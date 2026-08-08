@@ -37,7 +37,7 @@ final class PendingVoiceIntentRouter {
 
     private let store: PendingVoiceIntentStore
 
-    init(store: PendingVoiceIntentStore = .shared) { self.store = store }
+    init(store: PendingVoiceIntentStore) { self.store = store }
 
     /// The UI/app-state integration calls this only after it is authenticated
     /// and connected. A handler may return false to retain the intent for a

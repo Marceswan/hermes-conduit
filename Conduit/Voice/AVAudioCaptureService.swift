@@ -47,13 +47,13 @@ final class AVAudioCaptureService: NSObject, AudioCaptureService {
 
     func requestPermission() async -> Bool {
         await withCheckedContinuation { continuation in
-            switch session.recordPermission {
+            switch AVAudioApplication.shared.recordPermission {
             case .granted:
                 continuation.resume(returning: true)
             case .denied:
                 continuation.resume(returning: false)
             case .undetermined:
-                session.requestRecordPermission { continuation.resume(returning: $0) }
+                AVAudioApplication.requestRecordPermission { continuation.resume(returning: $0) }
             @unknown default:
                 continuation.resume(returning: false)
             }
@@ -120,7 +120,7 @@ final class AVAudioCaptureService: NSObject, AudioCaptureService {
         try session.setCategory(
             .playAndRecord,
             mode: .voiceChat,
-            options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker]
+            options: [.allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker]
         )
         try session.setPreferredSampleRate(16_000)
         try session.setActive(true)

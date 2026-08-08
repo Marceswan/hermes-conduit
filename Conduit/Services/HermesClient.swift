@@ -344,7 +344,7 @@ final class HermesClient: ObservableObject {
     var onEvent: ((StreamEvent) -> Void)?
     var onDisconnected: (() -> Void)?
 
-    static let requestTimeout: TimeInterval = 30
+    nonisolated static let requestTimeout: TimeInterval = 30
     static let promptSubmitTimeout: TimeInterval = 180 // 3 minutes
     static let titleGenerationTimeout: TimeInterval = 90
 

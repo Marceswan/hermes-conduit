@@ -10,6 +10,7 @@
 //  the Markdown renderer to fade the newest glyphs independently.
 //
 
+import Combine
 import SwiftUI
 
 struct StreamingText: View {

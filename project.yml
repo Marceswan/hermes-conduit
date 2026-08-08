@@ -3,6 +3,8 @@
 # Then open Conduit.xcodeproj in Xcode
 
 name: Conduit
+attributes:
+  LastUpgradeCheck: "2620"
 options:
   bundleIdPrefix: com.milim
   deploymentTarget:

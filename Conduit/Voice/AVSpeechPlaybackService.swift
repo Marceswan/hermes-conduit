@@ -25,7 +25,7 @@ final class AVSpeechPlaybackService: NSObject, SpeechPlaybackService {
     func start(sampleRate: Double) throws {
         stop()
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .defaultToSpeaker])
+        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .defaultToSpeaker])
         try session.setActive(true)
         guard let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: sampleRate, channels: 1, interleaved: true) else {
             throw VoiceAudioError.unavailable("The gateway reported an unsupported PCM format.")
@@ -71,7 +71,7 @@ final class AVSpeechPlaybackService: NSObject, SpeechPlaybackService {
     func playEncodedAudioData(_ data: Data) throws {
         stop()
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .defaultToSpeaker])
+        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .defaultToSpeaker])
         try session.setActive(true)
         let player = try AVAudioPlayer(data: data)
         player.delegate = self
