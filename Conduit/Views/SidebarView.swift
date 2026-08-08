@@ -16,12 +16,14 @@ struct SidebarView: View {
 
     enum SidebarTab: String, CaseIterable {
         case sessions = "Sessions"
+        case board = "Board"
         case cron = "Cron"
         case capabilities = "Capabilities"
 
         var icon: String {
             switch self {
             case .sessions: return "bubble.left.and.bubble.right"
+            case .board: return "rectangle.split.3x1"
             case .cron: return "clock"
             case .capabilities: return "wrench.adjustable"
             }
@@ -119,6 +121,8 @@ struct SidebarView: View {
                         switch selectedTab {
                         case .sessions:
                             SessionList()
+                        case .board:
+                            KanbanBoardTab()
                         case .cron:
                             CronList()
                         case .capabilities:

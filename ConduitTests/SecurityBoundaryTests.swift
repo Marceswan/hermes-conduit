@@ -37,9 +37,23 @@ final class SecurityBoundaryTests: XCTestCase {
         )
     }
 
+    func testKanbanPathsEscapeBoardSlugsAndRejectUnsafeTaskIDs() {
+        XCTAssertEqual(
+            KanbanPath.board(slug: "ops&x/../etc", includeArchived: false),
+            "/api/plugins/kanban/board?board=ops%26x%2F..%2Fetc"
+        )
+        XCTAssertNil(KanbanPath.task(id: "t_x/../y", board: nil))
+        XCTAssertNil(KanbanPath.taskLog(id: "t_x#frag", board: nil, tailBytes: 1024))
+    }
+
     func testInlineScriptSerializationEscapesScriptTerminators() {
         let value = MarkupHTML.jsonString("</script>\u{2028}\u{2029}")
-        XCTAssertTrue(value.contains("\\u003c/script>"))
+        // The load-bearing invariant is that the literal script terminator can
+        // never appear in inline script source. Whether the runtime also
+        // escapes "/" as "\/" (JSONSerialization does on some OS versions) is
+        // incidental.
+        XCTAssertFalse(value.contains("</script>"))
+        XCTAssertTrue(value.contains("\\u003c"))
         XCTAssertTrue(value.contains("\\u2028"))
         XCTAssertTrue(value.contains("\\u2029"))
     }

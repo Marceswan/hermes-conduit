@@ -504,13 +504,13 @@ final class HermesClient: ObservableObject {
             }
 
         case "reasoning.delta", "message.reasoning", "message.reasoning.delta":
-            let text = payload?["reasoning"]?.stringValue
+            let payloadText: String? = payload?["reasoning"]?.stringValue
                 ?? payload?["reasoning_content"]?.stringValue
                 ?? payload?["text"]?.stringValue
                 ?? payload?["content"]?.stringValue
-                ?? obj["reasoning"]?.stringValue
+            let objText: String? = obj["reasoning"]?.stringValue
                 ?? obj["text"]?.stringValue
-                ?? ""
+            let text = payloadText ?? objText ?? ""
             if !text.isEmpty {
                 onEvent?(.reasoningDelta(sessionId: sessionId, text: text))
             }
@@ -1366,6 +1366,14 @@ enum MessageNormalizer {
             $0 == "cron" || $0 == "scheduled" || $0 == "scheduler" || $0.hasPrefix("cron:") || $0.hasPrefix("cron_") || $0.hasPrefix("scheduled:")
         }) {
             return .cron
+        }
+
+        // Kanban worker sessions are agent-spawned board runs; they are
+        // surfaced through the Board tab, not the Sessions sidebar.
+        if allReported.contains(where: {
+            $0 == "kanban" || $0.hasPrefix("kanban:") || $0.hasPrefix("kanban_")
+        }) {
+            return .kanban
         }
 
         // Classify external sources (RETURN IMMEDIATELY — do not fall through)

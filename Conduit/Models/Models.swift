@@ -29,6 +29,7 @@ enum SessionSource: String, Codable, CaseIterable {
     case api
     case webhook
     case cron
+    case kanban
     case other
 
     var label: String {
@@ -39,6 +40,7 @@ enum SessionSource: String, Codable, CaseIterable {
         case .api: return "API"
         case .webhook: return "Webhook"
         case .cron: return "Cron"
+        case .kanban: return "Kanban"
         case .other: return "Other"
         }
     }
@@ -51,6 +53,7 @@ enum SessionSource: String, Codable, CaseIterable {
         case .api: return "globe"
         case .webhook: return "link"
         case .cron: return "clock.fill"
+        case .kanban: return "rectangle.split.3x1"
         case .other: return "questionmark.folder"
         }
     }
@@ -63,6 +66,7 @@ enum SessionSource: String, Codable, CaseIterable {
         case .api: return .green
         case .webhook: return .orange
         case .cron: return .pink
+        case .kanban: return .indigo
         case .other: return .gray
         }
     }

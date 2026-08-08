@@ -758,7 +758,7 @@ final class AppState: ObservableObject {
                   let activeClient = self.client,
                   activeClient === client else { return }
             guard PushNotificationService.shared.pendingTarget == nil else { return }
-            sessions = allSessions.filter { $0.source != .cron }
+            sessions = allSessions.filter { $0.source != .cron && $0.source != .kanban }
             cronSessions = allSessions.filter { $0.source == .cron }
 
             // Keep scheduled-job runs eligible for restoration. They are
@@ -1230,7 +1230,7 @@ final class AppState: ObservableObject {
             let allSessions = uniqueSessions(
                 [retainedActiveTurn].compactMap { $0 } + loadedSessions
             )
-            sessions = allSessions.filter { $0.source != .cron }
+            sessions = allSessions.filter { $0.source != .cron && $0.source != .kanban }
             cronSessions = allSessions.filter { $0.source == .cron }
             if let activeSessionId { updateActiveSessionTitle(for: activeSessionId) }
             Task { [weak self] in
@@ -2347,8 +2347,12 @@ final class AppState: ObservableObject {
             // Hermes Desktop's sidebar uses min_messages=1. Keep the explicit
             // client-side guard as well for older servers that ignore the
             // query parameter; malformed empty shadow rows must not leak into
-            // a profile's visible catalog.
-            return profilesMatch(owner, profile) && session.messageCount != 0
+            // a profile's visible catalog. Kanban worker sessions belong to
+            // the Board tab, not the sidebar (server-side
+            // exclude_sources=cron,kanban would save bandwidth once the
+            // multi-value format is verified; this client filter is
+            // authoritative).
+            return profilesMatch(owner, profile) && session.messageCount != 0 && session.source != .kanban
         }
     }
 

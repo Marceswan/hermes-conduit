@@ -1,6 +1,7 @@
 import XCTest
 @testable import Conduit
 
+@MainActor
 final class MessageNormalizerTests: XCTestCase {
     func testRuntimeSnapshotReadsLiveAssistantProjection() {
         let snapshot = SessionRuntimeSnapshot(
@@ -489,6 +490,22 @@ final class MessageNormalizerTests: XCTestCase {
         XCTAssertEqual(messages.count, 2)
         XCTAssertEqual(messages.map(\.role), [.user, .system])
         XCTAssertEqual(messages.last?.content, "Response interrupted by a user correction.")
+    }
+
+    func testClassifySourceKanbanMapsToKanbanCase() {
+        XCTAssertEqual(MessageNormalizer.classifySource(["source": .string("kanban")]), .kanban)
+        XCTAssertEqual(MessageNormalizer.classifySource(["origin": .string("kanban_worker")]), .kanban)
+        XCTAssertEqual(MessageNormalizer.classifySource(["platform": .string("kanban:default")]), .kanban)
+    }
+
+    func testClassifySourceKanbanDoesNotDisturbCronOrChat() {
+        XCTAssertEqual(
+            MessageNormalizer.classifySource(["source": .string("kanban"), "cron_job_id": .string("j1")]),
+            .cron,
+            "Cron metadata outranks the kanban source string"
+        )
+        XCTAssertEqual(MessageNormalizer.classifySource(["source": .string("desktop")]), .chat)
+        XCTAssertEqual(MessageNormalizer.classifySource(["source": .string("discord")]), .discord)
     }
 
     private func message(
