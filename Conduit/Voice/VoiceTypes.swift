@@ -223,6 +223,18 @@ protocol VoiceSpeechStream: AnyObject {
     func cancel()
 }
 
+/// Single serial queue for every AVAudioSession category/activation call in
+/// the app (the four sites in AVAudioCaptureService / AVSpeechPlaybackService).
+/// AVAudioSession's setActive does blocking IPC and triggers a main-thread
+/// unresponsiveness diagnostic when called there. Activations hop through
+/// this queue synchronously (callers need the thrown error and the session
+/// live before starting an engine); the lone deactivation is fire-and-forget
+/// on the SAME queue, so a queued deactivate can never land after a newer
+/// activate and silently kill a fresh capture session.
+enum AudioSessionCoordination {
+    static let queue = DispatchQueue(label: "conduit.audio-session", qos: .userInitiated)
+}
+
 @MainActor
 protocol VoiceGatewayService: AnyObject {
     var profile: String { get }

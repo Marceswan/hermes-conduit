@@ -25,8 +25,10 @@ final class AVSpeechPlaybackService: NSObject, SpeechPlaybackService {
     func start(sampleRate: Double) throws {
         stop()
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .defaultToSpeaker])
-        try session.setActive(true)
+        try AudioSessionCoordination.queue.sync {
+            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .defaultToSpeaker])
+            try session.setActive(true)
+        }
         guard let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: sampleRate, channels: 1, interleaved: true) else {
             throw VoiceAudioError.unavailable("The gateway reported an unsupported PCM format.")
         }
@@ -54,7 +56,7 @@ final class AVSpeechPlaybackService: NSObject, SpeechPlaybackService {
         guard let destination = buffer.int16ChannelData else { return 0 }
         pcm.withUnsafeBytes { source in
             guard let base = source.baseAddress else { return }
-            destination[0].assign(from: base.assumingMemoryBound(to: Int16.self), count: Int(frames))
+            destination[0].update(from: base.assumingMemoryBound(to: Int16.self), count: Int(frames))
         }
         pendingBuffers += 1
         player.scheduleBuffer(
@@ -71,8 +73,10 @@ final class AVSpeechPlaybackService: NSObject, SpeechPlaybackService {
     func playEncodedAudioData(_ data: Data) throws {
         stop()
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .defaultToSpeaker])
-        try session.setActive(true)
+        try AudioSessionCoordination.queue.sync {
+            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .defaultToSpeaker])
+            try session.setActive(true)
+        }
         let player = try AVAudioPlayer(data: data)
         player.delegate = self
         player.prepareToPlay()

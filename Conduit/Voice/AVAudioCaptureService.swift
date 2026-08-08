@@ -113,17 +113,23 @@ final class AVAudioCaptureService: NSObject, AudioCaptureService {
         input.removeTap(onBus: 0)
         engine.stop()
         converter = nil
-        try? session.setActive(false, options: .notifyOthersOnDeactivation)
+        let session = self.session
+        AudioSessionCoordination.queue.async {
+            try? session.setActive(false, options: .notifyOthersOnDeactivation)
+        }
     }
 
     private func configureSession() throws {
-        try session.setCategory(
-            .playAndRecord,
-            mode: .voiceChat,
-            options: [.allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker]
-        )
-        try session.setPreferredSampleRate(16_000)
-        try session.setActive(true)
+        let session = self.session
+        try AudioSessionCoordination.queue.sync {
+            try session.setCategory(
+                .playAndRecord,
+                mode: .voiceChat,
+                options: [.allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker]
+            )
+            try session.setPreferredSampleRate(16_000)
+            try session.setActive(true)
+        }
     }
 
     private func startEngine() throws {
