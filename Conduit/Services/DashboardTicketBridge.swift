@@ -104,6 +104,23 @@ enum DashboardTicketBridgeError: LocalizedError {
     }
 }
 
+/// WKUserContentController retains its message handlers strongly, which would
+/// cycle bridge -> webView -> configuration -> contentController -> bridge.
+/// This proxy is what the controller retains; it holds the bridge weakly, so
+/// the bridge deallocates naturally and needs no main-actor work in deinit.
+@MainActor
+private final class WeakScriptMessageForwarder: NSObject, WKScriptMessageHandler {
+    private weak var delegate: WKScriptMessageHandler?
+
+    init(_ delegate: WKScriptMessageHandler) {
+        self.delegate = delegate
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        delegate?.userContentController(userContentController, didReceive: message)
+    }
+}
+
 @MainActor
 final class DashboardTicketBridge: NSObject {
     let baseURL: String
@@ -113,14 +130,28 @@ final class DashboardTicketBridge: NSObject {
     private var requestID = 0
     private var pendingRequests: [Int: CheckedContinuation<[String: Any], Error>] = [:]
 
+    /// Native-OAuth bearer session (RFC 8252 sign-in via NativeOAuthFlow).
+    /// When present, all dashboard REST goes through URLSession with an
+    /// `Authorization: Bearer` header and the WebKit cookie machinery below
+    /// stays idle — there is no cookie session to preserve.
+    private var bearerCredentials: DashboardBearerCredentials?
+    private var bearerRefreshTask: Task<DashboardBearerCredentials, Error>?
+
+    var usesBearerAuth: Bool { bearerCredentials != nil }
+
     init(baseURL: String) {
         self.baseURL = (try? ConnectionURLPolicy.normalizedBaseURL(baseURL)) ?? ""
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
         self.webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
-        configuration.userContentController.add(self, name: "dashboard-response")
+        configuration.userContentController.add(WeakScriptMessageForwarder(self), name: "dashboard-response")
         webView.navigationDelegate = self
+        if let stored = KeychainHelper.loadBearerCredentials(), stored.baseURL == self.baseURL {
+            bearerCredentials = stored
+            isReady = true
+            return
+        }
         Task { [weak self] in
             guard let self else { return }
             await DashboardCookiePersistence.restore(into: self.webView.configuration.websiteDataStore.httpCookieStore)
@@ -132,11 +163,13 @@ final class DashboardTicketBridge: NSObject {
         }
     }
 
-    deinit {
-        webView.configuration.userContentController.removeScriptMessageHandler(forName: "dashboard-response")
-    }
-
     func reload() {
+        if bearerCredentials != nil {
+            // No page to reload in bearer mode; rotate the token instead so
+            // mintTicket's reload-and-retry loop still makes forward progress.
+            Task { [weak self] in _ = try? await self?.refreshBearerCredentials() }
+            return
+        }
         isReady = false
         rejectPending(with: DashboardTicketBridgeError.notReady)
         Task { [weak self] in
@@ -187,6 +220,15 @@ final class DashboardTicketBridge: NSObject {
         timeoutMilliseconds: Int = 12_000,
         maxResponseBytes: Int = DataURLLimits.maxJSONResponseBytes
     ) async throws -> [String: Any] {
+        if bearerCredentials != nil {
+            return try await bearerRequestJSON(
+                path: path,
+                method: method,
+                body: body,
+                timeoutMilliseconds: timeoutMilliseconds,
+                maxResponseBytes: maxResponseBytes
+            )
+        }
         for _ in 0..<30 where !isReady {
             try await Task.sleep(for: .milliseconds(100))
         }
@@ -264,6 +306,108 @@ final class DashboardTicketBridge: NSObject {
                 guard let error, let pending = self.pendingRequests.removeValue(forKey: id) else { return }
                 pending.resume(throwing: error)
             }
+        }
+    }
+
+    // MARK: - Bearer (native OAuth) transport
+
+    /// URLSession twin of the WebKit fetch path: same response-shape contract
+    /// ({_array:...} wrapping, {value:...} for scalars), same signInRequired
+    /// semantics on 401/403, with one transparent token refresh + retry.
+    private func bearerRequestJSON(
+        path: String,
+        method: String,
+        body: [String: Any]?,
+        timeoutMilliseconds: Int,
+        maxResponseBytes: Int,
+        allowRefresh: Bool = true
+    ) async throws -> [String: Any] {
+        guard var credentials = bearerCredentials else {
+            throw DashboardTicketBridgeError.signInRequired
+        }
+        if credentials.isExpiring {
+            credentials = try await refreshBearerCredentials()
+        }
+        guard let url = URL(string: "\(baseURL)\(path)") else {
+            throw DashboardTicketBridgeError.requestFailed("Could not encode dashboard request.")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = Double(max(1_000, timeoutMilliseconds)) / 1_000
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw DashboardTicketBridgeError.requestFailed("Dashboard did not respond.")
+        }
+        if http.statusCode == 401 || http.statusCode == 403 {
+            guard allowRefresh else { throw DashboardTicketBridgeError.signInRequired }
+            _ = try await refreshBearerCredentials()
+            return try await bearerRequestJSON(
+                path: path,
+                method: method,
+                body: body,
+                timeoutMilliseconds: timeoutMilliseconds,
+                maxResponseBytes: maxResponseBytes,
+                allowRefresh: false
+            )
+        }
+        guard data.count <= max(1_024, maxResponseBytes) else {
+            throw DashboardTicketBridgeError.requestFailed("response_too_large")
+        }
+
+        let decoded = try? JSONSerialization.jsonObject(with: data)
+        let normalized: [String: Any]
+        switch decoded {
+        case let object as [String: Any]:
+            normalized = object
+        case let array as [Any]:
+            normalized = ["_array": array]
+        case let other?:
+            normalized = ["value": other]
+        default:
+            normalized = [:]
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let detail = (normalized["error"] as? String)
+                ?? (normalized["message"] as? String)
+                ?? (normalized["detail"] as? String)
+                ?? "Dashboard request failed (\(http.statusCode))."
+            throw DashboardTicketBridgeError.requestFailed(detail)
+        }
+        return normalized
+    }
+
+    /// Rotate via /auth/native/refresh, deduplicating concurrent callers onto
+    /// one network round trip. A rejected refresh token surfaces as
+    /// signInRequired — AppState's recovery path then clears the stored
+    /// credentials and shows the login screen.
+    private func refreshBearerCredentials() async throws -> DashboardBearerCredentials {
+        if let bearerRefreshTask {
+            return try await bearerRefreshTask.value
+        }
+        guard let current = bearerCredentials else {
+            throw DashboardTicketBridgeError.signInRequired
+        }
+        let task = Task<DashboardBearerCredentials, Error> {
+            try await NativeOAuthFlow.refresh(current)
+        }
+        bearerRefreshTask = task
+        defer { bearerRefreshTask = nil }
+        do {
+            let refreshed = try await task.value
+            bearerCredentials = refreshed
+            KeychainHelper.saveBearerCredentials(refreshed)
+            return refreshed
+        } catch is DashboardTicketBridgeError {
+            throw DashboardTicketBridgeError.signInRequired
+        } catch let error as NativeOAuthError {
+            throw DashboardTicketBridgeError.requestFailed(error.localizedDescription)
         }
     }
 

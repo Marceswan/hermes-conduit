@@ -7,7 +7,9 @@
 //  ticket that we use for the WebSocket connection.
 //
 
+import SafariServices
 import SwiftUI
+import UIKit
 import WebKit
 
 struct LoginView: View {
@@ -20,6 +22,8 @@ struct LoginView: View {
     @State private var useFaceID = false
     @State private var isConnecting = false
     @State private var showWebView = false
+    @State private var nativeAuthorization: NativeOAuthFlow.PendingAuthorization?
+    @State private var cancelNativeAuthorization: (() -> Void)?
     @State private var error: String?
     @FocusState private var focusedField: LoginField?
 
@@ -131,7 +135,9 @@ struct LoginView: View {
                             .frame(height: 50)
                     }
                     .foregroundStyle(.white)
-                    .disabled(serverUrl.isEmpty || username.isEmpty || password.isEmpty || isConnecting)
+                    // Username/password stay optional: OAuth dashboards (e.g.
+                    // a Nous Portal-backed gateway) have no password to type.
+                    .disabled(serverUrl.isEmpty || isConnecting)
                     .conduitGlassControl(cornerRadius: 18, tint: .conduitAccent, prominent: true)
                 }
                 .padding(20)
@@ -169,6 +175,18 @@ struct LoginView: View {
                 }
             )
         }
+        .sheet(
+            item: $nativeAuthorization,
+            // The item binding is already nil here; cancelling an authorization
+            // that completed is a no-op, so this only aborts a swiped-away one.
+            onDismiss: { cancelNativeAuthorization?() }
+        ) { pending in
+            // Real Safari process: the hosted provider's bot check (Privy)
+            // passes here where an embedded WKWebView is rejected. The app
+            // stays foreground-active, keeping the loopback listener alive.
+            SafariAuthView(url: pending.authorizeURL)
+                .ignoresSafeArea()
+        }
     }
 
     private func connect() async {
@@ -188,7 +206,19 @@ struct LoginView: View {
             let client = NativeAuthClient(baseURL: serverUrl)
             let providers = try await client.authProviders()
             guard providers.contains(where: { $0["supports_password"] as? Bool == true }) else {
-                showWebView = true
+                // OAuth-only dashboard. Prefer the RFC 8252 native flow (real
+                // Safari — hosted providers' bot checks reject embedded
+                // webviews); older gateways without /auth/native/* fall back
+                // to the in-app web login sheet.
+                if await NativeOAuthFlow.isSupported(baseURL: serverUrl) {
+                    try await connectWithNativeOAuth()
+                } else {
+                    showWebView = true
+                }
+                return
+            }
+            guard !username.isEmpty, !password.isEmpty else {
+                error = "This dashboard uses password sign-in. Enter a username and password."
                 return
             }
 
@@ -206,9 +236,38 @@ struct LoginView: View {
             await appState.connect(with: HermesConnection(baseUrl: serverUrl, ticket: ticket))
         } catch is CancellationError {
             return
+        } catch NativeOAuthError.cancelled {
+            return
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    /// RFC 8252 native sign-in: Safari sheet -> loopback code -> bearer
+    /// tokens -> ws-ticket. Bearer credentials land in the Keychain, where
+    /// DashboardTicketBridge picks them up for all later REST + reconnects.
+    private func connectWithNativeOAuth() async throws {
+        let baseURL = try ConnectionURLPolicy.normalizedBaseURL(serverUrl)
+        let flow = try NativeOAuthFlow(baseURL: baseURL)
+        let pending = try await flow.begin()
+        cancelNativeAuthorization = { pending.cancel() }
+        nativeAuthorization = pending
+        defer {
+            cancelNativeAuthorization = nil
+            nativeAuthorization = nil
+        }
+
+        let code = try await pending.waitForCode()
+        let credentials = try await flow.exchange(code: code)
+        KeychainHelper.saveBearerCredentials(credentials)
+        // Bearer sign-in supersedes any saved password credential.
+        KeychainHelper.clearCredentials()
+        let ticket = try await NativeOAuthFlow.mintWSTicket(
+            baseURL: baseURL,
+            accessToken: credentials.accessToken
+        )
+        appState.rememberDashboardURL(baseURL)
+        await appState.connect(with: HermesConnection(baseUrl: baseURL, ticket: ticket))
     }
 
     private var loginIconAssetName: String {
@@ -223,6 +282,23 @@ struct LoginView: View {
     }
 }
 
+// MARK: - Native OAuth Safari sheet
+
+/// SFSafariViewController host for the RFC 8252 native sign-in. A real Safari
+/// process — not WKWebView — so hosted identity providers' CAPTCHA/bot checks
+/// behave exactly as they do in the Safari app.
+private struct SafariAuthView: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let controller = SFSafariViewController(url: url)
+        controller.dismissButtonStyle = .cancel
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
+}
+
 // MARK: - Auth WebView
 
 struct AuthWebView: UIViewRepresentable {
@@ -234,8 +310,13 @@ struct AuthWebView: UIViewRepresentable {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         config.userContentController.add(context.coordinator, name: "ticket")
+        // Hosted sign-in providers (the Nous Portal uses Privy) run a bot
+        // check that never resolves under the default WKWebView user agent.
+        config.preferences.javaScriptCanOpenWindowsAutomatically = true
         let webView = WKWebView(frame: .zero, configuration: config)
+        webView.customUserAgent = AuthWebView.safariUserAgent
         webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
         guard let normalized = try? ConnectionURLPolicy.normalizedBaseURL(url),
               let dashboardURL = URL(string: normalized) else {
             onError(ConnectionURLPolicyError.invalidURL.localizedDescription)
@@ -256,7 +337,17 @@ struct AuthWebView: UIViewRepresentable {
         Coordinator(parent: self)
     }
 
-    class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+    /// Mobile Safari's user agent for this OS version. Privy's human check
+    /// (Cloudflare Turnstile) spins forever under the default WKWebView UA,
+    /// which lacks the `Version/... Safari/...` suffix real Safari sends.
+    static var safariUserAgent: String {
+        let os = UIDevice.current.systemVersion
+        return "Mozilla/5.0 (iPhone; CPU iPhone OS \(os.replacingOccurrences(of: ".", with: "_")) "
+            + "like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) "
+            + "Version/\(os) Mobile/15E148 Safari/604.1"
+    }
+
+    class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         let parent: AuthWebView
         private var hasDeliveredTicket = false
         private var hasPinnedDashboardOrigin = false
@@ -349,6 +440,23 @@ struct AuthWebView: UIViewRepresentable {
                   let baseURL = try? ConnectionURLPolicy.normalizedBaseURL(parent.url) else { return }
             hasDeliveredTicket = true
             parent.onTicket(cleanedTicket, baseURL)
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            createWebViewWith configuration: WKWebViewConfiguration,
+            for navigationAction: WKNavigationAction,
+            windowFeatures: WKWindowFeatures
+        ) -> WKWebView? {
+            // Identity providers open OAuth steps via window.open. With no
+            // UI delegate those popups are silently dropped and sign-in
+            // stalls. Route them through the existing webview instead —
+            // decidePolicyFor still applies the transport/origin policy.
+            if let url = navigationAction.request.url,
+               ConnectionURLPolicy.isAllowedTransport(url) {
+                webView.load(URLRequest(url: url))
+            }
+            return nil
         }
 
         func webView(

@@ -619,6 +619,7 @@ final class AppState: ObservableObject {
         connectedAt = nil
         KeychainHelper.clearConnection()
         KeychainHelper.clearCredentials()
+        KeychainHelper.clearBearerCredentials()
         connection = nil
         client = nil
         dashboardTicketBridge = nil
@@ -724,6 +725,9 @@ final class AppState: ObservableObject {
         supportsProjects = false
         projectsLoading = false
         KeychainHelper.clearConnection()
+        // A dead refresh token cannot be revived by the bridge; drop it so the
+        // next launch goes straight to a fresh sign-in instead of retry loops.
+        KeychainHelper.clearBearerCredentials()
         turnState = .idle
         showLogin = true
         errorMessage = message
@@ -1923,7 +1927,7 @@ final class AppState: ObservableObject {
             // These send a prompt — extract the message and send it
             let message = obj["message"]?.stringValue ?? output
             if !message.isEmpty {
-                await sendMessage(message, attachments: [])
+                _ = await sendMessage(message, attachments: [])
             }
         case "prefill":
             if let notice = obj["notice"]?.stringValue, !notice.isEmpty {
@@ -4267,6 +4271,7 @@ enum KeychainHelper {
     private static let key = "hermes-conduit.connection.v1"
     private static let dashboardCookieKey = "hermes-conduit.dashboard-cookies.v1"
     private static let credentialsKey = "hermes-conduit.credentials.v1"
+    private static let bearerCredentialsKey = "hermes-conduit.bearer-credentials.v1"
     private static let pushRegistrationKey = "hermes-conduit.push-registration.v1"
     private static let service = "com.milim.conduit"
 
@@ -4299,6 +4304,20 @@ enum KeychainHelper {
 
     static func clearCredentials() {
         delete(account: credentialsKey)
+    }
+
+    static func saveBearerCredentials(_ credentials: DashboardBearerCredentials) {
+        guard let data = try? JSONEncoder().encode(credentials) else { return }
+        save(data, account: bearerCredentialsKey)
+    }
+
+    static func loadBearerCredentials() -> DashboardBearerCredentials? {
+        guard let data = load(account: bearerCredentialsKey) else { return nil }
+        return try? JSONDecoder().decode(DashboardBearerCredentials.self, from: data)
+    }
+
+    static func clearBearerCredentials() {
+        delete(account: bearerCredentialsKey)
     }
 
     static func savePushRegistration(_ data: Data) {
