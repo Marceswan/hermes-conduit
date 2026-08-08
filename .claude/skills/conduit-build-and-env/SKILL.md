@@ -220,6 +220,16 @@ hard rule.
   time out the type-checker (cap at ~4 terms or bind typed intermediates),
   and pure statics on a `@MainActor` type need `nonisolated` to be callable
   from synchronous nonisolated tests.
+- Device run fails with `DVTDeviceSymbolsCoordinatorErrorDomain` code 908
+  (worker `IDEInstallCoreDeviceWorker`, operation `dscExtractor`): Xcode
+  could not extract the device's dyld shared-cache symbols. Observed
+  2026-08-08 on beta-to-beta (Xcode 27 beta -> iOS 27 beta iPhone) with the
+  startup disk nearly full. Fix: free disk space (extraction needs ~10+ GB
+  scratch) and delete the device's folders under
+  `~/Library/Developer/Xcode/iOS DeviceSupport/` (regenerated on next run —
+  a half-extracted folder from a failed attempt also causes repeat 908s).
+  Escalation if it recurs with ample disk: reboot phone + Mac, use a cable,
+  then suspect the Xcode beta seed vs that iOS build.
 
 ### Simulator vs device
 
@@ -286,3 +296,4 @@ Volatile facts (re-check on each pass, date-stamped 2026-08-08):
 Run log:
 - 2026-08-08 (build): initial authoring
 - 2026-08-08 (build): added Xcode license-gate trap and toolchain-strictness notes discovered during Kanban phases 1-3
+- 2026-08-08 (build): added DVT error 908 dscExtractor trap (disk-full symbol extraction on beta-to-beta device runs)
