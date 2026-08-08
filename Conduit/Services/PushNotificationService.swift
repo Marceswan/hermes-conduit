@@ -51,7 +51,10 @@ final class PushNotificationService: ObservableObject {
         }
         return URL(string: "https://push.milim.dev")!
     }
-    private let bundleID = "com.milim.relay"
+    // APNs topic the relay pushes to — must match the app's real bundle ID.
+    // Note: the default push.milim.dev relay only holds an APNs key for the
+    // upstream com.milim.relay ID; a rebranded bundle needs its own relay.
+    private let bundleID = Bundle.main.bundleIdentifier ?? "com.meswan.hermes"
     private var registration: StoredRegistration?
     private var deviceToken: String?
     private var tokenContinuation: CheckedContinuation<String, Error>?
@@ -218,7 +221,7 @@ final class PushNotificationService: ObservableObject {
             return
         }
         let body = RegistrationRequest(bundleID: bundleID, deviceToken: deviceToken, environment: "production", preferences: preferences)
-        var request = try jsonRequest(path: "/v1/installations", method: "POST", body: body)
+        let request = try jsonRequest(path: "/v1/installations", method: "POST", body: body)
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(response: response, data: data)
         let responseBody = try JSONDecoder().decode(RegistrationResponse.self, from: data)
