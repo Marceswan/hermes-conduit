@@ -36,17 +36,29 @@ public final class UIApplication {
         return NSApp.isHidden ? .background : .inactive
     }
 
+    /// Only web, mail, and System Settings links may leave the app. iOS never
+    /// lets a link launch local software, so `file:` and app URLs are refused.
+    nonisolated public static func allowsExternalOpen(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return ["http", "https", "mailto", "x-apple.systempreferences"].contains(scheme)
+    }
+
     public func open(
         _ url: URL,
         options: [OpenExternalURLOptionsKey: Any] = [:],
         completionHandler: ((Bool) -> Void)? = nil
     ) {
+        guard Self.allowsExternalOpen(url) else {
+            completionHandler?(false)
+            return
+        }
         completionHandler?(NSWorkspace.shared.open(url))
     }
 
     @discardableResult
     public func open(_ url: URL, options: [OpenExternalURLOptionsKey: Any] = [:]) async -> Bool {
-        NSWorkspace.shared.open(url)
+        guard Self.allowsExternalOpen(url) else { return false }
+        return NSWorkspace.shared.open(url)
     }
 
     /// No suspension on Mac, so there is nothing to extend. Tokens stay
@@ -84,9 +96,19 @@ public final class UIApplication {
         }
     }
 
+    /// Upstream dismisses focus with `sendAction(resignFirstResponder, to: nil, ...)`.
+    /// NSApp.sendAction only calls resignFirstResponder on the responder and leaves
+    /// the window's firstResponder unchanged, so the nil-target case is handled here.
     @discardableResult
     public func sendAction(_ action: Selector, to target: Any?, from sender: Any?, for event: Any?) -> Bool {
-        NSApp.sendAction(action, to: target, from: sender)
+        if action == #selector(NSResponder.resignFirstResponder), target == nil {
+            return dismissFocus(in: NSApp.keyWindow)
+        }
+        return NSApp.sendAction(action, to: target, from: sender)
+    }
+
+    func dismissFocus(in window: NSWindow?) -> Bool {
+        window?.makeFirstResponder(nil) ?? false
     }
 
     public var supportsAlternateIcons: Bool { false }

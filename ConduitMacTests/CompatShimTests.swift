@@ -1,5 +1,5 @@
 import XCTest
-import UIKit
+@testable import UIKit
 @testable import ConduitMac
 
 final class CompatShimTests: XCTestCase {
@@ -76,5 +76,46 @@ final class CompatShimTests: XCTestCase {
 
     func testFontLineHeightPositive() {
         XCTAssertGreaterThan(UIFont.preferredFont(forTextStyle: .body).lineHeight, 0)
+    }
+
+    @MainActor
+    func testResignFirstResponderClearsFieldFocus() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 150, height: 24))
+        window.contentView?.addSubview(field)
+        window.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(window.makeFirstResponder(field))
+
+        XCTAssertTrue(UIApplication.shared.dismissFocus(in: window))
+
+        let responder = window.firstResponder
+        XCTAssertFalse(responder === field)
+        XCTAssertFalse((responder as? NSText)?.delegate as? NSTextField === field)
+        window.orderOut(nil)
+    }
+
+    func testAllowsExternalOpenOnlyForWebMailAndSettings() {
+        XCTAssertFalse(UIApplication.allowsExternalOpen(URL(fileURLWithPath: "/Applications/Calculator.app")))
+        XCTAssertFalse(UIApplication.allowsExternalOpen(URL(string: "file:///Applications/Calculator.app")!))
+        XCTAssertFalse(UIApplication.allowsExternalOpen(URL(string: "myapp://run")!))
+        XCTAssertTrue(UIApplication.allowsExternalOpen(URL(string: "https://example.com")!))
+        XCTAssertTrue(UIApplication.allowsExternalOpen(URL(string: "HTTP://example.com")!))
+        XCTAssertTrue(UIApplication.allowsExternalOpen(URL(string: "mailto:someone@example.com")!))
+        XCTAssertTrue(UIApplication.allowsExternalOpen(
+            URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy")!
+        ))
+    }
+
+    @MainActor
+    func testDisallowedURLIsRefusedWithoutOpening() async {
+        let url = URL(string: "file:///Applications/Calculator.app")!
+        var reported: Bool?
+        UIApplication.shared.open(url) { reported = $0 }
+        XCTAssertEqual(reported, false)
+        let opened = await UIApplication.shared.open(url)
+        XCTAssertFalse(opened)
     }
 }
