@@ -22,6 +22,7 @@ struct ConduitSheetHeader: View {
                 }
                 .conduitGlassControl(cornerRadius: 18)
                 .accessibilityLabel("Close \(title)")
+                .keyboardShortcut(.cancelAction) // MAC: a11y
             }
         }
         .frame(minHeight: 44)
