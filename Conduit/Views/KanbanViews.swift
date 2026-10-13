@@ -1712,6 +1712,7 @@ struct KanbanView: View {
                         .foregroundStyle(.tertiary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Clear search") // MAC: a11y
             }
             // V3B: assignee/tenant/Show Archived/grouping live behind ONE
             // compact filter button instead of crowding the header.

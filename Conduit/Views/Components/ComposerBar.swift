@@ -935,6 +935,7 @@ struct ComposerBar: View {
         }
         .disabled(!appState.composerIsEnabled || appState.isBusy)
         .conduitGlassControl(cornerRadius: Self.controlSize / 2, tint: .conduitAccent.opacity(0.08))
+        .accessibilityLabel("Add attachment") // MAC: a11y
         .photosPicker(
             isPresented: $showAttachmentMenu,
             selection: $photoItems,
