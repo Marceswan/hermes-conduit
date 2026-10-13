@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 /// Borderless tooltip bubble shown after the pointer rests on a control.
 final class TooltipWindow: NSPanel {
@@ -54,14 +55,40 @@ final class TooltipWindow: NSPanel {
     func hide() { orderOut(nil) }
 }
 
-/// Rounded accent wash drawn over the control under the pointer.
+/// Outline drawn over the control under the pointer: the control's own
+/// rounded shape, a faint accent wash, a thin accent stroke and a soft glow.
+/// The colour is the app accent (`Color.conduitAccent`), never system blue.
 final class HighlightWindow: NSWindow {
-    private final class FillView: NSView {
+    /// Room around the control for the glow; the window is this much larger.
+    static let glowInset: CGFloat = 8
+
+    private final class OutlineView: NSView {
+        var path: NSBezierPath?
+
         override func draw(_ dirtyRect: NSRect) {
-            NSColor.controlAccentColor.withAlphaComponent(0.12).setFill()
-            NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
+            guard let path else { return }
+            let accent = HighlightWindow.accentColor
+            NSGraphicsContext.saveGraphicsState()
+            accent.withAlphaComponent(0.10).setFill()
+            path.fill()
+            let glow = NSShadow()
+            glow.shadowColor = accent.withAlphaComponent(0.45)
+            glow.shadowBlurRadius = 6
+            glow.shadowOffset = .zero
+            glow.set()
+            accent.withAlphaComponent(0.70).setStroke()
+            let stroke = path.copy() as! NSBezierPath
+            stroke.lineWidth = 1
+            stroke.stroke()
+            NSGraphicsContext.restoreGraphicsState()
         }
     }
+
+    /// The app accent as an AppKit colour. Dynamic: resolves against the
+    /// drawing appearance, like the SwiftUI colour it comes from.
+    static var accentColor: NSColor { NSColor(Color.conduitAccent) }
+
+    private let outline = OutlineView()
 
     init() {
         super.init(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: true)
@@ -70,16 +97,18 @@ final class HighlightWindow: NSWindow {
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false
-        contentView = FillView()
+        contentView = outline
     }
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
     private var closeObserver: NSObjectProtocol?
+    private var shownShape: HoverOutlineShape?
 
-    func show(around elementFrame: CGRect, over newParent: NSWindow) {
-        let frame = elementFrame.insetBy(dx: -2, dy: -2)
+    func show(shape: HoverOutlineShape, over newParent: NSWindow) {
+        let frame = shape.frame.insetBy(dx: -Self.glowInset, dy: -Self.glowInset)
+        if parent === newParent, shownShape == shape, self.frame == frame { return }
         if parent !== newParent {
             parent?.removeChildWindow(self)
             newParent.addChildWindow(self, ordered: .above)
@@ -90,7 +119,11 @@ final class HighlightWindow: NSWindow {
                 MainActor.assumeIsolated { self?.hide() }
             }
         }
-        if self.frame != frame { setFrame(frame, display: true) }
+        appearance = newParent.effectiveAppearance
+        if self.frame != frame { setFrame(frame, display: false) }
+        outline.path = shape.path(relativeTo: frame.origin)
+        outline.needsDisplay = true
+        shownShape = shape
     }
 
     func hide() {
@@ -99,5 +132,6 @@ final class HighlightWindow: NSWindow {
         closeObserver = nil
         parent?.removeChildWindow(self)
         orderOut(nil)
+        shownShape = nil
     }
 }
