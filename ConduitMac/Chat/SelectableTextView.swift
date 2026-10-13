@@ -179,6 +179,7 @@ extension SelectableTextView {
         }
         view.textContainer?.maximumNumberOfLines = maximumNumberOfLines
         view.linkTextAttributes = [.foregroundColor: linkColor, .cursor: NSCursor.pointingHand]
+        context.coordinator.openURL = context.environment.openURL
     }
 
     /// Mirrors upstream `measureNonWrapping`: the text's natural single-line size.
@@ -219,11 +220,14 @@ extension SelectableTextView {
         measuredSize(proposalWidth: proposal.width)
     }
 
-    /// R11: link clicks never reach NSTextView's default NSWorkspace handling.
-    /// They go through `UIApplication.shared.open`, which applies the scheme
-    /// allowlist.
+    /// R11/R27: link clicks never reach NSTextView's default NSWorkspace
+    /// handling. They go to the environment `OpenURLAction` (root policy
+    /// `MacOpenURLPolicy` routes in-app links and applies the allowlist). Only
+    /// when no action was captured do they fall back to
+    /// `UIApplication.shared.open`, which applies the same scheme allowlist.
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
+        var openURL: OpenURLAction?
         private let opener: @MainActor (URL) -> Void
 
         init(opener: @escaping @MainActor (URL) -> Void = { UIApplication.shared.open($0) }) {
@@ -237,7 +241,12 @@ extension SelectableTextView {
         }
 
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
-            if let url = Self.url(fromLink: link) { opener(url) }
+            guard let url = Self.url(fromLink: link) else { return true }
+            if let openURL {
+                openURL(url)
+            } else {
+                opener(url)
+            }
             return true
         }
     }

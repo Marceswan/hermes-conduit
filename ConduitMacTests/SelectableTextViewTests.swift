@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import SwiftUI
 @testable import UIKit
 @testable import ConduitMac
 
@@ -46,6 +47,21 @@ final class SelectableTextViewTests: XCTestCase {
         let handled = coordinator.textView(NSTextView(), clickedOnLink: "https://example.com", at: 0)
         XCTAssertTrue(handled)
         XCTAssertEqual(opened, [URL(string: "https://example.com")!])
+    }
+
+    func testClickedLinkGoesToCapturedOpenURLActionNotFallback() {
+        var fallback: [URL] = []
+        var routed: [URL] = []
+        let coordinator = SelectableTextView.Coordinator { fallback.append($0) }
+        coordinator.openURL = OpenURLAction { url in
+            routed.append(url)
+            return .handled
+        }
+        let session = URL(string: "conduit://session/abc")!
+        XCTAssertTrue(coordinator.textView(NSTextView(), clickedOnLink: session, at: 0))
+        XCTAssertTrue(coordinator.textView(NSTextView(), clickedOnLink: "https://example.com", at: 0))
+        XCTAssertEqual(routed, [session, URL(string: "https://example.com")!])
+        XCTAssertTrue(fallback.isEmpty)
     }
 
     func testClickedDisallowedLinkReturnsTrueAndDefaultOpenerRefusesIt() {
