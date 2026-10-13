@@ -15,6 +15,9 @@ struct LiquidOrbView: NSViewRepresentable {
     var animates = true
     /// See LiveVoiceOrbPower: 60 only while speaking, unless in Low Power Mode.
     var framesPerSecond = 30
+    /// `speech` is a measured audio level (LiveVoiceLevelMeter) rather than the
+    /// call phase's 0 or 1: the renderer follows it closely instead of easing it.
+    var speechIsMeasured = false
 
     func makeCoordinator() -> LiquidOrbRenderer {
         LiquidOrbRenderer(pipeline: pipeline, state: state, animates: animates)
@@ -32,6 +35,7 @@ struct LiquidOrbView: NSViewRepresentable {
     }
 
     private func configure(_ view: LiquidOrbMTKView, renderer: LiquidOrbRenderer) {
+        renderer.speechIsMeasured = speechIsMeasured
         renderer.update(state: state, speech: speech, animates: animates)
         view.preferredFramesPerSecond = framesPerSecond
         view.wantsAnimation = animates
