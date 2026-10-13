@@ -7,3 +7,4 @@ public typealias UIImage = NSImage
 public typealias UIColor = NSColor
 public typealias UIFont = NSFont
 public typealias UIResponder = NSResponder
+public typealias UIEdgeInsets = NSEdgeInsets
