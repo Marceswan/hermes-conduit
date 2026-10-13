@@ -56,4 +56,39 @@ final class SelectableTextViewTests: XCTestCase {
         XCTAssertTrue(coordinator.textView(NSTextView(), clickedOnLink: file, at: 0))
         XCTAssertTrue(coordinator.textView(NSTextView(), clickedOnLink: "not a url \u{0}", at: 0))
     }
+
+    func testSuppliedFontChangesMeasuredHeightOfUnattributedText() {
+        let plain = NSAttributedString(string: String(repeating: "word ", count: 40))
+        let small = SelectableTextView(attributedText: plain, font: .systemFont(ofSize: 12))
+        let large = SelectableTextView(attributedText: plain, font: .systemFont(ofSize: 28))
+        XCTAssertGreaterThan(large.measuredSize(proposalWidth: 300).height, small.measuredSize(proposalWidth: 300).height)
+    }
+
+    func testStyledTextFillsMissingFontAndColorButKeepsRunValues() {
+        let text = NSMutableAttributedString(string: "ab")
+        text.addAttribute(.foregroundColor, value: NSColor.red, range: NSRange(location: 1, length: 1))
+        let view = SelectableTextView(attributedText: text, font: .systemFont(ofSize: 28), textColor: .blue)
+        let styled = view.styledText()
+        XCTAssertEqual(styled.attribute(.font, at: 0, effectiveRange: nil) as? NSFont, .systemFont(ofSize: 28))
+        XCTAssertEqual(styled.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor, .blue)
+        XCTAssertEqual(styled.attribute(.foregroundColor, at: 1, effectiveRange: nil) as? NSColor, .red)
+    }
+
+    func testNonWrappingTextMeasuresNaturalWidth() {
+        let view = SelectableTextView(text: "short", wrapsLines: false)
+        let size = view.measuredSize(proposalWidth: 1000)
+        XCTAssertGreaterThan(size.width, 0)
+        XCTAssertLessThan(size.width, 200)
+    }
+
+    func testUnusableProposalsReturnFiniteSizes() {
+        for wraps in [true, false] {
+            let view = SelectableTextView(text: "some text here", wrapsLines: wraps)
+            for proposal in [nil, .infinity, 0, -5, CGFloat.nan] as [CGFloat?] {
+                let size = view.measuredSize(proposalWidth: proposal)
+                XCTAssertTrue(size.width.isFinite && size.width > 0, "wraps \(wraps) proposal \(String(describing: proposal))")
+                XCTAssertTrue(size.height.isFinite && size.height > 0)
+            }
+        }
+    }
 }

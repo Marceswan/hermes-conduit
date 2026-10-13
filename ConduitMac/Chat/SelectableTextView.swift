@@ -140,13 +140,27 @@ extension SelectableTextView {
         return ceil(layout.usedRect(for: container).height)
     }
 
-    private func styledText() -> NSAttributedString {
+    func styledText() -> NSAttributedString {
         let styled = NSMutableAttributedString(attributedString: attributedText)
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = lineSpacing
         paragraph.alignment = textAlignment
         paragraph.lineBreakMode = wrapsLines ? .byWordWrapping : .byTruncatingTail
-        styled.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: styled.length))
+        let fullRange = NSRange(location: 0, length: styled.length)
+        guard fullRange.length > 0 else { return styled }
+        styled.addAttribute(.paragraphStyle, value: paragraph, range: fullRange)
+        // Same fill as upstream configure(_:): per-run font and color win,
+        // the configured defaults fill only what is missing.
+        styled.enumerateAttribute(.font, in: fullRange, options: []) { value, subrange, _ in
+            if value == nil {
+                styled.addAttribute(.font, value: font, range: subrange)
+            }
+        }
+        styled.enumerateAttribute(.foregroundColor, in: fullRange, options: []) { value, subrange, _ in
+            if value == nil {
+                styled.addAttribute(.foregroundColor, value: textColor, range: subrange)
+            }
+        }
         return styled
     }
 
@@ -167,14 +181,42 @@ extension SelectableTextView {
         view.linkTextAttributes = [.foregroundColor: linkColor, .cursor: NSCursor.pointingHand]
     }
 
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? {
+    /// Mirrors upstream `measureNonWrapping`: the text's natural single-line size.
+    func measureNonWrapping() -> CGSize {
+        let measured = styledText().boundingRect(
+            with: CGSize(width: 100_000, height: CGFloat.greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            context: nil
+        )
+        let lineHeight = NSLayoutManager().defaultLineHeight(for: font)
+        return CGSize(width: max(1, ceil(measured.width)), height: max(ceil(lineHeight), ceil(measured.height)))
+    }
+
+    /// Shared by `sizeThatFits` and tests (`Context` cannot be built outside
+    /// SwiftUI). Branch order and the `width > 0, width.isFinite` guard match
+    /// upstream `measuredSize(proposalWidth:textView:)`. Upstream returns nil
+    /// for an unusable wrapping proposal; AppKit has no fallback height, so
+    /// that case measures at the natural width instead.
+    func measuredSize(proposalWidth: CGFloat?) -> CGSize {
+        if !wrapsLines {
+            return measureNonWrapping()
+        }
         if let range = selfSizingWidthRange {
-            let natural = ceil(styledText().size().width)
-            let width = min(max(natural, range.lowerBound), range.upperBound)
+            let idealWidth = max(1, measureNonWrapping().width)
+            let width = min(max(idealWidth, range.lowerBound), range.upperBound)
             return CGSize(width: width, height: Self.measuredHeight(of: styledText(), width: width, maximumNumberOfLines: maximumNumberOfLines))
         }
-        let width = proposal.width ?? 600
+        let width: CGFloat
+        if let proposed = proposalWidth, proposed > 0, proposed.isFinite {
+            width = proposed
+        } else {
+            width = max(1, measureNonWrapping().width)
+        }
         return CGSize(width: width, height: Self.measuredHeight(of: styledText(), width: width, maximumNumberOfLines: maximumNumberOfLines))
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? {
+        measuredSize(proposalWidth: proposal.width)
     }
 
     /// R11: link clicks never reach NSTextView's default NSWorkspace handling.
