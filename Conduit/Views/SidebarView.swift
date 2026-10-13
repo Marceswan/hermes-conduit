@@ -143,11 +143,8 @@ struct SidebarView: View {
 
                     Group {
                         #if os(macOS) // MAC: sidebar always lists sessions; tabs drive the main pane (D6)
-                        // Any tap in the list means "show chat" (also re-selecting the already-active session).
+                        // Opening a session posts .macSessionOpenRequested (AppState.requestOpenSession), which returns the pane to chat.
                         SessionList()
-                            .simultaneousGesture(TapGesture().onEnded {
-                                selectedTabRaw = SidebarTab.sessions.rawValue
-                            })
                         #else // MAC:
                         switch selectedTab {
                         case .sessions:
@@ -668,7 +665,13 @@ struct SessionList: View {
             }
             .padding(.horizontal, 4)
             .padding(.vertical, 8)
+            #if os(macOS) // MAC: room for the last chip to scroll clear of the trailing fade
+            .padding(.trailing, MacTrailingFade.width)
+            #endif // MAC:
         }
+        #if os(macOS) // MAC: fade the trailing edge so the clipped chip row reads as scrolling
+        .macTrailingFade()
+        #endif // MAC:
     }
 
     /// One chip for Needs input, Working and Unread, so they don't crowd the
@@ -1693,6 +1696,7 @@ struct CronList: View {
     var body: some View {
         let jobs = CronJobFilter.visibleJobs(appState.cronJobs, filter: jobFilter.wrappedValue, query: searchText)
         List {
+            #if !os(macOS) // MAC: the Mac pane header (safeAreaInset below) replaces this row
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Scheduled jobs").font(.headline)
@@ -1710,6 +1714,7 @@ struct CronList: View {
             .padding(.vertical, 4)
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
+            #endif // MAC:
 
             if !appState.cronJobs.isEmpty {
                 Picker("Show jobs", selection: jobFilter) {
@@ -1796,10 +1801,13 @@ struct CronList: View {
             }
         }
         #if os(macOS) // MAC: a second .searchable crashes NSToolbar (the sessions list owns the window's search item); inline field instead (D6)
-        .safeAreaInset(edge: .top) {
-            TextField(AppLocalization.string("Search scheduled jobs"), text: $searchText)
-                .textFieldStyle(.roundedBorder)
-                .padding(.bottom, 6)
+        .safeAreaInset(edge: .top, spacing: 12) {
+            VStack(spacing: 12) {
+                MacPaneHeader(title: AppLocalization.string("Scheduled jobs"), subtitle: macHeaderSubtitle) {
+                    if appState.cronJobsLoading { ProgressView().controlSize(.small) }
+                }
+                MacSearchPill(prompt: AppLocalization.string("Search scheduled jobs"), text: $searchText)
+            }
         }
         #else // MAC:
         .searchable(text: $searchText, prompt: AppLocalization.string("Search scheduled jobs"))
@@ -1823,6 +1831,14 @@ struct CronList: View {
             Label(isPinned ? AppLocalization.string("Unpin") : AppLocalization.string("Pin"), systemImage: isPinned ? "pin.slash" : "pin")
         }
     }
+
+    #if os(macOS) // MAC: same counts the iOS heading row shows
+    private var macHeaderSubtitle: String {
+        appState.cronJobs.isEmpty
+            ? AppLocalization.string("\(appState.cronJobs.count) configured")
+            : AppLocalization.string("\(activeJobCount) active") + " · " + AppLocalization.string("\(inactiveJobCount) inactive")
+    }
+    #endif // MAC:
 
     private var activeJobCount: Int {
         appState.cronJobs.filter(\.isActive).count

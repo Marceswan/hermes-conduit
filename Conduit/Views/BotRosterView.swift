@@ -136,6 +136,15 @@ struct BotRosterView: View {
         return nil
     }
 
+    @ViewBuilder
+    private func botsSection<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        #if os(macOS) // MAC: the Mac pane header carries the "Bots" title (MacDetailRouter)
+        Section { content() }
+        #else // MAC:
+        Section(AppLocalization.string("Bots")) { content() }
+        #endif // MAC:
+    }
+
     private var rosterList: some View {
         List {
             if let notice = managementNotice {
@@ -162,7 +171,7 @@ struct BotRosterView: View {
                 }
             }
             if !visibleBots.isEmpty {
-                Section(AppLocalization.string("Bots")) {
+                botsSection { // MAC: titled by the pane header on Mac
                     ForEach(visibleBots) { bot in
                         BotRosterRow(
                             bot: bot,
@@ -182,7 +191,7 @@ struct BotRosterView: View {
                     }
                 }
             } else if canManageBots {
-                Section(AppLocalization.string("Bots")) {
+                botsSection { // MAC: titled by the pane header on Mac
                     newBotButton
                 }
             }

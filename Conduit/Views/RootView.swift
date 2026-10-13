@@ -93,6 +93,15 @@ struct MainView: View {
 
     private var isPersistentSidebarActive: Bool { sidebarPresentation == .persistent }
 
+    #if os(macOS) // MAC: route-aware chat chrome (D6): a chat hidden under Bots/Cron/Kanban adds no toolbar items, title or backdrop motion
+    @AppStorage(MacSidebarState.tabDefaultsKey) private var macTabRaw = SidebarTab.sessions.rawValue
+    private var chatPaneActive: Bool { MacChatRoute.isChatActive(tabRaw: macTabRaw) }
+    private var chatWindowTitle: String { MacChatRoute.navigationTitle(tabRaw: macTabRaw) }
+    #else // MAC:
+    private var chatPaneActive: Bool { true }
+    private var chatWindowTitle: String { "" }
+    #endif // MAC:
+
     var body: some View {
         sidebarLayoutContent
         // Changes Hermes asked for or just made (AgentSettings.swift).
@@ -327,7 +336,7 @@ struct MainView: View {
     private var chatNavigationContent: some View {
         NavigationStack {
             ZStack {
-                ConduitBackdrop(drifts: true)
+                ConduitBackdrop(drifts: chatPaneActive) // MAC: paused while hidden
                 if appState.activeRoomSurface != nil {
                     // Keyed by room: another room starts with its own draft.
                     GroupChatView()
@@ -343,10 +352,11 @@ struct MainView: View {
                         .ignoresSafeArea()
                 }
             }
-            .navigationTitle("")
+            .navigationTitle(chatWindowTitle) // MAC: pane name while chat is hidden
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
             .toolbar {
+                if chatPaneActive { // MAC: no chat toolbar items while another pane is shown
                 ToolbarItem(placement: .topBarLeading) {
                     // An open room supplies its own leading Leave button; a
                     // second leading control would be ambiguous. The edge
@@ -397,6 +407,7 @@ struct MainView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     ConnectionStatusIndicator()
                 }
+                } // MAC: chatPaneActive
             }
         }
         // The chat title's menu needs host-owned rename and delete prompts,

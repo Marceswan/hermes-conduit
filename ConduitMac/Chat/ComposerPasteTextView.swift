@@ -14,6 +14,7 @@ struct ComposerPasteTextView: NSViewRepresentable {
     static var maximumHeight: CGFloat { min(max(160, ceil(bodyLineHeight) * 4 + 16), 280) }
     private static var bodyLineHeight: CGFloat { NSFont.preferredFont(forTextStyle: .body).lineHeight }
 
+    @AppStorage(MacSidebarState.tabDefaultsKey) private var routeTabRaw = SidebarTab.sessions.rawValue
     @Binding var text: String
     @Binding var isFocused: Bool
     @Binding var measuredHeight: CGFloat
@@ -66,7 +67,8 @@ struct ComposerPasteTextView: NSViewRepresentable {
                 }
             }
         }
-        if isFocused {
+        // A chat hidden under Bots / Cron / Kanban must not take or keep focus.
+        if isFocused && MacChatRoute.isChatActive(tabRaw: routeTabRaw) {
             if let window = textView.window {
                 textView.wantsFocus = false
                 if window.firstResponder !== textView { window.makeFirstResponder(textView) }
