@@ -76,10 +76,15 @@ final class HoverAccessibilityEngineTests: XCTestCase {
             Button { } label: { Label("New Chat", systemImage: "plus") }
             Button { } label: { Image(nsImage: avatar) }.accessibilityLabel("Avatar")
             Button("Go") { }.accessibilityLabel("Send message")
+            Button("Settings") { }.buttonStyle(.plain)
+            Button("Retry") { }.buttonStyle(.plain).font(.caption)
+            Button { } label: { Image(systemName: "gear") }.buttonStyle(.plain).accessibilityLabel("Settings")
+            Button { } label: { Image(nsImage: avatar) }.buttonStyle(.plain).accessibilityLabel("Add")
+            Button { } label: { Image(nsImage: avatar).resizable().frame(width: 28, height: 28) }.buttonStyle(.plain).accessibilityLabel("Profile photo")
         }
         .padding(30)
         let host = NSHostingView(rootView: root)
-        host.frame = NSRect(x: 0, y: 0, width: 300, height: 400)
+        host.frame = NSRect(x: 0, y: 0, width: 300, height: 600)
         let window = show(host, size: host.frame.size)
 
         AccessibilityTreeBoost.set(false)
@@ -94,7 +99,7 @@ final class HoverAccessibilityEngineTests: XCTestCase {
         XCTAssertLessThan(repopulateMs, 1000)
 
         let kids = ((host.accessibilityChildren() ?? []) as [Any]).compactMap { $0 as? NSObject }
-        XCTAssertEqual(kids.count, 7, "SwiftUI exposed one accessibility node per button")
+        XCTAssertEqual(kids.count, 12, "SwiftUI exposed one accessibility node per button")
         var decisions: [HoverDecision] = []
         for kid in kids {
             let frame: NSValue? = kid.axValue("accessibilityFrame")
@@ -104,18 +109,20 @@ final class HoverAccessibilityEngineTests: XCTestCase {
         }
         let control = { (tip: String?) in HoverDecision(tooltip: tip, showsPointingHand: true, highlights: true) }
         // Observed: SwiftUI exposes no visible-text attribute, so a text button
-        // ("Connect", "New Chat") is told from an icon by label-vs-frame width.
+        // ("Connect", plain "Settings", plain caption "Retry", "New Chat") is
+        // told from an icon by label-vs-frame width and aspect ratio.
         XCTAssertEqual(decisions, [
             control("Close Settings"), control(nil), control("Send"), control("Settings"),
             control(nil), control("Avatar"), control("Send message"),
+            control(nil), control(nil), control("Settings"), control("Add"), control("Profile photo"),
         ])
     }
 
     // MARK: Boost lifetime
 
-    private func engine(idle: TimeInterval = 2, now: @escaping () -> TimeInterval = { 0 },
+    private func engine(idle: TimeInterval = 2, trailing: TimeInterval = 0.035, now: @escaping () -> TimeInterval = { 0 },
                         hit: @escaping (NSPoint, NSWindow) -> HoverElementSnapshot? = { _, _ in nil }) -> HoverAccessibilityEngine {
-        HoverAccessibilityEngine(idleInterval: idle, environment: .init(
+        HoverAccessibilityEngine(idleInterval: idle, trailingInterval: trailing, environment: .init(
             isAppActive: { true }, isKeyWindow: { _ in true }, pointerLocation: { .zero },
             now: now, hitTest: hit, highlightEnabled: { true }))
     }
@@ -150,6 +157,36 @@ final class HoverAccessibilityEngineTests: XCTestCase {
         XCTAssertFalse(AccessibilityTreeBoost.isOn)
     }
 
+    func testBoostLeavesAFlagItDidNotSetAlone() throws {
+        try XCTSkipUnless(AccessibilityTreeBoost.isAvailable)
+        AccessibilityTreeBoost.set(true)  // e.g. VoiceOver already attached
+        let window = show(NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 100)))
+        let engine = engine(idle: 0.05)
+        engine.process(.moved(window, NSPoint(x: 5, y: 5)))
+        engine.process(.interaction)
+        XCTAssertTrue(AccessibilityTreeBoost.isOn, "click must not clear a foreign flag")
+        engine.process(.moved(window, NSPoint(x: 5, y: 5)))
+        spin(0.3)  // idle timeout
+        XCTAssertTrue(AccessibilityTreeBoost.isOn, "idle must not clear a foreign flag")
+        engine.process(.deactivated)
+        XCTAssertTrue(AccessibilityTreeBoost.isOn)
+    }
+
+    func testBoostSetByEngineIsClearedAndRestored() throws {
+        try XCTSkipUnless(AccessibilityTreeBoost.isAvailable)
+        AccessibilityTreeBoost.set(false)
+        let window = show(NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 100)))
+        let engine = engine()
+        engine.process(.moved(window, NSPoint(x: 5, y: 5)))
+        XCTAssertTrue(AccessibilityTreeBoost.isOn)
+        engine.process(.interaction)
+        XCTAssertFalse(AccessibilityTreeBoost.isOn)
+        engine.process(.moved(window, NSPoint(x: 5, y: 5)))  // re-acquires after a click
+        XCTAssertTrue(AccessibilityTreeBoost.isOn)
+        engine.process(.deactivated)
+        XCTAssertFalse(AccessibilityTreeBoost.isOn)
+    }
+
     func testBoostRoundTripsBothDirections() throws {
         try XCTSkipUnless(AccessibilityTreeBoost.isAvailable)
         AccessibilityTreeBoost.set(true)
@@ -176,15 +213,34 @@ final class HoverAccessibilityEngineTests: XCTestCase {
         clock = 0.5  // cache lifetime (250 ms) elapsed
         engine.process(.moved(window, NSPoint(x: 20, y: 20)))
         XCTAssertEqual(hits, 2)
-        clock = 0.51  // outside the frame but within the ~30 Hz spacing
-        engine.process(.moved(window, NSPoint(x: 500, y: 500)))
-        XCTAssertEqual(hits, 2)
-        clock = 0.6
+        clock = 0.6  // outside the frame and past the ~30 Hz spacing
         engine.process(.moved(window, NSPoint(x: 500, y: 500)))
         XCTAssertEqual(hits, 3)
         engine.process(.interaction)  // click invalidates the cache
         engine.process(.moved(window, NSPoint(x: 20, y: 20)))
         XCTAssertEqual(hits, 4)
+        engine.dismissAll()
+    }
+
+    func testPointerThatRestsOutsideCachedFrameGetsTrailingEvaluation() {
+        var clock: TimeInterval = 0
+        var hits = 0
+        let a = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let engine = engine(trailing: 0.03, now: { clock }, hit: { point, _ in
+            hits += 1
+            return a.contains(point) ? HoverElementSnapshot(role: .button, isEnabled: true, frame: a) : nil
+        })
+        let window = show(NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 100)))
+        engine.process(.moved(window, NSPoint(x: 10, y: 10)))
+        XCTAssertEqual(hits, 1)
+        XCTAssertTrue(engine.currentDecision.showsPointingHand)
+        clock = 0.01  // 10 ms later: coalesced, served from the cache
+        engine.process(.moved(window, NSPoint(x: 500, y: 500)))
+        XCTAssertEqual(hits, 1)
+        XCTAssertTrue(engine.currentDecision.showsPointingHand, "stale until the trailing pass")
+        spin(0.2)  // pointer rests; the trailing evaluation fires
+        XCTAssertEqual(hits, 2)
+        XCTAssertEqual(engine.currentDecision, .none)
         engine.dismissAll()
     }
 

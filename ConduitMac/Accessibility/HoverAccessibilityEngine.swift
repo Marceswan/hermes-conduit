@@ -81,6 +81,8 @@ final class HoverAccessibilityEngine {
     static let cacheLifetime: TimeInterval = 0.25
     /// Outside a cached frame, hit tests run at most this often (~30 Hz).
     static let minHitTestSpacing: TimeInterval = 1.0 / 30
+    /// A move served from the coalescing window is re-evaluated this long after.
+    static let trailingInterval: TimeInterval = 0.035
     /// Elements larger than this are containers; never highlight them.
     static let maxHighlightSize = CGSize(width: 480, height: 160)
 
@@ -93,24 +95,34 @@ final class HoverAccessibilityEngine {
 
     private let environment: Environment
     private let idleInterval: TimeInterval
+    private let trailingInterval: TimeInterval
     private var monitor: Any?
     private var observers: [NSObjectProtocol] = []
     private let restTimer = ReusableTimer()
     private let idleTimer = ReusableTimer()
+    private let trailingTimer = ReusableTimer()
+    private var trailingTarget: (window: NSWindow, point: NSPoint)?
+    /// True only while this engine, not VoiceOver or another client, holds
+    /// the flag on, so it never switches off a flag it did not set.
+    private var ownsBoost = false
+    private var boostFailed = false
+    private(set) var currentDecision = HoverDecision.none
     private let tooltip = TooltipWindow()
     private let highlight = HighlightWindow()
     private var cache: HitCache?
     private var cursorState = HoverCursorState()
-    private var restSnapshot: HoverElementSnapshot?
     private weak var restWindow: NSWindow?
     private static let log = Logger(subsystem: "com.meswan.hermes.mac", category: "hover")
 
     init(idleInterval: TimeInterval = HoverAccessibilityEngine.idleInterval,
+         trailingInterval: TimeInterval = HoverAccessibilityEngine.trailingInterval,
          environment: Environment = .live) {
         self.idleInterval = idleInterval
+        self.trailingInterval = trailingInterval
         self.environment = environment
         restTimer.onFire = { [weak self] in self?.restElapsed() }
         idleTimer.onFire = { [weak self] in self?.setBoost(false) }
+        trailingTimer.onFire = { [weak self] in self?.trailingEvaluation() }
     }
 
     static func install() {
@@ -156,8 +168,10 @@ final class HoverAccessibilityEngine {
         switch input {
         case .interaction, .deactivated:
             cache = nil
+            trailingTimer.cancel()
             dismissAll()
             setBoost(false)
+            if case .deactivated = input { boostFailed = false }
         case let .moved(window, point):
             guard environment.isAppActive(), environment.isKeyWindow(window) else {
                 process(.deactivated)
@@ -171,7 +185,14 @@ final class HoverAccessibilityEngine {
 
     private func moved(in window: NSWindow, to point: NSPoint) {
         tooltip.hide()
-        let (snapshot, decision) = lookup(at: point, in: window)
+        let (snapshot, decision, servedStale) = lookup(at: point, in: window)
+        currentDecision = decision
+        if servedStale {
+            trailingTarget = (window, point)
+            trailingTimer.schedule(after: trailingInterval)
+        } else {
+            trailingTimer.cancel()
+        }
         apply(cursorState.update(showsHand: decision.showsPointingHand))
         if decision.highlights, let frame = snapshot?.frame,
            frame.width <= Self.maxHighlightSize.width, frame.height <= Self.maxHighlightSize.height {
@@ -180,7 +201,6 @@ final class HoverAccessibilityEngine {
             highlight.hide()
         }
         if decision.tooltip != nil, let snapshot {
-            restSnapshot = snapshot
             restWindow = window
             restTimer.schedule(after: Self.restDelay)
         } else {
@@ -190,13 +210,21 @@ final class HoverAccessibilityEngine {
 
     /// Hit tests only when the cache cannot answer: the pointer left the
     /// cached element's frame, the window changed, or the cache is stale.
-    private func lookup(at point: NSPoint, in window: NSWindow) -> (HoverElementSnapshot?, HoverDecision) {
+    /// `servedStale` is true when the cache answered although the pointer is
+    /// outside its frame (30 Hz coalescing); the caller must then schedule a
+    /// trailing evaluation so a pointer that comes to rest is not left with
+    /// the old control's state.
+    private func lookup(at point: NSPoint, in window: NSWindow)
+        -> (snapshot: HoverElementSnapshot?, decision: HoverDecision, servedStale: Bool) {
         let now = environment.now()
         if let cache, cache.window === window {
             let age = now - cache.at
             let insideFrame = cache.snapshot?.frame.contains(point) ?? false
-            if (insideFrame && age < Self.cacheLifetime) || age < Self.minHitTestSpacing {
-                return (cache.snapshot, cache.decision)
+            if insideFrame && age < Self.cacheLifetime {
+                return (cache.snapshot, cache.decision, false)
+            }
+            if !insideFrame && age < Self.minHitTestSpacing {
+                return (cache.snapshot, cache.decision, true)
             }
         }
         let snapshot = environment.hitTest(point, window)
@@ -204,23 +232,47 @@ final class HoverAccessibilityEngine {
             HoverTooltipPolicy.decide($0, highlightEnabled: environment.highlightEnabled())
         } ?? .none
         cache = HitCache(window: window, snapshot: snapshot, decision: decision, at: now)
-        return (snapshot, decision)
+        return (snapshot, decision, false)
     }
 
-    /// The tooltip text is computed here, and only if the pointer rested on a
-    /// still-valid element in a still-key window of the active app.
+    private func trailingEvaluation() {
+        guard let target = trailingTarget, environment.isAppActive(),
+              environment.isKeyWindow(target.window) else { return }
+        cache = nil  // force a fresh hit test at the latest pointer location
+        moved(in: target.window, to: target.point)
+    }
+
+    /// The tooltip text is computed here, and only if a fresh lookup at the
+    /// pointer still finds the element, in a still-key window of the active app.
     private func restElapsed() {
-        guard let window = restWindow, let snapshot = restSnapshot,
-              environment.isAppActive(), environment.isKeyWindow(window) else { return }
+        guard let window = restWindow, environment.isAppActive(), environment.isKeyWindow(window) else { return }
         let pointer = environment.pointerLocation()
-        guard snapshot.frame.contains(pointer),
-              let text = HoverTooltipPolicy.tooltipText(snapshot) else { return }
+        guard let current = lookup(at: pointer, in: window).snapshot,
+              current.frame.contains(pointer),
+              let text = HoverTooltipPolicy.tooltipText(current) else { return }
         tooltip.show(text, near: pointer)
     }
 
     private func setBoost(_ on: Bool) {
-        if !on { idleTimer.cancel() }
-        AccessibilityTreeBoost.set(on)
+        if on {
+            guard !boostFailed, !ownsBoost, !AccessibilityTreeBoost.isOn else { return }
+            AccessibilityTreeBoost.set(true)
+            if AccessibilityTreeBoost.isOn {
+                ownsBoost = true
+            } else {
+                boostFailed = true
+                Self.log.error("Accessibility tree boost did not turn on; disabled until next activation")
+            }
+        } else {
+            idleTimer.cancel()
+            guard ownsBoost else { return }
+            ownsBoost = false
+            AccessibilityTreeBoost.set(false)
+            if AccessibilityTreeBoost.isOn {
+                boostFailed = true
+                Self.log.error("Accessibility tree boost did not turn off; disabled until next activation")
+            }
+        }
     }
 
     private func apply(_ action: HoverCursorState.Action) {

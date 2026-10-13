@@ -60,6 +60,10 @@ final class HoverTooltipPolicyTests: XCTestCase {
         XCTAssertNil(HoverTooltipPolicy.tooltipText(node("Connect", width: 80, id: "")))
         // Narrow with a longer accessibility label: icon or short title, tooltip.
         XCTAssertEqual(HoverTooltipPolicy.tooltipText(node("Send message", width: 30, id: "")), "Send message")
+        // Near-square even though the label fits: an icon.
+        let square = HoverElementSnapshot(role: .button, label: "Add", imageIdentifier: "", isEnabled: true,
+                                          frame: CGRect(x: 0, y: 0, width: 30, height: 28))
+        XCTAssertEqual(HoverTooltipPolicy.tooltipText(square), "Add")
         // Symbol-backed is always an icon, whatever the width.
         XCTAssertEqual(HoverTooltipPolicy.tooltipText(node("Send", width: 200, id: "paperplane")), "Send")
     }
