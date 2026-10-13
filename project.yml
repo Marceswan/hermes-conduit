@@ -271,6 +271,7 @@ targets:
       base:
         PRODUCT_NAME: Conduit
         PRODUCT_MODULE_NAME: ConduitMac
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         PRODUCT_BUNDLE_IDENTIFIER: com.meswan.hermes.mac
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: ConduitMac/Resources/Info.plist

@@ -46,6 +46,32 @@ struct SafariAuthenticationView: View {
     private func openIfNeeded() {
         guard let url, url != openedURL else { return }
         openedURL = url
-        UIApplication.shared.open(url, options: [:], completionHandler: nil)
+        let onError = onError
+        Task { @MainActor in
+            await Self.openAuthorizeURL(url, onError: onError)
+        }
+    }
+
+    /// Opens the authorize URL. A refusal (the R6 allowlist) or a failed open
+    /// is reported through `onError`, so the user is not left waiting on a
+    /// browser that never opened. Goes through `UIApplication.shared.open`
+    /// (R7), never `NSWorkspace` directly.
+    @MainActor
+    static func openAuthorizeURL(
+        _ url: URL,
+        open: (URL) async -> Bool = { await UIApplication.shared.open($0, options: [:]) },
+        onError: @MainActor (Error) -> Void
+    ) async {
+        if await open(url) { return }
+        macOAuthLogger.error("OAuth stage: browser did not open the authorize URL")
+        onError(BrowserLaunchError.couldNotOpen)
+    }
+
+    enum BrowserLaunchError: LocalizedError {
+        case couldNotOpen
+
+        var errorDescription: String? {
+            "Conduit could not open your browser to sign in. Check your default browser and try again."
+        }
     }
 }
