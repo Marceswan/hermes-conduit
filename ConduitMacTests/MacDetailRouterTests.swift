@@ -43,35 +43,22 @@ final class MacDetailRouterMountTests: XCTestCase {
         }
     }
 
-    private func spin(_ seconds: TimeInterval) {
-        RunLoop.current.run(until: Date().addingTimeInterval(seconds))
-    }
-
     func testChatStaysMountedAcrossChatKanbanChat() {
-        let defaults = UserDefaults.standard
-        let original = defaults.object(forKey: MacSidebarState.tabDefaultsKey)
-        defer {
-            if let original { defaults.set(original, forKey: MacSidebarState.tabDefaultsKey) }
-            else { defaults.removeObject(forKey: MacSidebarState.tabDefaultsKey) }
-        }
-        defaults.set(SidebarTab.sessions.rawValue, forKey: MacSidebarState.tabDefaultsKey)
+        let suite = HostedTestSupport.makeSuite()
+        defer { HostedTestSupport.dropSuite(suite) }
+        suite.defaults.set(SidebarTab.sessions.rawValue, forKey: MacSidebarState.tabDefaultsKey)
         let counts = Counts()
-        let host = NSHostingView(rootView:
-            MacDetailRouter(chat: { Probe(counts: counts) })
+        let window = HostedTestSupport.host(
+            MacDetailRouter(defaults: suite.defaults, notificationCenter: NotificationCenter(), chat: { Probe(counts: counts) })
                 .environmentObject(AppStateRuntimeRegistry.shared.appState)
-                .frame(width: 600, height: 400))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = host
-        window.orderFront(nil)
-        defer { window.close() }
-        spin(0.3)
-        XCTAssertEqual(counts.appears, 1)
-        defaults.set(SidebarTab.kanban.rawValue, forKey: MacSidebarState.tabDefaultsKey)
-        spin(0.3)
-        defaults.set(SidebarTab.sessions.rawValue, forKey: MacSidebarState.tabDefaultsKey)
-        spin(0.3)
+                .frame(width: 600, height: 400),
+            size: NSSize(width: 600, height: 400))
+        defer { HostedTestSupport.tearDown(window) }
+        XCTAssertTrue(HostedTestSupport.waitUntil { counts.appears == 1 })
+        suite.defaults.set(SidebarTab.kanban.rawValue, forKey: MacSidebarState.tabDefaultsKey)
+        HostedTestSupport.settle(0.3)
+        suite.defaults.set(SidebarTab.sessions.rawValue, forKey: MacSidebarState.tabDefaultsKey)
+        HostedTestSupport.settle(0.3)
         XCTAssertEqual(counts.disappears, 0, "chat must not be torn down by a tab switch")
         XCTAssertEqual(counts.appears, 1)
     }

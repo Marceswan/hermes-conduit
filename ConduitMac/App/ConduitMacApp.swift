@@ -52,7 +52,7 @@ struct ConduitMacApp: App {
     var body: some Scene {
         WindowGroup("Conduit", id: "conduit-primary") {
             rootContent
-                .frame(minWidth: 820, minHeight: 560)
+                .frame(minWidth: MacSidebarState.windowMinWidth, minHeight: 560)
         }
         .defaultSize(width: 1180, height: 780)
         .commands { ConduitCommands(appState: appState) }

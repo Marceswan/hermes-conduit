@@ -11,6 +11,9 @@ struct GroupChatView: View {
     @State private var draft = ""
     @State private var showingDisbandConfirmation = false
     @FocusState private var composerFocused: Bool
+    #if os(macOS) // MAC: route state for the toolbar gate below
+    @AppStorage(MacSidebarState.tabDefaultsKey) private var macTabRaw = SidebarTab.sessions.rawValue
+    #endif // MAC:
 
     var body: some View {
         VStack(spacing: 0) {
@@ -20,7 +23,11 @@ struct GroupChatView: View {
             composer
         }
         .animation(.easeInOut(duration: 0.2), value: appState.minimisedLiveVoice)
+        #if os(macOS) // MAC: a room hidden under Bots/Cron/Kanban adds no toolbar items (D6)
+        .toolbar { if MacChatRoute.isChatActive(tabRaw: macTabRaw) { toolbarContent } }
+        #else // MAC:
         .toolbar { toolbarContent }
+        #endif // MAC:
         // The view is keyed by room, so appear/change bracket exactly one
         // room: the draft comes back on reopen and is kept as it changes.
         .onAppear { draft = appState.activeRoomDraft() }

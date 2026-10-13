@@ -7,6 +7,15 @@ enum MacSidebarState {
     /// Same key as upstream SidebarView's @AppStorage literal.
     static let tabDefaultsKey = "conduit.sidebarTab"
 
+    /// Column metrics. The window minimum must hold the widest sidebar plus
+    /// the narrowest detail pane, or the detail clips when the sidebar is
+    /// dragged wide (guarded by MacDetailRouterTests).
+    static let sidebarMinWidth: CGFloat = 260
+    static let sidebarIdealWidth: CGFloat = 340
+    static let sidebarMaxWidth: CGFloat = 390
+    static let detailMinWidth: CGFloat = 430
+    static let windowMinWidth: CGFloat = 820
+
     static func visibility(isVisible: Bool) -> NavigationSplitViewVisibility {
         isVisible ? .all : .detailOnly
     }
@@ -36,10 +45,14 @@ struct MacSplitLayout<Sidebar: View, Chat: View>: View {
             )
         ) {
             sidebar
-                .navigationSplitViewColumnWidth(min: 260, ideal: 340, max: 480)
+                .navigationSplitViewColumnWidth(
+                    min: MacSidebarState.sidebarMinWidth,
+                    ideal: MacSidebarState.sidebarIdealWidth,
+                    max: MacSidebarState.sidebarMaxWidth
+                )
         } detail: {
             MacDetailRouter(chat: { chat })
-                .frame(minWidth: 430)
+                .frame(minWidth: MacSidebarState.detailMinWidth)
         }
     }
 }

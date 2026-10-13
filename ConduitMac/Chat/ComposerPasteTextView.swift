@@ -14,6 +14,7 @@ struct ComposerPasteTextView: NSViewRepresentable {
     static var maximumHeight: CGFloat { min(max(160, ceil(bodyLineHeight) * 4 + 16), 280) }
     private static var bodyLineHeight: CGFloat { NSFont.preferredFont(forTextStyle: .body).lineHeight }
 
+    @AppStorage(MacSidebarState.tabDefaultsKey) private var routeTabRaw = SidebarTab.sessions.rawValue
     @Binding var text: String
     @Binding var isFocused: Bool
     @Binding var measuredHeight: CGFloat
@@ -66,10 +67,17 @@ struct ComposerPasteTextView: NSViewRepresentable {
                 }
             }
         }
-        if isFocused {
+        // A chat hidden under Bots / Cron / Kanban must not take or keep focus.
+        // Focus lost to the route is held (isFocused stays true) and restored
+        // on return, unless something else owns the keyboard by then.
+        if isFocused && MacChatRoute.isChatActive(tabRaw: routeTabRaw) {
             if let window = textView.window {
                 textView.wantsFocus = false
-                if window.firstResponder !== textView { window.makeFirstResponder(textView) }
+                if textView.heldFocusForRoute {
+                    textView.restoreFocusIfHeld()
+                } else if window.firstResponder !== textView {
+                    window.makeFirstResponder(textView)
+                }
             } else {
                 // Not in a window yet; ComposerTextView.viewDidMoveToWindow applies this.
                 textView.wantsFocus = true
@@ -77,7 +85,11 @@ struct ComposerPasteTextView: NSViewRepresentable {
         } else {
             textView.wantsFocus = false
             if textView.window?.firstResponder === textView {
-                textView.window?.makeFirstResponder(nil)
+                if MacChatRoute.isChatActive(tabRaw: routeTabRaw) {
+                    textView.window?.makeFirstResponder(nil)
+                } else {
+                    textView.resignForRoute()
+                }
             }
         }
         context.coordinator.remeasure(textView)
@@ -162,8 +174,38 @@ final class ComposerTextView: NSTextView {
 
     override func resignFirstResponder() -> Bool {
         let accepted = super.resignFirstResponder()
-        if accepted { onFocusChange?(false) }
+        if accepted && !resigningForRoute { onFocusChange?(false) }
         return accepted
+    }
+
+    /// The route hid the chat while this composer had focus. Not reported as a
+    /// focus loss, so the owner's isFocused stays true and the return to chat
+    /// can restore it.
+    var heldFocusForRoute = false
+    private var resigningForRoute = false
+
+    func resignForRoute() {
+        guard let window, window.firstResponder === self else { return }
+        resigningForRoute = true
+        heldFocusForRoute = window.makeFirstResponder(nil)
+        resigningForRoute = false
+    }
+
+    /// Focus is restored only when no sheet is attached and no other text
+    /// input (sidebar search, a pane field editor) owns the keyboard. When it
+    /// is not restored the owner is told focus is gone, so a later update
+    /// does not steal it.
+    @discardableResult
+    func restoreFocusIfHeld() -> Bool {
+        guard heldFocusForRoute else { return false }
+        heldFocusForRoute = false
+        guard let window else { return false }
+        if window.firstResponder === self { return true }
+        if window.attachedSheet == nil, !(window.firstResponder is NSText), window.makeFirstResponder(self) {
+            return true
+        }
+        onFocusChange?(false)
+        return false
     }
 
     override func viewDidMoveToWindow() {

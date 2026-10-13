@@ -15596,6 +15596,9 @@ final class AppState: ObservableObject {
     /// of the same bot share one flight.
     @discardableResult
     func openBotChat(for bot: BotProfile) async -> Bool {
+        #if os(macOS) // MAC: the main pane returns to chat, also when this bot chat is already active (D6)
+        NotificationCenter.default.post(name: .macSessionOpenRequested, object: nil)
+        #endif // MAC:
         guard let client, isConnected else {
             errorMessage = AppLocalization.string("Connect to Hermes to chat with bots.")
             return false
@@ -15961,6 +15964,9 @@ final class AppState: ObservableObject {
     /// superseded it).
     @discardableResult
     func requestOpenSession(_ sessionId: String, onFailure: (@MainActor () -> Void)? = nil) -> Task<Bool, Never> {
+        #if os(macOS) // MAC: the main pane returns to chat, also when this session is already active (D6)
+        NotificationCenter.default.post(name: .macSessionOpenRequested, object: nil)
+        #endif // MAC:
         cancelExplicitSessionOpen()
         let requestID = UUID()
         explicitSessionOpenRequestID = requestID

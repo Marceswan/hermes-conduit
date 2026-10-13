@@ -93,6 +93,12 @@ struct MainView: View {
 
     private var isPersistentSidebarActive: Bool { sidebarPresentation == .persistent }
 
+    #if os(macOS) // MAC: route-aware chat chrome (D6): a chat hidden under Bots/Cron/Kanban adds no toolbar items, title or backdrop motion
+    @AppStorage(MacSidebarState.tabDefaultsKey) private var macTabRaw = SidebarTab.sessions.rawValue
+    private var chatPaneActive: Bool { MacChatRoute.isChatActive(tabRaw: macTabRaw) }
+    private var chatWindowTitle: String { MacChatRoute.navigationTitle(tabRaw: macTabRaw) }
+    #endif // MAC:
+
     var body: some View {
         sidebarLayoutContent
         // Changes Hermes asked for or just made (AgentSettings.swift).
@@ -317,6 +323,62 @@ struct MainView: View {
         }
     }
 
+    /// The chat shell's window-toolbar items (moved out of `chatNavigationContent`
+    /// so the Mac route gate can wrap them without touching the iOS call).
+    @ToolbarContentBuilder
+    private var chatToolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            // An open room supplies its own leading Leave button; a
+            // second leading control would be ambiguous. The edge
+            // swipe still opens the sidebar.
+            if !isPersistentSidebarActive && appState.activeRoomSurface == nil {
+                Button {
+                    appState.showSidebar = true
+                } label: {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 16, weight: .semibold))
+                        .frame(width: 40, height: 40)
+                }
+                .conduitGlassControl(cornerRadius: 20, tint: .conduitAccent.opacity(0.10))
+                .accessibilityLabel("Open sessions")
+            }
+        }
+        // Session-only controls: an open room owns the title and
+        // actions (GroupChatView's toolbar), so the session's title,
+        // scroll-to-top, and refresh must not act on the hidden
+        // conversation behind it.
+        if appState.activeRoomSurface == nil {
+            ToolbarItem(placement: .principal) {
+                ChatTitleControl(
+                    onRename: { chatTitlePendingRename = $0 },
+                    onDelete: { chatTitlePendingDeletion = $0 }
+                )
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Task { await appState.refreshActiveSession() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 15, weight: .semibold))
+                        .rotationEffect(.degrees(appState.isChatRefreshing ? 360 : 0))
+                        .animation(
+                            appState.isChatRefreshing
+                                ? .linear(duration: 0.75).repeatForever(autoreverses: false)
+                                : .default,
+                            value: appState.isChatRefreshing
+                        )
+                        .frame(width: 40, height: 40)
+                }
+                .conduitGlassControl(cornerRadius: 20, tint: .conduitAccent.opacity(0.10))
+                .disabled(!appState.isConnected || appState.isChatRefreshing)
+                .accessibilityLabel("Refresh conversation")
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            ConnectionStatusIndicator()
+        }
+    }
+
     /// The existing chat shell, shared by both sidebar layouts so the drawer
     /// and the persistent column render the identical conversation surface.
     /// Only the drawer affordances (hamburger and left-edge swipe) hide while
@@ -327,7 +389,11 @@ struct MainView: View {
     private var chatNavigationContent: some View {
         NavigationStack {
             ZStack {
+                #if os(macOS) // MAC: paused while the chat is hidden
+                ConduitBackdrop(drifts: chatPaneActive)
+                #else // MAC:
                 ConduitBackdrop(drifts: true)
+                #endif // MAC:
                 if appState.activeRoomSurface != nil {
                     // Keyed by room: another room starts with its own draft.
                     GroupChatView()
@@ -343,61 +409,18 @@ struct MainView: View {
                         .ignoresSafeArea()
                 }
             }
+            #if os(macOS) // MAC: pane name while chat is hidden, so this stack cannot override the router's title
+            .navigationTitle(chatWindowTitle)
+            #else // MAC:
             .navigationTitle("")
+            #endif // MAC:
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    // An open room supplies its own leading Leave button; a
-                    // second leading control would be ambiguous. The edge
-                    // swipe still opens the sidebar.
-                    if !isPersistentSidebarActive && appState.activeRoomSurface == nil {
-                        Button {
-                            appState.showSidebar = true
-                        } label: {
-                            Image(systemName: "line.3.horizontal")
-                                .font(.system(size: 16, weight: .semibold))
-                                .frame(width: 40, height: 40)
-                        }
-                        .conduitGlassControl(cornerRadius: 20, tint: .conduitAccent.opacity(0.10))
-                        .accessibilityLabel("Open sessions")
-                    }
-                }
-                // Session-only controls: an open room owns the title and
-                // actions (GroupChatView's toolbar), so the session's title,
-                // scroll-to-top, and refresh must not act on the hidden
-                // conversation behind it.
-                if appState.activeRoomSurface == nil {
-                    ToolbarItem(placement: .principal) {
-                        ChatTitleControl(
-                            onRename: { chatTitlePendingRename = $0 },
-                            onDelete: { chatTitlePendingDeletion = $0 }
-                        )
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            Task { await appState.refreshActiveSession() }
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 15, weight: .semibold))
-                                .rotationEffect(.degrees(appState.isChatRefreshing ? 360 : 0))
-                                .animation(
-                                    appState.isChatRefreshing
-                                        ? .linear(duration: 0.75).repeatForever(autoreverses: false)
-                                        : .default,
-                                    value: appState.isChatRefreshing
-                                )
-                                .frame(width: 40, height: 40)
-                        }
-                        .conduitGlassControl(cornerRadius: 20, tint: .conduitAccent.opacity(0.10))
-                        .disabled(!appState.isConnected || appState.isChatRefreshing)
-                        .accessibilityLabel("Refresh conversation")
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    ConnectionStatusIndicator()
-                }
-            }
+            #if os(macOS) // MAC: no chat toolbar items while another pane is shown (D6)
+            .toolbar { if chatPaneActive { chatToolbarContent } }
+            #else // MAC:
+            .toolbar { chatToolbarContent }
+            #endif // MAC:
         }
         // The chat title's menu needs host-owned rename and delete prompts,
         // like the session list's rows.
