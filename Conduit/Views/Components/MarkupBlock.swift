@@ -293,6 +293,7 @@ enum MarkupHeights {
     }
 }
 
+#if os(iOS) // MAC: Mac twin in ConduitMac/WebViews/WebViewTwins.swift
 /// The page a block draws in. It takes no touches: the chat scrolls over it
 /// and the block handles taps.
 struct MarkupWebView: UIViewRepresentable {
@@ -380,6 +381,7 @@ struct MarkupWebView: UIViewRepresentable {
         }
     }
 }
+#endif // MAC:
 
 /// Reloads after WebKit ends a page's process. A page that draws starts
 /// counting again; one that keeps losing its process before it draws stops
@@ -446,6 +448,7 @@ struct MarkupPreviewSheet: View {
     }
 }
 
+#if os(iOS) // MAC: Mac twin in ConduitMac/WebViews/WebViewTwins.swift
 private struct SafeMarkupWebView: UIViewRepresentable {
     let html: String
 
@@ -491,6 +494,7 @@ private struct SafeMarkupWebView: UIViewRepresentable {
         }
     }
 }
+#endif // MAC:
 
 /// Fixes slips models commonly make in Mermaid they write, where the intent
 /// is plain. An xychart axis range is `0 --> 20`; "0 to 20" is the usual

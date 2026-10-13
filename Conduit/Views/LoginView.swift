@@ -865,6 +865,7 @@ enum AuthWebViewNavigationPolicy {
 
 // MARK: - Auth WebView
 
+#if os(iOS) // MAC: Mac twin in ConduitMac/WebViews/WebViewTwins.swift
 struct AuthWebView: UIViewRepresentable {
     let url: String
     let cloudflareAccess: CloudflareAccessCredentials?
@@ -1086,3 +1087,4 @@ struct AuthWebView: UIViewRepresentable {
         }
     }
 }
+#endif // MAC:

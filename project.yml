@@ -214,6 +214,26 @@ targets:
         PROVISIONING_PROFILE_SPECIFIER: ""
         SKIP_INSTALL: YES
         ENABLE_HARDENED_RUNTIME: YES
+  # Empty module named like the SDK's AppIntents+UIKit cross-import overlay, which
+  # the UIKit shim module otherwise triggers (the real overlay is iOS only).
+  AppIntentsUIKitOverlay:
+    type: framework
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: ConduitMac/Compat/Overlay
+    settings:
+      base:
+        PRODUCT_NAME: _AppIntents_UIKit
+        PRODUCT_MODULE_NAME: _AppIntents_UIKit
+        PRODUCT_BUNDLE_IDENTIFIER: com.meswan.hermes.mac.appintentsuikitoverlay
+        GENERATE_INFOPLIST_FILE: YES
+        DEVELOPMENT_TEAM: 58XKRG9VMA
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "Developer ID Application"
+        PROVISIONING_PROFILE_SPECIFIER: ""
+        SKIP_INSTALL: YES
+        ENABLE_HARDENED_RUNTIME: YES
   ConduitMac:
     type: application
     platform: macOS
@@ -222,6 +242,7 @@ targets:
       - path: ConduitMac
         excludes:
           - "Compat/Module/**"
+          - "Compat/Overlay/**"
       - path: Shared
       - path: Conduit
         excludes:
@@ -237,71 +258,15 @@ targets:
           - "CarPlay/PhoneScenePresence.swift"
           - "Watch/WatchVoiceLink.swift"
           - "CarPlay/CarPlayVoiceArtwork.swift"
-          # TEMP Task 5: removed in Task 6 (Views/** minus the view-layer files that non-view code references)
-          - "Views/AgentSettingsViews.swift"
-          - "Views/AskHermesPromptView.swift"
-          - "Views/BotEditorSheet.swift"
-          - "Views/BotRosterView.swift"
-          - "Views/CapabilitiesView.swift"
-          - "Views/CarPlaySettingsSection.swift"
-          - "Views/ChatRowDisclosure.swift"
-          - "Views/ChatScrollSurfaceLocator.swift"
-          - "Views/ChatSupportSheets.swift"
-          - "Views/Components/CameraCapture.swift"
-          - "Views/Components/ChatTypography.swift"
-          - "Views/Components/ComposerFullEditor.swift"
-          - "Views/Components/ComposerPasteTextView.swift"
-          - "Views/Components/ComposerReturnKey.swift"
-          - "Views/Components/ConduitSheetHeader.swift"
-          - "Views/Components/DynamicTypeSupport.swift"
-          - "Views/Components/ImagePicker.swift"
-          - "Views/Components/InlineAudioClip.swift"
-          - "Views/Components/MarkdownLargeDocument.swift"
-          - "Views/Components/MarkdownLargeDocumentView.swift"
-          - "Views/Components/MarkdownRichContent.swift"
-          - "Views/Components/MarkdownSelectionCoordinator.swift"
-          - "Views/Components/MarkdownSelectionHandles.swift"
-          - "Views/Components/MarkdownText.swift"
-          - "Views/Components/MarkupBlock.swift"
-          - "Views/Components/MediaPreviewPresenter.swift"
-          - "Views/Components/MessageReactionViews.swift"
+          # UIKit-backed views (R2): Mac twins in ConduitMac/Chat and ConduitMac/Views.
           - "Views/Components/SelectableTextView.swift"
-          - "Views/Components/StreamingText.swift"
-          - "Views/Components/VoiceInputLevelMeter.swift"
-          - "Views/ConnectionSetupForm.swift"
-          - "Views/ConnectionSetupView.swift"
-          - "Views/CustomHeadersEditor.swift"
-          - "Views/GPTLiveViews.swift"
-          - "Views/GatewayRestartViews.swift"
-          - "Views/GrokLiveViews.swift"
-          - "Views/GroupChatView.swift"
-          - "Views/Kanban/KanbanBoardEditorView.swift"
-          - "Views/Kanban/KanbanBoardFilterSheet.swift"
-          - "Views/Kanban/KanbanLiveUpdateSupport.swift"
-          - "Views/Kanban/KanbanOrchestrationSettingsSheet.swift"
-          - "Views/Kanban/KanbanProfileRoutingScreen.swift"
-          - "Views/Kanban/KanbanTaskComposerView.swift"
-          - "Views/Kanban/KanbanTaskDetailView.swift"
-          - "Views/Kanban/KanbanV2Support.swift"
-          - "Views/Kanban/KanbanV3ASupport.swift"
-          - "Views/Kanban/KanbanWorkerLogScreen.swift"
-          - "Views/KanbanViews.swift"
-          - "Views/LiveVoiceCallJobs.swift"
-          - "Views/LiveVoiceCallSheet.swift"
-          - "Views/LiveVoiceSetupSheet.swift"
-          - "Views/MinimisedLiveVoiceBar.swift"
-          - "Views/ModelPickerView.swift"
-          - "Views/OfflineChatTranscriptView.swift"
-          - "Views/ProfilePickerSheet.swift"
-          - "Views/RootView.swift"
-          - "Views/SavedDashboardsView.swift"
-          - "Views/ScreenQuestionViews.swift"
+          - "Views/Components/ComposerPasteTextView.swift"
+          - "Views/Components/MarkdownSelectionHandles.swift"
+          - "Views/Components/ImagePicker.swift"
+          - "Views/Components/CameraCapture.swift"
+          - "Views/ChatScrollSurfaceLocator.swift"
+          # DEBUG-only iOS selection fixture (UIView animations); only ConduitApp uses it.
           - "Views/SelectionFixtureView.swift"
-          - "Views/SidebarLayout.swift"
-          - "Views/SidebarTab.swift"
-          - "Views/SidebarView.swift"
-          - "Views/VoiceConversationSheet.swift"
-          - "Views/VoiceSettingsView.swift"
     settings:
       base:
         PRODUCT_NAME: Conduit
@@ -318,8 +283,14 @@ targets:
         PROVISIONING_PROFILE_SPECIFIER: ""
         ENABLE_HARDENED_RUNTIME: YES
         ENABLE_USER_SCRIPT_SANDBOXING: NO
+        # Upstream view files that import only SwiftUI use UIKit names (iOS
+        # SwiftUI re-exports UIKit). Make the shim module visible everywhere.
+        OTHER_SWIFT_FLAGS: "$(inherited) -Xfrontend -import-module -Xfrontend UIKit"
+        # Explicit modules do not see the SDK cross-import overlays this needs.
+        SWIFT_ENABLE_EXPLICIT_MODULES: NO
     dependencies:
       - target: UIKitCompat
+      - target: AppIntentsUIKitOverlay
       - package: WebRTC
   ConduitMacTests:
     type: bundle.unit-test

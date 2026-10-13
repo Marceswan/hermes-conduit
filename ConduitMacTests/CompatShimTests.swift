@@ -169,4 +169,16 @@ final class CompatShimTests: XCTestCase {
         let opened = await UIApplication.shared.open(url)
         XCTAssertFalse(opened)
     }
+
+    func testContentSizeCategoryMapsFromSwiftUI() {
+        XCTAssertEqual(UIContentSizeCategory(.large), .large)
+        XCTAssertNotEqual(UIContentSizeCategory(.accessibilityExtraLarge), .large)
+    }
+
+    func testTraitCollectionCarriesContentSizeCategory() {
+        let traits = UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(.extraLarge))
+        XCTAssertEqual(traits.preferredContentSizeCategory, UIContentSizeCategory(.extraLarge))
+        XCTAssertEqual(UIFont.preferredFont(forTextStyle: .body, compatibleWith: traits).pointSize,
+                       UIFont.preferredFont(forTextStyle: .body).pointSize)
+    }
 }

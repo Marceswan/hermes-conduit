@@ -831,7 +831,9 @@ struct SessionList: View {
 private struct SessionFilterOrderSheet: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
+#if os(iOS) // MAC: EditMode is unavailable on macOS; List reorders by drag without it
     @State private var editMode: EditMode = .active
+#endif // MAC:
 
     var body: some View {
         NavigationStack {
@@ -848,7 +850,9 @@ private struct SessionFilterOrderSheet: View {
                     Text("Drag categories into the order you prefer. All remains first in the session drawer.")
                 }
             }
+#if os(iOS) // MAC: see editMode
             .environment(\.editMode, $editMode)
+#endif // MAC:
             .navigationTitle("Session filters")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

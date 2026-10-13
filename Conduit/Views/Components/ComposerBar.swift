@@ -302,7 +302,7 @@ struct ComposerBar: View {
     /// the modifier chain in two parts.
     private var composerWithRequestHandlers: some View {
         Group {
-            if #available(iOS 26.0, *) {
+            if #available(iOS 26.0, macOS 26.0, *) { // MAC: R4-widen
                 GlassEffectContainer(spacing: 16) {
                     composerContent
                 }
@@ -966,7 +966,7 @@ struct ComposerBar: View {
             action: action,
             showsVoiceButton: appState.showsComposerVoiceButton
         )
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, macOS 26.0, *) { // MAC: R4-widen
             trailingControlButton(control)
                 .glassEffectID("composer-action", in: glassNamespace)
         } else {

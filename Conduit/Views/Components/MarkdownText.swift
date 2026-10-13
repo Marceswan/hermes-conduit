@@ -177,6 +177,7 @@ struct MarkdownSelectionHost: ViewModifier {
     }
 }
 
+#if os(iOS) // MAC: Mac twin in ConduitMac/Views/MarkdownSelectionHighlightOverlay.swift
 private struct MarkdownSelectionHighlightOverlay: UIViewRepresentable {
     @ObservedObject var coordinator: MarkdownSelectionCoordinator
 
@@ -226,6 +227,7 @@ private final class MarkdownSelectionHighlightView: UIView {
         }
     }
 }
+#endif // MAC:
 
 /// One render's parsed blocks plus the prebuilt selectable string (nil when
 /// the blocks need the full block-view path). A class so NSCache can hold it.
@@ -2112,6 +2114,7 @@ private struct WebFallbackImage: View {
     }
 }
 
+#if os(iOS) // MAC: Mac twin in ConduitMac/WebViews/WebViewTwins.swift
 private struct RemoteImageWebView: UIViewRepresentable {
     let url: String
     @Binding var height: CGFloat
@@ -2165,6 +2168,7 @@ private struct RemoteImageWebView: UIViewRepresentable {
         }
     }
 }
+#endif // MAC:
 
 private enum RemoteImageHTML {
     static func render(url: String) -> String {

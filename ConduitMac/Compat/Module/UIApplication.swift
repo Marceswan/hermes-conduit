@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import IOKit.pwr_mgt
 
 public struct UIBackgroundTaskIdentifier: Hashable, Sendable {
@@ -11,6 +12,25 @@ public struct UIContentSizeCategory: RawRepresentable, Hashable, Sendable {
     public let rawValue: String
     public init(rawValue: String) { self.rawValue = rawValue }
     public static let large = UIContentSizeCategory(rawValue: "UICTContentSizeCategoryL")
+
+    /// UIContentSizeCategory(_: SwiftUI.ContentSizeCategory).
+    public init(_ category: ContentSizeCategory) {
+        switch category {
+        case .extraSmall: self.init(rawValue: "UICTContentSizeCategoryXS")
+        case .small: self.init(rawValue: "UICTContentSizeCategoryS")
+        case .medium: self.init(rawValue: "UICTContentSizeCategoryM")
+        case .large: self.init(rawValue: "UICTContentSizeCategoryL")
+        case .extraLarge: self.init(rawValue: "UICTContentSizeCategoryXL")
+        case .extraExtraLarge: self.init(rawValue: "UICTContentSizeCategoryXXL")
+        case .extraExtraExtraLarge: self.init(rawValue: "UICTContentSizeCategoryXXXL")
+        case .accessibilityMedium: self.init(rawValue: "UICTContentSizeCategoryAccessibilityM")
+        case .accessibilityLarge: self.init(rawValue: "UICTContentSizeCategoryAccessibilityL")
+        case .accessibilityExtraLarge: self.init(rawValue: "UICTContentSizeCategoryAccessibilityXL")
+        case .accessibilityExtraExtraLarge: self.init(rawValue: "UICTContentSizeCategoryAccessibilityXXL")
+        case .accessibilityExtraExtraExtraLarge: self.init(rawValue: "UICTContentSizeCategoryAccessibilityXXXL")
+        @unknown default: self.init(rawValue: "UICTContentSizeCategoryL")
+        }
+    }
 }
 
 @MainActor
@@ -120,5 +140,5 @@ public final class UIApplication {
 
     public func registerForRemoteNotifications() {}
 
-    public var preferredContentSizeCategory: UIContentSizeCategory { .large }
+    public nonisolated var preferredContentSizeCategory: UIContentSizeCategory { .large }
 }

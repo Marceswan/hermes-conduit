@@ -21,6 +21,35 @@ public enum UIUserInterfaceStyle: Int, Sendable {
 /// A value carrying only the appearance, which is all dynamic colors read.
 public struct UITraitCollection: Sendable {
     public let userInterfaceStyle: UIUserInterfaceStyle
+    public let preferredContentSizeCategory: UIContentSizeCategory
+
+    public init(
+        userInterfaceStyle: UIUserInterfaceStyle = .unspecified,
+        preferredContentSizeCategory: UIContentSizeCategory = .large
+    ) {
+        self.userInterfaceStyle = userInterfaceStyle
+        self.preferredContentSizeCategory = preferredContentSizeCategory
+    }
+
+    public init(preferredContentSizeCategory: UIContentSizeCategory) {
+        self.init(userInterfaceStyle: .unspecified, preferredContentSizeCategory: preferredContentSizeCategory)
+    }
+}
+
+public extension NSFont {
+    /// Macs have no Dynamic Type; the traits do not change the size.
+    static func preferredFont(forTextStyle style: NSFont.TextStyle, compatibleWith traits: UITraitCollection?) -> NSFont {
+        preferredFont(forTextStyle: style)
+    }
+}
+
+/// UIFontDescriptor.SymbolicTraits names that upstream's attributed-text
+/// bridge uses.
+public typealias UIFontDescriptor = NSFontDescriptor
+
+public extension NSFontDescriptor.SymbolicTraits {
+    static let traitBold = NSFontDescriptor.SymbolicTraits.bold
+    static let traitItalic = NSFontDescriptor.SymbolicTraits.italic
 }
 
 public extension NSColor {

@@ -139,12 +139,18 @@ enum MarkdownSelectionSegmentPlan {
 final class MarkdownSelectionCoordinator: ObservableObject {
     final class SegmentRecord {
         var descriptor: MarkdownSelectionSegmentDescriptor
+#if os(iOS) // MAC: UITextView per segment
         var textView: UITextView?
 
         init(descriptor: MarkdownSelectionSegmentDescriptor, textView: UITextView?) {
             self.descriptor = descriptor
             self.textView = textView
         }
+#else // MAC: a Mac segment has no UIKit text view; Never? keeps replaceSegments unchanged
+        init(descriptor: MarkdownSelectionSegmentDescriptor, textView: Never?) {
+            self.descriptor = descriptor
+        }
+#endif // MAC:
     }
 
     struct ActiveSelectionState: Equatable {
@@ -236,9 +242,14 @@ final class MarkdownSelectionCoordinator: ObservableObject {
     /// Whether a segment currently has a mounted text view registered —
     /// the behavior-level query for registration lifecycle tests.
     func isSegmentRegistered(_ segmentID: String) -> Bool {
+#if os(iOS) // MAC: UITextView registration
         recordsByID[segmentID]?.textView != nil
+#else // MAC: Mac twins do not register
+        false
+#endif // MAC:
     }
 
+#if os(iOS) // MAC: UITextView registration; Mac twins do not register
     func register(descriptor: MarkdownSelectionSegmentDescriptor, textView: UITextView) {
         let existingRecord = recordsByID[descriptor.id]
         let registrationChanged = existingRecord?.descriptor != descriptor || existingRecord?.textView !== textView
@@ -282,11 +293,16 @@ final class MarkdownSelectionCoordinator: ObservableObject {
 
         publishIfVisibleSelectionChanged(from: before)
     }
+#endif // MAC:
 
+#if os(iOS) // MAC: UITextView text
     func text(for segmentID: String) -> String? {
         guard let textView = recordsByID[segmentID]?.textView else { return nil }
         return textView.attributedText?.string ?? textView.text
     }
+#else // MAC: no registered text views on Mac
+    func text(for segmentID: String) -> String? { nil }
+#endif // MAC:
 
     func orderedEndpoints(
         from start: MarkdownSelectionEndpoint,
@@ -420,6 +436,7 @@ final class MarkdownSelectionCoordinator: ObservableObject {
         return spans
     }
 
+#if os(iOS) // MAC: UITextView text storage
     func copiedAttributedText(from start: MarkdownSelectionEndpoint, to end: MarkdownSelectionEndpoint) -> NSAttributedString {
         let spans = spans(from: start, to: end)
         struct CopyPiece {
@@ -464,15 +481,22 @@ final class MarkdownSelectionCoordinator: ObservableObject {
 
         return result
     }
+#else // MAC: native selection copies on Mac
+    func copiedAttributedText(from start: MarkdownSelectionEndpoint, to end: MarkdownSelectionEndpoint) -> NSAttributedString {
+        NSAttributedString(string: "")
+    }
+#endif // MAC:
 
     private func orderedIndex(for segmentID: String) -> Int? {
         orderedSegmentIDs.firstIndex(of: segmentID)
     }
 
     private func textLength(for segmentID: String) -> Int {
+#if os(iOS) // MAC: UITextView length
         if let length = recordsByID[segmentID]?.textView?.attributedText?.length {
             return length
         }
+#endif // MAC:
         return text(for: segmentID)?.utf16.count ?? 0
     }
 
@@ -740,6 +764,7 @@ final class MarkdownSelectionCoordinator: ObservableObject {
         activeSelectionState?.focus
     }
 
+#if os(iOS) // MAC: UIScrollView/UIWindow geometry for the iOS selection handles
     /// Caret-style rect (window coordinates) for a selection endpoint —
     /// the trailing edge of the character before the offset, or the leading
     /// edge for offset 0. Drives the custom handle positions.
@@ -805,6 +830,7 @@ final class MarkdownSelectionCoordinator: ObservableObject {
         guard !windowRect.isNull else { return nil }
         return windowRect
     }
+#endif // MAC:
 
     func endSelection() {
         let before = visibleSelectionSnapshot()
@@ -818,6 +844,7 @@ final class MarkdownSelectionCoordinator: ObservableObject {
         // renders without the system's native handles (they cannot travel
         // outside the owner's own text view). Within-block selections keep
         // the fully native flow.
+#if os(iOS) // MAC: UITextView first responder
         if hasCrossSegmentSelection,
            let ownerID = nativeSelectionOwnerSegmentID,
            let owner = recordsByID[ownerID]?.textView,
@@ -825,6 +852,7 @@ final class MarkdownSelectionCoordinator: ObservableObject {
             owner.resignFirstResponder()
             applySelectionRanges()
         }
+#endif // MAC:
 
         publishIfVisibleSelectionChanged(from: before)
     }
@@ -841,6 +869,7 @@ final class MarkdownSelectionCoordinator: ObservableObject {
         return copiedAttributedText(from: activeSelectionState.anchor, to: activeSelectionState.focus)
     }
 
+#if os(iOS) // MAC: UIWindow geometry; the Mac highlight overlay is a no-op twin
     func highlightRects(in window: UIWindow?) -> [CGRect] {
         guard let window, activeSelectionState != nil else { return [] }
         let nativeSelectionOwnerSegmentID = nativeSelectionOwnerSegmentID
@@ -865,7 +894,9 @@ final class MarkdownSelectionCoordinator: ObservableObject {
             return selectionRects(for: span.range, in: textView, window: window)
         }
     }
+#endif // MAC:
 
+#if os(iOS) // MAC: UITextView hit-testing and ranges; selection is native on Mac
     private func endpoint(at windowPoint: CGPoint) -> MarkdownSelectionEndpoint? {
         for segmentID in orderedSegmentIDs {
             guard
@@ -1060,6 +1091,12 @@ final class MarkdownSelectionCoordinator: ObservableObject {
         }
         return rects
     }
+#else // MAC: stand-ins so the platform-neutral callers compile
+    private func endpoint(at windowPoint: CGPoint) -> MarkdownSelectionEndpoint? { nil }
+    private func nearestEndpoint(at windowPoint: CGPoint) -> MarkdownSelectionEndpoint? { nil }
+    func applySelectionRanges() {}
+    private func clearSelectionRanges() {}
+#endif // MAC:
 
     private func visibleSelectionSnapshot() -> VisibleSelectionSnapshot {
         VisibleSelectionSnapshot(

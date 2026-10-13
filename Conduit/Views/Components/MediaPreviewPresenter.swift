@@ -77,6 +77,7 @@ final class MediaPreviewPresenter {
         return MediaPreviewPresenter()
     }()
 
+#if os(iOS) // MAC: Mac twin in ConduitMac/Views/MediaPreviewPresenterMac.swift
     /// One open preview. Each controller gets its own session (Quick Look
     /// holds its data source weakly, so `sessions` keeps it alive), which
     /// removes only its own staged directory when that controller closes.
@@ -115,6 +116,7 @@ final class MediaPreviewPresenter {
     }
 
     private var sessions: [ObjectIdentifier: Session] = [:]
+#endif // MAC:
 
     /// Previews a file already on disk (a local attachment). The file is
     /// left in place afterwards. A type Quick Look must not render opens the
@@ -178,6 +180,7 @@ final class MediaPreviewPresenter {
 
     // MARK: - Presentation
 
+#if os(iOS) // MAC: Mac twin in ConduitMac/Views/MediaPreviewPresenterMac.swift
     @discardableResult
     private func show(_ session: Session) -> Bool {
         guard let presenter = Self.topViewController() else {
@@ -250,6 +253,7 @@ final class MediaPreviewPresenter {
         }
         return top
     }
+#endif // MAC:
 
     // MARK: - Content policy
 
@@ -371,6 +375,7 @@ final class MediaPreviewPresenter {
     }
 }
 
+#if os(iOS) // MAC: Mac twin in ConduitMac/Views/MediaPreviewPresenterMac.swift
 private final class PreviewItem: NSObject, QLPreviewItem {
     let previewItemURL: URL?
     let previewItemTitle: String?
@@ -380,6 +385,7 @@ private final class PreviewItem: NSObject, QLPreviewItem {
         previewItemTitle = title
     }
 }
+#endif // MAC:
 
 /// Makes an inline media view open the full-screen preview on tap, and
 /// tells VoiceOver it is a button that does so.

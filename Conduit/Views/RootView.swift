@@ -581,6 +581,7 @@ struct ConnectionStatusIndicator: View {
 
 // MARK: - Edge Pan Gesture
 
+#if os(iOS) // MAC: Mac twin in ConduitMac/Views/EdgePanGesture.swift
 /// Detects a left-edge pan gesture to open the sidebar.
 /// Uses UIScreenEdgePanGestureRecognizer (~20pt edge width) via UIViewRepresentable.
 struct EdgePanGesture: UIViewRepresentable {
@@ -614,3 +615,4 @@ struct EdgePanGesture: UIViewRepresentable {
         }
     }
 }
+#endif // MAC:
