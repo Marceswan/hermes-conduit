@@ -17,6 +17,7 @@ Run against a real Hermes dashboard before every release build.
 - [ ] Admin tabs: Capabilities toggle, Jobs list, Connectors, Logs, Kanban board load
 - [ ] Bot Mode: bot list loads; open a Bot Chat
 - [ ] Switch between two saved dashboards
+- [ ] Fresh install from DMG on a second Mac: no Gatekeeper prompt
 
 ## Agent pre-checks (2026-10-13)
 
