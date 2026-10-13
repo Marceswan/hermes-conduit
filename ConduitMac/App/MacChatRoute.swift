@@ -25,11 +25,13 @@ enum MacChatRoute {
     }
 
     /// The hidden chat's composer must not keep first responder: keystrokes on
-    /// another pane would land in an invisible text view. Returns true when it
-    /// resigned. Other responders (sidebar search, pane fields) are untouched.
+    /// another pane would land in an invisible text view. The focus is held on
+    /// the composer and restored when chat returns (`restoreFocusIfHeld`).
+    /// Returns true when it resigned. Other responders (sidebar search, pane fields) are untouched.
     @discardableResult
     static func resignComposerFocus(in window: NSWindow?) -> Bool {
-        guard let window, window.firstResponder is ComposerTextView else { return false }
-        return window.makeFirstResponder(nil)
+        guard let window, let composer = window.firstResponder as? ComposerTextView else { return false }
+        composer.resignForRoute()
+        return window.firstResponder !== composer
     }
 }

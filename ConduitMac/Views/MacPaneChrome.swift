@@ -74,13 +74,19 @@ enum MacTrailingFade {
 }
 
 extension View {
-    func macTrailingFade(width: CGFloat = MacTrailingFade.width) -> some View {
-        mask(
-            HStack(spacing: 0) {
-                Color.black
-                LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
-                    .frame(width: width)
-            }
-        )
+    /// Fades only the trailing edge. The scroll view's own clip is disabled and
+    /// the mask extends `verticalOverflow` past the top and bottom, so focus
+    /// rings and shadows on the chips are not cut; the mask still bounds the
+    /// row horizontally.
+    func macTrailingFade(width: CGFloat = MacTrailingFade.width, verticalOverflow: CGFloat = 24) -> some View {
+        scrollClipDisabled()
+            .mask(
+                HStack(spacing: 0) {
+                    Color.black
+                    LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: width)
+                }
+                .padding(.vertical, -verticalOverflow)
+            )
     }
 }
