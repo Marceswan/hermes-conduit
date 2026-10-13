@@ -284,6 +284,17 @@ struct MainView: View {
     @ViewBuilder
     private var sidebarLayoutContent: some View {
         if isPersistentSidebarActive {
+            #if os(macOS) // MAC: native resizable split view (D6)
+            MacSplitLayout(
+                sidebar: {
+                    SidebarView(
+                        onRequestSettings: presentSettingsFromPersistentSidebar,
+                        presentation: .persistent
+                    )
+                },
+                chat: { chatNavigationContent }
+            )
+            #else // MAC:
             HStack(spacing: 0) {
                 SidebarView(
                     onRequestSettings: presentSettingsFromPersistentSidebar,
@@ -296,6 +307,7 @@ struct MainView: View {
 
                 chatNavigationContent
             }
+            #endif // MAC:
         } else {
             chatNavigationContent
         }

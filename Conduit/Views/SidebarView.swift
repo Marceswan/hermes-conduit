@@ -142,6 +142,9 @@ struct SidebarView: View {
                     .dynamicTypeSize(...DynamicTypeSize.pinnedChromeCap)
 
                     Group {
+                        #if os(macOS) // MAC: sidebar always lists sessions; tabs drive the main pane (D6)
+                        SessionList()
+                        #else // MAC:
                         switch selectedTab {
                         case .sessions:
                             SessionList()
@@ -152,6 +155,7 @@ struct SidebarView: View {
                         case .kanban:
                             KanbanView()
                         }
+                        #endif // MAC:
                     }
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
