@@ -61,7 +61,9 @@ list after each `git merge upstream/main`.
 1. **Fetch and preview.** Run `git fetch upstream`. Before merging:
    - Save `git diff --name-status HEAD...upstream/main` (three dots: upstream's changes since the merge-base).
    - Review it for D (deleted) and R (renamed) entries on any file named in this ledger or in the ConduitMac excludes in `project.yml`. A rename leaves a dead exclude and a stale twin, so update `project.yml` and the twin.
-2. **Diff the twin sources.** For every ledger row whose first column is an upstream path (R2, R3, R4 rows), run `git diff HEAD...upstream/main -- <path>` and port relevant changes to the Mac side. Do not use `ORIG_HEAD`; it is unreliable after no-op merges, resets and rebases. Also:
+2. **Diff the twin sources.** For every ledger row that names an upstream file, whatever its rule, run `git diff HEAD...upstream/main -- <path>` and port relevant changes to the Mac side. Do not use `ORIG_HEAD`; it is unreliable after no-op merges, resets and rebases.
+   - Skipped and deferred rows: diff the named upstream file (e.g. `Conduit/ConduitApp.swift`, `Conduit/Views/AuxiliaryViews.swift`) and re-evaluate whether the skip/deferral still holds or a new modifier/API needs porting.
+   Also:
    - Run `grep -rn "keep in sync" ConduitMac`. For each marker, diff the named upstream source. These cover `SelectableTextView` `bridge`/`withTraits`, the `ConduitMacApp` rootContent port, and `WebViewTwins`.
    - `WebViewTwins.swift` holds renamed copies of upstream private types. `MacMarkupMessageProxy` copies `MarkupBlock.swift` `MarkupMessageProxy`, and `MacRemoteImageHTML` copies `MarkdownText.swift` `RemoteImageHTML`. Diff those whole files.
 3. **Check compile-clean drift.**
