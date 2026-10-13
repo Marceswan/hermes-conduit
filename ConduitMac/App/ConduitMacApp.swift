@@ -46,6 +46,7 @@ struct ConduitMacApp: App {
 
     init() {
         MacDefaults.register()
+        SheetEscape.install()
     }
 
     var body: some Scene {
