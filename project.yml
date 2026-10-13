@@ -227,7 +227,11 @@ targets:
         PRODUCT_NAME: Conduit
         PRODUCT_MODULE_NAME: ConduitMac
         PRODUCT_BUNDLE_IDENTIFIER: com.meswan.hermes.mac
-        GENERATE_INFOPLIST_FILE: YES
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: ConduitMac/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: ConduitMac/Resources/ConduitMac.entitlements
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
         DEVELOPMENT_TEAM: 58XKRG9VMA
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "Developer ID Application"
@@ -237,3 +241,32 @@ targets:
     dependencies:
       - target: UIKitCompat
       - package: WebRTC
+  ConduitMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: ConduitMacTests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        DEVELOPMENT_TEAM: 58XKRG9VMA
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "Developer ID Application"
+        PROVISIONING_PROFILE_SPECIFIER: ""
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Conduit.app/Contents/MacOS/Conduit"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+    dependencies:
+      - target: ConduitMac
+      - target: UIKitCompat
+
+schemes:
+  ConduitMac:
+    build:
+      targets:
+        ConduitMac: all
+    test:
+      targets:
+        - ConduitMacTests
+    archive:
+      config: Release
