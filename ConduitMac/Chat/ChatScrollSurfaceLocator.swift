@@ -40,6 +40,10 @@ final class ChatScrollSurfaceLocatorView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// Flipped so `convert(.zero, to:)` yields the top-left of the transcript
+    /// stack, matching the flipped document view SwiftUI uses.
+    override var isFlipped: Bool { true }
+
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     override func viewDidMoveToWindow() {
@@ -50,6 +54,7 @@ final class ChatScrollSurfaceLocatorView: NSView {
     override func layout() {
         super.layout()
         connectIfNeeded()
+        surface?.checkInsets()
     }
 
     func disconnect() {
@@ -73,23 +78,39 @@ final class ChatScrollSurfaceLocatorView: NSView {
 /// y grows downward as on iOS.
 @MainActor
 final class NSScrollViewChatSurface: NSObject, ChatScrollSurface {
+    /// What caused an offset change. Only `.userDiscrete` and `.live` are
+    /// reader intent; `.programmatic` is the engine or an animation.
+    enum ScrollKind: Equatable {
+        case programmatic
+        /// Wheel notch, scroller knob, keyboard paging or scroll-bar click.
+        /// None of these post willStartLiveScroll.
+        case userDiscrete
+        /// Between willStartLiveScroll and didEndLiveScroll.
+        case live
+    }
+
     private(set) weak var scrollView: NSScrollView?
     private weak var locator: NSView?
     private weak var engine: ChatScrollEngine?
     private var observers: [NSObjectProtocol] = []
     private var liveScrolling = false
+    /// Last offset this surface wrote. A bounds change to it is ours.
+    private var programmaticOffsetY: CGFloat?
+    private var animatingProgrammatically = false
+    private(set) var lastInsets: NSEdgeInsets
 
     init(scrollView: NSScrollView, locator: NSView, engine: ChatScrollEngine?) {
         self.scrollView = scrollView
         self.locator = locator
         self.engine = engine
+        self.lastInsets = scrollView.contentInsets
         super.init()
         let center = NotificationCenter.default
         scrollView.contentView.postsBoundsChangedNotifications = true
         scrollView.documentView?.postsFrameChangedNotifications = true
         observers = [
             center.addObserver(forName: NSView.boundsDidChangeNotification, object: scrollView.contentView, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.engine?.surfaceScrolled() }
+                MainActor.assumeIsolated { self?.boundsChanged() }
             },
             center.addObserver(forName: NSView.frameDidChangeNotification, object: scrollView.documentView, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.engine?.surfaceLayoutChanged() }
@@ -118,6 +139,50 @@ final class NSScrollViewChatSurface: NSObject, ChatScrollSurface {
         engine?.detach(self)
     }
 
+    private func boundsChanged() {
+        guard let engine, let scrollView else { return }
+        let y = scrollView.contentView.bounds.origin.y
+        switch classifyScroll(newOffsetY: y) {
+        case .programmatic:
+            engine.surfaceScrolled()
+        case .userDiscrete:
+            // Discrete scrolls never post willStartLiveScroll, so the engine
+            // would keep pinning the bottom. Treat them as a drag.
+            programmaticOffsetY = nil
+            engine.userDragBegan()
+            engine.surfaceScrolled()
+            engine.userDragEnded()
+        case .live:
+            engine.surfaceScrolled()
+        }
+    }
+
+    /// Decides whether a bounds change came from the reader. Pure apart from
+    /// reading surface state, so tests can drive it directly.
+    func classifyScroll(newOffsetY: CGFloat) -> ScrollKind {
+        if liveScrolling { return .live }
+        if animatingProgrammatically { return .programmatic }
+        if let target = programmaticOffsetY, abs(newOffsetY - target) <= 0.5 {
+            return .programmatic
+        }
+        return .userDiscrete
+    }
+
+    /// Mirrors iOS checkAdjustedInsets: insets changed (for example the
+    /// window's toolbar or a title-bar change) without a layout of the
+    /// document, so the engine has to be told. Returns true when they changed.
+    @discardableResult
+    func checkInsets() -> Bool {
+        guard let scrollView else { return false }
+        let current = scrollView.contentInsets
+        guard current.top != lastInsets.top || current.bottom != lastInsets.bottom
+            || current.left != lastInsets.left || current.right != lastInsets.right
+        else { return false }
+        lastInsets = current
+        engine?.surfaceLayoutChanged()
+        return true
+    }
+
     // MARK: - ChatScrollSurface
 
     var contentOffsetY: CGFloat { scrollView?.contentView.bounds.origin.y ?? 0 }
@@ -125,7 +190,14 @@ final class NSScrollViewChatSurface: NSObject, ChatScrollSurface {
     var viewportHeight: CGFloat { scrollView?.contentView.bounds.height ?? 0 }
     var insetTop: CGFloat { scrollView?.contentInsets.top ?? 0 }
     var insetBottom: CGFloat { scrollView?.contentInsets.bottom ?? 0 }
+
+    /// True from willStartLiveScroll to didEndLiveScroll. On Mac this
+    /// deliberately includes trackpad momentum: live scroll does not end until
+    /// the momentum finishes, so the engine never pins during a fling (R14).
     var isTracking: Bool { liveScrolling }
+
+    /// Always false on Mac. Momentum is folded into isTracking (R14); reporting
+    /// deceleration separately would let the engine pin mid-fling.
     var isDecelerating: Bool { false }
 
     var transcriptOriginY: CGFloat {
@@ -136,11 +208,15 @@ final class NSScrollViewChatSurface: NSObject, ChatScrollSurface {
     func setContentOffsetY(_ y: CGFloat, animated: Bool) {
         guard let scrollView else { return }
         let point = NSPoint(x: scrollView.contentView.bounds.origin.x, y: y)
+        programmaticOffsetY = y
         if animated {
-            NSAnimationContext.runAnimationGroup { context in
+            animatingProgrammatically = true
+            NSAnimationContext.runAnimationGroup({ context in
                 context.duration = 0.2
                 scrollView.contentView.animator().setBoundsOrigin(point)
-            }
+            }, completionHandler: { [weak self] in
+                MainActor.assumeIsolated { self?.animatingProgrammatically = false }
+            })
         } else {
             scrollView.contentView.setBoundsOrigin(point)
         }
