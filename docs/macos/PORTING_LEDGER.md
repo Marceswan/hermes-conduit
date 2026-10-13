@@ -58,10 +58,29 @@ list after each `git merge upstream/main`.
 
 ## Sync routine
 
-1. `git fetch upstream && git merge upstream/main` on `macos`
-2. Resolve conflicts; every one should be at a `// MAC:` line, a ledger file, or `project.yml`
-3. For each twin row above, diff the upstream source: `git diff ORIG_HEAD HEAD -- <upstream file>`; port relevant changes to the twin
-4. `xcodegen generate`, then `xcodebuild test -scheme ConduitMac -destination 'platform=macOS'`
-5. iOS build check: `xcodebuild build -scheme Conduit -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO`
-6. Run `docs/macos/SMOKE_CHECKLIST.md`, then `scripts/mac-release.sh`
-7. Re-run `AccessibilityLabelAuditTests` (part of step 4) and update `docs/macos/a11y-audit-allowlist.txt` for any new upstream icon-only buttons.
+1. **Fetch and preview.** Run `git fetch upstream`. Before merging:
+   - Save `git diff --name-status HEAD...upstream/main` (three dots: upstream's changes since the merge-base).
+   - Review it for D (deleted) and R (renamed) entries on any file named in this ledger or in the ConduitMac excludes in `project.yml`. A rename leaves a dead exclude and a stale twin, so update `project.yml` and the twin.
+2. **Diff the twin sources.** For every ledger row whose first column is an upstream path (R2, R3, R4 rows), run `git diff HEAD...upstream/main -- <path>` and port relevant changes to the Mac side. Do not use `ORIG_HEAD`; it is unreliable after no-op merges, resets and rebases. Also:
+   - Run `grep -rn "keep in sync" ConduitMac`. For each marker, diff the named upstream source. These cover `SelectableTextView` `bridge`/`withTraits`, the `ConduitMacApp` rootContent port, and `WebViewTwins`.
+   - `WebViewTwins.swift` holds renamed copies of upstream private types. `MacMarkupMessageProxy` copies `MarkupBlock.swift` `MarkupMessageProxy`, and `MacRemoteImageHTML` copies `MarkdownText.swift` `RemoteImageHTML`. Diff those whole files.
+3. **Check compile-clean drift.**
+   - In the upstream diff, grep for APIs shadowed by `ConduitMac/Compat/App/SwiftUIiOSModifiers.swift` (see `docs/macos/DECISIONS.md` D4): `fullScreenCover` becomes `sheet`, `keyboardType` becomes a no-op, and `.toolbar(.hidden, for: .navigationBar)` hides the window toolbar. Check that new uses behave acceptably on Mac.
+   - Check upstream additions inside `#if os(iOS)` or `// MAC:` gated regions. Mac silently drops them, so review each one.
+4. **Merge.** Run `git merge upstream/main`. Conflicts should only be at `// MAC:` lines, in ledger files, or in `project.yml`. Commit the merge.
+5. **Build and test.**
+   - Run `xcodegen generate`, then `xcodebuild test -scheme ConduitMac -destination 'platform=macOS'`. It must show `** TEST SUCCEEDED **`.
+   - Run `xcodebuild build -scheme Conduit -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO`. It must show `** BUILD SUCCEEDED **`.
+   - On a new Mac compile error, apply the porting rules in order:
+     - R1: add the missing member to a shim. Shims expose only members upstream uses.
+     - R2: exclude the file and twin it under ConduitMac.
+     - R3: gate one type with `#if os(iOS)` and add a Mac twin.
+     - R4: gate one statement.
+     - Tag every upstream edit `// MAC:` and add a ledger row.
+   - See `docs/macos/DECISIONS.md` D1-D4. A D3 failure looks like `no such module '_<Framework>_UIKit'` after upstream imports a framework with a cross-import overlay. Fix it by adding an empty overlay framework target such as `AppIntentsUIKitOverlay`, and keep `SWIFT_ENABLE_EXPLICIT_MODULES: NO`.
+   - If `AccessibilityLabelAuditTests` fails:
+     - For a new unlabeled icon-only button, add a cross-platform `.accessibilityLabel(...)` tagged `// MAC: a11y` (preferred), and update the a11y labels ledger row.
+     - Add an allowlist entry in `docs/macos/a11y-audit-allowlist.txt` ONLY if the image is decorative or the label is set elsewhere.
+     - Delete stale allowlist entries; the test fails on them.
+6. **Smoke and push.** Run `docs/macos/SMOKE_CHECKLIST.md`, then run `git push origin macos`.
+7. **Release (only when cutting one).** Run `CONDUIT_NOTARY_PROFILE=conduit-notary scripts/mac-release.sh`. It needs the notarytool keychain profile.
