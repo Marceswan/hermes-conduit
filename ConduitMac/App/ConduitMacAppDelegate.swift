@@ -1,6 +1,11 @@
 import AppKit
 
 enum MacDefaults {
+    /// The test host is the real app; global monitors must not run in tests.
+    static var isRunningUnderXCTest: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    }
+
     /// The persistent sidebar column is the natural Mac layout.
     static func register() {
         UserDefaults.standard.register(defaults: ["conduit.ipadPersistentSidebar": true])
@@ -10,7 +15,7 @@ enum MacDefaults {
 final class ConduitMacAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         MacDefaults.register()
-        HoverAccessibilityEngine.install()
+        if !MacDefaults.isRunningUnderXCTest { HoverAccessibilityEngine.install() }
         Task.detached(priority: .background) {
             AttachmentStaging.sweepStaleFiles()
         }

@@ -80,11 +80,15 @@ struct MainView: View {
     @State private var chatTitlePendingDeletion: SessionSummary?
 
     private var sidebarPresentation: SidebarPresentation {
-        SidebarLayoutPolicy.resolvePresentation(
+        #if os(macOS) // MAC: always the split view; no drawer, no first-frame flash
+        return .persistent
+        #else // MAC:
+        return SidebarLayoutPolicy.resolvePresentation(
             idiom: UIDevice.current.userInterfaceIdiom,
             prefersPersistentSidebar: prefersPersistentSidebar,
             availableWidth: availableWindowWidth
         )
+        #endif // MAC:
     }
 
     private var isPersistentSidebarActive: Bool { sidebarPresentation == .persistent }

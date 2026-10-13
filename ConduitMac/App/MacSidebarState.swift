@@ -4,6 +4,8 @@ import SwiftUI
 /// (`MacSplitLayout`) and the Toggle Sidebar command so both read one key.
 enum MacSidebarState {
     static let defaultsKey = "conduit.mac.sidebarVisible"
+    /// Same key as upstream SidebarView's @AppStorage literal.
+    static let tabDefaultsKey = "conduit.sidebarTab"
 
     static func visibility(isVisible: Bool) -> NavigationSplitViewVisibility {
         isVisible ? .all : .detailOnly
@@ -37,6 +39,7 @@ struct MacSplitLayout<Sidebar: View, Chat: View>: View {
                 .navigationSplitViewColumnWidth(min: 260, ideal: 340, max: 480)
         } detail: {
             MacDetailRouter(chat: { chat })
+                .frame(minWidth: 430)
         }
     }
 }

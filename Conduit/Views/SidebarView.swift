@@ -143,7 +143,11 @@ struct SidebarView: View {
 
                     Group {
                         #if os(macOS) // MAC: sidebar always lists sessions; tabs drive the main pane (D6)
+                        // Any tap in the list means "show chat" (also re-selecting the already-active session).
                         SessionList()
+                            .simultaneousGesture(TapGesture().onEnded {
+                                selectedTabRaw = SidebarTab.sessions.rawValue
+                            })
                         #else // MAC:
                         switch selectedTab {
                         case .sessions:
