@@ -222,6 +222,20 @@ targets:
       - path: ConduitMac
         excludes:
           - "Compat/Module/**"
+      - path: Shared
+      - path: Conduit
+        excludes:
+          - "ConduitApp.swift"
+          - "Info.plist"
+          - "Conduit.entitlements"
+          - "Resources/AlternateIcons/**"
+          # iOS-only frameworks (R2): twins in ConduitMac/Stubs.
+          - "CarPlay/CarPlayVoiceSceneDelegate.swift"
+          - "CarPlay/CarPlayVoiceCoordinator.swift"
+          - "CarPlay/CarPlayBrowseTemplates.swift"
+          - "CarPlay/CarPlayVoiceTemplateFactory.swift"
+          - "CarPlay/PhoneScenePresence.swift"
+          - "Watch/WatchVoiceLink.swift"
     settings:
       base:
         PRODUCT_NAME: Conduit

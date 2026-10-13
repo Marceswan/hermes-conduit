@@ -27,10 +27,14 @@
 //
 
 import AVFAudio
+#if os(iOS) // MAC: CallKit/PushKit are iOS-only; ConduitMac/Stubs/HermesNativeCallsStub.swift
 import CallKit
+#endif // MAC:
 import Foundation
 import OSLog
+#if os(iOS) // MAC: PushKit is iOS-only
 import PushKit
+#endif // MAC:
 import StoreKit
 import UIKit
 import UserNotifications
@@ -95,6 +99,7 @@ enum HermesNativeCallPlan: Equatable {
     }
 }
 
+#if os(iOS) // MAC: class is CallKit-bound; Mac twin in ConduitMac/Stubs
 @MainActor
 final class HermesNativeCalls: NSObject {
     static let shared = HermesNativeCalls()
@@ -834,3 +839,4 @@ extension HermesNativeCalls: CXProviderDelegate {
         action.fail()
     }
 }
+#endif // MAC:
