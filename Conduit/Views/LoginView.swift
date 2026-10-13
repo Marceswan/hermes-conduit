@@ -112,7 +112,9 @@ struct LoginView: View {
                     .onChange(of: focusedField) { _, field in
                         guard let field else { return }
                         withAnimation(.easeOut(duration: 0.25)) {
+#if os(iOS)
                             proxy.scrollTo(field, anchor: .center)
+#endif // MAC: no soft keyboard on Mac; scrolling to focus clipped the header
                         }
                     }
                     .onChange(of: revealCloudflareSection) { _, requested in

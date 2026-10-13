@@ -77,14 +77,14 @@ final class SheetEscapeTests: XCTestCase {
         let c = Counter()
         let ctx = try XCTUnwrap(present { b in self.icon("Settings", c, "x", b) })
         defer { ctx.parent.orderOut(nil) }
-        let original = SheetEscape.isTreeBoosted(NSApp)
-        defer { _ = SheetEscape.withAccessibilityTree { true }; if SheetEscape.isTreeBoosted(NSApp) != original { NSApp.perform(NSSelectorFromString("accessibilitySetEnhancedUserInterfaceAttribute:"), with: NSNumber(value: original)) } }
+        let original = AccessibilityTreeBoost.isOn
+        defer { _ = AccessibilityTreeBoost.withTree { true }; if AccessibilityTreeBoost.isOn != original { NSApp.perform(NSSelectorFromString("accessibilitySetEnhancedUserInterfaceAttribute:"), with: NSNumber(value: original)) } }
         XCTAssertTrue(SheetEscape.handleEscape(in: ctx.sheet))
-        XCTAssertEqual(SheetEscape.isTreeBoosted(NSApp), original)
+        XCTAssertEqual(AccessibilityTreeBoost.isOn, original)
         // Already on (as the hover engine leaves it): untouched afterwards.
         NSApp.perform(NSSelectorFromString("accessibilitySetEnhancedUserInterfaceAttribute:"), with: NSNumber(value: true))
-        XCTAssertTrue(SheetEscape.withAccessibilityTree { true })
-        XCTAssertTrue(SheetEscape.isTreeBoosted(NSApp))
+        XCTAssertTrue(AccessibilityTreeBoost.withTree { true })
+        XCTAssertTrue(AccessibilityTreeBoost.isOn)
     }
 
     func testDoneIsNeverPressed() throws {
@@ -206,11 +206,11 @@ final class SheetEscapeTests: XCTestCase {
 
     func testUnavailableAccessibilitySelectorsSkipTheBoostAndReturnFalse() {
         let plain = NSObject()
-        XCTAssertFalse(SheetEscape.canBoostTree(plain))
+        XCTAssertFalse(AccessibilityTreeBoost.isAvailable(on: plain))
         var ran = false
-        XCTAssertFalse(SheetEscape.withAccessibilityTree(on: plain) { ran = true; return true })
+        XCTAssertFalse(AccessibilityTreeBoost.withTree(on: plain) { ran = true; return true })
         XCTAssertFalse(ran)
-        XCTAssertTrue(SheetEscape.canBoostTree(NSApp))
+        XCTAssertTrue(AccessibilityTreeBoost.isAvailable)
     }
 
     // MARK: header shortcut + monitor

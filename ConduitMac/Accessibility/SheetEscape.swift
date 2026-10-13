@@ -26,7 +26,7 @@ enum SheetEscape {
     static func handleEscape(in window: NSWindow?) -> Bool {
         guard let window, window.sheetParent != nil, isSwiftUIHosted(window) else { return false }
         if let editor = window.firstResponder as? NSTextView, editor.hasMarkedText() { return false }
-        return withAccessibilityTree {
+        return AccessibilityTreeBoost.withTree {
             guard let control = closeControl(in: window.contentView) else { return false }
             return pressed(control)
         }
@@ -39,40 +39,6 @@ enum SheetEscape {
            String(reflecting: type(of: controller)).contains("NSHostingController") { return true }
         if let view = window.contentView, String(reflecting: type(of: view)).contains("HostingView") { return true }
         return false
-    }
-
-    // MARK: - Accessibility tree
-
-    private static let boostGetter = NSSelectorFromString("accessibilityEnhancedUserInterfaceAttribute")
-    private static let boostSetter = NSSelectorFromString("accessibilitySetEnhancedUserInterfaceAttribute:")
-
-    /// True when `app` exposes the enhanced-UI accessors. No KVC: on
-    /// `SwiftUI.AppKitApplication` the KVC key raises `NSUnknownKeyException`.
-    static func canBoostTree(_ app: NSObject) -> Bool {
-        app.responds(to: boostGetter) && app.responds(to: boostSetter)
-    }
-
-    static func isTreeBoosted(_ app: NSObject) -> Bool {
-        guard app.responds(to: boostGetter) else { return false }
-        return (app.perform(boostGetter)?.takeUnretainedValue() as? NSNumber)?.boolValue ?? false
-    }
-
-    private static func setTreeBoosted(_ on: Bool, _ app: NSObject) {
-        _ = app.perform(boostSetter, with: NSNumber(value: on))
-    }
-
-    /// SwiftUI builds a window's accessibility tree only while an assistive
-    /// client is attached; without one a sheet's hosting view reports no
-    /// children. `AXEnhancedUserInterface` is the switch those clients flip,
-    /// so hold it on just for the lookup and press, then put it back. Already
-    /// on (e.g. the hover engine left it on) means touch nothing. If the
-    /// accessors are unavailable the body does not run and the result is false.
-    static func withAccessibilityTree(on app: NSObject = NSApp, _ body: () -> Bool) -> Bool {
-        guard canBoostTree(app) else { return false }
-        let previous = isTreeBoosted(app)
-        if !previous { setTreeBoosted(true, app) }
-        defer { if !previous { setTreeBoosted(false, app) } }
-        return body()
     }
 
     private static let traversalSelectors = ["accessibilityRole", "accessibilityChildren"].map(NSSelectorFromString)
