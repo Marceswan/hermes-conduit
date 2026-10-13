@@ -2483,6 +2483,7 @@ struct ClarifyQuestionRow: View {
                     .frame(width: 36, height: 36)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Send answer") // MAC: a11y
             .foregroundStyle(.white)
             .background(Color.orange, in: Circle())
             .disabled(!canSubmitCustomAnswer)
@@ -2557,6 +2558,7 @@ struct ClarifyQuestionRow: View {
                         .frame(width: 36, height: 36)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Send answer") // MAC: a11y
                 .foregroundStyle(.white)
                 .background(Color.orange, in: Circle())
                 .disabled(!canSubmitCustomAnswer)
