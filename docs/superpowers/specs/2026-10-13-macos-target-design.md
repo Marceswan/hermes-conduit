@@ -306,3 +306,39 @@ an env var and never stores secrets in the repo.
   `NSTextView` versions may need iteration to match streaming behavior.
 - Shim names shadow UIKit names. A future upstream use of an unshimmed member
   shows up as a Mac compile error after merge, which is the intended signal.
+
+## Addendum (2026-10-13): Mac accessibility sweep
+
+Requested by the user after the Task 11 smoke run. It ships before the first
+release build. Chosen approach: a global Mac layer, with zero edits to
+upstream views for coverage.
+
+- **Hover tooltips.** An app-level hover engine (`ConduitMac/Accessibility/`)
+  hit-tests the accessibility tree under the resting pointer (0.6 s).
+  - It shows the element's `accessibilityHelp`, else its
+    `accessibilityLabel`, in a system-style tooltip for buttons, links,
+    pop-up/menu buttons, checkboxes, radio buttons, disclosure triangles,
+    and labelled images.
+  - It shows nothing when the visible title equals the label.
+  - It hides on any click, key, scroll, or mouse exit.
+- **Hover feedback.** A pointing-hand cursor over enabled interactive
+  controls, and a subtle accent highlight drawn over the hovered control.
+  The highlight can be toggled from the View menu
+  (`conduit.mac.hoverHighlight`, default on).
+- **Esc in sheets.** Upstream has 60 sheets and none declares a
+  `.cancelAction`. On Esc in a sheet window, the Mac layer finds the
+  sheet's close/cancel/done button in the accessibility tree and presses
+  it (`accessibilityPerformPress`), so SwiftUI's own dismiss path runs.
+  It does nothing during IME composition or outside sheets.
+- **Label audit.** A test scans `Conduit/Views` for icon-only buttons with
+  no accessibility label. Gaps get `.accessibilityLabel` added upstream:
+  cross-platform, tagged `// MAC: a11y`, with a ledger row. Reviewed false
+  positives go in `docs/macos/a11y-audit-allowlist.txt`.
+- **Smoke-run fixes.**
+  - Login logo clipping: the Mac skips the focus-driven `scrollTo` in
+    `LoginView`, via a single R4 gate.
+  - The macOS app icon gets a proper rounded-rect mask with margins.
+- **Out of scope:** detecting truncated text for overflow popovers.
+- **Safety (ruling R18):** agents never send clicks or keys to the running
+  app while the login form holds credentials. UI checks use hover and
+  screenshots only.

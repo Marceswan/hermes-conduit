@@ -2696,6 +2696,562 @@ git commit -m "macOS: scene presence tests, smoke checklist and fixes"
 
 ---
 
+### Task 11b: Hover tooltips, pointer cursor, hover highlight
+
+Added 2026-10-13 (spec addendum "Mac accessibility sweep"). Can run in parallel with 11c and 11d: it touches only new files, plus one line each in `ConduitMacAppDelegate.swift` and `ConduitCommands.swift`.
+
+**Files:**
+- Create: `ConduitMac/Accessibility/HoverTooltipPolicy.swift`
+- Create: `ConduitMac/Accessibility/HoverAccessibilityEngine.swift`
+- Create: `ConduitMac/Accessibility/HoverOverlayWindows.swift`
+- Modify: `ConduitMac/App/ConduitMacAppDelegate.swift` (add `HoverAccessibilityEngine.install()` in `applicationDidFinishLaunching`)
+- Modify: `ConduitMac/App/ConduitCommands.swift` (View-menu toggle)
+- Test: `ConduitMacTests/HoverTooltipPolicyTests.swift`, `ConduitMacTests/HoverAccessibilityEngineTests.swift`
+
+**Interfaces:**
+- Produces:
+  - `HoverElementSnapshot`
+  - `HoverDecision`
+  - `HoverTooltipPolicy.decide(_:highlightEnabled:) -> HoverDecision`
+  - `HoverAccessibilityEngine.install()`
+  - `HoverAccessibilityEngine.snapshot(at screenPoint: NSPoint, in window: NSWindow?) -> HoverElementSnapshot?`
+  - `HoverAccessibilityEngine.highlightDefaultsKey = "conduit.mac.hoverHighlight"`
+
+- [ ] **Step 1: Probe the real SwiftUI accessibility tree first**
+
+Write a temporary test that hosts four SwiftUI button shapes in an on-screen `NSWindow` via `NSHostingView` and calls `HoverAccessibilityEngine.snapshot(at:in:)` at each button's centre. Dump `role`, `label`, `title` and `help`:
+
+```swift
+Button { } label: { Image(systemName: "xmark") }.accessibilityLabel("Close Settings")
+Button("Connect") { }
+Button { } label: { Label("Send", systemImage: "paperplane") }.labelStyle(.iconOnly)
+Button { } label: { Image(systemName: "gear") }.help("Settings")
+```
+
+Record the observed attributes in the task report. Step 3's policy rules must match what AppKit actually reports. Adjust the rules, and the tests in Step 2, to these observations. Example: if an `.iconOnly` `Label` reports `title == "Send"` with no `label`, treat a title on an image-only button as tooltip text. Keep the probe as a permanent test (`testSwiftUIButtonShapesProduceExpectedDecisions`) that asserts the final decisions for all four.
+
+- [ ] **Step 2: Write the failing policy tests**
+
+`ConduitMacTests/HoverTooltipPolicyTests.swift`:
+
+```swift
+import XCTest
+import AppKit
+@testable import ConduitMac
+
+final class HoverTooltipPolicyTests: XCTestCase {
+    private func el(_ role: NSAccessibility.Role?, label: String? = nil, title: String? = nil,
+                    help: String? = nil, enabled: Bool = true) -> HoverElementSnapshot {
+        HoverElementSnapshot(role: role, label: label, title: title, help: help,
+                             isEnabled: enabled, frame: CGRect(x: 0, y: 0, width: 24, height: 24))
+    }
+
+    func testIconButtonShowsLabelPointerAndHighlight() {
+        let d = HoverTooltipPolicy.decide(el(.button, label: "Close Settings"), highlightEnabled: true)
+        XCTAssertEqual(d, HoverDecision(tooltip: "Close Settings", showsPointingHand: true, highlights: true))
+    }
+
+    func testHelpWinsOverLabel() {
+        XCTAssertEqual(HoverTooltipPolicy.decide(el(.button, label: "Gear", help: "Open settings"), highlightEnabled: false).tooltip, "Open settings")
+    }
+
+    func testVisibleTitleEqualToLabelHasNoTooltip() {
+        XCTAssertNil(HoverTooltipPolicy.decide(el(.button, label: "Connect", title: "connect"), highlightEnabled: true).tooltip)
+    }
+
+    func testDisabledButtonGetsTooltipButNoPointer() {
+        let d = HoverTooltipPolicy.decide(el(.button, label: "Send", enabled: false), highlightEnabled: true)
+        XCTAssertEqual(d.tooltip, "Send")
+        XCTAssertFalse(d.showsPointingHand)
+        XCTAssertFalse(d.highlights)
+    }
+
+    func testLabelledImageGetsTooltipOnly() {
+        XCTAssertEqual(HoverTooltipPolicy.decide(el(.image, label: "Bot avatar"), highlightEnabled: true),
+                       HoverDecision(tooltip: "Bot avatar", showsPointingHand: false, highlights: false))
+    }
+
+    func testTextAndGroupsGetNothing() {
+        XCTAssertEqual(HoverTooltipPolicy.decide(el(.staticText, label: "Hello"), highlightEnabled: true), .none)
+        XCTAssertEqual(HoverTooltipPolicy.decide(el(.group, label: "Row"), highlightEnabled: true), .none)
+        XCTAssertEqual(HoverTooltipPolicy.decide(el(nil), highlightEnabled: true), .none)
+    }
+
+    func testHighlightRespectsSetting() {
+        XCTAssertFalse(HoverTooltipPolicy.decide(el(.button, label: "X"), highlightEnabled: false).highlights)
+    }
+
+    func testLongLabelIsTruncatedWithASCIIEllipsis() {
+        let long = String(repeating: "a", count: 300)
+        let tip = HoverTooltipPolicy.decide(el(.button, label: long), highlightEnabled: false).tooltip
+        XCTAssertEqual(tip?.count, HoverTooltipPolicy.maxLength)
+        XCTAssertTrue(tip?.hasSuffix("...") ?? false)
+    }
+}
+```
+
+Run: `xcodebuild test -scheme ConduitMac -destination 'platform=macOS' -only-testing:ConduitMacTests/HoverTooltipPolicyTests`
+Expected: compile failure, `cannot find 'HoverElementSnapshot'`.
+
+- [ ] **Step 3: Implement the policy**
+
+`ConduitMac/Accessibility/HoverTooltipPolicy.swift`:
+
+```swift
+import AppKit
+
+/// Accessibility facts about the element under the pointer.
+struct HoverElementSnapshot: Equatable {
+    var role: NSAccessibility.Role?
+    var label: String?
+    var title: String?
+    var help: String?
+    var isEnabled: Bool
+    /// Screen coordinates (AppKit, bottom-left origin).
+    var frame: CGRect
+}
+
+/// What the hover layer does for that element.
+struct HoverDecision: Equatable {
+    var tooltip: String?
+    var showsPointingHand: Bool
+    var highlights: Bool
+
+    static let none = HoverDecision(tooltip: nil, showsPointingHand: false, highlights: false)
+}
+
+/// Mac-only tooltip rules. iOS has no hover, so upstream labels its icon
+/// controls for VoiceOver only; on Mac the same label becomes the tooltip.
+enum HoverTooltipPolicy {
+    static let maxLength = 120
+
+    static let interactiveRoles: Set<NSAccessibility.Role> = [
+        .button, .link, .popUpButton, .menuButton, .checkBox, .radioButton, .disclosureTriangle,
+    ]
+
+    static func decide(_ element: HoverElementSnapshot, highlightEnabled: Bool) -> HoverDecision {
+        guard let role = element.role else { return .none }
+        let interactive = interactiveRoles.contains(role)
+        guard interactive || role == .image else { return .none }
+        let pointer = interactive && element.isEnabled
+        return HoverDecision(
+            tooltip: tooltipText(element),
+            showsPointingHand: pointer,
+            highlights: pointer && highlightEnabled
+        )
+    }
+
+    static func tooltipText(_ element: HoverElementSnapshot) -> String? {
+        if let help = cleaned(element.help) { return truncated(help) }
+        guard let label = cleaned(element.label) else { return nil }
+        if let title = cleaned(element.title), title.caseInsensitiveCompare(label) == .orderedSame {
+            return nil
+        }
+        return truncated(label)
+    }
+
+    private static func cleaned(_ text: String?) -> String? {
+        let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func truncated(_ text: String) -> String {
+        text.count <= maxLength ? text : String(text.prefix(maxLength - 3)) + "..."
+    }
+}
+```
+
+Adjust these rules to the Step 1 observations, and keep the tests in sync.
+
+- [ ] **Step 4: Write the failing engine test**
+
+`ConduitMacTests/HoverAccessibilityEngineTests.swift`:
+- Host an `NSButton(image:target:action:)` (image only, `setAccessibilityLabel("Close Settings")`) in an on-screen `NSWindow` (`isReleasedWhenClosed = false`, `orderFront`).
+- Compute the button's centre in screen coordinates with `window.convertPoint(toScreen:)`.
+- Assert `HoverAccessibilityEngine.snapshot(at:in:)` returns role `.button` and label `"Close Settings"`.
+- Add a second case for a point over empty window background: it returns `nil`, or a snapshot whose decision is `.none`.
+- Add the Step 1 SwiftUI probe test.
+
+- [ ] **Step 5: Implement the engine and overlays**
+
+`ConduitMac/Accessibility/HoverAccessibilityEngine.swift`:
+
+```swift
+import AppKit
+
+/// App-wide hover layer: tooltips from accessibility labels, a pointing
+/// hand over controls, and an optional highlight. One local event monitor
+/// serves every window, sheets included.
+@MainActor
+final class HoverAccessibilityEngine {
+    static let shared = HoverAccessibilityEngine()
+    static let highlightDefaultsKey = "conduit.mac.hoverHighlight"
+    static let restDelay: TimeInterval = 0.6
+    /// Elements larger than this are containers; never highlight them.
+    static let maxHighlightSize = CGSize(width: 480, height: 160)
+
+    private var monitor: Any?
+    private var keyObserver: NSObjectProtocol?
+    private var restTimer: Timer?
+    private let tooltip = TooltipWindow()
+    private let highlight = HighlightWindow()
+
+    static func install() { shared.start() }
+
+    func start() {
+        UserDefaults.standard.register(defaults: [Self.highlightDefaultsKey: true])
+        guard monitor == nil else { return }
+        NSApp.windows.forEach { $0.acceptsMouseMovedEvents = true }
+        keyObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
+        ) { note in
+            MainActor.assumeIsolated { (note.object as? NSWindow)?.acceptsMouseMovedEvents = true }
+        }
+        monitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.mouseMoved, .leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown, .scrollWheel, .mouseExited]
+        ) { [weak self] event in
+            self?.handle(event)
+            return event
+        }
+    }
+
+    private func handle(_ event: NSEvent) {
+        guard event.type == .mouseMoved, let window = event.window, window.isKeyWindow || window.isMainWindow else {
+            dismissAll()
+            return
+        }
+        tooltip.hide()
+        restTimer?.invalidate()
+        let point = NSEvent.mouseLocation
+        let snapshot = Self.snapshot(at: point, in: window)
+        let decision = snapshot.map {
+            HoverTooltipPolicy.decide($0, highlightEnabled: UserDefaults.standard.bool(forKey: Self.highlightDefaultsKey))
+        } ?? .none
+        if decision.showsPointingHand { NSCursor.pointingHand.set() }
+        if decision.highlights, let frame = snapshot?.frame,
+           frame.width <= Self.maxHighlightSize.width, frame.height <= Self.maxHighlightSize.height {
+            highlight.show(around: frame, over: window)
+        } else {
+            highlight.hide()
+        }
+        guard let text = decision.tooltip else { return }
+        restTimer = Timer.scheduledTimer(withTimeInterval: Self.restDelay, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tooltip.show(text, near: point) }
+        }
+    }
+
+    private func dismissAll() {
+        restTimer?.invalidate()
+        tooltip.hide()
+        highlight.hide()
+    }
+
+    /// Reads the accessibility element under `screenPoint`, climbing to the
+    /// nearest interactive or labelled ancestor (SwiftUI often reports the
+    /// inner image of a button).
+    static func snapshot(at screenPoint: NSPoint, in window: NSWindow?) -> HoverElementSnapshot? {
+        guard let content = window?.contentView else { return nil }
+        var current = content.accessibilityHitTest(screenPoint) as? NSObject
+        for _ in 0..<4 {
+            guard let element = current else { return nil }
+            let role = element.accessibilityRole()
+            if let role, HoverTooltipPolicy.interactiveRoles.contains(role) || role == .image {
+                return HoverElementSnapshot(
+                    role: role,
+                    label: element.accessibilityLabel(),
+                    title: element.accessibilityTitle(),
+                    help: element.accessibilityHelp(),
+                    isEnabled: element.isAccessibilityEnabled(),
+                    frame: element.accessibilityFrame()
+                )
+            }
+            current = element.accessibilityParent() as? NSObject
+        }
+        return nil
+    }
+}
+```
+
+`ConduitMac/Accessibility/HoverOverlayWindows.swift`:
+- `TooltipWindow` is a borderless, non-activating `NSPanel`:
+  - `ignoresMouseEvents = true`, `level = .popUpMenu`, `hasShadow = true`.
+  - Content: an `NSVisualEffectView` (`material = .toolTip`, `state = .active`, corner radius 4) wrapping `NSTextField(labelWithString:)` with font `NSFont.toolTipsFont(ofSize: 0)`, 6pt by 3pt padding, max width 320 with wrapping.
+  - `show(_:near:)` sizes the panel to fit, places it at the pointer plus (12, -24), clamps it to the pointer's screen `visibleFrame`, then calls `orderFrontRegardless()`. `hide()` calls `orderOut(nil)`.
+- `HighlightWindow` is a borderless, transparent `NSWindow` (`ignoresMouseEvents = true`, `isOpaque = false`, `backgroundColor = .clear`):
+  - Its content view draws a rounded rect (radius 6) filled with `NSColor.controlAccentColor.withAlphaComponent(0.12)`.
+  - `show(around:over:)` sets the frame to the element frame inset by -2, and attaches as a child of the parent window with `addChildWindow(_:ordered: .above)` if not already attached. `hide()` detaches and calls `orderOut`.
+- No animations, which respects Reduce Motion by default.
+
+`ConduitMacAppDelegate.applicationDidFinishLaunching`: add `HoverAccessibilityEngine.install()`.
+
+`ConduitCommands`:
+- Add `@AppStorage(HoverAccessibilityEngine.highlightDefaultsKey) private var hoverHighlight = true`.
+- Inside `CommandGroup(after: .sidebar)`, add `Toggle("Highlight Controls on Hover", isOn: $hoverHighlight)`.
+
+- [ ] **Step 6: Run the tests**
+
+Run: `xcodebuild test -scheme ConduitMac -destination 'platform=macOS'`
+Expected: all pass. The new policy tests, the engine tests and the SwiftUI probe are green.
+
+- [ ] **Step 7: Hover-only visual check (ruling R18: no clicks or keys)**
+1. Launch the app.
+2. Write a scratch Swift script in the workspace (never in the repo) that posts only a `CGEvent` `mouseMoved` to the centre of the login screen's "Need help connecting?" row or another labelled control, then waits 1s.
+3. Take a screenshot with `screencapture -x`, Read it, and report whether a tooltip and highlight appear.
+
+If posting events is denied, because the process lacks the Accessibility permission, mark it UNVERIFIED and move on. Never click. Delete screenshots that show the dashboard URL or username.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add ConduitMac/Accessibility ConduitMac/App ConduitMacTests
+git commit -m "macOS: hover tooltips, pointer cursor and highlight from accessibility labels"
+```
+
+---
+
+### Task 11c: Esc dismisses sheets
+
+Added 2026-10-13. Parallel-safe with 11b and 11d. It installs from `ConduitMacApp.init()`, not from the app delegate.
+
+**Files:**
+- Create: `ConduitMac/Accessibility/SheetEscape.swift`
+- Modify: `ConduitMac/App/ConduitMacApp.swift` (call `SheetEscape.install()` in `init()`)
+- Test: `ConduitMacTests/SheetEscapeTests.swift`
+
+**Interfaces:**
+- Produces:
+  - `SheetEscape.install()`
+  - `SheetEscape.handleEscape(in: NSWindow?) -> Bool`
+  - `SheetEscape.isCloseLabel(_: String) -> Bool`
+  - `SheetEscape.closeControl(in: Any?) -> NSObject?`
+
+- [ ] **Step 1: Write the failing tests**
+
+`ConduitMacTests/SheetEscapeTests.swift`:
+
+```swift
+import XCTest
+import AppKit
+@testable import ConduitMac
+
+@MainActor
+final class SheetEscapeTests: XCTestCase {
+    private final class Target: NSObject { var pressed = false; @objc func press() { pressed = true } }
+
+    func testCloseLabelMatching() {
+        XCTAssertTrue(SheetEscape.isCloseLabel("Close Settings"))
+        XCTAssertTrue(SheetEscape.isCloseLabel("Cancel"))
+        XCTAssertTrue(SheetEscape.isCloseLabel("Done"))
+        XCTAssertFalse(SheetEscape.isCloseLabel("Closet organizer"))
+        XCTAssertFalse(SheetEscape.isCloseLabel("Delete"))
+    }
+
+    func testEscapeInSheetPressesCloseButton() {
+        let parent = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        parent.isReleasedWhenClosed = false
+        parent.orderFront(nil)
+        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        sheet.isReleasedWhenClosed = false
+        let target = Target()
+        let close = NSButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)!, target: target, action: #selector(Target.press))
+        close.setAccessibilityLabel("Close Settings")
+        close.frame = NSRect(x: 10, y: 10, width: 24, height: 24)
+        sheet.contentView?.addSubview(close)
+        let presented = expectation(description: "sheet presented")
+        parent.beginSheet(sheet) { _ in }
+        DispatchQueue.main.async { presented.fulfill() }
+        wait(for: [presented], timeout: 2)
+        defer { parent.endSheet(sheet); parent.orderOut(nil) }
+
+        XCTAssertTrue(SheetEscape.handleEscape(in: sheet))
+        XCTAssertTrue(target.pressed)
+    }
+
+    func testEscapeOutsideSheetIsIgnored() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        XCTAssertFalse(SheetEscape.handleEscape(in: window))
+        XCTAssertFalse(SheetEscape.handleEscape(in: nil))
+    }
+}
+```
+
+Add one more test: when the sheet's first responder is an `NSTextView` with marked text (`setMarkedText`), `handleEscape` returns false and nothing is pressed.
+
+Run: `xcodebuild test -scheme ConduitMac -destination 'platform=macOS' -only-testing:ConduitMacTests/SheetEscapeTests`
+Expected: compile failure, `cannot find 'SheetEscape'`.
+
+- [ ] **Step 2: Implement**
+
+`ConduitMac/Accessibility/SheetEscape.swift`:
+
+```swift
+import AppKit
+
+/// Esc closes a sheet on Mac. Upstream's 60 sheets declare no
+/// `.cancelAction`, so this presses the sheet's own close/cancel/done
+/// control through accessibility and SwiftUI's dismiss path runs as if
+/// the user had clicked it.
+@MainActor
+enum SheetEscape {
+    private static var monitor: Any?
+    static let escapeKeyCode: UInt16 = 53
+
+    static func install() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.keyCode == escapeKeyCode,
+                  event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty else { return event }
+            return handleEscape(in: event.window) ? nil : event
+        }
+    }
+
+    static func handleEscape(in window: NSWindow?) -> Bool {
+        guard let window, window.sheetParent != nil else { return false }
+        if let editor = window.firstResponder as? NSTextView, editor.hasMarkedText() { return false }
+        guard let control = closeControl(in: window.contentView) else { return false }
+        return control.accessibilityPerformPress()
+    }
+
+    /// Breadth-first search for a button whose label starts with a
+    /// close/cancel/done word. Bounded so a huge sheet cannot stall a key press.
+    static func closeControl(in root: Any?) -> NSObject? {
+        var queue: [NSObject] = (root as? NSObject).map { [$0] } ?? []
+        var visited = 0
+        while !queue.isEmpty, visited < 2_000 {
+            let element = queue.removeFirst()
+            visited += 1
+            if element.accessibilityRole() == .button,
+               let label = element.accessibilityLabel() ?? element.accessibilityTitle(),
+               isCloseLabel(label) {
+                return element
+            }
+            queue.append(contentsOf: (element.accessibilityChildren() ?? []).compactMap { $0 as? NSObject })
+        }
+        return nil
+    }
+
+    static func isCloseLabel(_ label: String) -> Bool {
+        let words = Set(["Close", "Cancel", "Done"].flatMap { [$0, AppLocalization.string($0)] })
+        let trimmed = label.trimmingCharacters(in: .whitespaces)
+        return words.contains { trimmed == $0 || trimmed.hasPrefix($0 + " ") }
+    }
+}
+```
+
+If `AppLocalization.string(_:)` has a different signature, check with `grep -n "static func string" Conduit/Services/AppLanguage.swift`, adapt the call, and note it.
+
+`ConduitMacApp.init()`: add `SheetEscape.install()` after `MacDefaults.register()`.
+
+- [ ] **Step 3: Run the tests**
+
+Run: `xcodebuild test -scheme ConduitMac -destination 'platform=macOS'`
+Expected: all pass.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add ConduitMac/Accessibility/SheetEscape.swift ConduitMac/App/ConduitMacApp.swift ConduitMacTests/SheetEscapeTests.swift
+git commit -m "macOS: Esc dismisses sheets via their close control"
+```
+
+---
+
+### Task 11d: Accessibility label audit
+
+Added 2026-10-13. Parallel-safe with 11b and 11c. This is the only accessibility task that edits upstream views.
+
+**Files:**
+- Create: `ConduitMacTests/AccessibilityLabelAuditTests.swift`
+- Create: `docs/macos/a11y-audit-allowlist.txt`
+- Modify: upstream files under `Conduit/Views/` that the audit flags (adding `.accessibilityLabel` only)
+- Modify: `docs/macos/PORTING_LEDGER.md`
+
+- [ ] **Step 1: Write the audit test**
+
+`ConduitMacTests/AccessibilityLabelAuditTests.swift`:
+- Locate the repo root from `#filePath` (two directories up from the test file).
+- Read every `.swift` file under `Conduit/Views/`.
+- Flag a line containing `Image(systemName:` when both of these hold:
+  - It sits inside a button label: one of the 4 preceding lines contains `Button(`, `Button {`, or `} label: {`.
+  - None of the next 8 lines contains `.accessibilityLabel(`, `.accessibilityHidden(true)`, `Text(`, `Label(`, or `.help(`, and none of the 4 preceding lines contains `Label(` or `Text(`.
+- Ignore any `file:line` listed in `docs/macos/a11y-audit-allowlist.txt` (one `path:line` or `path:symbol-name` per line, `#` comments allowed).
+- Assert that the flagged list is empty. On failure, the message lists every flagged `path:line` with the line text.
+
+Run it and record the RED list in the report.
+
+- [ ] **Step 2: Triage every hit**
+
+For each flagged site, read the code:
+- **Real gap (an icon-only control with no spoken name):** add `.accessibilityLabel("…")` to the `Button`. Phrase it like nearby upstream labels, in English (e.g. `"Close \(title)"`, `"Send message"`). Put `// MAC: a11y` on the same line. This is a cross-platform improvement, so do not wrap it in `#if`.
+- **False positive:** add it to the allowlist with a `#` reason. Typical false positives are labels set by a wrapping view, decorative images inside a labelled `Label`, or the heuristic window missing a label.
+
+Do not hand-edit `Localizable.xcstrings`. New keys fall back to English in other locales. Note that in the ledger.
+
+- [ ] **Step 3: Run the audit and the full suite**
+
+Run: `xcodebuild test -scheme ConduitMac -destination 'platform=macOS'`
+Expected: all pass, and the audit list is empty.
+
+Run: `xcodebuild build -scheme Conduit -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO 2>&1 | tail -1`
+Expected: `** BUILD SUCCEEDED **`.
+
+- [ ] **Step 4: Ledger and commit**
+
+Add one `PORTING_LEDGER.md` row: "a11y labels: N sites in M files, cross-platform `.accessibilityLabel`, tagged `// MAC: a11y`". Then:
+
+```bash
+git add ConduitMacTests/AccessibilityLabelAuditTests.swift docs/macos Conduit/Views
+git commit -m "a11y: label icon-only buttons; audit test guards new gaps"
+```
+
+---
+
+### Task 11e: Smoke-run fixes (login clipping, Mac icon, checklist accuracy)
+
+Added 2026-10-13. Runs after 11b, 11c and 11d are merged, because it touches `LoginView.swift`, which 11d may also edit.
+
+**Files:**
+- Modify: `Conduit/Views/LoginView.swift` (one R4 gate)
+- Create: `scripts/make-mac-icon.swift`
+- Modify: `ConduitMac/Resources/Assets.xcassets/AppIcon.appiconset/*.png`
+- Modify: `ConduitMacTests/PhoneScenePresenceMacTests.swift`
+- Modify: `docs/macos/SMOKE_CHECKLIST.md`, `docs/macos/PORTING_LEDGER.md`
+
+- [ ] **Step 1: Login clipping**
+
+In `LoginView.swift`, find the `.onChange(of: focusedField)` handler that calls `proxy.scrollTo(..., anchor: .center)` (around lines 101-112 at `0f36195e`). Wrap only the `scrollTo` call in `#if os(iOS)` / `#endif // MAC: no soft keyboard on Mac; scrolling to focus clipped the header`, and add a ledger row. Rebuild, launch the app, and take a screenshot: the logo must be fully visible below the title bar. Ruling R18 applies: no clicks or keys, screenshot only. Delete any screenshot showing the dashboard URL or username after you check it.
+
+- [ ] **Step 2: macOS icon**
+
+`scripts/make-mac-icon.swift` takes `<input-1024.png> <output-dir>` and uses CoreGraphics to:
+- Draw onto a 1024x1024 transparent canvas.
+- Clip to a rounded rect of 824x824 centred (100pt margins) with corner radius 185 (Apple's macOS icon grid).
+- Draw the source art scaled to 824x824 inside the clip.
+- Add a soft drop shadow (y offset -10, blur 20, black at 30%) under the shape.
+- Write `icon_1024.png`, then use `sips -z` for 16/32/64/128/256/512 into the asset set, reusing the file names already in `AppIcon.appiconset/Contents.json`.
+
+Run it with `swift scripts/make-mac-icon.swift <upstream 1024 PNG path> ConduitMac/Resources/Assets.xcassets/AppIcon.appiconset`. Rebuild, then confirm `Conduit.app/Contents/Resources/AppIcon.icns` has transparent corners, for example with `sips -g hasAlpha`, and by rendering a size to PNG and reading it.
+
+- [ ] **Step 3: Test and doc accuracy (Task 11 review minors)**
+- `PhoneScenePresenceMacTests`: hide other windows in the positive test too, and restore the host windows afterwards. In the miniaturize test, assert `!NSApp.isHidden` and poll `window.isMiniaturized` (timeout 3s) as preconditions, replacing the fixed sleep.
+- `SMOKE_CHECKLIST.md`:
+  - Mark check (b) UNVERIFIED and note the predicate used.
+  - Add an `## Open findings` list with file references and owners (11e for clipping and icon, user for the logged-in items).
+  - Rewrite the incident note per the review: no auto-submit or auto-test path exists, agent clicks reached Connect and Test Connection, and at least 2 auth attempts reached the dashboard. Add the R18 rule.
+  - Mark the clipping and icon items PASS once Steps 1-2 verify them.
+
+- [ ] **Step 4: Run all tests and commit**
+
+Run: `xcodebuild test -scheme ConduitMac -destination 'platform=macOS'`, then the iOS build check.
+
+```bash
+git add Conduit/Views/LoginView.swift scripts/make-mac-icon.swift ConduitMac/Resources ConduitMacTests docs/macos
+git commit -m "macOS: fix login header clipping, masked app icon, checklist accuracy"
+```
+
+---
+
 ### Task 12: Notarized release build
 
 **Files:**
