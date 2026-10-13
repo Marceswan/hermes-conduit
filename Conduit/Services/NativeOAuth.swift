@@ -842,7 +842,7 @@ final class NativeOAuthPresentationTask {
     deinit { task?.cancel() }
 }
 
-#if os(iOS) // MAC: twin in ConduitMac/Twins/SafariAuthenticationView.swift
+#if os(iOS) // MAC: twin in ConduitMac/Views/SafariAuthenticationView.swift
 private struct SafariAuthenticationView: UIViewControllerRepresentable {
     let url: URL?
     let operation: @MainActor () async throws -> NativeOAuthLoginResult

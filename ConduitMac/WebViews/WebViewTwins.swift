@@ -1,3 +1,4 @@
+// Mac twins of upstream WKWebView representables; keep in sync (PORTING_LEDGER).
 import SwiftUI
 import WebKit
 
