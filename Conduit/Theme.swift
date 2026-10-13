@@ -246,7 +246,7 @@ struct ConduitGlassGroup<Content: View>: View {
     }
 
     var body: some View {
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, macOS 26.0, *) { // MAC: glass APIs need macOS 26
             GlassEffectContainer(spacing: spacing) {
                 content
             }
@@ -277,7 +277,7 @@ extension View {
         tint: Color = .clear,
         interactive: Bool = false
     ) -> some View {
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, macOS 26.0, *) { // MAC: glass APIs need macOS 26
             if interactive {
                 self.glassEffect(.regular.tint(tint).interactive(), in: .rect(cornerRadius: cornerRadius))
             } else {
@@ -300,7 +300,7 @@ extension View {
         prominent: Bool = false,
         interactive: Bool = true
     ) -> some View {
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, macOS 26.0, *) { // MAC: glass APIs need macOS 26
             if interactive {
                 self.glassEffect(
                     .regular.tint(prominent ? tint.opacity(0.88) : tint).interactive(),
@@ -327,7 +327,7 @@ extension View {
 
     @ViewBuilder
     func conduitGlassButtonStyle(prominent: Bool = false) -> some View {
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, macOS 26.0, *) { // MAC: glass APIs need macOS 26
             if prominent {
                 self.buttonStyle(.glassProminent)
             } else {

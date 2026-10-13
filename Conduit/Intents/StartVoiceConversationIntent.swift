@@ -65,7 +65,7 @@ struct StartVoiceConversationIntent: AppIntent {
     /// Bring Conduit to the foreground before the pending voice launch is
     /// consumed. Never background-only: microphone capture and the voice
     /// conversation belong to the foreground app scene.
-    @available(iOS 26.0, *)
+    @available(iOS 26.0, macOS 26.0, *) // MAC: IntentModes needs macOS 26
     static var supportedModes: IntentModes {
         .foreground(.immediate)
     }

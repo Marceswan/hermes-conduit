@@ -36,6 +36,7 @@ final class AVAudioSession: NSObject {
         static let interruptSpokenAudioAndMixWithOthers = CategoryOptions(rawValue: 1 << 4)
         static let allowBluetoothA2DP = CategoryOptions(rawValue: 1 << 5)
         static let allowAirPlay = CategoryOptions(rawValue: 1 << 6)
+        static let allowBluetoothHFP = CategoryOptions(rawValue: 1 << 7)
     }
 
     struct SetActiveOptions: OptionSet {
@@ -52,6 +53,7 @@ final class AVAudioSession: NSObject {
         case unknown = 0, newDeviceAvailable, oldDeviceUnavailable, categoryChange,
              override, wakeFromSleep = 6, noSuitableRouteForCategory, routeConfigurationChange
     }
+    enum PortOverride: UInt { case none = 0, speaker = 1936747378 }
     enum SilenceSecondaryAudioHintType: UInt { case begin = 1, end = 0 }
     enum RecordPermission { case undetermined, denied, granted }
 
@@ -63,6 +65,8 @@ final class AVAudioSession: NSObject {
         static let bluetoothHFP = Port(rawValue: "BluetoothHFP")
         static let bluetoothA2DP = Port(rawValue: "BluetoothA2DPOutput")
         static let usbAudio = Port(rawValue: "USBAudio")
+        static let builtInReceiver = Port(rawValue: "Receiver")
+        static let carAudio = Port(rawValue: "CarAudio")
     }
 
     final class PortDescription: NSObject {
@@ -92,19 +96,23 @@ final class AVAudioSession: NSObject {
 
     private(set) var category: Category = .soloAmbient
     private(set) var mode: Mode = .default
+    private(set) var categoryOptions: CategoryOptions = []
 
     func setCategory(_ category: Category, mode: Mode = .default, options: CategoryOptions = []) throws {
         self.category = category
         self.mode = mode
+        self.categoryOptions = options
     }
 
     func setCategory(_ category: Category, options: CategoryOptions = []) throws {
         self.category = category
+        self.categoryOptions = options
     }
 
     func setMode(_ mode: Mode) throws { self.mode = mode }
     func setActive(_ active: Bool, options: SetActiveOptions = []) throws {}
     func setPreferredInput(_ input: PortDescription?) throws {}
+    func overrideOutputAudioPort(_ portOverride: PortOverride) throws {}
     func setPreferredSampleRate(_ rate: Double) throws {}
     func setPreferredIOBufferDuration(_ duration: TimeInterval) throws {}
 
@@ -138,6 +146,14 @@ final class AVAudioSession: NSObject {
     }
 
     var sampleRate: Double { 48_000 }
+    var inputNumberOfChannels: Int { 1 }
     var isOtherAudioPlaying: Bool { false }
     var secondaryAudioShouldBeSilencedHint: Bool { false }
 }
+
+// The notification user-info keys are declared unavailable on macOS in AVFAudio;
+// same-named globals here shadow them. Notifications never fire on Mac, so the
+// values only need to be stable strings.
+let AVAudioSessionInterruptionTypeKey = "AVAudioSessionInterruptionTypeKey"
+let AVAudioSessionRouteChangeReasonKey = "AVAudioSessionRouteChangeReasonKey"
+let AVAudioSessionSilenceSecondaryAudioHintTypeKey = "AVAudioSessionSilenceSecondaryAudioHintTypeKey"

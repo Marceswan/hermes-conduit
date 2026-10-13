@@ -10,7 +10,9 @@ import CryptoKit
 import Foundation
 import Network
 import OSLog
+#if os(iOS) // MAC: no SafariServices on Mac
 import SafariServices
+#endif // MAC:
 import Security
 import SwiftUI
 import UIKit
@@ -840,6 +842,7 @@ final class NativeOAuthPresentationTask {
     deinit { task?.cancel() }
 }
 
+#if os(iOS) // MAC: twin in ConduitMac/Twins/SafariAuthenticationView.swift
 private struct SafariAuthenticationView: UIViewControllerRepresentable {
     let url: URL?
     let operation: @MainActor () async throws -> NativeOAuthLoginResult
@@ -931,3 +934,4 @@ private struct SafariAuthenticationView: UIViewControllerRepresentable {
         }
     }
 }
+#endif // MAC:

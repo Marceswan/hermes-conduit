@@ -125,7 +125,7 @@ struct AskHermesAboutScreenIntent: AppIntent {
     @available(iOS, deprecated: 26.0, message: "Use supportedModes on iOS 26+; retained for iOS 17–25.")
     static var openAppWhenRun: Bool = true
 
-    @available(iOS 26.0, *)
+    @available(iOS 26.0, macOS 26.0, *) // MAC: IntentModes needs macOS 26
     static var supportedModes: IntentModes {
         .foreground(.immediate)
     }

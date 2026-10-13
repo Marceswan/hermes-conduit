@@ -1136,6 +1136,7 @@ extension DashboardTicketBridge: WKScriptMessageHandler {
     }
 }
 
+#if os(iOS) // MAC: twin in ConduitMac/Twins/DashboardTicketBridgeView.swift
 /// Hosts the authenticated WebKit process in the SwiftUI hierarchy. It has no
 /// visible UI; its only job is preserving the dashboard's HttpOnly session for
 /// fresh WebSocket tickets after a reconnect or cold launch.
@@ -1149,3 +1150,4 @@ struct DashboardTicketBridgeView: UIViewRepresentable {
 
     func updateUIView(_ uiView: WKWebView, context: Context) {}
 }
+#endif // MAC:

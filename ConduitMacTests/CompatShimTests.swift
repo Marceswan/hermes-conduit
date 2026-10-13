@@ -74,6 +74,33 @@ final class CompatShimTests: XCTestCase {
         XCTAssertNoThrow(try session.setActive(true, options: []))
     }
 
+    func testAudioSessionRemembersCategoryOptionsForConfiguredChecks() throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .defaultToSpeaker])
+        XCTAssertTrue(session.categoryOptions.isSuperset(of: [.allowBluetoothHFP]))
+        XCTAssertTrue(session.categoryOptions.contains(.defaultToSpeaker))
+        try session.setCategory(.playback, options: [])
+        XCTAssertTrue(session.categoryOptions.isEmpty)
+        XCTAssertNoThrow(try session.overrideOutputAudioPort(.speaker))
+    }
+
+    func testDynamicColorResolvesPerAppearance() throws {
+        let color = UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(red: 1, green: 0, blue: 0, alpha: 1)
+                : UIColor(red: 0, green: 0, blue: 1, alpha: 1)
+        }
+        func resolved(_ name: NSAppearance.Name) throws -> NSColor {
+            var result: NSColor?
+            try XCTUnwrap(NSAppearance(named: name)).performAsCurrentDrawingAppearance {
+                result = color.usingColorSpace(.sRGB)
+            }
+            return try XCTUnwrap(result)
+        }
+        XCTAssertEqual(try resolved(.darkAqua).redComponent, 1, accuracy: 0.01)
+        XCTAssertEqual(try resolved(.aqua).blueComponent, 1, accuracy: 0.01)
+    }
+
     func testFontLineHeightPositive() {
         XCTAssertGreaterThan(UIFont.preferredFont(forTextStyle: .body).lineHeight, 0)
     }
