@@ -1,10 +1,12 @@
 import AppKit
 import SwiftUI
 
-/// Mac twin of upstream SelectableTextView. Placeholder: Task 7 replaces the
-/// body with an NSTextView-backed representable. The initializers and
-/// `bridge` match upstream so call sites compile unchanged.
-struct SelectableTextView: View {
+// Mac twin of SelectableTextView.swift SelectableTextView; keep in sync (PORTING_LEDGER).
+/// NSTextView-backed selectable text. The initializers and `bridge` match
+/// upstream so call sites compile unchanged. `selectionCoordinator` and
+/// `selectionSegment` are accepted and ignored: selection is native NSTextView
+/// selection on Mac.
+struct SelectableTextView: NSViewRepresentable {
     let attributedText: NSAttributedString
     let font: NSFont
     let textColor: NSColor
@@ -101,11 +103,101 @@ struct SelectableTextView: View {
             selectionSegment: selectionSegment
         )
     }
+}
 
-    var body: some View {
-        Text(AttributedString(attributedText))
-            .textSelection(.enabled)
-            .lineLimit(maximumNumberOfLines == 0 ? nil : maximumNumberOfLines)
+extension SelectableTextView {
+    static func makeTextView(delegate: NSTextViewDelegate? = nil) -> NSTextView {
+        let textView = NSTextView(frame: .zero)
+        textView.delegate = delegate
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.drawsBackground = false
+        textView.isRichText = true
+        textView.usesFindBar = true
+        textView.textContainerInset = .zero
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.widthTracksTextView = true
+        textView.isVerticallyResizable = false
+        textView.isHorizontallyResizable = false
+        textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return textView
+    }
+
+    static func measuredHeight(
+        of text: NSAttributedString,
+        width: CGFloat,
+        maximumNumberOfLines: Int = 0
+    ) -> CGFloat {
+        let storage = NSTextStorage(attributedString: text)
+        let container = NSTextContainer(size: NSSize(width: width, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        container.maximumNumberOfLines = maximumNumberOfLines
+        let layout = NSLayoutManager()
+        layout.addTextContainer(container)
+        storage.addLayoutManager(layout)
+        layout.ensureLayout(for: container)
+        return ceil(layout.usedRect(for: container).height)
+    }
+
+    private func styledText() -> NSAttributedString {
+        let styled = NSMutableAttributedString(attributedString: attributedText)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = lineSpacing
+        paragraph.alignment = textAlignment
+        paragraph.lineBreakMode = wrapsLines ? .byWordWrapping : .byTruncatingTail
+        styled.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: styled.length))
+        return styled
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSTextView {
+        let view = Self.makeTextView(delegate: context.coordinator)
+        updateNSView(view, context: context)
+        return view
+    }
+
+    func updateNSView(_ view: NSTextView, context: Context) {
+        let styled = styledText()
+        if view.attributedString() != styled {
+            view.textStorage?.setAttributedString(styled)
+        }
+        view.textContainer?.maximumNumberOfLines = maximumNumberOfLines
+        view.linkTextAttributes = [.foregroundColor: linkColor, .cursor: NSCursor.pointingHand]
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? {
+        if let range = selfSizingWidthRange {
+            let natural = ceil(styledText().size().width)
+            let width = min(max(natural, range.lowerBound), range.upperBound)
+            return CGSize(width: width, height: Self.measuredHeight(of: styledText(), width: width, maximumNumberOfLines: maximumNumberOfLines))
+        }
+        let width = proposal.width ?? 600
+        return CGSize(width: width, height: Self.measuredHeight(of: styledText(), width: width, maximumNumberOfLines: maximumNumberOfLines))
+    }
+
+    /// R11: link clicks never reach NSTextView's default NSWorkspace handling.
+    /// They go through `UIApplication.shared.open`, which applies the scheme
+    /// allowlist.
+    @MainActor
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        private let opener: @MainActor (URL) -> Void
+
+        init(opener: @escaping @MainActor (URL) -> Void = { UIApplication.shared.open($0) }) {
+            self.opener = opener
+        }
+
+        static func url(fromLink link: Any) -> URL? {
+            if let url = link as? URL { return url }
+            if let string = link as? String { return URL(string: string) }
+            return nil
+        }
+
+        func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+            if let url = Self.url(fromLink: link) { opener(url) }
+            return true
+        }
     }
 }
 
