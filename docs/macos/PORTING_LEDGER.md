@@ -67,7 +67,7 @@ list after each `git merge upstream/main`.
    - Run `grep -rn "keep in sync" ConduitMac`. For each marker, diff the named upstream source. These cover `SelectableTextView` `bridge`/`withTraits`, the `ConduitMacApp` rootContent port, and `WebViewTwins`.
    - `WebViewTwins.swift` holds renamed copies of upstream private types. `MacMarkupMessageProxy` copies `MarkupBlock.swift` `MarkupMessageProxy`, and `MacRemoteImageHTML` copies `MarkdownText.swift` `RemoteImageHTML`. Diff those whole files.
 3. **Check compile-clean drift.**
-   - In the upstream diff, grep for APIs shadowed by `ConduitMac/Compat/App/SwiftUIiOSModifiers.swift` (see `docs/macos/DECISIONS.md` D4): `fullScreenCover` becomes `sheet`, `keyboardType` becomes a no-op, and `.toolbar(.hidden, for: .navigationBar)` hides the window toolbar. Check that new uses behave acceptably on Mac.
+   - In the upstream diff, grep for APIs shadowed by `ConduitMac/Compat/App/SwiftUIiOSModifiers.swift` (see `docs/macos/DECISIONS.md` D4): `fullScreenCover` becomes `sheet`, `keyboardType` becomes a no-op, and `.toolbar(.hidden, for: .navigationBar)` / `.toolbarBackground(_, for: .navigationBar)` are no-ops (they must never touch the window title bar). Check that new uses behave acceptably on Mac.
    - Check upstream additions inside `#if os(iOS)` or `// MAC:` gated regions. Mac silently drops them, so review each one.
 4. **Merge.** Run `git merge upstream/main`. Conflicts should only be at `// MAC:` lines, in ledger files, or in `project.yml`. Commit the merge.
 5. **Build and test.**
