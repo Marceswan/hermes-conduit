@@ -353,7 +353,7 @@ final class DevicePowerState: ObservableObject {
 
 // MARK: - View
 
-#if os(iOS) // MAC: Mac twin in ConduitMac/Views/LiquidOrbView.swift
+#if os(iOS) // MAC: Mac twin in ConduitMac/Views/LiquidOrbViewTwin.swift
 /// The Metal orb as a SwiftUI view. Check `LiquidOrbPipeline.shared` first:
 /// without Metal there is nothing to draw.
 struct LiquidOrbView: UIViewRepresentable {

@@ -52,7 +52,7 @@ struct MarkupWebView: NSViewRepresentable {
     /// handler and delegates.
     static func makeConfiguredWebView(configuration: WKWebViewConfiguration = WKWebViewConfiguration()) -> WKWebView {
         let view = PassthroughWebView(frame: .zero, configuration: configuration)
-        view.setValue(false, forKey: "drawsBackground")
+        view.makeBackgroundTransparent()
         view.enclosingScrollView?.hasVerticalScroller = false
         return view
     }
@@ -134,7 +134,7 @@ struct SafeMarkupWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         let view = WKWebView(frame: .zero, configuration: configuration)
-        view.setValue(false, forKey: "drawsBackground")
+        view.makeBackgroundTransparent()
         view.navigationDelegate = context.coordinator
         view.loadHTMLString(html, baseURL: MarkupHTML.baseURL)
         return view
@@ -196,7 +196,7 @@ struct RemoteImageWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         let view = WKWebView(frame: .zero, configuration: configuration)
-        view.setValue(false, forKey: "drawsBackground")
+        view.makeBackgroundTransparent()
         view.enclosingScrollView?.hasVerticalScroller = false
         view.navigationDelegate = context.coordinator
         view.loadHTMLString(MacRemoteImageHTML.render(url: url), baseURL: URL(string: "https://conduit.local/"))
@@ -458,5 +458,16 @@ struct AuthWebView: NSViewRepresentable {
                 decisionHandler(.cancel)
             }
         }
+    }
+}
+
+extension WKWebView {
+    /// `drawsBackground` is private KVC; skip it if this macOS answers neither
+    /// setter (an unknown key raises NSUnknownKeyException). Observed on
+    /// macOS 27: only the underscore form responds, and KVC resolves to it.
+    func makeBackgroundTransparent() {
+        guard responds(to: NSSelectorFromString("setDrawsBackground:"))
+            || responds(to: NSSelectorFromString("_setDrawsBackground:")) else { return }
+        setValue(false, forKey: "drawsBackground")
     }
 }

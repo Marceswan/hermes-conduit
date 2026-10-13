@@ -313,14 +313,14 @@ struct KeychainE2EKeyStore: E2EKeyStoring {
     static let service = "com.milim.relay.e2e"
 
     private var baseQuery: [String: Any] {
-        var query: [String: Any] = [
+        var query: [String: Any] = [ // MAC: built mutably so the app-group key can be gated
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.service,
         ]
 #if os(iOS) // MAC: no shared app group on Mac
         query[kSecAttrAccessGroup as String] = NotificationE2E.appGroup
 #endif // MAC: no shared app group on Mac
-        return query
+        return query // MAC: see gated access-group key above
     }
 
     func records() -> [E2EKeyRecord] {

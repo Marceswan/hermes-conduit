@@ -6,9 +6,9 @@ Run against a real Hermes dashboard before every release build.
 - [ ] Log in with OAuth: browser opens, approve, app signs in; Cancel returns to login
 - [ ] Open a session; history renders; long reply scrolls; scroll up during streaming stays put
 - [ ] Send a message; reply streams; code block, math, Mermaid block render
-- [ ] Select text in a reply across a line; Cmd-C copies; Cmd-F finds
+- [ ] Select text in a reply across a line; Cmd-C copies; Cmd-F finds (per message; transcript-wide Find in Chat is deferred)
 - [ ] Paste a screenshot (Cmd-Shift-Ctrl-4 then Cmd-V): attaches as image
-- [ ] Copy a PNG in Finder, paste: attaches as image; drag a PDF onto composer: attaches
+- [ ] Copy a PNG in Finder, paste: attaches as image; drag an image file onto composer: attaches as image (non-image drops are not supported, same as upstream)
 - [ ] Return sends; Shift-Return newline; Japanese IME Return confirms without sending
 - [ ] Approve a tool call inline
 - [ ] Switch model and reasoning effort
@@ -18,6 +18,15 @@ Run against a real Hermes dashboard before every release build.
 - [ ] Bot Mode: bot list loads; open a Bot Chat
 - [ ] Switch between two saved dashboards
 - [ ] Fresh install from DMG on a second Mac: no Gatekeeper prompt
+
+## Release gate (run before distributing a DMG)
+
+- [ ] Log in, quit, relaunch: still signed in and no keychain prompt
+- [ ] After login, no "would like to access data from other apps" prompt
+- [ ] Live hover pass and Esc pass on a long chat, with Activity Monitor CPU under about 10% while hovering
+- [ ] Close the window mid-stream, wait 30 s, click the Dock icon: reply completed
+- [ ] The `.windowToolbar`-hidden sheets (e.g. SidebarView drawer root) don't break the main window toolbar
+- [ ] Notarized DMG installed on a second Mac with no Gatekeeper prompt
 
 ## Agent pre-checks (2026-10-13)
 

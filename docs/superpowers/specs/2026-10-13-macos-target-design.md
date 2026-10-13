@@ -190,6 +190,8 @@ and all chat state in `AppState`.
 | `LiquidOrb/LiquidOrbView.swift` | Plan 1: static placeholder twin. Plan 3 (voice): `MTKView` twin. |
 | `NativeOAuth.swift` `SafariAuthenticationView` (`SFSafariViewController`) | Twin that opens the authorize URL in the default browser with `NSWorkspace` and shows a "Continue in your browser" panel with Cancel. Upstream's loopback listener (RFC 8252) receives the callback unchanged. |
 
+Accepted Plan 1 placeholder (R29): `MediaPreviewPresenterMac` reveals the staged file in Finder instead of previewing it; `QLPreviewPanel` preview is backlog.
+
 If an excluded file also defines types used elsewhere (for example
 `PastedImage` in `ComposerPasteTextView.swift`), the Mac file redefines them
 identically, or the type moves to a shared file with a `// MAC:` note. The
