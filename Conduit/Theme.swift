@@ -300,20 +300,27 @@ extension View {
         prominent: Bool = false,
         interactive: Bool = true
     ) -> some View {
+        #if os(macOS) // MAC: a Button or Menu left on the default Mac style draws a square bezel (and padding) behind the glass; the accessibility shape declares the glass shape so the hover outline matches it (D7)
+        let base = self
+            .buttonStyle(.plain)
+            .contentShape(.accessibility, RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        #else // MAC:
+        let base = self
+        #endif // MAC:
         if #available(iOS 26.0, macOS 26.0, *) { // MAC: glass APIs need macOS 26
             if interactive {
-                self.glassEffect(
+                base.glassEffect(
                     .regular.tint(prominent ? tint.opacity(0.88) : tint).interactive(),
                     in: .rect(cornerRadius: cornerRadius)
                 )
             } else {
-                self.glassEffect(
+                base.glassEffect(
                     .regular.tint(prominent ? tint.opacity(0.88) : tint),
                     in: .rect(cornerRadius: cornerRadius)
                 )
             }
         } else {
-            self
+            base
                 .background(
                     prominent ? tint.opacity(0.92) : Color.conduitSurface.opacity(0.78),
                     in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)

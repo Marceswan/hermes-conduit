@@ -282,7 +282,7 @@ final class HoverAccessibilityEngineTests: XCTestCase {
     func testClosingParentWindowDetachesHighlight() {
         let a = show(NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 200)))
         let highlight = HighlightWindow()
-        highlight.show(around: CGRect(x: 250, y: 250, width: 40, height: 20), over: a)
+        highlight.show(shape: HoverOutlineShape.make(frame: CGRect(x: 250, y: 250, width: 40, height: 20), axPath: nil), over: a)
         XCTAssertTrue(a === highlight.parent)
         a.close()
         XCTAssertNil(highlight.parent)
@@ -293,8 +293,8 @@ final class HoverAccessibilityEngineTests: XCTestCase {
         let a = show(NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 200)))
         let b = show(NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 200)))
         let highlight = HighlightWindow()
-        highlight.show(around: CGRect(x: 250, y: 250, width: 40, height: 20), over: a)
-        highlight.show(around: CGRect(x: 250, y: 250, width: 40, height: 20), over: b)
+        highlight.show(shape: HoverOutlineShape.make(frame: CGRect(x: 250, y: 250, width: 40, height: 20), axPath: nil), over: a)
+        highlight.show(shape: HoverOutlineShape.make(frame: CGRect(x: 250, y: 250, width: 40, height: 20), axPath: nil), over: b)
         XCTAssertTrue(b === highlight.parent)
         XCTAssertFalse(a.childWindows?.contains(highlight) ?? false)
         a.close()  // closing the old parent no longer touches the highlight

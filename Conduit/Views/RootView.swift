@@ -367,9 +367,13 @@ struct MainView: View {
                                 : .default,
                             value: appState.isChatRefreshing
                         )
+                        #if os(iOS) // MAC: the system toolbar platter sizes the item (D7)
                         .frame(width: 40, height: 40)
+                        #endif // MAC:
                 }
+                #if os(iOS) // MAC: no second glass layer over the system platter (D7)
                 .conduitGlassControl(cornerRadius: 20, tint: .conduitAccent.opacity(0.10))
+                #endif // MAC:
                 .disabled(!appState.isConnected || appState.isChatRefreshing)
                 .accessibilityLabel("Refresh conversation")
             }
@@ -572,9 +576,13 @@ private struct ChatTitleControl: View {
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(.primary)
             .lineLimit(1)
+            #if os(macOS) // MAC: flat pill on the system toolbar platter, standard item height (D7)
+            .macToolbarTitlePill()
+            #else // MAC:
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
             .conduitGlassSurface(cornerRadius: 16, tint: .conduitAccent.opacity(0.06))
+            #endif // MAC:
             // The navigation bar doesn't grow; touch and hold shows it large.
             .dynamicTypeSize(...DynamicTypeSize.xxLarge)
     }
@@ -609,9 +617,13 @@ struct ConnectionStatusIndicator: View {
                     .stroke(color.opacity(0.38), lineWidth: 1)
                     .frame(width: 19, height: 19)
             }
+            #if os(iOS) // MAC: the system toolbar platter sizes the item (D7)
             .frame(width: 40, height: 40)
+            #endif // MAC:
         }
+        #if os(iOS) // MAC: no second glass layer over the system platter (D7)
         .conduitGlassControl(cornerRadius: 20, tint: color.opacity(0.10))
+        #endif // MAC:
         .animation(ConduitMotion.response, value: appState.isConnected)
         .accessibilityLabel(appState.isConnected ? AppLocalization.string("Gateway connected") : AppLocalization.string("Gateway disconnected"))
     }

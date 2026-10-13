@@ -87,7 +87,11 @@ struct SidebarView: View {
                                             .foregroundStyle(.secondary)
                                         Text(appState.profileDisplayName(appState.activeProfile))
                                             .font(.subheadline.weight(.semibold))
+                                            #if os(macOS) // MAC: one line so the row keeps its fixed height (D7)
+                                            .lineLimit(1)
+                                            #else // MAC:
                                             .lineLimit(2)
+                                            #endif // MAC:
                                     }
                                     Image(systemName: "chevron.up.chevron.down")
                                         .font(.caption2.weight(.semibold))
@@ -95,7 +99,11 @@ struct SidebarView: View {
                                 }
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 4)
+                                #if os(macOS) // MAC: same height as the Settings button beside it (D7)
+                                .frame(height: MacControlHeight.large)
+                                #else // MAC:
                                 .frame(minHeight: 48)
+                                #endif // MAC:
                             }
                             .disabled(appState.isProfileSwitching)
                             .conduitGlassControl(cornerRadius: 18, tint: .conduitAccent.opacity(0.08))
@@ -109,7 +117,11 @@ struct SidebarView: View {
                             } label: {
                                 Image(systemName: "gearshape")
                                     .font(.system(size: 16, weight: .medium))
+                                    #if os(macOS) // MAC: named row height (D7)
+                                    .frame(width: MacControlHeight.large, height: MacControlHeight.large)
+                                    #else // MAC:
                                     .frame(width: 44, height: 44)
+                                    #endif // MAC:
                             }
                             .conduitGlassControl(cornerRadius: 18)
                             .accessibilityLabel("Settings")
@@ -130,6 +142,9 @@ struct SidebarView: View {
                     .dynamicTypeSize(...DynamicTypeSize.pinnedChromeCap)
 
                     ConduitGlassGroup(spacing: 8) {
+                        #if os(macOS) // MAC: inset, concentric indicator on equal segments (D7)
+                        MacSidebarTabStrip(selectedRaw: $selectedTabRaw)
+                        #else // MAC:
                         // Every tab drops to its icon together once the
                         // names no longer fit their quarters (large text).
                         ViewThatFits(in: .horizontal) {
@@ -138,6 +153,7 @@ struct SidebarView: View {
                         }
                         .padding(4)
                         .conduitGlassSurface(cornerRadius: 20, tint: .conduitAccent.opacity(0.05))
+                        #endif // MAC:
                     }
                     .dynamicTypeSize(...DynamicTypeSize.pinnedChromeCap)
 
@@ -242,7 +258,11 @@ struct SessionList: View {
                     }
                     .foregroundStyle(Color.conduitBackgroundColor)
                     .frame(maxWidth: .infinity)
+                    #if os(macOS) // MAC: as tall as the icon buttons in this row (D7)
+                    .frame(minHeight: MacControlHeight.large)
+                    #else // MAC:
                     .padding(.vertical, 10)
+                    #endif // MAC:
                     .background(Color.conduitAccent, in: RoundedRectangle(cornerRadius: 14))
                 }
                 .buttonStyle(.plain)
