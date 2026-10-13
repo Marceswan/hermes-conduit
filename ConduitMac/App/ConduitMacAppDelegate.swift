@@ -10,6 +10,7 @@ enum MacDefaults {
 final class ConduitMacAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         MacDefaults.register()
+        HoverAccessibilityEngine.install()
         Task.detached(priority: .background) {
             AttachmentStaging.sweepStaleFiles()
         }
