@@ -80,11 +80,15 @@ struct MainView: View {
     @State private var chatTitlePendingDeletion: SessionSummary?
 
     private var sidebarPresentation: SidebarPresentation {
-        SidebarLayoutPolicy.resolvePresentation(
+        #if os(macOS) // MAC: always the split view; no drawer, no first-frame flash
+        return .persistent
+        #else // MAC:
+        return SidebarLayoutPolicy.resolvePresentation(
             idiom: UIDevice.current.userInterfaceIdiom,
             prefersPersistentSidebar: prefersPersistentSidebar,
             availableWidth: availableWindowWidth
         )
+        #endif // MAC:
     }
 
     private var isPersistentSidebarActive: Bool { sidebarPresentation == .persistent }
@@ -284,6 +288,17 @@ struct MainView: View {
     @ViewBuilder
     private var sidebarLayoutContent: some View {
         if isPersistentSidebarActive {
+            #if os(macOS) // MAC: native resizable split view (D6)
+            MacSplitLayout(
+                sidebar: {
+                    SidebarView(
+                        onRequestSettings: presentSettingsFromPersistentSidebar,
+                        presentation: .persistent
+                    )
+                },
+                chat: { chatNavigationContent }
+            )
+            #else // MAC:
             HStack(spacing: 0) {
                 SidebarView(
                     onRequestSettings: presentSettingsFromPersistentSidebar,
@@ -296,6 +311,7 @@ struct MainView: View {
 
                 chatNavigationContent
             }
+            #endif // MAC:
         } else {
             chatNavigationContent
         }

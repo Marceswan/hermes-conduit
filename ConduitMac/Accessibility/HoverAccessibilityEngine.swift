@@ -236,6 +236,10 @@ final class HoverAccessibilityEngine {
         return (snapshot, decision, false)
     }
 
+    /// Test hooks: run the timer callbacks directly instead of waiting on the run loop.
+    func fireIdleTimerForTesting() { idleTimer.onFire() }
+    func fireTrailingTimerForTesting() { trailingTimer.onFire() }
+
     private func trailingEvaluation() {
         guard let target = trailingTarget, environment.isAppActive(),
               environment.isKeyWindow(target.window) else { return }

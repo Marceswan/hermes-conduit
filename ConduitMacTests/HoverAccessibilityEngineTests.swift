@@ -7,6 +7,7 @@ import SwiftUI
 final class HoverAccessibilityEngineTests: XCTestCase {
     private var windows: [NSWindow] = []
     private var boostWasOn = false
+    private var engines: [HoverAccessibilityEngine] = []
 
     override func setUp() {
         super.setUp()
@@ -14,6 +15,8 @@ final class HoverAccessibilityEngineTests: XCTestCase {
     }
 
     override func tearDown() {
+        engines.forEach { $0.process(.deactivated); $0.dismissAll() }
+        engines = []
         windows.forEach { $0.close() }
         windows = []
         AccessibilityTreeBoost.set(boostWasOn)
@@ -123,9 +126,11 @@ final class HoverAccessibilityEngineTests: XCTestCase {
     private func engine(idle: TimeInterval = 2, trailing: TimeInterval = 0.035, now: @escaping () -> TimeInterval = { 0 },
                         hit: @escaping (NSPoint, NSWindow) -> HoverElementSnapshot? = { _, _ in nil },
                         voiceOver: @escaping () -> Bool = { false }) -> HoverAccessibilityEngine {
-        HoverAccessibilityEngine(idleInterval: idle, trailingInterval: trailing, environment: .init(
+        let made = HoverAccessibilityEngine(idleInterval: idle, trailingInterval: trailing, environment: .init(
             isAppActive: { true }, isKeyWindow: { _ in true }, pointerLocation: { .zero },
             now: now, hitTest: hit, highlightEnabled: { true }, isVoiceOverEnabled: voiceOver))
+        engines.append(made)
+        return made
     }
 
     func testBoostTurnsOnWhileMovingAndOffAfterClick() throws {
@@ -154,7 +159,7 @@ final class HoverAccessibilityEngineTests: XCTestCase {
         let engine = engine(idle: 0.05)
         engine.process(.moved(window, NSPoint(x: 5, y: 5)))
         XCTAssertTrue(AccessibilityTreeBoost.isOn)
-        spin(0.4)
+        engine.fireIdleTimerForTesting()
         XCTAssertFalse(AccessibilityTreeBoost.isOn)
     }
 
@@ -167,7 +172,7 @@ final class HoverAccessibilityEngineTests: XCTestCase {
         engine.process(.interaction)
         XCTAssertTrue(AccessibilityTreeBoost.isOn, "click must not clear a foreign flag")
         engine.process(.moved(window, NSPoint(x: 5, y: 5)))
-        spin(0.3)  // idle timeout
+        engine.fireIdleTimerForTesting()  // idle timeout
         XCTAssertTrue(AccessibilityTreeBoost.isOn, "idle must not clear a foreign flag")
         engine.process(.deactivated)
         XCTAssertTrue(AccessibilityTreeBoost.isOn)
@@ -255,7 +260,7 @@ final class HoverAccessibilityEngineTests: XCTestCase {
         engine.process(.moved(window, NSPoint(x: 500, y: 500)))
         XCTAssertEqual(hits, 1)
         XCTAssertTrue(engine.currentDecision.showsPointingHand, "stale until the trailing pass")
-        spin(0.2)  // pointer rests; the trailing evaluation fires
+        engine.fireTrailingTimerForTesting()  // pointer rests; the trailing evaluation fires
         XCTAssertEqual(hits, 2)
         XCTAssertEqual(engine.currentDecision, .none)
         engine.dismissAll()

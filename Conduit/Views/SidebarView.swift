@@ -142,6 +142,13 @@ struct SidebarView: View {
                     .dynamicTypeSize(...DynamicTypeSize.pinnedChromeCap)
 
                     Group {
+                        #if os(macOS) // MAC: sidebar always lists sessions; tabs drive the main pane (D6)
+                        // Any tap in the list means "show chat" (also re-selecting the already-active session).
+                        SessionList()
+                            .simultaneousGesture(TapGesture().onEnded {
+                                selectedTabRaw = SidebarTab.sessions.rawValue
+                            })
+                        #else // MAC:
                         switch selectedTab {
                         case .sessions:
                             SessionList()
@@ -152,6 +159,7 @@ struct SidebarView: View {
                         case .kanban:
                             KanbanView()
                         }
+                        #endif // MAC:
                     }
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
@@ -1787,7 +1795,15 @@ struct CronList: View {
                 }
             }
         }
+        #if os(macOS) // MAC: a second .searchable crashes NSToolbar (the sessions list owns the window's search item); inline field instead (D6)
+        .safeAreaInset(edge: .top) {
+            TextField(AppLocalization.string("Search scheduled jobs"), text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .padding(.bottom, 6)
+        }
+        #else // MAC:
         .searchable(text: $searchText, prompt: AppLocalization.string("Search scheduled jobs"))
+        #endif // MAC:
         .scrollContentBackground(.hidden)
         .listStyle(.plain)
         .task(id: appState.activeProfile) { await appState.refreshCronContent() }

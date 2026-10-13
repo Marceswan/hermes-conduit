@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ConduitCommands: Commands {
     @ObservedObject var appState: AppState
-    @AppStorage("conduit.ipadPersistentSidebar") private var persistentSidebar = true
+    @AppStorage(MacSidebarState.defaultsKey) private var sidebarVisible = true
     @AppStorage(HoverAccessibilityEngine.highlightDefaultsKey) private var hoverHighlight = true
 
     var body: some Commands {
@@ -15,7 +15,7 @@ struct ConduitCommands: Commands {
                 .keyboardShortcut(".", modifiers: .command)
         }
         CommandGroup(after: .sidebar) {
-            Button(persistentSidebar ? "Hide Sidebar" : "Show Sidebar") { persistentSidebar.toggle() }
+            Button(sidebarVisible ? "Hide Sidebar" : "Show Sidebar") { sidebarVisible.toggle() }
                 .keyboardShortcut("s", modifiers: [.command, .control])
             Toggle("Highlight Controls on Hover", isOn: $hoverHighlight)
         }

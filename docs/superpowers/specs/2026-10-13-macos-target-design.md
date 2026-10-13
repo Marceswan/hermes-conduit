@@ -210,7 +210,7 @@ implementation plan must check each excluded file for such types.
   - Interrupt Turn: Cmd-.
   - Switch Dashboard: Cmd-Shift-D
   - Find in Chat: Cmd-F
-  - Toggle Sidebar: Cmd-Ctrl-S
+  - Toggle Sidebar: Cmd-Ctrl-S (toggles split column visibility via conduit.mac.sidebarVisible; see DECISIONS D6)
   - Push-to-Talk: Option-Space while the app is active
 - Revision (plan research, 2026-10-13): the `Settings` scene, Switch Dashboard,
   and transcript-wide Find are deferred. Upstream `SettingsView` needs about 12
