@@ -39,6 +39,14 @@ extension ToolbarItemPlacement {
     static var topBarTrailing: ToolbarItemPlacement { .primaryAction }
 }
 
-extension ToolbarPlacement {
-    static var navigationBar: ToolbarPlacement { .windowToolbar }
+/// Stand-in for iOS's `ToolbarPlacement.navigationBar`. Mac windows have no iOS navigation bar,
+/// and mapping it to `.windowToolbar` made `.toolbar(.hidden, for: .navigationBar)` hide the
+/// window's title bar and traffic lights. The overloads below shadow SwiftUI's and do nothing.
+struct MacNavigationBarPlacement: Sendable {
+    static var navigationBar: MacNavigationBarPlacement { MacNavigationBarPlacement() }
+}
+
+extension View {
+    func toolbar(_ visibility: Visibility, for bars: MacNavigationBarPlacement) -> some View { self }
+    func toolbarBackground(_ visibility: Visibility, for bars: MacNavigationBarPlacement) -> some View { self }
 }

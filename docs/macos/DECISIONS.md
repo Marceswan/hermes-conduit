@@ -18,9 +18,9 @@ Two side effects, both handled in project.yml:
 - Explicit module builds cannot see the SDK cross-import overlays (`no such module '_AppIntents_AppKit'`), so `SWIFT_ENABLE_EXPLICIT_MODULES: NO` on ConduitMac. Removing it reproduces the error.
 
 ## D4: iOS-only SwiftUI API (Task 6, 2026-10-13)
-Result: same-named declarations in the app module shadow the SDK's macOS-unavailable ones, including types (`NavigationBarItem`), static members (`ToolbarItemPlacement.topBarLeading`, `ToolbarPlacement.navigationBar`) and View methods (`navigationBarTitleDisplayMode`, `fullScreenCover`). No call-site edits were needed. File: ConduitMac/Compat/App/SwiftUIiOSModifiers.swift.
-Mappings: topBarLeading -> .navigation, topBarTrailing -> .primaryAction, navigationBar -> .windowToolbar, fullScreenCover -> sheet, textInputAutocapitalization and keyboardType -> no-ops.
-Review point: upstream's `.toolbar(.hidden, for: .navigationBar)` (7 sites) now hides the window toolbar on Mac inside that view.
+Result: same-named declarations in the app module shadow the SDK's macOS-unavailable ones, including types (`NavigationBarItem`), static members (`ToolbarItemPlacement.topBarLeading`) and View methods (`navigationBarTitleDisplayMode`, `fullScreenCover`). No call-site edits were needed. File: ConduitMac/Compat/App/SwiftUIiOSModifiers.swift.
+Mappings: topBarLeading -> .navigation, topBarTrailing -> .primaryAction, `.navigationBar` -> no-op (see below), fullScreenCover -> sheet, textInputAutocapitalization and keyboardType -> no-ops.
+Correction (titlebar fix): `navigationBar` was first mapped to `.windowToolbar`, so upstream's `.toolbar(.hidden, for: .navigationBar)` (7 sites) and `.toolbarBackground(.hidden, for: .navigationBar)` (9 sites) hid the window toolbar and title bar, traffic lights included, once the persistent sidebar (SidebarView.swift:161) was in the main window. Mac windows have no iOS nav bar and the chrome must stay, so `.navigationBar` now lives on `MacNavigationBarPlacement`, with app-target `toolbar(_:for:)` and `toolbarBackground(_:for:)` overloads that return `self`. Guard: ConduitMacTests/WindowChromeTests.
 
 ## D5: Hover accessibility layer (2026-10-13)
 What it does: `HoverAccessibilityEngine` (ConduitMac/Accessibility) installs one app-wide local event monitor. SwiftUI builds a window's accessibility tree only while an assistive client is attached, so the engine reads the element under the pointer through that tree and shows a tooltip from its label, a pointing-hand cursor over controls, and an optional highlight.
