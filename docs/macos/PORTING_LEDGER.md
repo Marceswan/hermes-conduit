@@ -58,6 +58,7 @@ list after each `git merge upstream/main`.
 | Conduit/Views/RootView.swift `sidebarLayoutContent` | R4 (1 region, 3 `// MAC:` lines) | the `isPersistentSidebarActive` HStack (fixed-width sidebar + Divider + chat) is replaced on Mac by a native resizable `NavigationSplitView` (D6) | ConduitMac/App/MacSidebarState.swift (`MacSplitLayout`), ConduitMac/App/MacDetailRouter.swift; tested in MacDetailRouterTests |
 | Conduit/Views/SidebarView.swift tab content switch | R4 (1 region, 3 `// MAC:` lines) | the per-tab switch (Sessions/Bots/Cron/Kanban) shows only `SessionList()` on Mac; the tab picker is kept and drives the main pane; a simultaneous tap gesture on `SessionList()` returns to Sessions so re-selecting the active session shows chat (D6) | `MacDetailRouter` renders Bots/Cron/Kanban in the detail column |
 | Conduit/Views/RootView.swift `sidebarPresentation` | R4 (1 region, 3 `// MAC:` lines) | Mac always returns `.persistent`: no drawer, no first-frame flash, immune to a stray `conduit.ipadPersistentSidebar` default (D6) | none |
+| Conduit/Views/SidebarView.swift `CronList` `.searchable` | R4 (1 region, 3 `// MAC:` lines) | with CronList in the split-view detail column, a second `.searchable` crashes at launch in `NSToolbar _insertNewItemWithItemIdentifier` (macOS 27, reproduced 4x; the sessions list already owns the window's search item). Removing it stops the crash | inline `TextField` via `.safeAreaInset(edge: .top)` bound to the same `searchText` |
 
 ## Sync routine
 

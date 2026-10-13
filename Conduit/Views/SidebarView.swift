@@ -1795,7 +1795,15 @@ struct CronList: View {
                 }
             }
         }
+        #if os(macOS) // MAC: a second .searchable crashes NSToolbar (the sessions list owns the window's search item); inline field instead (D6)
+        .safeAreaInset(edge: .top) {
+            TextField(AppLocalization.string("Search scheduled jobs"), text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .padding(.bottom, 6)
+        }
+        #else // MAC:
         .searchable(text: $searchText, prompt: AppLocalization.string("Search scheduled jobs"))
+        #endif // MAC:
         .scrollContentBackground(.hidden)
         .listStyle(.plain)
         .task(id: appState.activeProfile) { await appState.refreshCronContent() }
