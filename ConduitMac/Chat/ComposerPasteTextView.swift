@@ -66,8 +66,19 @@ struct ComposerPasteTextView: NSViewRepresentable {
                 }
             }
         }
-        if isFocused, textView.window?.firstResponder !== textView {
-            textView.window?.makeFirstResponder(textView)
+        if isFocused {
+            if let window = textView.window {
+                textView.wantsFocus = false
+                if window.firstResponder !== textView { window.makeFirstResponder(textView) }
+            } else {
+                // Not in a window yet; ComposerTextView.viewDidMoveToWindow applies this.
+                textView.wantsFocus = true
+            }
+        } else {
+            textView.wantsFocus = false
+            if textView.window?.firstResponder === textView {
+                textView.window?.makeFirstResponder(nil)
+            }
         }
         context.coordinator.remeasure(textView)
     }
@@ -78,6 +89,10 @@ struct ComposerPasteTextView: NSViewRepresentable {
         textView.canSubmitFromReturn = canSubmitFromReturn
         textView.onSubmitFromReturn = onSubmitFromReturn
         textView.onPastedImages = { images in images.forEach(onPastedImage) }
+        let focus = $isFocused
+        textView.onFocusChange = { focused in
+            DispatchQueue.main.async { focus.wrappedValue = focused }
+        }
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -93,9 +108,6 @@ struct ComposerPasteTextView: NSViewRepresentable {
             remeasure(textView)
         }
 
-        func textDidBeginEditing(_ notification: Notification) { parent.isFocused = true }
-        func textDidEndEditing(_ notification: Notification) { parent.isFocused = false }
-
         func remeasure(_ textView: NSTextView) {
             guard let container = textView.textContainer, let layout = textView.layoutManager else { return }
             layout.ensureLayout(for: container)
@@ -108,21 +120,74 @@ struct ComposerPasteTextView: NSViewRepresentable {
     }
 }
 
+enum PasteDecision: Equatable {
+    case images([PastedImage])
+    case text
+}
+
 final class ComposerTextView: NSTextView {
     var returnKeySends = false
     var canSubmitFromReturn = false
     var onSubmitFromReturn: (() -> Bool)?
     var onPastedImages: (([PastedImage]) -> Void)?
+    var onFocusChange: ((Bool) -> Void)?
+    /// Focus requested before the view had a window; honoured in viewDidMoveToWindow.
+    var wantsFocus = false
+
+    convenience init() {
+        self.init(frame: NSRect(x: 0, y: 0, width: 200, height: 20))
+    }
+
+    // NSTextView's init(frame:) forwards here, so both must be overridden.
+    override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
+        super.init(frame: frameRect, textContainer: container)
+        registerForDraggedTypes([.fileURL, .png, .tiff])
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        registerForDraggedTypes([.fileURL, .png, .tiff])
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        registerForDraggedTypes([.fileURL, .png, .tiff])
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { onFocusChange?(true) }
+        return accepted
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let accepted = super.resignFirstResponder()
+        if accepted { onFocusChange?(false) }
+        return accepted
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard wantsFocus, let window else { return }
+        wantsFocus = false
+        window.makeFirstResponder(self)
+    }
+
+    /// Image file URLs (Finder copies). Checked before the string so filenames do not win.
+    static func imageFileImages(from pasteboard: NSPasteboard) -> [PastedImage] {
+        guard let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] else {
+            return []
+        }
+        return urls.compactMap { url -> PastedImage? in
+            guard let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .image),
+                  let data = try? Data(contentsOf: url) else { return nil }
+            return PastedImage(data: data, typeIdentifier: type.identifier)
+        }
+    }
 
     static func pastedImages(from pasteboard: NSPasteboard) -> [PastedImage] {
-        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] {
-            let images = urls.compactMap { url -> PastedImage? in
-                guard let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .image),
-                      let data = try? Data(contentsOf: url) else { return nil }
-                return PastedImage(data: data, typeIdentifier: type.identifier)
-            }
-            if !images.isEmpty { return images }
-        }
+        let fileImages = imageFileImages(from: pasteboard)
+        if !fileImages.isEmpty { return fileImages }
         if let data = pasteboard.data(forType: .png) {
             return [PastedImage(data: data, typeIdentifier: UTType.png.identifier)]
         }
@@ -145,13 +210,38 @@ final class ComposerTextView: NSTextView {
         super.keyDown(with: event)
     }
 
+    /// Text wins over bitmap previews (Excel, Word, Safari copies carry both).
+    /// Image file URLs still attach as images.
+    static func pasteDecision(for pasteboard: NSPasteboard) -> PasteDecision {
+        let fileImages = imageFileImages(from: pasteboard)
+        if !fileImages.isEmpty { return .images(fileImages) }
+        if let string = pasteboard.string(forType: .string), !string.isEmpty { return .text }
+        let images = pastedImages(from: pasteboard)
+        return images.isEmpty ? .text : .images(images)
+    }
+
+    /// `.copy` when the pasteboard carries an image; empty to defer to NSTextView.
+    func dragOperation(for pasteboard: NSPasteboard) -> NSDragOperation {
+        Self.pastedImages(from: pasteboard).isEmpty ? [] : .copy
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let operation = dragOperation(for: sender.draggingPasteboard)
+        return operation.isEmpty ? super.draggingEntered(sender) : operation
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if !dragOperation(for: sender.draggingPasteboard).isEmpty { return true }
+        return super.prepareForDragOperation(sender)
+    }
+
     override func paste(_ sender: Any?) {
-        let images = Self.pastedImages(from: .general)
-        if !images.isEmpty {
+        switch Self.pasteDecision(for: .general) {
+        case .images(let images):
             onPastedImages?(images)
-            return
+        case .text:
+            pasteAsPlainText(sender)
         }
-        pasteAsPlainText(sender)
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
