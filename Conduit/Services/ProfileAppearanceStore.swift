@@ -6,86 +6,226 @@
 //  profile identifiers and configuration; a person's chosen label/photo must
 //  travel neither to the gateway nor between accounts.
 //
+//  It is also scoped to one saved dashboard (#148). Every Hermes server has
+//  a profile called "default", so a label or photo keyed by profile name
+//  alone showed dashboard A's "default" name and picture on dashboard B.
+//  Names live in a per-dashboard map; photos live in a per-dashboard
+//  subdirectory whose file names encode the profile.
+//
 
 import Foundation
+import ImageIO
 import UIKit
 
-enum ProfileAppearanceStore {
-    private static let defaultNameKey = "conduit.defaultProfileName.v1"
-    private static let avatarsKey = "conduit.profileAvatars.v1"
+/// Main-actor isolated: its read-modify-write of the defaults maps relies
+/// on a single caller context (AppState).
+@MainActor
+final class ProfileAppearanceStore {
+    static let defaultName = "Hermes"
+    /// Pre-scoping keys. Their values belonged to the only dashboard that
+    /// existed then, so they are adopted by the registry's first dashboard.
+    static let legacyDefaultNameKey = "conduit.defaultProfileName.v1"
+    static let legacyAvatarsKey = "conduit.profileAvatars.v1"
+    static let defaultNamesKey = "conduit.defaultProfileNameByDashboard.v1"
+    /// The bucket for writes made while no dashboard is selected.
+    private static let unscopedBucket = "unscoped"
 
-    static func loadDefaultName() -> String {
-        let saved = UserDefaults.standard.string(forKey: defaultNameKey)?
+    private let defaults: UserDefaults
+    private let avatarsRootOverride: URL?
+    private let legacyAvatarDirectoriesOverride: [URL]?
+
+    /// `avatarsRoot` and `legacyAvatarDirectories` are test seams; nil uses
+    /// Documents/profile-avatars and the pre-scoping locations.
+    init(
+        defaults: UserDefaults = .standard,
+        avatarsRoot: URL? = nil,
+        legacyAvatarDirectories: [URL]? = nil
+    ) {
+        self.defaults = defaults
+        self.avatarsRootOverride = avatarsRoot
+        self.legacyAvatarDirectoriesOverride = legacyAvatarDirectories
+    }
+
+    // MARK: Default profile name
+
+    func loadDefaultName(dashboardID: UUID?) -> String {
+        let saved = defaultNames()[Self.bucket(dashboardID)]?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return saved.isEmpty ? "Hermes" : saved
+        return saved.isEmpty ? Self.defaultName : saved
     }
 
     @discardableResult
-    static func saveDefaultName(_ value: String) -> String {
+    func saveDefaultName(_ value: String, dashboardID: UUID?) -> String {
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        let saved = normalized.isEmpty ? "Hermes" : normalized
-        UserDefaults.standard.set(saved, forKey: defaultNameKey)
+        let saved = normalized.isEmpty ? Self.defaultName : normalized
+        var names = defaultNames()
+        names[Self.bucket(dashboardID)] = saved
+        defaults.set(names, forKey: Self.defaultNamesKey)
         return saved
     }
 
-    static func loadAvatarURLs() -> [String: URL] {
-        let paths = UserDefaults.standard.dictionary(forKey: avatarsKey) as? [String: String] ?? [:]
-        var restored: [String: URL] = paths.reduce(into: [String: URL]()) { result, entry in
-            let url = URL(fileURLWithPath: entry.value)
-            if FileManager.default.fileExists(atPath: url.path) { result[entry.key] = url }
+    /// Every dashboard's main profile name, by dashboard UUID string: the
+    /// Apple Watch names a call with them (HermesCallerName).
+    func defaultNamesByDashboard() -> [String: String] {
+        defaultNames().reduce(into: [String: String]()) { result, entry in
+            let name = entry.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let id = UUID(uuidString: entry.key), !name.isEmpty else { return }
+            result[id.uuidString] = name
         }
-        // The image file name encodes the profile, so photos survive a
-        // UserDefaults reset or app update even if the small reference map is
-        // unavailable. This mirrors the React client's file discovery.
-        for directory in [documentsDirectory(), legacyApplicationSupportDirectory()].compactMap({ $0 }) {
-            for url in (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [] {
-                guard let profile = profileName(from: url), FileManager.default.fileExists(atPath: url.path) else { continue }
-                restored[profile] = url
-            }
-        }
-        UserDefaults.standard.set(restored.mapValues(\.path), forKey: avatarsKey)
-        return restored
     }
 
-    static func saveAvatar(_ source: Data, for profile: String) throws -> URL {
+    private func defaultNames() -> [String: String] {
+        defaults.dictionary(forKey: Self.defaultNamesKey) as? [String: String] ?? [:]
+    }
+
+    // MARK: Avatars
+
+    /// The dashboard's photos, discovered from its directory. File names
+    /// encode the profile, so no path map is kept (absolute container paths
+    /// change across app updates anyway).
+    func loadAvatarURLs(dashboardID: UUID?) -> [String: URL] {
+        guard let directory = avatarsDirectory(dashboardID: dashboardID, create: false) else { return [:] }
+        return Self.avatarFiles(in: directory).reduce(into: [String: URL]()) { result, entry in
+            result[entry.profile] = entry.url
+        }
+    }
+
+    func saveAvatar(_ source: Data, for profile: String, dashboardID: UUID?) throws -> URL {
         guard let image = UIImage(data: source), let jpeg = image.jpegData(compressionQuality: 0.88) else {
             throw ProfileAppearanceError.invalidImage
         }
-        let url = try avatarsDirectory().appendingPathComponent(fileName(for: profile), isDirectory: false)
+        guard let directory = avatarsDirectory(dashboardID: dashboardID, create: true) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let url = directory.appendingPathComponent(Self.fileName(for: profile), isDirectory: false)
         try jpeg.write(to: url, options: .atomic)
-        var paths = UserDefaults.standard.dictionary(forKey: avatarsKey) as? [String: String] ?? [:]
-        paths[profile] = url.path
-        UserDefaults.standard.set(paths, forKey: avatarsKey)
+        ProfileAvatarImageCache.forget(url)
         return url
     }
 
-    static func removeAvatar(for profile: String) {
-        var paths = UserDefaults.standard.dictionary(forKey: avatarsKey) as? [String: String] ?? [:]
-        if let path = paths.removeValue(forKey: profile) { try? FileManager.default.removeItem(atPath: path) }
-        UserDefaults.standard.set(paths, forKey: avatarsKey)
+    func removeAvatar(for profile: String, dashboardID: UUID?) {
+        guard let directory = avatarsDirectory(dashboardID: dashboardID, create: false) else { return }
+        let url = directory.appendingPathComponent(Self.fileName(for: profile))
+        try? FileManager.default.removeItem(at: url)
+        ProfileAvatarImageCache.forget(url)
     }
 
-    private static func avatarsDirectory() throws -> URL {
-        let directory = try documentsDirectory(create: true)
-        return directory
+    /// Remove Dashboard: its label and photos go with it.
+    func removeAll(dashboardID: UUID) {
+        var names = defaultNames()
+        if names.removeValue(forKey: Self.bucket(dashboardID)) != nil {
+            defaults.set(names, forKey: Self.defaultNamesKey)
+        }
+        if let directory = avatarsDirectory(dashboardID: dashboardID, create: false) {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        ProfileAvatarImageCache.forgetAll()
     }
 
-    private static func documentsDirectory(create: Bool = false) throws -> URL {
+    // MARK: Legacy adoption
+
+    /// One-time move of the pre-scoping name and photos into `dashboardID`
+    /// (the registry's first dashboard: the one they were chosen on).
+    /// Idempotent: once the legacy key and files are gone this is a no-op,
+    /// and it never overwrites a name the dashboard already has. Photos are
+    /// moved, not copied; when two copies exist for the same profile, the
+    /// most recently written one is kept.
+    func adoptLegacyAppearance(into dashboardID: UUID) {
+        if let legacyName = defaults.string(forKey: Self.legacyDefaultNameKey) {
+            var names = defaultNames()
+            let bucket = Self.bucket(dashboardID)
+            let trimmed = legacyName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if names[bucket] == nil, !trimmed.isEmpty {
+                names[bucket] = trimmed
+                defaults.set(names, forKey: Self.defaultNamesKey)
+            }
+            defaults.removeObject(forKey: Self.legacyDefaultNameKey)
+        }
+        defaults.removeObject(forKey: Self.legacyAvatarsKey)
+
+        let legacyFiles = legacyAvatarDirectories().flatMap(Self.avatarFiles(in:))
+        guard !legacyFiles.isEmpty,
+              let target = avatarsDirectory(dashboardID: dashboardID, create: true) else { return }
+        // A newer legacy photo can replace one already at its destination.
+        defer { ProfileAvatarImageCache.forgetAll() }
         let manager = FileManager.default
-        let base = try manager.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: create)
-        let directory = base.appendingPathComponent("profile-avatars", isDirectory: true)
-        if create { try manager.createDirectory(at: directory, withIntermediateDirectories: true) }
+        for file in legacyFiles {
+            let destination = target.appendingPathComponent(file.url.lastPathComponent)
+            if manager.fileExists(atPath: destination.path) {
+                if Self.modificationDate(file.url) > Self.modificationDate(destination) {
+                    do {
+                        _ = try manager.replaceItemAt(destination, withItemAt: file.url)
+                    } catch {
+                        try? manager.removeItem(at: destination)
+                        try? manager.moveItem(at: file.url, to: destination)
+                    }
+                } else {
+                    try? manager.removeItem(at: file.url)
+                }
+            } else {
+                try? manager.moveItem(at: file.url, to: destination)
+            }
+        }
+    }
+
+    // MARK: Paths
+
+    private static func bucket(_ dashboardID: UUID?) -> String {
+        dashboardID?.uuidString ?? unscopedBucket
+    }
+
+    private func avatarsRoot(create: Bool) -> URL? {
+        if let avatarsRootOverride {
+            if create { try? FileManager.default.createDirectory(at: avatarsRootOverride, withIntermediateDirectories: true) }
+            return avatarsRootOverride
+        }
+        let manager = FileManager.default
+        guard let base = try? manager.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: create) else { return nil }
+        return base.appendingPathComponent("profile-avatars", isDirectory: true)
+    }
+
+    private func avatarsDirectory(dashboardID: UUID?, create: Bool) -> URL? {
+        guard let root = avatarsRoot(create: create) else { return nil }
+        let directory = root.appendingPathComponent(Self.bucket(dashboardID), isDirectory: true)
+        if create {
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            } catch {
+                return nil
+            }
+        }
         return directory
     }
 
-    private static func documentsDirectory() -> URL? { try? documentsDirectory(create: false) }
-
-    private static func legacyApplicationSupportDirectory() -> URL? {
-        guard let base = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: false) else { return nil }
-        return base.appendingPathComponent("ProfileAvatars", isDirectory: true)
+    /// Where photos lived before scoping: loose files directly in the avatars
+    /// root, and an older Application Support folder.
+    private func legacyAvatarDirectories() -> [URL] {
+        if let legacyAvatarDirectoriesOverride { return legacyAvatarDirectoriesOverride }
+        var directories: [URL] = []
+        if let root = avatarsRoot(create: false) { directories.append(root) }
+        if let base = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: false) {
+            directories.append(base.appendingPathComponent("ProfileAvatars", isDirectory: true))
+        }
+        return directories
     }
 
-    private static func fileName(for profile: String) -> String {
+    private static func avatarFiles(in directory: URL) -> [(profile: String, url: URL)] {
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        )) ?? []
+        return urls.compactMap { url in
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
+                  let profile = profileName(from: url) else { return nil }
+            return (profile, url)
+        }
+    }
+
+    private static func modificationDate(_ url: URL) -> Date {
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+    }
+
+    static func fileName(for profile: String) -> String {
         let encoded = profile.data(using: .utf8)?.base64EncodedString() ?? "default"
         let safe = encoded.replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "+", with: "-")
@@ -107,5 +247,66 @@ enum ProfileAppearanceStore {
 
 enum ProfileAppearanceError: LocalizedError {
     case invalidImage
-    var errorDescription: String? { "That photo could not be read." }
+    var errorDescription: String? { AppLocalization.string("That photo could not be read.") }
+}
+
+
+/// Profile photos decoded once, at the largest size an avatar shows. An
+/// avatar sits in the live reply and thinking rows, whose bodies run at
+/// streaming rate; reading and decoding the whole photo there cost a disk
+/// read and a full-size image decode per frame. A saved or removed photo
+/// keeps its file name, so the store drops the entry when it writes.
+@MainActor
+enum ProfileAvatarImageCache {
+    /// The largest avatar is 48 pt (the profile picker); 192 px covers it
+    /// at 3x with room to spare.
+    static let maxPixelSize: CGFloat = 192
+
+    /// A 192 px bitmap is ~150 KB, so the count bounds the memory too.
+    private static let images: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 32
+        return cache
+    }()
+    /// When each photo last failed to decode, so a missing or damaged file
+    /// is retried now and then rather than on every redraw, and a passing
+    /// failure (a file not readable yet) doesn't hide the photo for good.
+    private static var failedReads: [String: TimeInterval] = [:]
+    static let failedReadRetryInterval: TimeInterval = 30
+
+    /// The first show of each photo decodes it here, on the main actor, so
+    /// the avatar never flashes its initials. ImageIO reads the file once
+    /// and builds the thumbnail without decoding the photo at full size.
+    static func image(at url: URL) -> UIImage? {
+        let key = url.path as NSString
+        if let cached = images.object(forKey: key) { return cached }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let failedAt = failedReads[url.path], now - failedAt < failedReadRetryInterval { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCache: false,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ]
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else {
+            failedReads[url.path] = now
+            return nil
+        }
+        let image = UIImage(cgImage: thumbnail)
+        failedReads[url.path] = nil
+        images.setObject(image, forKey: key)
+        return image
+    }
+
+    static func forget(_ url: URL) {
+        images.removeObject(forKey: url.path as NSString)
+        failedReads[url.path] = nil
+    }
+
+    static func forgetAll() {
+        images.removeAllObjects()
+        failedReads.removeAll()
+    }
 }

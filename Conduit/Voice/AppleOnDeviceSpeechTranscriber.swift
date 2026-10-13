@@ -4,7 +4,10 @@
 //
 
 import Foundation
+import OSLog
 import Speech
+
+private let speechTranscriberLogger = Logger(subsystem: "com.milim.relay", category: "VoiceSpeech")
 
 /// A zero-configuration transcription route backed by Apple's system-managed
 /// speech model. `requiresOnDeviceRecognition` is always true: Conduit never
@@ -15,7 +18,7 @@ final class AppleOnDeviceSpeechTranscriber: DeviceSpeechTranscriptionService {
     private var continuation: CheckedContinuation<String, Error>?
     private var temporaryAudioURL: URL?
 
-    static func currentAvailability(locale: Locale = .current) -> AppleSpeechRecognitionAvailability {
+    static func currentAvailability(locale: Locale = SpeechRecognitionLocale.preferred(accepts: SpeechRecognitionLocale.recognizesOnDevice)) -> AppleSpeechRecognitionAvailability {
         let identifier = locale.identifier
         guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.supportsOnDeviceRecognition else {
             return .unsupported(localeIdentifier: identifier)
@@ -34,15 +37,15 @@ final class AppleOnDeviceSpeechTranscriber: DeviceSpeechTranscriptionService {
 
     func transcribe(_ audio: VoiceCapturedAudio) async throws -> String {
         cancel()
-        let locale = Locale.current
+        let locale = SpeechRecognitionLocale.preferred(accepts: SpeechRecognitionLocale.recognizesOnDevice)
         guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.supportsOnDeviceRecognition else {
-            throw VoiceAudioError.unavailable("On-device Apple speech recognition is unavailable for \(locale.identifier).")
+            throw VoiceAudioError.unavailable(AppLocalization.string("On-device Apple speech recognition is unavailable for \(locale.identifier)."))
         }
         guard await requestPermission() else {
-            throw VoiceAudioError.unavailable("Speech Recognition permission is required for on-device transcription.")
+            throw VoiceAudioError.unavailable(AppLocalization.string("Speech Recognition permission is required for on-device transcription."))
         }
         guard recognizer.isAvailable else {
-            throw VoiceAudioError.unavailable("Apple speech recognition is temporarily unavailable.")
+            throw VoiceAudioError.unavailable(AppLocalization.string("Apple speech recognition is temporarily unavailable."))
         }
 
         let url = FileManager.default.temporaryDirectory
@@ -51,7 +54,7 @@ final class AppleOnDeviceSpeechTranscriber: DeviceSpeechTranscriptionService {
         do {
             try audio.wavData.write(to: url, options: .atomic)
         } catch {
-            throw VoiceAudioError.unavailable("Conduit could not prepare captured audio for transcription.")
+            throw VoiceAudioError.unavailable(AppLocalization.string("Conduit could not prepare captured audio for transcription."))
         }
         temporaryAudioURL = url
 
@@ -101,7 +104,10 @@ final class AppleOnDeviceSpeechTranscriber: DeviceSpeechTranscriptionService {
 
     private func receive(transcript: String?, isFinal: Bool, errorDescription: String?) {
         if let errorDescription {
-            complete(.failure(VoiceAudioError.unavailable(errorDescription)))
+            // The framework's text ("kAFAssistantErrorDomain error 1101") is for
+            // the log; the person gets what to try.
+            speechTranscriberLogger.error("on-device recognition failed: \(errorDescription, privacy: .public)")
+            complete(.failure(VoiceAudioError.unavailable(AppLocalization.string("Apple speech recognition stopped. Try again, or choose another speech-to-text option in Settings > Voice."))))
             return
         }
         guard isFinal else { return }

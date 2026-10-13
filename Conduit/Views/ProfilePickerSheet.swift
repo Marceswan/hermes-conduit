@@ -6,6 +6,7 @@
 import SwiftUI
 
 struct ProfilePickerSheet: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
     @State private var isReordering = false
@@ -22,12 +23,12 @@ struct ProfilePickerSheet: View {
                     VStack(alignment: .leading, spacing: 14) {
                         HStack(alignment: .top, spacing: 12) {
                             Text(isReordering
-                                 ? "Use the arrows to choose the order profiles appear throughout Conduit."
-                                 : "Sessions and settings follow the active profile. Photos stay only on this device.")
+                                 ? AppLocalization.string("Use the arrows to choose the order profiles appear throughout Conduit.")
+                                 : AppLocalization.string("Sessions and settings follow the active profile. Photos stay only on this device."))
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                             Spacer(minLength: 0)
-                            Button(isReordering ? "Done" : "Reorder") {
+                            Button(isReordering ? AppLocalization.string("Done") : AppLocalization.string("Reorder")) {
                                 Haptics.selection()
                                 withAnimation(ConduitMotion.response) { isReordering.toggle() }
                             }
@@ -64,13 +65,23 @@ struct ProfilePickerSheet: View {
             }
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .top, spacing: 0) {
-                ConduitSheetHeader(title: "Profiles", close: { dismiss() })
+                ConduitSheetHeader(title: AppLocalization.string("Profiles"), close: { dismiss() })
             }
         }
     }
 }
 
+/// One profile card. Selection covers the whole card — see the selection
+/// surface on the body for why, and for the accessibility split between the
+/// card and its nested controls.
+///
+/// Covered by `ConduitUITests/ProfilePickerUITests`: the picker is reached with
+/// the DEBUG-only `-CONDUIT_UI_TEST_CONNECTED_DASHBOARD` stub plus the
+/// `-CONDUIT_UI_TEST_PROFILES` roster seam in `AppState.uiTestSeededProfiles()`,
+/// which seeds through the same `orderedProfiles` a real `/api/profiles`
+/// discovery uses.
 private struct ProfilePickerRow: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
     @EnvironmentObject private var appState: AppState
     let profile: String
     let isReordering: Bool
@@ -83,6 +94,12 @@ private struct ProfilePickerRow: View {
     @State private var pickedImage: UIImage?
     @State private var saveError: String?
     private var isCurrent: Bool { profile == appState.activeProfile }
+    /// One rule for both selection paths: the text column's button and the
+    /// card-sized selection surface behind the row must agree on when a
+    /// profile can be selected.
+    private var canSelect: Bool {
+        !isCurrent && !appState.isProfileSwitching && !isReordering
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -109,26 +126,18 @@ private struct ProfilePickerRow: View {
             Button(action: select) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(appState.profileDisplayName(profile)).font(.headline).foregroundStyle(.primary)
-                    Text(profile == "default" ? "Primary Hermes profile" : "Hermes profile").font(.caption).foregroundStyle(.secondary)
+                    Text(profile == "default" ? AppLocalization.string("Primary Hermes profile") : AppLocalization.string("Hermes profile")).font(.caption).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
             }
-            .buttonStyle(.plain).disabled(isCurrent || appState.isProfileSwitching || isReordering)
+            .buttonStyle(.plain).disabled(!canSelect)
 
             if isReordering {
-                VStack(spacing: 0) {
-                    Button(action: moveEarlier) {
-                        Image(systemName: "chevron.up").font(.caption.weight(.bold)).frame(width: 34, height: 22)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!canMoveEarlier)
-                    .accessibilityLabel("Move \(appState.profileDisplayName(profile)) earlier")
-                    Button(action: moveLater) {
-                        Image(systemName: "chevron.down").font(.caption.weight(.bold)).frame(width: 34, height: 22)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!canMoveLater)
-                    .accessibilityLabel("Move \(appState.profileDisplayName(profile)) later")
+                HStack(spacing: 2) {
+                    reorderArrow("chevron.up", enabled: canMoveEarlier, action: moveEarlier)
+                        .accessibilityLabel("Move \(appState.profileDisplayName(profile)) earlier")
+                    reorderArrow("chevron.down", enabled: canMoveLater, action: moveLater)
+                        .accessibilityLabel("Move \(appState.profileDisplayName(profile)) later")
                 }
             } else if isCurrent {
                 Label("Current", systemImage: "checkmark.circle.fill").font(.caption.weight(.semibold)).foregroundStyle(.conduitAccent)
@@ -147,6 +156,32 @@ private struct ProfilePickerRow: View {
             }
         }
         .padding(12)
+        // The card's empty area selects the profile. The selection surface has
+        // to be a card-sized button BEHIND the row, not a container
+        // `.onTapGesture`: a gesture on an ancestor also recognizes taps that
+        // land on the nested controls, so tapping the avatar or the
+        // photo-removal button would switch profiles (and dismiss the sheet)
+        // as well as running its own action. As a sibling behind the row it is
+        // reached only where nothing interactive sits above it — the padding,
+        // the trailing accessory column, and the space beside the name — and
+        // the nested controls keep every tap that lands on them.
+        //
+        // Accessibility stays on the inner select button, which VoiceOver
+        // already exposes with the profile name and the `canSelect` disabled
+        // state; this surface is hidden to avoid a duplicate target. The
+        // Kanban card's `.accessibilityElement(children: .combine)` treatment
+        // is wrong here for the same reason the gesture is — this row carries
+        // two further controls that combining would fold into the card.
+        .background {
+            Button(action: select) {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(Color.clear)
+                    .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSelect)
+            .accessibilityHidden(true)
+        }
         .conduitGlassSurface(cornerRadius: 20, tint: isCurrent ? .conduitAccent.opacity(0.12) : .clear)
         .overlay(alignment: .bottomLeading) {
             if let saveError { Text(saveError).font(.caption2).foregroundStyle(.red).padding(.horizontal, 12).padding(.bottom, 4) }
@@ -160,10 +195,30 @@ private struct ProfilePickerRow: View {
                 do {
                     try appState.saveProfileAvatar(data, for: profile)
                     saveError = nil
-                } catch { saveError = error.localizedDescription }
+                } catch { saveError = UserFacingError.message(for: error) }
             }
             pickedImage = nil
         }
+    }
+
+    /// A reorder arrow with a full 44 pt tap target (#552). A `.plain` button
+    /// hit-tests only its label's drawn content, so without the content shape
+    /// just the small chevron glyph took taps; the space around it fell to the
+    /// disabled text button and the disabled selection surface behind the row,
+    /// which swallow taps, and the arrows looked dead on device.
+    private func reorderArrow(_ systemImage: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(Color.conduitAccent)
+                .frame(width: 34, height: 34)
+                .background(Color.conduitAccent.opacity(0.12), in: Circle())
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.35)
     }
 }
 
@@ -178,12 +233,14 @@ struct ProfileAvatarView: View {
     }
     var body: some View {
         Group {
-            if let url, let image = UIImage(contentsOfFile: url.path) {
+            if let url, let image = ProfileAvatarImageCache.image(at: url) {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
                     .frame(width: size, height: size)
                     .clipped()
+                    // Always beside the profile's name, or inside a labelled button.
+                    .accessibilityHidden(true)
             } else {
                 Text(initials).font(.system(size: max(10, size * 0.36), weight: .bold, design: .rounded))
                     .foregroundStyle(Color.conduitAccent).frame(width: size, height: size)

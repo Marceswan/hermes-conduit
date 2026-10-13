@@ -11,7 +11,8 @@ final class WakeLifecycleTests: XCTestCase {
             isAuthenticated: true,
             isGatewayConnected: true,
             microphonePermitted: true,
-            voiceState: .idle
+            isVoiceIdle: true,
+            hasWakePhrases: true
         )
 
         coordinator.update(for: ready)
@@ -23,7 +24,8 @@ final class WakeLifecycleTests: XCTestCase {
             isAuthenticated: true,
             isGatewayConnected: true,
             microphonePermitted: true,
-            voiceState: .speaking
+            isVoiceIdle: false,
+            hasWakePhrases: true
         ))
         XCTAssertFalse(service.isArmed)
 
@@ -32,7 +34,8 @@ final class WakeLifecycleTests: XCTestCase {
             isAuthenticated: true,
             isGatewayConnected: true,
             microphonePermitted: true,
-            voiceState: .idle
+            isVoiceIdle: true,
+            hasWakePhrases: true
         ))
         XCTAssertFalse(service.isArmed)
         XCTAssertGreaterThanOrEqual(service.disarmCount, 2)
@@ -41,7 +44,7 @@ final class WakeLifecycleTests: XCTestCase {
     func testRecordsServiceFailureWithoutLeavingWakeArmed() {
         let service = FakeWakeWordService(error: WakeWordServiceError.unavailable("No model"))
         let coordinator = WakeLifecycleCoordinator(service: service)
-        coordinator.update(for: .init(isForegroundActive: true, isAuthenticated: true, isGatewayConnected: true, microphonePermitted: true, voiceState: .idle))
+        coordinator.update(for: .init(isForegroundActive: true, isAuthenticated: true, isGatewayConnected: true, microphonePermitted: true, isVoiceIdle: true, hasWakePhrases: true))
         XCTAssertFalse(service.isArmed)
         XCTAssertEqual(coordinator.lastFailureReason, "No model")
     }
@@ -75,6 +78,231 @@ final class WakeLifecycleTests: XCTestCase {
             ]
         )
         XCTAssertTrue(pack.assets.allSatisfy { $0.sha256 == nil && $0.checksumStatus == .notRecorded })
+    }
+}
+
+extension WakeLifecycleTests {
+    func testRoutePolicyIdentifiesCarPlay() {
+        let car = VoiceAudioRoutePort(type: .carAudio, name: "CarPlay")
+        let speaker = VoiceAudioRoutePort(type: .builtInSpeaker, name: "Speaker")
+        let a2dp = VoiceAudioRoutePort(type: .bluetoothA2DP, name: "Buds")
+        XCTAssertTrue(WakeRoutePolicy.isCarPlay(outputs: [car]))
+        XCTAssertFalse(WakeRoutePolicy.isCarPlay(outputs: [speaker]))
+        XCTAssertFalse(WakeRoutePolicy.isCarPlay(outputs: [a2dp]))
+        XCTAssertFalse(WakeRoutePolicy.isCarPlay(outputs: []), "an empty route fails open")
+        XCTAssertTrue(WakeRoutePolicy.isCarPlay(outputs: [speaker, car]), "any CarPlay output counts")
+
+        var snapshot = WakeLifecycleSnapshot(
+            isForegroundActive: true,
+            isAuthenticated: true,
+            isGatewayConnected: true,
+            microphonePermitted: true,
+            isVoiceIdle: true,
+            hasWakePhrases: true
+        )
+        XCTAssertTrue(snapshot.canArm)
+        snapshot.isRouteSuitable = false
+        XCTAssertFalse(snapshot.canArm)
+    }
+
+    func testOtherAppsAudioPausesWakeOnly() {
+        var snapshot = WakeLifecycleSnapshot(
+            isForegroundActive: true,
+            isAuthenticated: true,
+            isGatewayConnected: true,
+            microphonePermitted: true,
+            isVoiceIdle: true,
+            hasWakePhrases: true
+        )
+        XCTAssertTrue(snapshot.otherAudioAllowsListening, "allowed unless something says otherwise")
+        XCTAssertFalse(snapshot.isPausedForOtherAudio)
+
+        snapshot.otherAudioAllowsListening = false
+        XCTAssertFalse(snapshot.canArm)
+        XCTAssertTrue(snapshot.canArmIgnoringOtherAudio)
+        XCTAssertTrue(snapshot.isPausedForOtherAudio)
+
+        snapshot.isVoiceIdle = false
+        XCTAssertFalse(snapshot.isPausedForOtherAudio, "a call, not the podcast, keeps wake off")
+
+        let service = FakeWakeWordService()
+        let coordinator = WakeLifecycleCoordinator(service: service)
+        snapshot.isVoiceIdle = true
+        coordinator.update(for: snapshot)
+        XCTAssertFalse(service.isArmed, "wake waits for the other app's audio to stop")
+        snapshot.otherAudioAllowsListening = true
+        coordinator.update(for: snapshot)
+        XCTAssertTrue(service.isArmed, "and listens again once it does")
+        snapshot.otherAudioAllowsListening = false
+        coordinator.update(for: snapshot)
+        XCTAssertFalse(service.isArmed, "a podcast starting stops an armed listener")
+    }
+
+    func testAppStateOtherAudioFollowsTheSetting() throws {
+        let suite = "WakeLifecycleTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let appState = AppState(defaults: defaults, loadSavedConnection: false, clearSessionPresentationCache: {})
+        var otherAudioPlaying = true
+        appState.wakeOtherAudioProbe = { otherAudioPlaying }
+        XCTAssertFalse(appState.wakeListensOverOtherAudio, "off by default")
+
+        appState.noteWakeOtherAudio(playing: true)
+        XCTAssertTrue(appState.isWakeOtherAudioPlaying)
+        XCTAssertFalse(appState.wakeLifecycleSnapshot.otherAudioAllowsListening)
+
+        let revision = appState.wakeSettingsRevision
+        appState.setWakeListensOverOtherAudio(true)
+        XCTAssertNotEqual(appState.wakeSettingsRevision, revision, "the change must publish")
+        XCTAssertTrue(appState.wakeLifecycleSnapshot.otherAudioAllowsListening, "kept listening over other audio")
+
+        otherAudioPlaying = false
+        appState.setWakeListensOverOtherAudio(false)
+        XCTAssertFalse(appState.isWakeOtherAudioPlaying, "turning it off re-reads what plays now")
+        XCTAssertTrue(appState.wakeLifecycleSnapshot.otherAudioAllowsListening)
+
+        otherAudioPlaying = true
+        appState.setWakeListensOverOtherAudio(true)
+        appState.setWakeListensOverOtherAudio(false)
+        XCTAssertFalse(appState.wakeLifecycleSnapshot.otherAudioAllowsListening, "a playing podcast pauses wake again")
+    }
+
+    func testOtherAudioMonitorPollsOnlyWhileWakeCouldListen() async throws {
+        let suite = "WakeLifecycleTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let appState = AppState(defaults: defaults, loadSavedConnection: false, clearSessionPresentationCache: {})
+        var otherAudioPlaying = false
+        appState.wakeOtherAudioProbe = { otherAudioPlaying }
+        appState.wakeOtherAudioPollInterval = .milliseconds(10)
+        let ready = WakeLifecycleSnapshot(
+            isForegroundActive: true,
+            isAuthenticated: true,
+            isGatewayConnected: true,
+            microphonePermitted: true,
+            isVoiceIdle: true,
+            hasWakePhrases: true
+        )
+
+        appState.updateWakeOtherAudioMonitor(for: ready)
+        let monitor = try XCTUnwrap(appState.wakeOtherAudioMonitor, "armed wake watches for other audio")
+        appState.updateWakeOtherAudioMonitor(for: ready)
+        XCTAssertEqual(appState.wakeOtherAudioMonitor, monitor, "a refresh keeps the one monitor")
+
+        otherAudioPlaying = true
+        await waitForWake { appState.isWakeOtherAudioPlaying }
+        XCTAssertTrue(appState.isWakeOtherAudioPlaying, "a podcast starting is noticed")
+
+        var paused = ready
+        paused.otherAudioAllowsListening = false
+        appState.updateWakeOtherAudioMonitor(for: paused)
+        XCTAssertEqual(appState.wakeOtherAudioMonitor, monitor, "still polling while waiting for it to stop")
+        otherAudioPlaying = false
+        await waitForWake { !appState.isWakeOtherAudioPlaying }
+        XCTAssertFalse(appState.isWakeOtherAudioPlaying, "the podcast stopping is noticed")
+
+        var inCall = ready
+        inCall.isVoiceIdle = false
+        appState.updateWakeOtherAudioMonitor(for: inCall)
+        XCTAssertNil(appState.wakeOtherAudioMonitor, "no polling while wake could not listen anyway")
+        XCTAssertTrue(monitor.isCancelled)
+
+        appState.updateWakeOtherAudioMonitor(for: ready)
+        let restarted = try XCTUnwrap(appState.wakeOtherAudioMonitor, "polling resumes after the call")
+        appState.setWakeListensOverOtherAudio(true)
+        appState.updateWakeOtherAudioMonitor(for: ready)
+        XCTAssertNil(appState.wakeOtherAudioMonitor, "no polling when wake keeps listening over other audio")
+        XCTAssertTrue(restarted.isCancelled)
+    }
+
+    /// Lets the main actor run until `condition` holds, capped at 10 seconds
+    /// of wall clock (hosted runners can stall the main actor).
+    private func waitForWake(until condition: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(10)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func testStaysDisarmedWithoutWakePhrases() {
+        let service = FakeWakeWordService()
+        let coordinator = WakeLifecycleCoordinator(service: service)
+        coordinator.update(for: .init(
+            isForegroundActive: true,
+            isAuthenticated: true,
+            isGatewayConnected: true,
+            microphonePermitted: true,
+            isVoiceIdle: true,
+            hasWakePhrases: false
+        ))
+        XCTAssertFalse(service.isArmed)
+        XCTAssertEqual(service.armCount, 0)
+    }
+
+    func testDisarmImmediatelyStopsAnArmedListener() {
+        let service = FakeWakeWordService()
+        let coordinator = WakeLifecycleCoordinator(service: service)
+        coordinator.update(for: .init(
+            isForegroundActive: true,
+            isAuthenticated: true,
+            isGatewayConnected: true,
+            microphonePermitted: true,
+            isVoiceIdle: true,
+            hasWakePhrases: true
+        ))
+        XCTAssertTrue(service.isArmed)
+        coordinator.disarmImmediately()
+        XCTAssertFalse(service.isArmed)
+    }
+
+    func testAppStateWakeBindingsAreScopedToTheActiveDashboard() throws {
+        let suite = "WakeLifecycleTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let dashboard = SavedDashboard(id: UUID(), label: "Home", normalizedURL: "https://hermes.example")
+        let appState = AppState(
+            defaults: defaults,
+            loadSavedConnection: false,
+            dashboardRegistry: SavedDashboardRegistry(activeDashboardID: dashboard.id, dashboards: [dashboard]),
+            clearSessionPresentationCache: {}
+        )
+        let gatewayID = try XCTUnwrap(appState.wakeGatewayID)
+        XCTAssertEqual(gatewayID, dashboard.id.uuidString)
+        appState.setWakePreferences(
+            WakeProfilePreferences(enabledPhrases: ["Hey Default"], startsFreshConversation: false),
+            forProfile: "default"
+        )
+        appState.wakeConfiguration.save(
+            WakeProfilePreferences(enabledPhrases: ["hey elsewhere"]),
+            for: WakeProfileKey(gatewayID: "another-dashboard", profileID: "default")
+        )
+        XCTAssertEqual(appState.activeWakeBindings.map(\.normalizedPhrase), ["hey default"])
+        XCTAssertEqual(appState.activeWakeBindings.first?.key.gatewayID, gatewayID)
+        XCTAssertEqual(appState.wakePreferences(forProfile: "default").startsFreshConversation, false)
+
+        appState.setWakePreferences(WakeProfilePreferences(enabledPhrases: []), forProfile: "default")
+        XCTAssertTrue(appState.activeWakeBindings.isEmpty)
+    }
+
+    func testAppStateWakeRouteFollowsTheCarPlaySetting() throws {
+        let suite = "WakeLifecycleTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let appState = AppState(defaults: defaults, loadSavedConnection: false, clearSessionPresentationCache: {})
+        XCTAssertTrue(appState.wakeListensOnCarPlay, "on by default")
+
+        appState.isWakeRouteCarPlay = false
+        XCTAssertTrue(appState.wakeLifecycleSnapshot.isRouteSuitable)
+        appState.isWakeRouteCarPlay = true
+        XCTAssertTrue(appState.wakeLifecycleSnapshot.isRouteSuitable, "CarPlay listens through the iPhone microphone")
+
+        let revision = appState.wakeSettingsRevision
+        appState.setWakeListensOnCarPlay(false)
+        XCTAssertNotEqual(appState.wakeSettingsRevision, revision, "the change must publish")
+        XCTAssertFalse(appState.isWakeRouteCarPlay, "the change re-reads the live route (no CarPlay in tests)")
+        XCTAssertTrue(appState.wakeLifecycleSnapshot.isRouteSuitable, "the setting only affects CarPlay")
+        appState.isWakeRouteCarPlay = true
+        XCTAssertFalse(appState.wakeLifecycleSnapshot.isRouteSuitable, "turned off, CarPlay stops wake")
     }
 }
 

@@ -3,10 +3,8 @@
 # Then open Conduit.xcodeproj in Xcode
 
 name: Conduit
-attributes:
-  LastUpgradeCheck: "2620"
 options:
-  bundleIdPrefix: com.meswan
+  bundleIdPrefix: com.milim
   deploymentTarget:
     iOS: "17.0"
   developmentLanguage: en
@@ -16,10 +14,16 @@ settings:
     SWIFT_VERSION: "5.9"
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
     ENABLE_BITCODE: NO
-    DEVELOPMENT_TEAM: 58XKRG9VMA
-    CODE_SIGN_STYLE: Automatic
-    MARKETING_VERSION: "0.1.1"
-    CURRENT_PROJECT_VERSION: "114"
+    DEVELOPMENT_TEAM: U2TH557QA8
+    CODE_SIGN_STYLE: Manual
+    MARKETING_VERSION: "0.1.15"
+    CURRENT_PROJECT_VERSION: "162"
+packages:
+  # GPT-Live voice runs over WebRTC; Apple ships no WebRTC stack. Prebuilt
+  # Google WebRTC as a binary xcframework, pinned to an exact release.
+  WebRTC:
+    url: https://github.com/stasel/WebRTC
+    exactVersion: 153.0.0
 targets:
   Conduit:
     type: application
@@ -31,14 +35,145 @@ targets:
           - "Resources/AlternateIcons/**"
       - path: Conduit/Resources/AlternateIcons
         buildPhase: resources
+      # End-to-end encrypted notifications (#431), shared with the
+      # Notification Service Extension. Also the Apple Watch app's link
+      # format and relay wires (Shared/WatchVoice,
+      # designs/apple-watch-voice-direct.md) and Gemini Live's protocol and
+      # session (Shared/GeminiLive, designs/apple-watch-voice-direct.md),
+      # shared with the Watch app.
+      - path: Shared
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.meswan.hermes
+        PRODUCT_BUNDLE_IDENTIFIER: com.milim.relay
         PRODUCT_NAME: Conduit
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: Conduit/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_IDENTITY: "Apple Distribution"
         CODE_SIGN_ENTITLEMENTS: Conduit/Conduit.entitlements
+        PROVISIONING_PROFILE_SPECIFIER: "Conduit App Store"
+        # The draft-stripping phase below deletes lprojs it can't declare
+        # up front, which the user-script sandbox would refuse.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    dependencies:
+      - package: WebRTC
+      - target: ConduitWatch
+      # Embedded as Conduit.app/PlugIns/ConduitNotificationService.appex.
+      - target: ConduitNotificationService
+      # The configured launcher widgets are embedded with the app.
+      - target: ConduitWidgets
+    postBuildScripts:
+      # A draft language (Info.plist ConduitDraftLanguages) is compiled from
+      # the String Catalogs like any other; drop its lproj so it never ships.
+      - name: Strip draft localizations
+        basedOnDependencyAnalysis: false
+        script: |
+          python3 "$SRCROOT/scripts/strip-draft-localizations.py" \
+            --info-plist "$SRCROOT/$INFOPLIST_FILE" \
+            --bundle "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH" \
+            --development-language "$DEVELOPMENT_LANGUAGE"
+  # The Apple Watch app: voice calls to Hermes, Gemini Live on the Watch
+  # itself or GPT-Live through the host's audio bridge
+  # (designs/apple-watch-voice-direct.md, apple-watch-gpt-live.md).
+  # Embedded in the iPhone app; signed automatically so Xcode registers
+  # its App ID on the first archive.
+  ConduitWatch:
+    type: application
+    platform: watchOS
+    deploymentTarget: "10.0"
+    sources:
+      - path: ConduitWatch
+      - path: Shared/WatchVoice
+      # The iPhone's own Gemini Live code: the Watch runs the same session
+      # (designs/apple-watch-voice-direct.md).
+      - path: Shared/GeminiLive
+      # The iPhone's Grok Live session, which a Watch call to Grok runs
+      # through the host's audio bridge.
+      - path: Shared/GrokLive
+      # GPT-Live's events, which the Watch reads and answers through the
+      # host's audio bridge (designs/apple-watch-gpt-live.md).
+      - path: Conduit/Voice/GPTLive/GPTLiveProtocol.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.milim.relay.watchkitapp
+        PRODUCT_NAME: ConduitWatch
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: ConduitWatch/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "4"
+        SKIP_INSTALL: YES
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "Apple Development"
+        PROVISIONING_PROFILE_SPECIFIER: ""
+        # Push Notifications, for the PushKit token calls from Hermes ring
+        # on (designs/hermes-calls-watch.md). Automatic signing adds the
+        # capability to the App ID. Production, as the iPhone's: the relay
+        # sends only to production APNs.
+        CODE_SIGN_ENTITLEMENTS: ConduitWatch/ConduitWatch.entitlements
+  ConduitNotificationService:
+    # Decrypts end-to-end encrypted notifications before iOS shows them
+    # (#431). APNs still targets com.milim.relay; this App ID has no Push
+    # capability of its own.
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: ConduitNotificationService
+      - path: Shared
+        # The Watch app's code, Gemini Live and Grok Live, which the
+        # extension never uses.
+        excludes:
+          - "WatchVoice/**"
+          - "GeminiLive/**"
+          - "GrokLive/**"
+          - "Widgets/**"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.milim.relay.NotificationService
+        PRODUCT_NAME: ConduitNotificationService
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: ConduitNotificationService/Info.plist
+        CODE_SIGN_IDENTITY: "Apple Distribution"
+        CODE_SIGN_ENTITLEMENTS: ConduitNotificationService/ConduitNotificationService.entitlements
+        PROVISIONING_PROFILE_SPECIFIER: "Conduit Notification Service App Store"
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+  ConduitWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: ConduitWidgets
+        excludes:
+          - "Info.plist"
+          - "ConduitWidgets.entitlements"
+          - "Resources/**"
+      - path: ConduitWidgets/Resources/Assets.xcassets
+        buildPhase: resources
+      - path: Shared/Widgets
+      - path: Conduit/Localizable.xcstrings
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.milim.relay.widgets
+        PRODUCT_NAME: ConduitWidgets
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: ConduitWidgets/Info.plist
+        CODE_SIGN_IDENTITY: "Apple Distribution"
+        CODE_SIGN_ENTITLEMENTS: ConduitWidgets/ConduitWidgets.entitlements
+        PROVISIONING_PROFILE_SPECIFIER: "Conduit Widgets App Store"
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    postBuildScripts:
+      - name: Strip draft localizations
+        basedOnDependencyAnalysis: false
+        script: |
+          python3 "$SRCROOT/scripts/strip-draft-localizations.py" \
+            --info-plist "$SRCROOT/$INFOPLIST_FILE" \
+            --bundle "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH" \
+            --development-language "$DEVELOPMENT_LANGUAGE"
   ConduitTests:
     type: bundle.unit-test
     platform: iOS
@@ -49,3 +184,141 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
     dependencies:
       - target: Conduit
+  ConduitUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: ConduitUITests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: Conduit
+  # macOS (docs/superpowers/specs/2026-10-13-macos-target-design.md).
+  # The Swift module is named UIKit so upstream `import UIKit` resolves on Mac.
+  UIKitCompat:
+    type: framework
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: ConduitMac/Compat/Module
+    settings:
+      base:
+        PRODUCT_NAME: UIKit
+        PRODUCT_MODULE_NAME: UIKit
+        PRODUCT_BUNDLE_IDENTIFIER: com.meswan.hermes.mac.uikitcompat
+        GENERATE_INFOPLIST_FILE: YES
+        DEVELOPMENT_TEAM: 58XKRG9VMA
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "Developer ID Application"
+        PROVISIONING_PROFILE_SPECIFIER: ""
+        SKIP_INSTALL: YES
+        ENABLE_HARDENED_RUNTIME: YES
+  # Empty module named like the SDK's AppIntents+UIKit cross-import overlay, which
+  # the UIKit shim module otherwise triggers (the real overlay is iOS only).
+  AppIntentsUIKitOverlay:
+    type: framework
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: ConduitMac/Compat/Overlay
+    settings:
+      base:
+        PRODUCT_NAME: _AppIntents_UIKit
+        PRODUCT_MODULE_NAME: _AppIntents_UIKit
+        PRODUCT_BUNDLE_IDENTIFIER: com.meswan.hermes.mac.appintentsuikitoverlay
+        GENERATE_INFOPLIST_FILE: YES
+        DEVELOPMENT_TEAM: 58XKRG9VMA
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "Developer ID Application"
+        PROVISIONING_PROFILE_SPECIFIER: ""
+        SKIP_INSTALL: YES
+        ENABLE_HARDENED_RUNTIME: YES
+  ConduitMac:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: ConduitMac
+        excludes:
+          - "Compat/Module/**"
+          - "Compat/Overlay/**"
+      - path: Shared
+      - path: Conduit
+        excludes:
+          - "ConduitApp.swift"
+          - "Info.plist"
+          - "Conduit.entitlements"
+          - "Resources/AlternateIcons/**"
+          # iOS-only frameworks (R2): twins in ConduitMac/Stubs.
+          - "CarPlay/CarPlayVoiceSceneDelegate.swift"
+          - "CarPlay/CarPlayVoiceCoordinator.swift"
+          - "CarPlay/CarPlayBrowseTemplates.swift"
+          - "CarPlay/CarPlayVoiceTemplateFactory.swift"
+          - "CarPlay/PhoneScenePresence.swift"
+          - "Watch/WatchVoiceLink.swift"
+          - "CarPlay/CarPlayVoiceArtwork.swift"
+          # UIKit-backed views (R2): Mac twins in ConduitMac/Chat and ConduitMac/Views.
+          - "Views/Components/SelectableTextView.swift"
+          - "Views/Components/ComposerPasteTextView.swift"
+          - "Views/Components/MarkdownSelectionHandles.swift"
+          - "Views/Components/ImagePicker.swift"
+          - "Views/Components/CameraCapture.swift"
+          - "Views/ChatScrollSurfaceLocator.swift"
+          # DEBUG-only iOS selection fixture (UIView animations); only ConduitApp uses it.
+          - "Views/SelectionFixtureView.swift"
+    settings:
+      base:
+        PRODUCT_NAME: Conduit
+        PRODUCT_MODULE_NAME: ConduitMac
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        PRODUCT_BUNDLE_IDENTIFIER: com.meswan.hermes.mac
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: ConduitMac/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: ConduitMac/Resources/ConduitMac.entitlements
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        DEVELOPMENT_TEAM: 58XKRG9VMA
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "Developer ID Application"
+        PROVISIONING_PROFILE_SPECIFIER: ""
+        ENABLE_HARDENED_RUNTIME: YES
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        # Upstream view files that import only SwiftUI use UIKit names (iOS
+        # SwiftUI re-exports UIKit). Make the shim module visible everywhere.
+        OTHER_SWIFT_FLAGS: "$(inherited) -Xfrontend -import-module -Xfrontend UIKit"
+        # Explicit modules do not see the SDK cross-import overlays this needs.
+        SWIFT_ENABLE_EXPLICIT_MODULES: NO
+    dependencies:
+      - target: UIKitCompat
+      - target: AppIntentsUIKitOverlay
+      - package: WebRTC
+  ConduitMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: ConduitMacTests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        DEVELOPMENT_TEAM: 58XKRG9VMA
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "Developer ID Application"
+        PROVISIONING_PROFILE_SPECIFIER: ""
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Conduit.app/Contents/MacOS/Conduit"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+    dependencies:
+      - target: ConduitMac
+      - target: UIKitCompat
+
+schemes:
+  ConduitMac:
+    build:
+      targets:
+        ConduitMac: all
+    test:
+      targets:
+        - ConduitMacTests
+    archive:
+      config: Release

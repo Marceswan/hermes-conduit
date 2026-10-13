@@ -18,6 +18,10 @@
 //    controls.
 //  - Use resumed.messages from session.resume RPC, including any in-flight
 //    transcript state, rather than deriving liveness from message roles.
+//    Since the compact resume (issue #106) the default openSession suppresses
+//    that transcript (omit_messages) and AppState hydrates the persisted rows
+//    over REST; openSessionLegacy is the variant whose response still carries
+//    the messages.
 //  - Do NOT merge gateway RPC session.list into the UI list — it reads from
 //    the main DB containing ALL profiles. Use profile-scoped endpoint only.
 //
@@ -25,6 +29,7 @@
 import Foundation
 import Combine
 import os
+import UniformTypeIdentifiers
 
 // MARK: - JSON-RPC Types
 
@@ -35,8 +40,56 @@ private struct JsonRpcRequest: Encodable {
     let params: [String: AnyCodable]?
 }
 
+/// A JSON-RPC `id` as it appears on an inbound frame. Responses to this
+/// client's own requests echo its integer ids; server→client requests
+/// (`tui_gateway/server_requests.py`) carry string ids (`srq-<hex>`), so a
+/// string id must decode instead of dropping the whole frame.
+private enum JsonRpcID: Decodable, Equatable {
+    case int(Int)
+    case string(String)
+    /// Any other scalar (JSON-RPC forbids them): decoded so the rest of the
+    /// frame is not lost. It never matches a request of ours and is never
+    /// answered (requests need a string id).
+    case other
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(Int.self) {
+            self = .int(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else {
+            self = .other
+        }
+    }
+
+    /// The id exactly as it must be echoed back in a response frame.
+    var wireValue: Any {
+        switch self {
+        case .int(let value): return value
+        case .string(let value): return value
+        case .other: return NSNull()
+        }
+    }
+}
+
+/// First-caller-wins latch for racing a completion handler against a
+/// deadline; exactly one side resumes the continuation.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed = false
+
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if claimed { return false }
+        claimed = true
+        return true
+    }
+}
+
 private struct JsonRpcResponse: Decodable {
-    let id: Int?
+    let id: JsonRpcID?
     let result: AnyCodable?
     let error: RpcError?
     let method: String?
@@ -46,8 +99,37 @@ private struct JsonRpcResponse: Decodable {
 struct RpcError: Decodable, Error, LocalizedError {
     let code: Int?
     let message: String
+    /// Machine-readable refusal reason from the error's `data.reason`
+    /// (Hermes' contract; the message is for people), e.g.
+    /// `SESSION_NOT_OWNED` on a `prompt.submit` 4090.
+    var reason: String? = nil
 
     var errorDescription: String? { message }
+
+    /// Hermes refused the send because another live surface (Hermes
+    /// Desktop, a terminal) owns this chat.
+    var isSessionNotOwned: Bool { reason == "SESSION_NOT_OWNED" }
+
+    /// Hermes' contract check refused a key this gateway doesn't know
+    /// (`4000 invalid params for <method>: <key>: Extra inputs are not
+    /// permitted`). Nothing ran, so the request is safe to resend without it.
+    func refusesUnknownParam(_ key: String) -> Bool {
+        code == 4000 && message.contains("invalid params") && message.contains(key)
+    }
+}
+
+extension RpcError {
+    private enum CodingKeys: String, CodingKey { case code, message, data }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let data = try? container.decodeIfPresent(AnyCodable.self, forKey: .data)
+        self.init(
+            code: try container.decodeIfPresent(Int.self, forKey: .code),
+            message: try container.decode(String.self, forKey: .message),
+            reason: data?.objectValue?["reason"]?.stringValue
+        )
+    }
 }
 
 // Type-erased Codable for dynamic JSON
@@ -159,27 +241,76 @@ enum AnyCodable: Codable, Equatable {
 
 // MARK: - Stream Events
 
+/// Which row a `message.react` call addresses.
+enum MessageReactionTarget: Equatable {
+    case row(Int)
+    /// The newest persisted row of this role (`"assistant"` or `"user"`).
+    case newest(role: String)
+}
+
+struct MessageReactionResult: Equatable {
+    let rowId: Int
+    let reactions: [MessageReaction]
+}
+
 enum StreamEvent {
     case messageStart(sessionId: String)
     case messageDelta(sessionId: String, text: String)
     case reasoningDelta(sessionId: String, text: String)
     case messageComplete(sessionId: String, messageId: String?, content: String?, reasoning: String?)
+    /// The agent reacted to a message (its `react_to_message` tool). The
+    /// reaction is already persisted; this only paints it now. `role` names
+    /// the reacted row's role so a live row with no `rowId` yet can match.
+    case messageReaction(sessionId: String, rowId: Int, reactions: [MessageReaction], role: String)
     case messageError(sessionId: String, message: String)
     case messageInterrupted(sessionId: String)
     case sessionBusy(sessionId: String, busy: Bool)
     case sessionInfo(sessionId: String, snapshot: SessionRuntimeSnapshot)
     case sessionTitle(runtimeSessionId: String, storedSessionId: String, title: String)
-    case toolStart(sessionId: String, toolName: String, toolInput: String?)
-    case toolComplete(sessionId: String, toolName: String, toolOutput: String?)
+    case toolStart(sessionId: String, toolName: String, toolInput: String?, toolID: String? = nil)
+    case toolComplete(sessionId: String, toolName: String, toolOutput: String?, toolID: String? = nil)
     case reviewSummary(sessionId: String, activity: ReviewActivity)
-    case clarify(sessionId: String, requestId: String, question: String, choices: [(label: String, value: String)])
+    /// The complete normalized clarification — batch structure intact. The
+    /// parser must not flatten `questions[]` back into scalar fields, or a
+    /// parsed batch would be discarded at the AppState boundary.
+    case clarify(sessionId: String, activity: ClarifyActivity)
+    /// `clarify.expire { request_id }` (legacy, always a timeout) or a
+    /// `request.cancel` for a clarify server request, carrying its `reason`
+    /// (`timeout`, `interrupted`, `shutdown`, `session_closed`).
+    case clarifyExpire(sessionId: String, requestId: String, reason: String? = nil)
     case approval(sessionId: String, activity: ApprovalActivity)
+    /// A `sudo` / `secret` / `vault.unlock_prompt` server request.
+    case inputPrompt(sessionId: String, activity: InputPromptActivity)
+    /// `request.cancel` for one of those: the gateway withdrew it, with its
+    /// `reason` (`timeout`, `interrupted`, `shutdown`, `session_closed`).
+    case inputPromptExpire(sessionId: String, requestId: String, reason: String? = nil)
+    /// `request.cancel` for an approval server request, translated to the
+    /// approval queue id the card is keyed by. `resolved` means a choice was
+    /// committed — by this device or another surface.
+    case approvalWithdrawn(sessionId: String, requestId: String, reason: String)
     case contextUpdate(sessionId: String, percent: Double, used: Int, max: Int)
     case cwdUpdate(sessionId: String, cwd: String)
     case modelUpdate(sessionId: String, model: String, provider: String)
     case agentCount(sessionId: String, count: Int)
     case delegateAgent(sessionId: String, activity: DelegateAgentActivity)
+    /// `status.update` — gateway lifecycle status for a session. Compaction
+    /// edges drive the compression spinner/state; unrelated kinds are typed
+    /// as `.other` so they can never masquerade as compaction events.
+    case statusUpdate(sessionId: String, kind: StatusUpdateKind, text: String?)
     case unparsed(payload: [String: Any])
+}
+
+/// `status.update` `payload.kind` values Hermes emits on the compression
+/// lifecycle (verified against `tui_gateway/server.py::_status_update`):
+/// `compacting` is active server-side compaction (auto-compaction progress
+/// re-tagged from the generic "lifecycle" kind), and `compacted` is the
+/// terminal completion edge (e.g. the compute-host late ack). The in-process
+/// manual path uses unrelated kinds (`compressing`, then a bare `status`),
+/// which land in `.other` together with every driver-specific string.
+enum StatusUpdateKind: Equatable {
+    case compacting
+    case compacted
+    case other(String)
 }
 
 /// Runtime fields returned by `session.resume` and `session.info`.
@@ -203,6 +334,22 @@ struct SessionRuntimeSnapshot {
     let approvalsMode: String?
     let inflight: AnyCodable?
     let queued: AnyCodable?
+    /// Authoritative still-pending clarification carried by `session.resume`
+    /// (`pending_clarify`) — the same payload as the one-shot `clarify.request`
+    /// plus any answers locked before the client detached. The one-shot event
+    /// is not sufficient for restore: it may have fired while the app was
+    /// backgrounded or disconnected.
+    let pendingClarify: ClarifyActivity?
+    /// Further unanswered clarify server requests from `open_requests`
+    /// (after the oldest, which rides `pendingClarify`).
+    let additionalPendingClarifies: [ClarifyActivity]
+    /// Raw authoritative approval still blocking the session. AppState adds
+    /// the enclosing runtime session id when normalizing the card.
+    let pendingApprovalPayload: [String: AnyCodable]?
+    /// Unanswered sudo / secret / vault-unlock requests re-announced by
+    /// `session.resume` (`open_requests`), oldest first. Upstream never puts
+    /// `open_requests` in `session.info`, so a live snapshot parses none.
+    let pendingInputPrompts: [InputPromptActivity]
 
     /// `session.resume` may include an in-flight or queued projection that is
     /// newer than the persisted database transcript. Keep that projection for
@@ -259,6 +406,13 @@ struct SessionRuntimeSnapshot {
         approvalsMode = object["approvals_mode"]?.stringValue
             ?? object["approval_mode"]?.stringValue
             ?? object["approvals"]?.objectValue?["mode"]?.stringValue
+        pendingClarify = object["pending_clarify"]?.objectValue
+            .flatMap { MessageNormalizer.pendingClarifyActivity(from: $0) }
+        additionalPendingClarifies = (object["open_clarifies"]?.arrayValue ?? []).compactMap {
+            $0.objectValue.flatMap { MessageNormalizer.pendingClarifyActivity(from: $0) }
+        }
+        pendingApprovalPayload = object["pending_approval"]?.objectValue
+        pendingInputPrompts = InputPromptActivity.pending(inOpenRequests: object["open_requests"])
         self.inflight = inflight
         self.queued = queued
     }
@@ -266,13 +420,164 @@ struct SessionRuntimeSnapshot {
 
 struct SessionResumeResult {
     let sessionId: String
+    /// The durable stored-session key the response names, parsed from
+    /// `stored_session_id` / `session_key` when the gateway provides one.
+    /// Deliberately separate from `sessionId`: a returned runtime id alone is
+    /// never proof of durable conversation identity.
+    var storedSessionId: String? = nil
     let messages: [ChatMessage]
     let snapshot: SessionRuntimeSnapshot
+}
+
+/// Typed result of `session.compress` — the dedicated manual-compression RPC
+/// the TUI and Hermes Desktop use for `/compress`. Shapes verified against
+/// upstream `tui_gateway`:
+/// - in-process compression (`_compress_live`): `status` of `"compressed"` or
+///   `"aborted"`, `removed`, a `summary` object, and `messages` — the
+///   post-compress history in the same shape `session.resume` returns;
+/// - compute-host compression (`_compress_via_compute_host`): the host's
+///   result forwarded verbatim (same fields), or `status: "pending"` when the
+///   gateway's bounded wait expired while the host is still compressing;
+/// - a concurrent compression already holding the lock:
+///   `lock_held: true` with a human-readable `message` and no `status`.
+struct SessionCompressResult {
+    enum Status: Equatable {
+        case compressed
+        case pending
+        case aborted
+    }
+
+    let status: Status?
+    let lockHeld: Bool
+    let message: String?
+    let removed: Int?
+    let messages: [ChatMessage]
+    /// Distinguishes "gateway returned no transcript" from "returned an empty
+    /// one" — an absent `messages` payload must never clear the transcript.
+    let hasMessagesPayload: Bool
+    let summaryHeadline: String?
+    let summaryTokenLine: String?
+    let summaryNote: String?
+    /// `summary.aborted`. The compute-host result can carry the abort flag
+    /// inside `summary` alone, so abort detection checks both fields.
+    let summaryAborted: Bool
+    /// Compute-host results carry the host's rendered feedback under
+    /// `host_ack.output`; rendered when the response has no summary lines
+    /// (upstream Desktop falls back to it before the removed-count text).
+    let hostOutput: String?
+
+    var isPending: Bool { status == .pending }
+    var isAborted: Bool { status == .aborted || summaryAborted }
+
+    /// Non-trapping exact `Int` extraction. Delegates to `HermesClient.exactIntValue`.
+    private static func exactIntValue(_ value: AnyCodable?) -> Int? {
+        HermesClient.exactIntValue(value)
+    }
+
+    init(from result: AnyCodable) {
+        let object = result.objectValue ?? [:]
+        switch object["status"]?.stringValue?.lowercased() {
+        case "pending": status = .pending
+        case "aborted": status = .aborted
+        case "compressed": status = .compressed
+        default: status = nil
+        }
+        lockHeld = object["lock_held"]?.boolValue == true
+        message = object["message"]?.stringValue
+        removed = Self.exactIntValue(object["removed"])
+        hasMessagesPayload = object["messages"]?.arrayValue != nil
+        messages = MessageNormalizer.normalizeMessages(object["messages"]?.arrayValue ?? [])
+        let summary = object["summary"]?.objectValue ?? [:]
+        summaryHeadline = summary["headline"]?.stringValue
+        summaryTokenLine = summary["token_line"]?.stringValue
+        summaryNote = summary["note"]?.stringValue
+        summaryAborted = summary["aborted"]?.boolValue == true
+        hostOutput = object["host_ack"]?.objectValue?["output"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 struct SessionBranchMessage {
     let role: MessageRole
     let content: String
+}
+
+/// Typed result of `prompt.submit`, derived from the gateway's actual
+/// response `status` field (verified against upstream `tui_gateway`):
+/// `streaming` for a new turn, `steered`/`redirected`/`queued` when the
+/// gateway applied its busy-input policy to a mid-turn submission. The busy
+/// outcomes are NOT failures — Hermes accepted the text — but they prove the
+/// session was RUNNING when the prompt landed, so a caller that believed the
+/// session idle must adopt the authoritative busy state.
+enum PromptSubmissionOutcome: Equatable {
+    /// `{"status": "streaming"}` — the gateway started a new turn.
+    case accepted
+    /// `{"status": "steered"}` — injected into the live turn.
+    case steered
+    /// `{"status": "redirected"}` — live-turn correction accepted.
+    case redirected
+    /// `{"status": "queued"}` — held for the next turn.
+    case queued
+
+    var isBusySubmission: Bool { self != .accepted }
+
+    init(gatewayStatus: String?) {
+        switch gatewayStatus?.lowercased() {
+        case "steered": self = .steered
+        case "redirected": self = .redirected
+        case "queued": self = .queued
+        // "streaming" and any unrecognized success shape: the RPC envelope
+        // succeeded, so the submission was accepted. Older gateways may omit
+        // the status field; never invent a failure from a missing field.
+        default: self = .accepted
+        }
+    }
+}
+
+/// One row of `session.active_list` — the gateway's authoritative in-memory
+/// runtime registry. Reading it does not resume, focus, or otherwise mutate a
+/// session (upstream contract), which makes it the only safe liveness probe
+/// for a healthy foreground transition.
+struct LiveSessionStatus: Equatable {
+    /// The registry's runtime id for this live session.
+    let runtimeSessionId: String
+    /// The durable stored session key the runtime was resumed/created from.
+    let storedSessionId: String
+    /// Upstream `_session_live_status`: "working" | "waiting" | "starting" | "idle".
+    let status: String
+    let lastActive: TimeInterval?
+
+    /// Authoritative committed-busy state. Upstream `_session_live_status`
+    /// reports "working" while the turn thread runs and "waiting" while a
+    /// decision is pending. "starting" is deliberately excluded: it means
+    /// `agent_build_started` with the ready event unset, which
+    /// `_schedule_agent_build` also arms for PLAIN session.create /
+    /// cold-resume pre-warm with no prompt involved — and because the
+    /// starting check precedes the running check it can transiently mask a
+    /// committed running turn during the submit→agent-ready window. Hermes
+    /// Desktop likewise treats only working/waiting as busy. A "starting"
+    /// row is runtime-present, liveness-inconclusive; the typed
+    /// `prompt.submit` outcome is the authority for busy-input semantics.
+    var isRunning: Bool { status == "working" || status == "waiting" }
+
+    init(runtimeSessionId: String, storedSessionId: String, status: String, lastActive: TimeInterval? = nil) {
+        self.runtimeSessionId = runtimeSessionId
+        self.storedSessionId = storedSessionId
+        self.status = status
+        self.lastActive = lastActive
+    }
+
+    init?(from object: [String: AnyCodable]) {
+        guard let runtimeId = object["id"]?.stringValue, !runtimeId.isEmpty else {
+            return nil
+        }
+        self.init(
+            runtimeSessionId: runtimeId,
+            storedSessionId: object["session_key"]?.stringValue ?? "",
+            status: object["status"]?.stringValue ?? "idle",
+            lastActive: object["last_active"]?.doubleValue
+        )
+    }
 }
 
 /// Result of the newer active-turn correction RPC. `queued` is still a
@@ -299,12 +604,86 @@ private struct PendingRequest {
     let timer: Timer?
 }
 
+// MARK: - WebSocket seam
+
+/// The slice of `URLSessionWebSocketTask` that `HermesClient` depends on, so
+/// the client can be driven against a fake transport in tests without a real
+/// network. `AnyObject`-bound so the `===` identity checks (which tell a
+/// superseded receive loop apart from the current socket) keep working on the
+/// existential type.
+protocol HermesWebSocket: AnyObject {
+    var closeCode: URLSessionWebSocketTask.CloseCode { get }
+    func resume()
+    func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?)
+    func receive() async throws -> URLSessionWebSocketTask.Message
+    func send(_ message: URLSessionWebSocketTask.Message, completionHandler: @escaping @Sendable (Error?) -> Void)
+}
+
+extension URLSessionWebSocketTask: HermesWebSocket {}
+
+/// Produces sockets for a `HermesClient` and owns the underlying session.
+/// `makeSocket` wires the handshake callbacks (`onOpen` / `onCloseBeforeOpen`,
+/// mirroring `URLSessionWebSocketDelegate`); `invalidate` tears the session
+/// down. The production impl is a faithful extraction of the client's former
+/// inline `URLSession` logic; tests supply a fake. All methods are invoked from
+/// `HermesClient` on the MainActor; the protocol is left nonisolated so the
+/// `URLSessionWebSocketTransport` default doesn't force closure-isolation hoops.
+protocol HermesWebSocketTransport: AnyObject {
+    func makeSocket(
+        request: URLRequest,
+        onOpen: @escaping (any HermesWebSocket) -> Void,
+        onCloseBeforeOpen: @escaping (any HermesWebSocket) -> Void
+    ) -> any HermesWebSocket
+
+    func invalidate()
+}
+
+/// Production transport: one `URLSession` per socket, delegate-driven
+/// handshake. Behaviour is identical to the client's pre-seam connect().
+final class URLSessionWebSocketTransport: HermesWebSocketTransport {
+    /// Explicit incoming-message bound for the production socket. URLSession's
+    /// own default (1 MiB) closes the connection with close code 1009 as soon
+    /// as a single WebSocket message exceeds it, which is how resuming a large
+    /// session — one huge `session.resume` frame — used to kill Conduit's
+    /// connection in a reconnect loop (issue #106). 4 MiB comfortably covers
+    /// legitimate control payloads while staying bounded; the compact resume
+    /// keeps transcript-sized payloads off the socket entirely.
+    static let maximumMessageSize = 4 * 1024 * 1024
+
+    private var session: URLSession?
+    private var delegate: WebSocketOpenDelegate?
+
+    func makeSocket(
+        request: URLRequest,
+        onOpen: @escaping (any HermesWebSocket) -> Void,
+        onCloseBeforeOpen: @escaping (any HermesWebSocket) -> Void
+    ) -> any HermesWebSocket {
+        let delegate = WebSocketOpenDelegate()
+        delegate.onOpen = onOpen
+        delegate.onCloseBeforeOpen = onCloseBeforeOpen
+        let config = URLSessionConfiguration.default
+        config.waitsForConnectivity = true
+        let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        self.session = session
+        self.delegate = delegate
+        let task = session.webSocketTask(with: request)
+        task.maximumMessageSize = Self.maximumMessageSize
+        return task
+    }
+
+    func invalidate() {
+        session?.invalidateAndCancel()
+        session = nil
+        delegate = nil
+    }
+}
+
 /// URLSession only confirms the WebSocket handshake through its delegate. The
 /// client must not issue session RPCs or paint a green indicator before this
 /// callback, otherwise a just-opened socket can race its first `session.resume`.
 private final class WebSocketOpenDelegate: NSObject, URLSessionWebSocketDelegate {
-    var onOpen: ((URLSessionWebSocketTask) -> Void)?
-    var onCloseBeforeOpen: ((URLSessionWebSocketTask) -> Void)?
+    var onOpen: ((any HermesWebSocket) -> Void)?
+    var onCloseBeforeOpen: ((any HermesWebSocket) -> Void)?
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
         onOpen?(webSocketTask)
@@ -326,11 +705,37 @@ final class HermesClient: ObservableObject {
     @Published private(set) var isConnected = false
 
     // Non-published internal state
-    private var socket: URLSessionWebSocketTask?
-    private var session: URLSession?
-    private var socketDelegate: WebSocketOpenDelegate?
+    private var socket: (any HermesWebSocket)?
+    private var transport: (any HermesWebSocketTransport)?
+    private let transportFactory: @MainActor () -> any HermesWebSocketTransport
     private var requestId = 0
     private var pending = [Int: PendingRequest]()
+    /// Server→client request ids this client has presented and not yet
+    /// answered (or seen withdrawn). Not cleared by `connect()`, but AppState
+    /// builds a fresh client per reconnect, so in practice this is rebuilt
+    /// from `session.resume`'s `open_requests` (same ids) on each connection.
+    private var openServerRequestIDs = Set<String>()
+    /// Approval server request id (`srq-…`) → the approval queue
+    /// `request_id` its card is keyed by (and the session the request named),
+    /// so `request.cancel` can reach it. Rebuilt like `openServerRequestIDs`.
+    private var approvalQueueIDs = [String: (queueID: String, sessionId: String)]()
+    /// Clarify / input-prompt server request id → the session the request
+    /// named, the fallback for a `request.cancel` whose envelope omits
+    /// `session_id`.
+    private var clarifySessions = [String: String]()
+    /// The socket `client.capabilities` was sent on, so a repeated
+    /// `gateway.ready` does not advertise twice on one connection.
+    private weak var advertisedSocket: AnyObject?
+    /// `client.capabilities` → `declines_not_shown`: the gateway counts a
+    /// 4404 "not shown here" as one client declining a window-owned request
+    /// rather than as its answer.
+    private var backendCountsDeclines = false
+    /// True between sending `client.capabilities` and its reply, while
+    /// `backendCountsDeclines` is not yet known.
+    private var capabilityReplyPending = false
+    /// Window-owned request ids that arrived while `capabilityReplyPending`:
+    /// declined (or not) once the reply says whether declines are counted.
+    private var deferredWindowOwnedDeclines: [String] = []
     private var closedIntentionally = false
     private var receiveTask: Task<Void, Never>?
     private var socketHasOpened = false
@@ -339,23 +744,109 @@ final class HermesClient: ObservableObject {
 
     let connection: HermesConnection
     let profile: String?
+    let cloudflareAccess: CloudflareAccessCredentials?
 
     // Callback for stream events (set by AppState)
     var onEvent: ((StreamEvent) -> Void)?
     var onDisconnected: (() -> Void)?
 
-    nonisolated static let requestTimeout: TimeInterval = 30
+    static let requestTimeout: TimeInterval = 30
     static let promptSubmitTimeout: TimeInterval = 180 // 3 minutes
     static let titleGenerationTimeout: TimeInterval = 90
+    /// The legacy full-transcript resume is the RPC most likely to carry the
+    /// largest payload over the slowest connections (issue #106 follow-up),
+    /// so it gets a bounded-but-generous budget instead of the ordinary
+    /// request timeout.
+    static let legacyResumeTimeout: TimeInterval = 60
+    /// Budget for the `session.active_list` liveness probe. It sits on
+    /// latency-sensitive paths — the foreground refresh and the pre-send
+    /// stale-idle correction — so a stalled gateway must fail it fast instead
+    /// of holding the composer for the generic request timeout. 8s matches
+    /// the old `session.list` health-check budget; a timed-out probe takes
+    /// the same fallback paths as any other probe failure.
+    static let livenessProbeTimeout: TimeInterval = 8
+    /// Budget for the foreground `ping` (`healthCheck`). See there.
+    static let pingTimeout: TimeInterval = 5
+    /// Dedicated budget for `session.compress`. Manual compression is
+    /// LLM-bound and routinely outlives the generic request timeout on large
+    /// sessions, while the gateway keeps compressing after the client gives
+    /// up. Its compute-host wait alone runs for up to
+    /// `compression.context_total_ceiling_seconds + 30s`, capped at 630s
+    /// (upstream `tui_gateway/compute_host_bridge.py`
+    /// `_COMPUTE_HOST_COMPRESS_WAIT_CAP_SECS`), and then answers
+    /// `status: "pending"` rather than an error — so this budget must sit
+    /// above that cap or the client reports a false timeout while the host is
+    /// still compressing (upstream #97948; Hermes Desktop parity:
+    /// `SESSION_COMPRESS_TIMEOUT_MS = 660_000`).
+    static let sessionCompressTimeout: TimeInterval = 660
+    /// Approval queue hydration is optional recovery context. It must never
+    /// hold foreground restoration behind the ordinary RPC timeout.
+    static let pendingApprovalsTimeout: TimeInterval = 3
 
-    init(connection: HermesConnection, profile: String? = nil) {
+    /// Non-trapping exact `Int` extraction. `Int(Double)` traps outside the
+    /// Int64 range, and numeric fields can be gateway-authored — a hostile or buggy
+    /// payload must degrade to invalid response or unknown, never crash the client.
+    /// Non-integer doubles, NaN, infinity, and out-of-range numbers are rejected:
+    /// only exact whole values convert.
+    nonisolated static func exactIntValue(_ value: AnyCodable?) -> Int? {
+        guard case .number(let n)? = value else { return nil }
+        guard n.isFinite,
+              n >= -9_223_372_036_854_775_808.0, // Int.min == -2^63, exact as Double
+              n < 9_223_372_036_854_775_808.0,   // 2^63 itself already overflows
+              n == n.rounded(.towardZero) else {
+            return nil
+        }
+        return Int(n)
+    }
+
+    init(
+        connection: HermesConnection,
+        profile: String? = nil,
+        cloudflareAccess: CloudflareAccessCredentials? = nil,
+        transportFactory: @escaping @MainActor () -> any HermesWebSocketTransport = { URLSessionWebSocketTransport() }
+    ) {
         self.connection = connection
         self.profile = profile
+        self.cloudflareAccess = cloudflareAccess
+        self.transportFactory = transportFactory
     }
 
     // MARK: - Connection
 
     func connect() async throws {
+        // Tear down any prior connection in full before installing a new one —
+        // this mirrors disconnect()'s cleanup. Cancelling the receive task alone
+        // is not enough: URLSessionWebSocketTask.receive() does not honor
+        // cooperative cancellation, so a superseded loop stays alive until its
+        // socket actually errors; cancelling the socket + invalidating the
+        // session forces that error, after which the loop's identity guard
+        // no-ops its late catch. Resuming the open continuation and failing
+        // pending RPCs here also covers the case where the new connect() throws
+        // before its own waitForSocketOpen (e.g. invalid URL) — without it the
+        // prior connect() would hang forever and its RPCs would wait out their
+        // own timers. (AppState makes a fresh HermesClient per reconnect and
+        // disconnects the old one first, so this is defense-in-depth against an
+        // intra-instance reconnect — which no caller does today.)
+        receiveTask?.cancel()
+        receiveTask = nil
+        socket?.cancel(with: .goingAway, reason: nil)
+        socket = nil
+        transport?.invalidate()
+        transport = nil
+        openTimeoutTask?.cancel()
+        openTimeoutTask = nil
+        openContinuation?.resume(throwing: HermesError.connectionClosed)
+        openContinuation = nil
+        isConnected = false
+        failAllPendingRequests(with: HermesError.connectionClosed)
+        // Per-connection capability state. The open-request bookkeeping is
+        // not cleared here; AppState builds a fresh client per reconnect, so
+        // it is rebuilt from `session.resume` on that client.
+        advertisedSocket = nil
+        backendCountsDeclines = false
+        capabilityReplyPending = false
+        deferredWindowOwnedDeclines = []
+
         closedIntentionally = false
         socketHasOpened = false
         let url: URL
@@ -369,20 +860,18 @@ final class HermesClient: ObservableObject {
             throw HermesError.invalidUrl
         }
 
-        let config = URLSessionConfiguration.default
-        config.waitsForConnectivity = true
-        let socketDelegate = WebSocketOpenDelegate()
-        socketDelegate.onOpen = { [weak self] task in
-            Task { @MainActor in self?.didOpen(task) }
-        }
-        socketDelegate.onCloseBeforeOpen = { [weak self] task in
-            Task { @MainActor in self?.didClose(task) }
-        }
-        let session = URLSession(configuration: config, delegate: socketDelegate, delegateQueue: nil)
-        self.session = session
-        self.socketDelegate = socketDelegate
+        let transport = transportFactory()
+        self.transport = transport
 
-        let socket = session.webSocketTask(with: url)
+        var request = URLRequest(url: url)
+        request = request.applyingProxyHeaders(cloudflare: cloudflareAccess)
+        // Lets the notifier plugin tell Conduit's opens from Desktop's (#454).
+        request.setValue("conduit", forHTTPHeaderField: "X-Conduit-Client")
+        let socket = transport.makeSocket(
+            request: request,
+            onOpen: { [weak self] socket in Task { @MainActor in self?.didOpen(socket) } },
+            onCloseBeforeOpen: { [weak self] socket in Task { @MainActor in self?.didClose(socket) } }
+        )
         self.socket = socket
         socket.resume()
         try await waitForSocketOpen(socket)
@@ -395,19 +884,21 @@ final class HermesClient: ObservableObject {
         }
     }
 
-    private func waitForSocketOpen(_ socket: URLSessionWebSocketTask) async throws {
+    private func waitForSocketOpen(_ socket: any HermesWebSocket) async throws {
+        // The prior continuation (if any) is already resumed by connect()'s
+        // teardown before we reach here, so just install this one.
         try await withCheckedThrowingContinuation { continuation in
             openContinuation = continuation
             openTimeoutTask?.cancel()
             openTimeoutTask = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(15))
                 guard !Task.isCancelled else { return }
-                self?.failSocketOpen(socket, error: HermesError.timeout("WebSocket connection"))
+                await self?.failSocketOpen(socket, error: HermesError.timeout(AppLocalization.string("WebSocket connection")))
             }
         }
     }
 
-    private func didOpen(_ socket: URLSessionWebSocketTask) {
+    private func didOpen(_ socket: any HermesWebSocket) {
         guard self.socket === socket, !socketHasOpened else { return }
         socketHasOpened = true
         openTimeoutTask?.cancel()
@@ -416,17 +907,20 @@ final class HermesClient: ObservableObject {
         openContinuation = nil
     }
 
-    private func didClose(_ socket: URLSessionWebSocketTask) {
+    private func didClose(_ socket: any HermesWebSocket) {
         guard self.socket === socket, !socketHasOpened else { return }
         failSocketOpen(socket, error: HermesError.connectionClosed)
     }
 
-    private func failSocketOpen(_ socket: URLSessionWebSocketTask, error: Error) {
+    private func failSocketOpen(_ socket: any HermesWebSocket, error: Error) {
         guard self.socket === socket else { return }
         openTimeoutTask?.cancel()
         openTimeoutTask = nil
         socket.cancel(with: .goingAway, reason: nil)
         self.socket = nil
+        transport?.invalidate()
+        transport = nil
+        isConnected = false
         openContinuation?.resume(throwing: error)
         openContinuation = nil
     }
@@ -437,6 +931,12 @@ final class HermesClient: ObservableObject {
         while !Task.isCancelled {
             do {
                 let message = try await socket.receive()
+                // A reconnect replaces `self.socket`; if this loop has been
+                // superseded, drop the frame rather than dispatch it —
+                // `handleMessage` has no identity check of its own and could
+                // otherwise fire `onEvent`/resolve pending RPCs for the new
+                // connection. Same guard the catch uses below.
+                guard self.socket === socket else { break }
                 switch message {
                 case .data(let data):
                     handleMessage(data: data)
@@ -448,7 +948,21 @@ final class HermesClient: ObservableObject {
             } catch {
                 // Socket closed or errored
                 logger.error("WebSocket receive failed: \(error.localizedDescription, privacy: .public)")
+                // Only tear down if this loop still owns the current socket.
+                // A reconnect replaces `self.socket` and spawns a new loop; an
+                // unguarded late catch from the superseded loop would mark the
+                // healthy new connection disconnected and fail its in-flight
+                // RPCs. didOpen/didClose/failSocketOpen guard the same way.
+                guard self.socket === socket else { break }
                 isConnected = false
+                // No response can ever arrive on a dead socket; failing the
+                // in-flight requests here keeps awaiting UI from hanging for
+                // the remainder of each request's timeout.
+                failAllPendingRequests(with: HermesError.connectionClosed)
+                // Drop the dead socket: its `closeCode` stays `.invalid` after
+                // a receive error, so leaving it installed would let `rpc`
+                // re-issue against it and hang until its own timeout.
+                self.socket = nil
                 if !closedIntentionally {
                     onDisconnected?()
                 }
@@ -463,10 +977,27 @@ final class HermesClient: ObservableObject {
             return
         }
 
-        // Handle RPC response (has id)
-        if let id = json.id {
-            guard let pending = pending.removeValue(forKey: id) else {
-                logger.debug("Received unmatched RPC response id \(id)")
+        // Server→client request: carries both `method` and `id`. It must be
+        // routed before response matching — it is not an answer to any of
+        // this client's requests, and an integer id could otherwise collide
+        // with (and wrongly settle) one of them.
+        if let method = json.method, method != "event", let requestID = json.id {
+            // Hermes mints string ids only (like the reference client, any
+            // other id is ignored — never answered, never matched to a
+            // pending RPC of ours).
+            guard case .string = requestID else {
+                logger.debug("Ignored server request \(method, privacy: .public) with a non-string id")
+                return
+            }
+            handleServerRequest(id: requestID, method: method, params: json.params?.objectValue ?? [:])
+            return
+        }
+
+        // Handle RPC response (has id, no method)
+        if json.method == nil, let requestID = json.id {
+            guard case .int(let id) = requestID,
+                  let pending = pending.removeValue(forKey: id) else {
+                logger.debug("Received unmatched RPC response id \(String(describing: requestID.wireValue), privacy: .public)")
                 return
             }
             logger.notice("Received RPC response id \(id)")
@@ -481,199 +1012,368 @@ final class HermesClient: ObservableObject {
 
         // Handle stream event notification
         if json.method == "event", let params = json.params {
+            let eventObject = params.objectValue
+            switch eventObject?["type"]?.stringValue {
+            case "gateway.ready":
+                advertiseClientCapabilities()
+            case "request.cancel":
+                // Bookkeeping only: the request is closed whatever the
+                // reason. What the card shows is decided by the event.
+                let payload = eventObject?["payload"]?.objectValue
+                if let id = payload?["id"]?.stringValue {
+                    openServerRequestIDs.remove(id)
+                    if let session = clarifySessions.removeValue(forKey: id),
+                       (eventObject?["session_id"]?.stringValue ?? "").isEmpty,
+                       var patched = eventObject {
+                        patched["session_id"] = .string(session)
+                        handleStreamEvent(params: .object(patched))
+                        return
+                    }
+                    if let approval = approvalQueueIDs.removeValue(forKey: id) {
+                        let envelopeSession = eventObject?["session_id"]?.stringValue ?? ""
+                        onEvent?(.approvalWithdrawn(
+                            sessionId: envelopeSession.isEmpty ? approval.sessionId : envelopeSession,
+                            requestId: approval.queueID,
+                            reason: payload?["reason"]?.stringValue ?? ""
+                        ))
+                    }
+                }
+            default:
+                break
+            }
             handleStreamEvent(params: params)
         } else {
             logger.debug("Received non-event WebSocket notification without an RPC id")
         }
     }
 
-    private func handleStreamEvent(params: AnyCodable) {
-        guard let obj = params.objectValue else { return }
-        let type = obj["type"]?.stringValue ?? ""
-        let sessionId = obj["session_id"]?.stringValue ?? ""
-        let payload = obj["payload"]?.objectValue
+    // MARK: - Server→client requests
 
-        switch type {
-        case "message.start":
-            onEvent?(.messageStart(sessionId: sessionId))
-
-        case "message.delta":
-            let text = payload?["text"]?.stringValue ?? obj["text"]?.stringValue ?? ""
-            if !text.isEmpty {
-                onEvent?(.messageDelta(sessionId: sessionId, text: text))
+    /// Tells the gateway, once per connection, that this client answers
+    /// server→client JSON-RPC requests. Hermes (#112548) never sends an
+    /// approval / clarify / sudo / secret request to a WebSocket client that
+    /// has not said so: it withdraws the approval ("the attached client
+    /// cannot answer approval requests") and the command is blocked. Sent on
+    /// `gateway.ready`, which the gateway writes first on every new socket.
+    /// A gateway that predates server requests answers -32601; ignored.
+    ///
+    /// Ordering: nothing waits for this before `session.resume`, and nothing
+    /// needs to. The gateway computes a resume's `open_requests` whatever the
+    /// client advertised, and those replays arrive in the resume response.
+    /// The capability only gates *new* live requests, and it goes out on the
+    /// first frame of the connection, like the reference `json-rpc-channel`.
+    private func advertiseClientCapabilities() {
+        guard let socket = self.socket, advertisedSocket !== socket else { return }
+        advertisedSocket = socket
+        capabilityReplyPending = true
+        Task { @MainActor [weak self] in
+            guard let self, self.socket === socket else { return }
+            do {
+                let result = try await self.rpc("client.capabilities", params: ["server_requests": true], scoped: false)
+                guard self.socket === socket else { return }
+                self.backendCountsDeclines = result.objectValue?["declines_not_shown"]?.boolValue == true
+                self.logger.notice("Advertised server_requests capability")
+            } catch {
+                self.logger.notice("client.capabilities not accepted: \(error.localizedDescription, privacy: .public)")
+                // Let a later gateway.ready on this socket try again.
+                if self.advertisedSocket === socket { self.advertisedSocket = nil }
             }
-
-        case "reasoning.delta", "message.reasoning", "message.reasoning.delta":
-            let payloadText: String? = payload?["reasoning"]?.stringValue
-                ?? payload?["reasoning_content"]?.stringValue
-                ?? payload?["text"]?.stringValue
-                ?? payload?["content"]?.stringValue
-            let objText: String? = obj["reasoning"]?.stringValue
-                ?? obj["text"]?.stringValue
-            let text = payloadText ?? objText ?? ""
-            if !text.isEmpty {
-                onEvent?(.reasoningDelta(sessionId: sessionId, text: text))
+            guard self.socket === socket else { return }
+            self.capabilityReplyPending = false
+            let deferred = self.deferredWindowOwnedDeclines
+            self.deferredWindowOwnedDeclines = []
+            if self.backendCountsDeclines {
+                for id in deferred {
+                    self.writeServerRequestReply(id: .string(id), error: (Self.notShownCode, "no Conduit window shows this session"))
+                }
             }
+        }
+    }
 
-        case "message.complete":
-            let messageId = payload?["message_id"]?.stringValue
-                ?? payload?["id"]?.stringValue
-                ?? payload?["message"]?.objectValue?["id"]?.stringValue
-                ?? obj["message_id"]?.stringValue
-                ?? obj["id"]?.stringValue
-            let content = payload?["content"]?.stringValue
-                ?? payload?["text"]?.stringValue
-                ?? payload?["rendered"]?.stringValue
-            let reasoning = payload?["reasoning"]?.stringValue
-            onEvent?(.messageComplete(sessionId: sessionId, messageId: messageId, content: content, reasoning: reasoning))
-
-        case "error":
-            onEvent?(.messageError(sessionId: sessionId, message: payload?["message"]?.stringValue ?? "Hermes reported an error."))
-
-        case "message.interrupted", "session.interrupted":
-            onEvent?(.messageInterrupted(sessionId: sessionId))
-
-        case "session.busy":
-            let busy = payload?["busy"]?.boolValue ?? false
-            onEvent?(.sessionBusy(sessionId: sessionId, busy: busy))
-
-        case "session.info":
-            onEvent?(.sessionInfo(sessionId: sessionId, snapshot: SessionRuntimeSnapshot(object: payload ?? [:])))
-
-        case "session.title":
-            let storedSessionId = payload?["session_id"]?.stringValue ?? ""
-            let title = payload?["title"]?.stringValue?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !storedSessionId.isEmpty, !title.isEmpty {
-                onEvent?(.sessionTitle(
-                    runtimeSessionId: sessionId,
-                    storedSessionId: storedSessionId,
-                    title: title
-                ))
+    /// One inbound server→client request (`tui_gateway/server_requests.py`).
+    ///
+    /// - `approval` becomes the existing approval card. Its params carry the
+    ///   approval queue's own `request_id`, and the card still answers through
+    ///   `approval.respond`: resolving the queue entry makes the gateway
+    ///   withdraw this request itself (`request.cancel`, reason `resolved`),
+    ///   so no response frame is written for it.
+    /// - `clarify` becomes the existing clarify card keyed by the server
+    ///   request id; `respondToClarification` answers it with a response
+    ///   frame (single question) or `clarify.lock` (batch questions).
+    /// - `sudo`, `secret` and `vault.unlock_prompt` become a masked input
+    ///   card; `respondToInputPrompt` answers `{value}` ('' = skip).
+    /// - Everything else (`vault.save_login`, `vault.code`, desktop-only
+    ///   bridges) has no UI here and is declined at once with -32601, so the
+    ///   tool fails fast instead of waiting out its deadline.
+    private func handleServerRequest(id: JsonRpcID, method: String, params: [String: AnyCodable]) {
+        guard case .string(let requestID) = id, !requestID.isEmpty else { return }
+        let sessionId = params["session_id"]?.stringValue ?? ""
+        logger.notice("Received server request \(method, privacy: .public) id \(requestID, privacy: .public)")
+        switch method {
+        case "approval":
+            guard let activity = MessageNormalizer.approvalActivity(from: params, sessionId: sessionId) else {
+                writeServerRequestReply(id: id, error: (Self.invalidParamsCode, "approval request without a session"))
+                return
             }
-
-        case "tool.start", "tool_call":
-            let name = payload?["name"]?.stringValue ?? ""
-            let input = payload?["args_text"]?.descriptiveStringValue
-                ?? payload?["context"]?.descriptiveStringValue
-                ?? payload?["input"]?.descriptiveStringValue
-                ?? payload?["arguments"]?.descriptiveStringValue
-            ?? payload?["args"]?.descriptiveStringValue
-            onEvent?(.toolStart(sessionId: sessionId, toolName: name, toolInput: input))
-
-        case "tool.complete", "tool_result":
-            let name = payload?["name"]?.stringValue ?? ""
-            let output = payload?["output"]?.descriptiveStringValue ?? payload?["result"]?.descriptiveStringValue
-            onEvent?(.toolComplete(sessionId: sessionId, toolName: name, toolOutput: output))
-
-        case "review.summary":
-            guard let payload, let review = MessageNormalizer.reviewActivity(from: payload, eventSessionId: sessionId) else { return }
-            onEvent?(.reviewSummary(sessionId: sessionId, activity: review))
-
-        case "clarify", "clarify.request":
-            guard let payload,
-                  let clarify = MessageNormalizer.clarifyActivity(from: payload) else { return }
-            onEvent?(.clarify(
-                sessionId: sessionId,
-                requestId: clarify.requestId,
-                question: clarify.question,
-                choices: clarify.choices.map { (label: $0.label, value: $0.value) }
-            ))
-
-        case "approval.request":
-            guard let payload,
-                  let approval = MessageNormalizer.approvalActivity(from: payload, sessionId: sessionId) else { return }
-            onEvent?(.approval(sessionId: sessionId, activity: approval))
-
-        case "context.update", "session.context":
-            let percent = payload?["context_percent"]?.doubleValue ?? 0
-            let used = payload?["context_used"]?.intValue ?? 0
-            let max = payload?["context_max"]?.intValue ?? 0
-            onEvent?(.contextUpdate(sessionId: sessionId, percent: percent, used: used, max: max))
-
-        case "cwd.update", "workspace.update":
-            let cwd = payload?["cwd"]?.stringValue ?? ""
-            onEvent?(.cwdUpdate(sessionId: sessionId, cwd: cwd))
-
-        case "model.update":
-            let model = payload?["model"]?.stringValue ?? ""
-            let provider = payload?["provider"]?.stringValue ?? ""
-            onEvent?(.modelUpdate(sessionId: sessionId, model: model, provider: provider))
-
-        case let eventType where eventType.hasPrefix("subagent."):
-            guard let payload else { return }
-            let activity = delegateAgentActivity(from: payload, eventType: eventType)
-            onEvent?(.delegateAgent(sessionId: sessionId, activity: activity))
-
+            openServerRequestIDs.insert(requestID)
+            if let queueID = activity.requestId {
+                approvalQueueIDs[requestID] = (queueID, sessionId)
+            }
+            onEvent?(.approval(sessionId: sessionId, activity: activity))
+        case "clarify":
+            guard let activity = MessageNormalizer.pendingClarifyActivity(
+                from: Self.clarifyPayload(serverRequestID: requestID, params: params)
+            ) else {
+                writeServerRequestReply(id: id, error: (Self.invalidParamsCode, "clarify request without a question"))
+                return
+            }
+            openServerRequestIDs.insert(requestID)
+            clarifySessions[requestID] = sessionId
+            onEvent?(.clarify(sessionId: sessionId, activity: activity))
+        case _ where InputPromptActivity.Kind(rawValue: method) != nil:
+            guard let activity = InputPromptActivity.from(requestId: requestID, method: method, params: params) else {
+                writeServerRequestReply(id: id, error: (Self.invalidParamsCode, "\(method) request without a session"))
+                return
+            }
+            openServerRequestIDs.insert(requestID)
+            clarifySessions[requestID] = sessionId
+            onEvent?(.inputPrompt(sessionId: sessionId, activity: activity))
         default:
-            // Pass through unparsed events
-            onEvent?(.unparsed(payload: obj.mapValues { $0.anyValue }))
+            declineServerRequest(id: id, method: method)
+        }
+    }
+
+    /// Methods this client presents (anything else is declined).
+    static func handlesServerRequest(_ method: String) -> Bool {
+        method == "clarify" || method == "approval" || InputPromptActivity.Kind(rawValue: method) != nil
+    }
+
+    /// Requests only the Hermes Desktop window showing the session can
+    /// answer (`server_requests.py`, "window-owned bridges").
+    static let windowOwnedServerRequests: Set<String> = [
+        "preview.read", "preview.act", "terminal.read", "window.read", "tour"
+    ]
+
+    /// Declines a request this client has no UI for, so the tool fails fast
+    /// instead of waiting out its deadline. A window-owned request gets the
+    /// 4404 "not shown here" decline, which settles only once every attached
+    /// client declined — a -32601 would settle it at once and take it away
+    /// from a Desktop window on the same session. A gateway that does not
+    /// count declines would settle on any error, so there it gets none
+    /// (reference: `apps/shared/src/json-rpc-channel.ts`).
+    private func declineServerRequest(id: JsonRpcID, method: String) {
+        if Self.windowOwnedServerRequests.contains(method) {
+            guard backendCountsDeclines else {
+                // Until the capability reply says whether declines are
+                // counted, hold the decline rather than drop it.
+                if capabilityReplyPending, case .string(let requestID) = id {
+                    deferredWindowOwnedDeclines.append(requestID)
+                }
+                return
+            }
+            writeServerRequestReply(id: id, error: (Self.notShownCode, "no Conduit window shows this session"))
+        } else {
+            writeServerRequestReply(id: id, error: (Self.methodNotFoundCode, "no handler for server request: \(method)"))
+        }
+    }
+
+    /// The legacy `clarify.request` payload shape for a `clarify` server
+    /// request: its params, keyed by the server request id (which the
+    /// response frame and `clarify.lock` both address).
+    static func clarifyPayload(serverRequestID: String, params: [String: AnyCodable]) -> [String: AnyCodable] {
+        var payload = params
+        payload["request_id"] = .string(serverRequestID)
+        return payload
+    }
+
+    /// Whether `requestId` names a server→client request rather than a
+    /// legacy `clarify.request` id. Hermes mints `srq-<hex>` ids; the prefix
+    /// check covers a card restored before this connection saw the request.
+    func isServerRequestID(_ requestId: String) -> Bool {
+        openServerRequestIDs.contains(requestId) || requestId.hasPrefix("srq-")
+    }
+
+    /// Every `clarify` entry of a resume's `open_requests`, oldest first, as
+    /// legacy clarify payloads (locked batch answers ride `answers`).
+    static func openClarifyPayloads(in openRequests: AnyCodable?) -> [[String: AnyCodable]] {
+        (openRequests?.arrayValue ?? []).compactMap { entry in
+            guard let object = entry.objectValue,
+                  object["method"]?.stringValue == "clarify",
+                  let id = object["id"]?.stringValue, !id.isEmpty else { return nil }
+            return clarifyPayload(serverRequestID: id, params: object["params"]?.objectValue ?? [:])
+        }
+    }
+
+    static func openRequestIDs(in openRequests: AnyCodable?) -> [String] {
+        (openRequests?.arrayValue ?? []).compactMap { entry in
+            guard let object = entry.objectValue,
+                  let method = object["method"]?.stringValue,
+                  method == "clarify" || method == "approval"
+                      || InputPromptActivity.Kind(rawValue: method) != nil,
+                  let id = object["id"]?.stringValue, !id.isEmpty else { return nil }
+            return id
+        }
+    }
+
+    static let methodNotFoundCode = -32601
+    static let notShownCode = 4404
+    static let invalidParamsCode = -32602
+
+    private func serverRequestReplyText(id: JsonRpcID, result: [String: Any]?, error: (code: Int, message: String)?) -> String? {
+        var frame: [String: Any] = ["jsonrpc": "2.0", "id": id.wireValue]
+        if let error {
+            frame["error"] = ["code": error.code, "message": error.message]
+        } else {
+            frame["result"] = result ?? [:]
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: frame) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Fire-and-forget reply (used for declines): the gateway withdraws the
+    /// request itself if the frame is lost with the socket.
+    private func writeServerRequestReply(id: JsonRpcID, error: (code: Int, message: String)) {
+        guard let socket, socket.closeCode == .invalid, isConnected,
+              let text = serverRequestReplyText(id: id, result: nil, error: error) else { return }
+        socket.send(.string(text)) { [weak self] sendError in
+            if let sendError {
+                self?.logger.error("Server request reply failed: \(sendError.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    /// Answers an open server request with `result`. Throws when the frame
+    /// cannot be written so the card can offer a retry; the gateway sends no
+    /// acknowledgement for a response frame.
+    private func sendServerRequestResult(id requestID: String, result: [String: Any]) async throws {
+        guard let socket, socket.closeCode == .invalid, isConnected else {
+            throw HermesError.notConnected
+        }
+        guard let text = serverRequestReplyText(id: .string(requestID), result: result, error: nil) else {
+            throw HermesError.invalidResponse
+        }
+        // Bounded like rpc(): a send completion that never fires must not
+        // leave the card submitting forever.
+        let once = ResumeOnce()
+        let deadline = Self.requestTimeout
+        var deadlineTask: Task<Void, Never>?
+        defer { deadlineTask?.cancel() }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            deadlineTask = Task {
+                try? await Task.sleep(for: .seconds(deadline))
+                guard !Task.isCancelled, once.claim() else { return }
+                continuation.resume(throwing: HermesError.timeout("server request reply"))
+            }
+            socket.send(.string(text)) { error in
+                guard once.claim() else { return }
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+        openServerRequestIDs.remove(requestID)
+    }
+
+    private func handleStreamEvent(params: AnyCodable) {
+        if let event = StreamEventParser.parse(params: params) {
+            onEvent?(event)
         }
     }
 
     func disconnect() {
         closedIntentionally = true
         receiveTask?.cancel()
+        receiveTask = nil
         openTimeoutTask?.cancel()
         openTimeoutTask = nil
         openContinuation?.resume(throwing: HermesError.connectionClosed)
         openContinuation = nil
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
-        session?.invalidateAndCancel()
-        socketDelegate = nil
+        transport?.invalidate()
+        transport = nil
         isConnected = false
-        // Fail all pending requests
-        for (_, pending) in pending {
-            pending.timer?.invalidate()
-            pending.continuation.resume(throwing: HermesError.connectionClosed)
+        failAllPendingRequests(with: HermesError.connectionClosed)
+    }
+
+    private func failAllPendingRequests(with error: Error) {
+        for (_, request) in pending {
+            request.timer?.invalidate()
+            request.continuation.resume(throwing: error)
         }
         pending.removeAll()
     }
 
     // MARK: - RPC
 
-    private func rpc(_ method: String, params: [String: Any]? = nil, timeout: TimeInterval = requestTimeout) async throws -> AnyCodable {
-        guard let socket, socket.closeCode == .invalid else {
+    private func rpc(
+        _ method: String,
+        params: [String: Any]? = nil,
+        timeout: TimeInterval = requestTimeout,
+        scoped: Bool = true
+    ) async throws -> AnyCodable {
+        // Require both a live socket and a completed handshake. A receive
+        // error leaves the socket installed with `closeCode == .invalid`, so
+        // closeCode alone would let an RPC ride a dead socket to its timeout.
+        guard let socket, socket.closeCode == .invalid, isConnected else {
             throw HermesError.notConnected
         }
 
         let id = incrementRequestId()
-        let scopedParams = scopeParams(params)
+        let scopedParams = scoped ? scopeParams(params) : (params?.isEmpty == false ? params : nil)
         let encodedParams = scopedParams?.mapValues { AnyCodable.from($0) }
 
         let request = JsonRpcRequest(id: id, method: method, params: encodedParams)
         let body = try JSONEncoder().encode(request)
         logger.notice("Sending RPC id \(id) method \(method, privacy: .public)")
 
-        return try await withCheckedThrowingContinuation { continuation in
-            // Timeout
-            let timer = Timer.scheduledTimer(withTimeInterval: timeout, repeats: false) { [weak self] _ in
-                Task { @MainActor in
-                    if let pending = self?.pending.removeValue(forKey: id) {
-                        pending.continuation.resume(throwing: HermesError.timeout(method))
-                    }
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
                 }
-            }
 
-            pending[id] = PendingRequest(continuation: continuation, timer: timer)
-
-            // Hermes' established React Native client uses WebSocket text
-            // frames (`socket.send(JSON.stringify(...))`). The gateway accepts
-            // the connection but does not dispatch binary JSON-RPC frames.
-            let text = String(decoding: body, as: UTF8.self)
-            socket.send(.string(text)) { [weak self] error in
-                if let error {
-                    self?.logger.error("RPC send failed for \(method, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                // Timeout
+                let timer = Timer.scheduledTimer(withTimeInterval: timeout, repeats: false) { [weak self] _ in
                     Task { @MainActor in
                         if let pending = self?.pending.removeValue(forKey: id) {
-                            pending.timer?.invalidate()
-                            pending.continuation.resume(throwing: error)
+                            pending.continuation.resume(throwing: HermesError.timeout(method))
+                        }
+                    }
+                }
+
+                pending[id] = PendingRequest(continuation: continuation, timer: timer)
+
+                // Hermes' established React Native client uses WebSocket text
+                // frames (`socket.send(JSON.stringify(...))`). The gateway accepts
+                // the connection but does not dispatch binary JSON-RPC frames.
+                let text = String(decoding: body, as: UTF8.self)
+                socket.send(.string(text)) { [weak self] error in
+                    if let error {
+                        self?.logger.error("RPC send failed for \(method, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                        Task { @MainActor in
+                            if let pending = self?.pending.removeValue(forKey: id) {
+                                pending.timer?.invalidate()
+                                pending.continuation.resume(throwing: error)
+                            }
                         }
                     }
                 }
             }
-        }
+        }, onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelPendingRequest(id: id)
+            }
+        })
+    }
+
+    private func cancelPendingRequest(id: Int) {
+        guard let pending = pending.removeValue(forKey: id) else { return }
+        pending.timer?.invalidate()
+        pending.continuation.resume(throwing: CancellationError())
     }
 
     private func incrementRequestId() -> Int {
@@ -683,7 +1383,10 @@ final class HermesClient: ObservableObject {
 
     private func scopeParams(_ params: [String: Any]?) -> [String: Any]? {
         var params = params ?? [:]
-        if let profile, profile != "default" {
+        // The client's profile is the DEFAULT scope; a caller-supplied
+        // `profile` is explicit intent (Bot Mode addresses another profile's
+        // registry) and always wins.
+        if params["profile"] == nil, let profile, profile != "default" {
             params["profile"] = profile
         }
         return params.isEmpty ? nil : params
@@ -698,6 +1401,134 @@ final class HermesClient: ObservableObject {
         let result = try await rpc("session.list", params: nil)
         return MessageNormalizer.normalizeSessions(result, profile: profile)
     }
+
+    // MARK: - Bot Mode
+
+    /// THE Bot Mode capability call. A gateway old enough to lack the method
+    /// has no Bot Mode; callers classify the thrown error with
+    /// `isMissingRPCMethod`. Rows carry `canonical_session`, `last_session`,
+    /// `ui_meta['hermes-bots']`, and `has_avatar`. The listing is
+    /// gateway-wide (`list_profiles()`), so it is sent UNSCOPED: the
+    /// dashboard profile context must never shrink the roster.
+    func botRoster() async throws -> BotRosterSnapshot {
+        let result = try await rpc("profiles.list", params: nil, scoped: false)
+        guard let snapshot = BotRosterDecoder.decode(result) else {
+            throw HermesError.invalidResponse
+        }
+        return snapshot
+    }
+
+    /// The bot's canonical-chat registry lookup: the profile's session titled
+    /// exactly "Bot Chat", window-free, hidden rows included — the gateway
+    /// answers the indexed exact-title scan with at most one row. Explicit
+    /// `profile` routing is the identity contract; `scopeParams` never
+    /// overrides a caller-supplied profile.
+    func findBotChatSession(profile: String) async throws -> [BotChatLookupRow] {
+        let result = try await rpc("session.list", params: [
+            "profile": profile,
+            "title": BotMode.canonicalChatTitle,
+            "limit": BotMode.lookupSessionLimit,
+            "include_hidden": true
+        ])
+        guard let rows = BotChatLookupDecoder.decode(result) else {
+            throw HermesError.invalidResponse
+        }
+        return rows
+    }
+
+    /// Creates the bot's ONE forever chat: born hidden, titled "Bot Chat",
+    /// and always following the profile's CURRENT model/provider config.
+    /// Older gateways ignore the unknown `hidden`/`follow_profile_config`
+    /// params (upstream behavior). The stored row is lazy until the eager
+    /// `session.title` write lands.
+    func createBotChatSession(profile: String) async throws -> (sessionId: String, storedSessionId: String?) {
+        let result = try await rpc("session.create", params: [
+            "cols": 96,
+            "source": "desktop",
+            "profile": profile,
+            "title": BotMode.canonicalChatTitle,
+            "hidden": true,
+            "follow_profile_config": true
+        ])
+        let object = result.objectValue ?? [:]
+        let sessionId = object["session_id"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !sessionId.isEmpty else { throw HermesError.invalidResponse }
+        let stored = ["stored_session_id", "storedSessionId", "session_key"]
+            .compactMap { object[$0]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+        return (sessionId, stored)
+    }
+
+    // MARK: - Bot management
+    //
+    // Every `profiles.*` write addresses its profile through `name` and is
+    // sent UNSCOPED, like `profiles.list`: the dashboard's own profile
+    // context must never redirect a write meant for another bot.
+
+    /// `profiles.create`. A fresh profile (bundled skills) that inherits the
+    /// launch profile's model and credentials (the gateway's default).
+    func createBotProfile(name: String, description: String, soul: String) async throws {
+        _ = try await rpc("profiles.create", params: [
+            "name": name,
+            "description": description,
+            "soul": soul
+        ], timeout: 60, scoped: false)
+    }
+
+    /// `profiles.describe`: the editor snapshot (description + SOUL.md).
+    func describeBotProfile(name: String) async throws -> BotProfileDetails {
+        let result = try await rpc("profiles.describe", params: ["name": name], scoped: false)
+        guard let object = result.objectValue else { throw HermesError.invalidResponse }
+        return BotProfileDetails(
+            description: object["description"]?.stringValue ?? "",
+            soul: object["soul"]?.stringValue ?? ""
+        )
+    }
+
+    /// `profiles.configure`. Sections are independent; the answer's
+    /// `applied` reports each. `expectedMetaRevision` turns the ui_meta
+    /// write into a compare-and-swap against the roster snapshot it was
+    /// built from.
+    func configureBotProfile(
+        name: String,
+        botMeta: [String: Any]? = nil,
+        expectedMetaRevision: Int? = nil,
+        description: String? = nil,
+        soul: String? = nil
+    ) async throws -> AnyCodable {
+        var params: [String: Any] = ["name": name]
+        if let botMeta {
+            params["ui_meta"] = [BotManagement.uiMetaKey: botMeta]
+            if let expectedMetaRevision {
+                params["ui_meta_expected_revisions"] = [BotManagement.uiMetaKey: expectedMetaRevision]
+            }
+        }
+        if let description { params["description"] = description }
+        if let soul { params["soul"] = soul }
+        return try await rpc("profiles.configure", params: params, scoped: false)
+    }
+
+    /// `profiles.get_asset` for the bot's avatar. Nil when it has none.
+    func botAvatar(name: String) async throws -> Data? {
+        let result = try await rpc("profiles.get_asset", params: [
+            "name": name,
+            "asset": BotManagement.avatarAsset
+        ], scoped: false)
+        return BotAvatarImage.imageData(fromGetAssetResult: result)
+    }
+
+    /// `profiles.set_asset`: stores the avatar PNG, or clears it when nil.
+    func setBotAvatar(name: String, png: Data?) async throws {
+        var params: [String: Any] = ["name": name, "asset": BotManagement.avatarAsset]
+        if let png {
+            params["data"] = BotAvatarImage.dataURL(png: png)
+        } else {
+            params["clear"] = true
+        }
+        _ = try await rpc("profiles.set_asset", params: params, scoped: false)
+    }
+
 
     /// Projects are a newer, optional gateway capability. Unlike the ordinary
     /// session catalog, membership comes from Hermes' server-side project tree
@@ -723,18 +1554,113 @@ final class HermesClient: ObservableObject {
         return MessageNormalizer.normalizeProject(project, profile: profile)
     }
 
-    func healthCheck() async throws {
-        _ = try await rpc("session.list", params: nil, timeout: 8)
+    func renameProject(_ projectId: String, name: String) async throws {
+        _ = try await rpc("projects.update", params: ["id": projectId, "name": name])
     }
 
-    func openSession(_ sessionId: String) async throws -> SessionResumeResult {
-        let result = try await rpc("session.resume", params: [
+    /// Removes the project record and its folder list from projects.db. The
+    /// folders, files and conversations themselves are left untouched.
+    func deleteProject(_ projectId: String) async throws {
+        _ = try await rpc("projects.delete", params: ["id": projectId])
+    }
+
+    /// Re-homes a stored session's workspace into `cwd`, the same RPC Hermes
+    /// Desktop's "Move to project" uses. Project membership follows the
+    /// session's folder, so moving the folder is moving the session; the
+    /// gateway also re-anchors a live agent bound to the row. Returns the
+    /// folder the gateway actually stored.
+    @discardableResult
+    func moveSessionWorkspace(_ sessionKey: String, cwd: String) async throws -> String {
+        let result = try await rpc("session.workspace.move", params: [
+            "session_key": sessionKey,
+            "cwd": cwd
+        ])
+        let moved = result.objectValue?["cwd"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return moved.isEmpty ? cwd : moved
+    }
+
+    /// Is this socket still alive? Asked when Conduit comes back to the
+    /// foreground with a socket iOS may have killed while it slept (#417).
+    ///
+    /// `ping` is Hermes' cheapest probe, answered on the WebSocket reader
+    /// thread even while every agent is mid-turn (upstream
+    /// `tui_gateway/contracts/liveness.py`), so it gets a shorter budget than
+    /// the `session.list` it replaces, which builds a whole session list:
+    /// the 5 s Hermes Desktop gives the same probe. Unscoped, like
+    /// `profiles.list`, because it takes no arguments at all.
+    ///
+    /// A gateway that predates `ping` answers "method not found". That reply
+    /// travelled over this socket, so it proves the socket alive exactly as a
+    /// pong would; Hermes Desktop reads it the same way.
+    func healthCheck() async throws {
+        do {
+            _ = try await rpc("ping", params: nil, timeout: Self.pingTimeout, scoped: false)
+        } catch let error where Self.isMissingRPCMethod(error) {
+            return
+        }
+    }
+
+    /// Resumes a session with the compact projection: `omit_messages` asks
+    /// the gateway to suppress the persisted transcript copy in the response
+    /// (`messages: []`) because the caller hydrates it through the
+    /// authenticated REST history route, exactly like Hermes Desktop. Older
+    /// gateways read `session.resume` params loosely and simply ignore the
+    /// unknown flag, degrading to the historical full response. AppState owns
+    /// the REST hydration and falls back to `openSessionLegacy` when no
+    /// usable history source exists.
+    func openSession(_ sessionId: String, profile: String? = nil) async throws -> SessionResumeResult {
+        try await resumeSession(sessionId, omitMessages: true, profile: profile)
+    }
+
+    /// Resume variant that carries the persisted transcript inside the RPC
+    /// response. Used when compact resume cannot be hydrated (missing bridge,
+    /// a gateway without the history endpoint, or history rows that resolved
+    /// to a foreign session). Its response is the largest ordinary payload in
+    /// the app, so it uses the dedicated `legacyResumeTimeout`.
+    func openSessionLegacy(_ sessionId: String, profile: String? = nil) async throws -> SessionResumeResult {
+        try await resumeSession(sessionId, omitMessages: false, profile: profile)
+    }
+
+    /// Compact responses are tiny, so they ride the ordinary request budget;
+    /// the legacy transcript response gets the generous bounded budget.
+    static func resumeTimeout(omitMessages: Bool) -> TimeInterval {
+        omitMessages ? requestTimeout : legacyResumeTimeout
+    }
+
+    private func resumeSession(
+        _ sessionId: String,
+        omitMessages: Bool,
+        profile: String? = nil
+    ) async throws -> SessionResumeResult {
+        var params: [String: Any] = [
             "session_id": sessionId,
             "cols": 96,
             "source": "desktop"
-        ])
+        ]
+        if omitMessages {
+            params["omit_messages"] = true
+        }
+        // A bot chat lives in the bot profile's state.db; the gateway's
+        // `session.resume` reads the `profile` param to open that store
+        // (`_profile_home(params.profile)`). Without it the resume lands on
+        // the dashboard profile and cannot see the session.
+        if let profile, !profile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            params["profile"] = profile
+        }
+        let result = try await rpc(
+            "session.resume",
+            params: params,
+            timeout: Self.resumeTimeout(omitMessages: omitMessages)
+        )
         let object = result.objectValue ?? [:]
         let resolvedId = object["session_id"]?.stringValue ?? sessionId
+        // The durable stored key is parsed separately from the runtime id and
+        // stays nil when the gateway omits it (legacy gateways). Callers must
+        // not treat the runtime `session_id` as durable identity evidence.
+        let storedId = ["stored_session_id", "storedSessionId", "session_key"]
+            .compactMap { object[$0]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
         let messages = MessageNormalizer.normalizeMessages(
             object["messages"]?.arrayValue ?? []
         )
@@ -746,8 +1672,64 @@ final class HermesClient: ObservableObject {
                 snapshotObject[key] = value
             }
         }
+        // Pending decisions ride the resume response top level. Hoist both so
+        // the snapshot parser sees the same contract as session.info.
+        for key in ["pending_clarify", "pending_approval"] {
+            if let value = object[key] {
+                snapshotObject[key] = value
+            }
+        }
+        // Current Hermes no longer sends `pending_clarify`: an unanswered
+        // clarify is a server→client request, re-announced in
+        // `open_requests` under its original id. Feed it through the same
+        // authoritative restore path (locked batch answers ride `answers`).
+        let openClarifies = Self.openClarifyPayloads(in: object["open_requests"])
+        // The oldest rides `pending_clarify` only when the resume did not
+        // already carry one; every other open clarify rides `open_clarifies`.
+        if snapshotObject["pending_clarify"] == nil, let oldest = openClarifies.first {
+            snapshotObject["pending_clarify"] = .object(oldest)
+            if openClarifies.count > 1 {
+                snapshotObject["open_clarifies"] = .array(openClarifies.dropFirst().map { .object($0) })
+            }
+        } else if !openClarifies.isEmpty {
+            snapshotObject["open_clarifies"] = .array(openClarifies.map { .object($0) })
+        }
+        for id in Self.openRequestIDs(in: object["open_requests"]) {
+            openServerRequestIDs.insert(id)
+        }
+        // Anything replayed that this client cannot present is declined
+        // exactly like the live frame, or it would stall the agent until its
+        // deadline after every reconnect.
+        for entry in object["open_requests"]?.arrayValue ?? [] {
+            guard let request = entry.objectValue,
+                  let method = request["method"]?.stringValue,
+                  !Self.handlesServerRequest(method),
+                  let id = request["id"]?.stringValue, !id.isEmpty else { continue }
+            declineServerRequest(id: .string(id), method: method)
+        }
+        for entry in object["open_requests"]?.arrayValue ?? [] {
+            guard let request = entry.objectValue,
+                  request["method"]?.stringValue == "approval",
+                  let id = request["id"]?.stringValue,
+                  let params = request["params"]?.objectValue,
+                  let queueID = params["request_id"]?.stringValue,
+                  !queueID.isEmpty else { continue }
+            approvalQueueIDs[id] = (queueID, params["session_id"]?.stringValue ?? "")
+        }
+        for entry in object["open_requests"]?.arrayValue ?? [] {
+            guard let request = entry.objectValue,
+                  let method = request["method"]?.stringValue,
+                  method == "clarify" || InputPromptActivity.Kind(rawValue: method) != nil,
+                  let id = request["id"]?.stringValue,
+                  let session = request["params"]?.objectValue?["session_id"]?.stringValue else { continue }
+            clarifySessions[id] = session
+        }
+        if let openRequests = object["open_requests"] {
+            snapshotObject["open_requests"] = openRequests
+        }
         return SessionResumeResult(
             sessionId: resolvedId,
+            storedSessionId: storedId,
             messages: messages,
             snapshot: SessionRuntimeSnapshot(
                 object: snapshotObject,
@@ -767,7 +1749,9 @@ final class HermesClient: ObservableObject {
         _ = try await rpc("config.set", params: ["key": "busy", "value": mode.rawValue])
     }
 
-    func createSession(model: String? = nil, provider: String? = nil, reasoningEffort: String? = nil, fast: Bool? = nil, cwd: String? = nil) async throws -> (sessionId: String, storedSessionId: String?, profile: String?) {
+    /// `inProfile` creates the session in another profile on the same
+    /// gateway (a voice job addressed to a bot); nil uses the client's own.
+    func createSession(model: String? = nil, provider: String? = nil, reasoningEffort: String? = nil, fast: Bool? = nil, cwd: String? = nil, inProfile: String? = nil) async throws -> (sessionId: String, storedSessionId: String?, profile: String?) {
         var params: [String: Any] = [
             "cols": 96,
             "source": "desktop"
@@ -775,7 +1759,7 @@ final class HermesClient: ObservableObject {
         // Keep this explicit instead of relying solely on the generic RPC
         // scope. Hermes Desktop does the same: a global gateway can otherwise
         // create an unscoped session in its launch/default profile.
-        if let profile, !profile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if let profile = inProfile ?? profile, !profile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             params["profile"] = profile
         }
         if let model {
@@ -824,21 +1808,56 @@ final class HermesClient: ObservableObject {
         )
     }
 
-    func setSessionTitle(_ sessionId: String, title: String) async throws {
-        _ = try await rpc("session.title", params: [
+    func setSessionTitle(_ sessionId: String, title: String, profile: String? = nil) async throws {
+        var params: [String: Any] = [
             "session_id": sessionId,
             "title": title
-        ])
+        ]
+        // The gateway's `session.title` is session-scoped (the db comes from
+        // the resolved session's own profile home), so this param is inert
+        // on the wire — it is carried to keep the bot chat's RPCs uniformly
+        // self-describing about the profile they address.
+        if let profile, !profile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            params["profile"] = profile
+        }
+        _ = try await rpc("session.title", params: params)
     }
 
     /// Reads the gateway's current title without guessing from the local
     /// catalog. This is particularly important for profile-scoped sessions,
     /// whose title can be updated asynchronously by Hermes.
-    func sessionTitle(_ sessionId: String) async throws -> String? {
-        let result = try await rpc("session.title", params: ["session_id": sessionId])
+    func sessionTitle(_ sessionId: String, profile: String? = nil) async throws -> String? {
+        var params: [String: Any] = ["session_id": sessionId]
+        if let profile, !profile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            params["profile"] = profile
+        }
+        let result = try await rpc("session.title", params: params)
         let title = result.objectValue?["title"]?.stringValue?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return (title?.isEmpty == false) ? title : nil
+    }
+
+    /// A stateless one-shot request on the profile's `task` backend (no
+    /// session lends its model, nothing is added to any history). Used for
+    /// saved voice calls' titles and resume summaries.
+    func oneshot(
+        task: String,
+        instructions: String,
+        input: String,
+        profile: String?,
+        maxTokens: Int = 500
+    ) async throws -> String? {
+        var params: [String: Any] = [
+            "task": task,
+            "instructions": instructions,
+            "input": input,
+            "max_tokens": maxTokens,
+            "temperature": 0.3
+        ]
+        if let profile, !profile.isEmpty { params["profile"] = profile }
+        let result = try await rpc("llm.oneshot", params: params, timeout: Self.titleGenerationTimeout)
+        let text = result.objectValue?["text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (text?.isEmpty == false) ? text : nil
     }
 
     /// Hermes' one-shot endpoint uses the configured title-capable model but
@@ -867,11 +1886,68 @@ final class HermesClient: ObservableObject {
         return result.objectValue?["text"]?.stringValue
     }
 
-    func sendPrompt(_ sessionId: String, text: String) async throws {
-        _ = try await rpc("prompt.submit", params: [
+    /// The gateway's answer is meaningful and must not be discarded: an idle
+    /// session returns `{"status": "streaming"}`, while a busy session never
+    /// rejects — it applies the configured busy policy and reports
+    /// `steered`/`redirected`/`queued`. A lost RPC acknowledgement (timeout,
+    /// socket death after the bytes reached Hermes) leaves the turn running
+    /// server-side; upstream's own clients recover that case by querying the
+    /// authoritative session state instead of blindly re-submitting.
+    ///
+    /// `surface` names where the turn came from (`voice-live` for a spoken
+    /// turn). Hermes adds its spoken-reply note to the model input only, so
+    /// the persisted user row stays what the user said; older gateways
+    /// ignore the key.
+    ///
+    /// `voiceTurn` marks a spoken voice-conversation turn, which Hermes runs
+    /// on its `auxiliary.voice_chat` model (reasoning off by default). A
+    /// gateway from before that slot refuses the unknown key with `4000`
+    /// before anything runs, so the turn is resent once without it and the
+    /// key is dropped for this client from then on.
+    func sendPrompt(_ sessionId: String, text: String, surface: String? = nil, voiceTurn: Bool = false) async throws -> PromptSubmissionOutcome {
+        var params: [String: Any] = [
             "session_id": sessionId,
             "text": text
-        ], timeout: Self.promptSubmitTimeout)
+        ]
+        if let surface { params["surface"] = surface }
+        let marksVoiceTurn = voiceTurn && !gatewayRefusesVoiceTurn
+        if marksVoiceTurn { params["voice_turn"] = true }
+        let result: AnyCodable
+        do {
+            result = try await rpc("prompt.submit", params: params, timeout: Self.promptSubmitTimeout)
+        } catch let error as RpcError where marksVoiceTurn && error.refusesUnknownParam("voice_turn") {
+            gatewayRefusesVoiceTurn = true
+            params.removeValue(forKey: "voice_turn")
+            result = try await rpc("prompt.submit", params: params, timeout: Self.promptSubmitTimeout)
+        }
+        return PromptSubmissionOutcome(
+            gatewayStatus: result.objectValue?["status"]?.stringValue
+        )
+    }
+
+    /// Set once this gateway refused `prompt.submit`'s `voice_turn` key
+    /// (a Hermes from before `auxiliary.voice_chat`).
+    private var gatewayRefusesVoiceTurn = false
+
+    /// Read-only liveness probe against the gateway's in-memory runtime
+    /// registry (`session.active_list`). Unlike `session.resume` this does not
+    /// switch, rebind, or mutate the session, and it is authoritative about
+    /// absence: a runtime that has ended (turn complete + transport gone, or
+    /// a gateway restart) is no longer listed. The empty parameter map is
+    /// load-bearing: `scopeParams` collapses it to an argument-free request
+    /// under the default profile (non-default profiles add only the gateway
+    /// `profile` context). Older gateways without the method throw `RpcError`;
+    /// callers degrade to resume-based recovery.
+    func activeSessions(inProfile: String? = nil) async throws -> [LiveSessionStatus] {
+        // An explicit profile reads another profile's registry (a voice job
+        // running on a bot); the client's own scope still applies otherwise.
+        let result = try await rpc(
+            "session.active_list",
+            params: inProfile.map { ["profile": $0] as [String: Any] } ?? [:],
+            timeout: Self.livenessProbeTimeout
+        )
+        let rows = result.objectValue?["sessions"]?.arrayValue ?? []
+        return rows.compactMap { LiveSessionStatus(from: $0.objectValue ?? [:]) }
     }
 
     func steer(_ sessionId: String, text: String) async throws {
@@ -898,18 +1974,225 @@ final class HermesClient: ObservableObject {
         ])
     }
 
-    func respondToClarification(requestId: String, answer: String) async throws {
-        _ = try await rpc("clarify.respond", params: [
-            "request_id": requestId,
-            "answer": answer
-        ])
+    /// Outcome of `clarify.respond`. Batch questions report the gateway's
+    /// authoritative `remaining` list so the caller can tell a per-question
+    /// lock from full completion; `expired` is a successful RPC whose status
+    /// says the request timed out server-side (the clarify bridge sets
+    /// `allow_expired`, so a late answer never errors) and must not read as
+    /// success. `remaining` keeps the wire's presence semantics: an explicit
+    /// empty list confirms completion, while an omitted field (older or
+    /// minimal gateways) carries no sibling information at all.
+    enum ClarifyResponseOutcome: Equatable {
+        case accepted(remaining: [String]?)
+        case expired
+
+        var isExpired: Bool { self == .expired }
+
+        /// True only on an explicit `remaining: []` — the gateway's own
+        /// confirmation that every question is resolved. An omitted
+        /// remaining field must never be inferred as completion.
+        var requestCompleted: Bool {
+            switch self {
+            case .accepted(let remaining): return remaining?.isEmpty == true
+            case .expired: return false
+            }
+        }
     }
 
-    func respondToApproval(sessionId: String, choice: String) async throws {
-        _ = try await rpc("approval.respond", params: [
+    /// Answers one clarification. Batch questions pass their gateway `qid` as
+    /// `questionId` for the per-question lock (`{"status": "ok",
+    /// "remaining": [...]}`). Omitting `questionId` keeps the legacy
+    /// request-level response — still required for push-relay cards, request
+    /// cancellation, and harmless for single-question gateways, which ignore
+    /// the extra parameter.
+    func respondToClarification(
+        requestId: String,
+        answer: String,
+        questionId: String? = nil
+    ) async throws -> ClarifyResponseOutcome {
+        if isServerRequestID(requestId) {
+            return try await respondToClarifyServerRequest(
+                requestId: requestId,
+                answer: answer,
+                questionId: questionId
+            )
+        }
+        var params: [String: Any] = [
+            "request_id": requestId,
+            "answer": answer
+        ]
+        if let questionId, !questionId.isEmpty {
+            params["question_id"] = questionId
+        }
+        let result = try await rpc("clarify.respond", params: params)
+        let status = result.objectValue?["status"]?.stringValue?.lowercased()
+        if status == "expired" {
+            return .expired
+        }
+        // Presence matters: `remaining` omitted and `remaining: []` are
+        // different protocol states.
+        let remaining: [String]? = result.objectValue?["remaining"]?.arrayValue.map {
+            $0.compactMap(\.stringValue)
+        }
+        return .accepted(remaining: remaining)
+    }
+
+    /// Answers a `clarify` server request (Hermes #110521). A batch
+    /// question locks through `clarify.lock`, whose reply has the same
+    /// `{status, remaining}` shape as the legacy `clarify.respond`; the last
+    /// lock resolves the request server-side. A single question is answered
+    /// with the response frame itself — `{answer}` under the request's id —
+    /// which the gateway never acknowledges, so the outcome carries no
+    /// `remaining` list.
+    private func respondToClarifyServerRequest(
+        requestId: String,
+        answer: String,
+        questionId: String?
+    ) async throws -> ClarifyResponseOutcome {
+        guard let questionId, !questionId.isEmpty else {
+            try await sendServerRequestResult(id: requestId, result: ["answer": answer])
+            clarifySessions.removeValue(forKey: requestId)
+            return .accepted(remaining: nil)
+        }
+        let result = try await rpc(
+            "clarify.lock",
+            params: ["request_id": requestId, "question_id": questionId, "answer": answer]
+        )
+        let status = result.objectValue?["status"]?.stringValue?.lowercased()
+        if status == "expired" {
+            openServerRequestIDs.remove(requestId)
+            clarifySessions.removeValue(forKey: requestId)
+            return .expired
+        }
+        let remaining: [String]? = result.objectValue?["remaining"]?.arrayValue.map {
+            $0.compactMap(\.stringValue)
+        }
+        if remaining?.isEmpty == true {
+            openServerRequestIDs.remove(requestId)
+            clarifySessions.removeValue(forKey: requestId)
+        }
+        return .accepted(remaining: remaining)
+    }
+
+    /// `message.react`: sets, replaces or (same emoji, or nil) retracts the
+    /// user's reaction. The row is named by its durable `row_id`; a live row
+    /// that hasn't been reloaded yet names `newest_role` instead and Hermes
+    /// resolves the newest row of that role. The reaction needs no turn of
+    /// its own: Hermes tells the agent about it with the next message.
+    func reactToMessage(
+        sessionId: String,
+        target: MessageReactionTarget,
+        emoji: String?
+    ) async throws -> MessageReactionResult {
+        var params: [String: Any] = [
+            "session_id": sessionId,
+            "author": MessageReaction.userAuthor
+        ]
+        // An explicit null clears the reaction.
+        params["emoji"] = emoji.map { $0 as Any } ?? NSNull()
+        switch target {
+        case .row(let rowId):
+            params["row_id"] = rowId
+        case .newest(let role):
+            params["newest_role"] = role
+        }
+        let result = try await rpc("message.react", params: params)
+        let object = result.objectValue ?? [:]
+        guard let rowId = Self.exactIntValue(object["row_id"]), rowId > 0 else {
+            throw HermesError.invalidResponse
+        }
+        return MessageReactionResult(
+            rowId: rowId,
+            reactions: MessageNormalizer.messageReactions(from: object["reactions"])
+        )
+    }
+
+    /// Answers a sudo / secret / vault-unlock server request. `value` is
+    /// sent once and never retained; an empty string tells Hermes the user
+    /// skipped (the tool then proceeds without the value).
+    func respondToInputPrompt(requestId: String, value: String) async throws {
+        try await sendServerRequestResult(id: requestId, result: ["value": value])
+        clarifySessions.removeValue(forKey: requestId)
+    }
+
+    func respondToApproval(
+        sessionId: String,
+        requestId: String? = nil,
+        choice: String,
+        profile: String? = nil
+    ) async throws -> Bool {
+        var params: [String: Any] = [
             "choice": choice,
             "session_id": sessionId
-        ])
+        ]
+        let trimmedRequestId = requestId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasRequestId = trimmedRequestId?.isEmpty == false
+        if let trimmedRequestId, hasRequestId {
+            params["request_id"] = trimmedRequestId
+        }
+        if let profile, !profile.isEmpty {
+            params["profile"] = profile
+        }
+        let result = try await rpc("approval.respond", params: params)
+        // Current Hermes reports the number of queue entries resolved. Older
+        // gateways omitted the field after a successful response to legacy
+        // requestless approval calls.
+        guard let object = result.objectValue else {
+            throw HermesError.invalidResponse
+        }
+        guard let rawResolved = object["resolved"] else {
+            if hasRequestId {
+                throw HermesError.invalidResponse
+            }
+            return true
+        }
+        guard let resolved = Self.exactIntValue(rawResolved), resolved >= 0 else {
+            throw HermesError.invalidResponse
+        }
+        if let trimmedRequestId, hasRequestId {
+            // Settled here; the gateway's `resolved` cancel would only find
+            // a card that is no longer pending.
+            approvalQueueIDs = approvalQueueIDs.filter { $0.value.queueID != trimmedRequestId }
+        }
+        return resolved > 0
+    }
+
+    /// Returns every unresolved approval for one live Hermes session. Current
+    /// Hermes scopes this method through `session_id`; bind payloads to that
+    /// requested identity rather than trusting optional fields inside a row.
+    func pendingApprovals(sessionId: String, profile: String? = nil) async throws -> [ApprovalActivity] {
+        var params: [String: Any] = ["session_id": sessionId]
+        if let profile, !profile.isEmpty {
+            params["profile"] = profile
+        }
+        let result = try await rpc(
+            "approval.pending",
+            params: params,
+            timeout: Self.pendingApprovalsTimeout
+        )
+        guard let object = result.objectValue,
+              let approvalsValue = object["approvals"],
+              let array = approvalsValue.arrayValue else {
+            throw HermesError.invalidResponse
+        }
+        return array.compactMap { value in
+            guard let payload = value.objectValue else { return nil }
+            return MessageNormalizer.approvalActivity(from: payload, sessionId: sessionId)
+        }
+    }
+
+    /// The `subagent_id`s Hermes still has running for one live session.
+    func liveSubagentIDs(sessionId: String) async throws -> Set<String> {
+        let result = try await rpc("subagent.list", params: ["session_id": sessionId])
+        guard let rows = result.objectValue?["subagents"]?.arrayValue else {
+            throw HermesError.invalidResponse
+        }
+        let ids = rows.compactMap { row in
+            row.objectValue?["subagent_id"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+        }
+        // A row without an id could be any running agent: trust none of it.
+        guard ids.count == rows.count else { throw HermesError.invalidResponse }
+        return Set(ids)
     }
 
     func modelOptions(sessionId: String? = nil) async throws -> (model: String?, provider: String?, providers: [ProviderInfo]?) {
@@ -923,12 +2206,19 @@ final class HermesClient: ObservableObject {
         return (model, provider, providers)
     }
 
-    func setModel(_ sessionId: String, model: String, provider: String) async throws {
-        _ = try await rpc("config.set", params: [
+    /// The gateway can answer without switching: a guarded pick (expensive
+    /// model, data-training tier, or a switch that abandons a large cached
+    /// context) comes back as `confirm_required` and nothing is applied until
+    /// the client repeats the call with `confirm_expensive_model`.
+    func setModel(_ sessionId: String, model: String, provider: String, confirmed: Bool = false) async throws -> ModelSwitchOutcome {
+        var params: [String: Any] = [
             "key": "model",
             "session_id": sessionId,
             "value": "\(model) --provider \(provider) --session"
-        ])
+        ]
+        if confirmed { params["confirm_expensive_model"] = true }
+        let result = try await rpc("config.set", params: params)
+        return ModelSwitchOutcome(from: result, requestedModel: model)
     }
 
     func setReasoning(_ sessionId: String, effort: String) async throws {
@@ -989,6 +2279,87 @@ final class HermesClient: ObservableObject {
         ])
     }
 
+    /// Dedicated manual-compression RPC (`session.compress`) — the same path
+    /// the TUI and Hermes Desktop use for `/compress`. It must NOT go through
+    /// `slash.exec`: compressing a large session legitimately outlives the
+    /// generic request timeout, which surfaces as a failure while the gateway
+    /// is still compressing (upstream #44456). `focusTopic` mirrors Desktop: it is
+    /// omitted entirely when empty rather than sent as an empty string.
+    func compressSession(
+        sessionId: String,
+        focusTopic: String? = nil,
+        timeout: TimeInterval = sessionCompressTimeout
+    ) async throws -> SessionCompressResult {
+        var params: [String: Any] = ["session_id": sessionId]
+        let trimmedTopic = focusTopic?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmedTopic, !trimmedTopic.isEmpty {
+            params["focus_topic"] = trimmedTopic
+        }
+        let result = try await rpc("session.compress", params: params, timeout: timeout)
+        return SessionCompressResult(from: result)
+    }
+
+    /// Whether `error` means "this gateway predates the RPC method". Upstream
+    /// answers unknown methods with the JSON-RPC `-32601` "unknown method"
+    /// error (`tui_gateway/server.py`), and Hermes Desktop treats the same
+    /// message family (`method not found` / `-32601` / `unknown method` /
+    /// `no such method`, `apps/desktop/src/lib/gateway-rpc.ts`) as the
+    /// legacy-gateway signal. Timeouts, busy rejections, connection failures,
+    /// and compression errors are deliberately NOT in this class — a slow RPC
+    /// must never be retried as a missing one.
+    static func isMissingRPCMethod(_ error: Error) -> Bool {
+        let message: String
+        if let rpcError = error as? RpcError {
+            if rpcError.code == -32601 { return true }
+            message = rpcError.message
+        } else {
+            message = (error as? LocalizedError)?.errorDescription
+                ?? String(describing: error)
+        }
+        return matchesMissingMethodPattern(message)
+    }
+
+    private static func matchesMissingMethodPattern(_ message: String) -> Bool {
+        // Plain substring checks over Desktop's regex — the pattern is a
+        // compile-constant, so NSRegularExpression buys nothing here.
+        let lowered = message.lowercased()
+        return lowered.contains("method not found")
+            || lowered.contains("-32601")
+            || lowered.contains("unknown method")
+            || lowered.contains("no such method")
+    }
+
+    /// Whether `error` means "the runtime session id is gone" — the gateway
+    /// answers session-scoped RPCs for a reaped/detached runtime with
+    /// `_err(4001, "session not found")` (`tui_gateway/server.py::_sess_nowait`),
+    /// and the client is expected to recover by resuming the STORED session
+    /// id. Hermes Desktop classifies the same condition by the
+    /// `/session not found/i` message. Timeouts, busy rejections, connection
+    /// loss, and compression failures are never in this class.
+    static func isSessionNotFoundError(_ error: Error) -> Bool {
+        if let rpcError = error as? RpcError {
+            if rpcError.code == 4001 { return true }
+            return rpcError.message.lowercased().contains("session not found")
+        }
+        let message = (error as? LocalizedError)?.errorDescription
+            ?? String(describing: error)
+        return message.lowercased().contains("session not found")
+    }
+
+    /// Whether `error` means the hosted room is gone/tombstoned: `groups.*`
+    /// answers the room-error envelope (4112 "room not found" / 4114) unless
+    /// the caller opted into disbanded rooms. The room's driver keeps
+    /// running server-side; a client surface showing the room must close.
+    static func isRoomNotFoundError(_ error: Error) -> Bool {
+        if let rpcError = error as? RpcError {
+            if rpcError.code == 4112 || rpcError.code == 4114 { return true }
+            return rpcError.message.lowercased().contains("hosted room not found")
+        }
+        let message = (error as? LocalizedError)?.errorDescription
+            ?? String(describing: error)
+        return message.lowercased().contains("hosted room not found")
+    }
+
     // MARK: - Attachments
 
     func attachImage(_ sessionId: String, base64: String, filename: String) async throws -> String? {
@@ -1000,22 +2371,48 @@ final class HermesClient: ObservableObject {
         return result.objectValue?["path"]?.stringValue
     }
 
-    func attachPdf(_ sessionId: String, base64: String, filename: String) async throws {
-        _ = try await rpc("pdf.attach", params: [
-            "session_id": sessionId,
-            "content_base64": base64,
-            "filename": filename
-        ], timeout: 120)
-    }
-
-    func attachFile(_ sessionId: String, dataUrl: String, name: String, path: String = "") async throws {
-        _ = try await rpc("file.attach", params: [
+    /// Stages any non-image file (PDFs included) in the session's
+    /// attachments folder, the way Hermes Desktop sends files. Returns the
+    /// `@file:` reference the prompt must carry: without it the agent is
+    /// never told the file is there.
+    func attachFile(_ sessionId: String, dataUrl: String, name: String, path: String = "") async throws -> String? {
+        let result = try await rpc("file.attach", params: [
             "session_id": sessionId,
             "data_url": dataUrl,
             "name": name,
             "path": path
         ], timeout: 120)
+        return Self.fileAttachmentReference(from: result)
     }
+
+    /// The `@file:` reference from a `file.attach` reply: its `ref_text`,
+    /// else one built from the staged path (a reply without `ref_text`).
+    static func fileAttachmentReference(from result: AnyCodable) -> String? {
+        let object = result.objectValue
+        if let reference = object?["ref_text"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           reference.hasPrefix("@file:"), reference.count > "@file:".count {
+            return reference
+        }
+        let path = [object?["ref_path"], object?["path"]]
+            .compactMap { $0?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+        guard let path else { return nil }
+        return "@file:\(formatReferenceValue(path))"
+    }
+
+    /// Quotes a reference value that holds whitespace, brackets or quotes so
+    /// Hermes reads it back whole (its `format_reference_value`).
+    static func formatReferenceValue(_ value: String) -> String {
+        guard value.rangeOfCharacter(from: referenceValueQuotingCharacters) != nil else { return value }
+        for quote in ["`", "\"", "'"] where !value.contains(quote) {
+            return "\(quote)\(value)\(quote)"
+        }
+        return value
+    }
+
+    private static let referenceValueQuotingCharacters = CharacterSet.whitespacesAndNewlines
+        .union(CharacterSet(charactersIn: "()[]{}<>\"'`"))
 
     // MARK: - Cron
 
@@ -1031,31 +2428,162 @@ final class HermesClient: ObservableObject {
         return arr.compactMap { try? JSONDecoder().decode(CronRun.self, from: JSONSerialization.data(withJSONObject: $0.anyValue)) }
     }
 
-    private func delegateAgentActivity(from payload: [String: AnyCodable], eventType: String) -> DelegateAgentActivity {
-        let id = payload["id"]?.stringValue ?? payload["agent_id"]?.stringValue ?? UUID().uuidString
-        let statusValue = payload["status"]?.stringValue ?? {
-            if eventType.contains("fail") { return "failed" }
-            if eventType.contains("interrupt") { return "interrupted" }
-            if eventType.contains("complete") || eventType.contains("finish") { return "completed" }
-            if eventType.contains("spawn") { return "queued" }
-            return "running"
-        }()
-        let status = DelegateAgentActivity.Status(rawValue: statusValue.lowercased()) ?? .running
-        let text = payload["text"]?.stringValue ?? payload["message"]?.stringValue ?? payload["summary"]?.stringValue ?? ""
-        let kind: DelegateAgentActivity.StreamLine.Kind = eventType.contains("tool") ? .tool : eventType.contains("thinking") ? .thinking : eventType.contains("progress") ? .progress : .summary
-        let lines = text.isEmpty ? [] : [DelegateAgentActivity.StreamLine(kind: kind, text: text, isError: status == .failed)]
-        return DelegateAgentActivity(
-            id: id,
-            goal: payload["goal"]?.stringValue ?? payload["task"]?.stringValue ?? "Delegate agent",
-            model: payload["model"]?.stringValue,
-            status: status,
-            taskCount: payload["task_count"]?.intValue ?? 1,
-            taskIndex: payload["task_index"]?.intValue ?? 0,
-            currentTool: payload["tool"]?.stringValue ?? payload["current_tool"]?.stringValue,
-            summary: payload["summary"]?.stringValue,
-            stream: lines
+    // MARK: - Group Chats
+
+    /// THE Group Chat capability call (`groups.capabilities`). A gateway old
+    /// enough to lack the method has no hosted rooms; callers classify the
+    /// thrown error with `isMissingRPCMethod`. Like the bot roster, rooms are
+    /// gateway-wide, so every `groups.*` call below is sent UNSCOPED — the
+    /// contract's optional `profile` param is multiplexed-gateway routing,
+    /// and the dashboard profile context must never shrink the room catalog.
+    func groupsCapabilities() async throws -> GroupCapabilities {
+        let result = try await rpc("groups.capabilities", params: nil, scoped: false)
+        guard let capabilities = GroupCapabilitiesDecoder.decode(result) else {
+            throw HermesError.invalidResponse
+        }
+        return capabilities
+    }
+
+    /// Rooms hosted by the current gateway, most recently changed first.
+    func groupsList(
+        includeDisbanded: Bool = false,
+        limit: Int? = nil,
+        offset: Int? = nil
+    ) async throws -> (rooms: [GroupRoom], nextOffset: Int?) {
+        var params: [String: Any] = ["include_disbanded": includeDisbanded]
+        if let limit { params["limit"] = limit }
+        if let offset { params["offset"] = offset }
+        let result = try await rpc("groups.list", params: params, scoped: false)
+        guard let object = result.objectValue, let rows = object["rooms"]?.arrayValue else {
+            throw HermesError.invalidResponse
+        }
+        return (rows.compactMap { GroupDecoders.room($0) }, Self.exactIntValue(object["next_offset"]))
+    }
+
+    /// Create a hosted room on the current gateway. `roomID` is the CLIENT-
+    /// MINTED room identity AND idempotency key (the contract's mandatory
+    /// field; the gateway's validator accepts ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+    /// up to 128 chars — a UUID fits). `members` carries this client's
+    /// proposed roster rows (`member_id`/`profile`/`handle`/`display_name`
+    /// for local bots); the gateway re-validates the frozen 2–6 roster and
+    /// refuses ambiguous, duplicated, or reserved handles.
+    func groupsCreate(roomID: String, name: String, members: [[String: Any]]) async throws -> GroupRoom {
+        let result = try await rpc(
+            "groups.create",
+            params: ["room_id": roomID, "name": name, "members": members],
+            scoped: false
+        )
+        guard let room = GroupDecoders.room(result.objectValue?["room"]) else {
+            throw HermesError.invalidResponse
+        }
+        return room
+    }
+
+    /// One room's replay cursor, authority state, and live driver status.
+    /// Tombstoned rooms are OPTED INTO by default: a poller must be able to
+    /// OBSERVE a disband (`disbanded_at` set) to close its surface — with
+    /// the default `false` the gateway answers "room not found" instead of
+    /// the tombstone.
+    func groupsState(roomID: String, includeDisbanded: Bool = true)
+        async throws -> (room: GroupRoom, driverStatus: GroupDriverStatus?) {
+        let result = try await rpc(
+            "groups.state",
+            params: ["room_id": roomID, "include_disbanded": includeDisbanded],
+            scoped: false
+        )
+        guard let room = GroupDecoders.room(result.objectValue?["room"]) else {
+            throw HermesError.invalidResponse
+        }
+        return (room, GroupDecoders.driverStatus(result.objectValue?["driver_status"]))
+    }
+
+    /// Append one inert `message.user` event. IDEMPOTENT: `eventID` is the
+    /// client retry key — a retry after an ambiguous failure MUST reuse the
+    /// same id; the gateway maps it to the server-owned `user:<sha256>` id,
+    /// so the second send deduplicates instead of posting a twin. The actor
+    /// is server-owned; the payload is exactly `{text, thread_id}`.
+    func groupsSend(roomID: String, eventID: String, text: String, threadID: String)
+        async throws -> GroupSendResult {
+        let result = try await rpc(
+            "groups.send",
+            params: [
+                "room_id": roomID,
+                "event_id": eventID,
+                "payload": ["text": text, "thread_id": threadID],
+            ],
+            scoped: false
+        )
+        guard let object = result.objectValue,
+              let event = GroupDecoders.event(object["event"]) else {
+            throw HermesError.invalidResponse
+        }
+        return GroupSendResult(
+            event: event,
+            accepted: object["accepted"]?.boolValue ?? true,
+            driverStarted: object["driver_started"]?.boolValue ?? false
         )
     }
+
+    /// One monotonic room-log delta after `sinceSeq`, bounded by the page
+    /// limit (the gateway's own `max_log_limit` is the hard ceiling).
+    func groupsLog(
+        roomID: String,
+        sinceSeq: Int,
+        limit: Int? = nil,
+        includeDisbanded: Bool = false
+    ) async throws -> GroupLogPage {
+        var params: [String: Any] = [
+            "room_id": roomID,
+            "since_seq": sinceSeq,
+            "include_disbanded": includeDisbanded,
+        ]
+        if let limit { params["limit"] = limit }
+        let result = try await rpc("groups.log", params: params, scoped: false)
+        guard let page = GroupDecoders.logPage(result) else { throw HermesError.invalidResponse }
+        return page
+    }
+
+    /// Permanently tombstone a hosted room. The gateway stops the room's
+    /// work and revokes peer routes before writing the tombstone.
+    func groupsDisband(roomID: String) async throws {
+        _ = try await rpc("groups.disband", params: ["room_id": roomID], scoped: false)
+    }
+
+    /// Durably cancel queued or running work for one room. Only offered
+    /// when `groupsCapabilities` advertised the method.
+    func groupsStop(roomID: String) async throws -> Int {
+        let result = try await rpc("groups.stop", params: ["room_id": roomID], scoped: false)
+        return Self.exactIntValue(result.objectValue?["cancelled"]) ?? 0
+    }
+
+    /// Answer one member's pending approval (`groups.approve`). Every field
+    /// comes from the `pending_actions` row: the gateway resolves only the
+    /// exact request it is still holding and refuses a stale one. Only
+    /// offered when `groupsCapabilities` advertised the method.
+    ///
+    /// Returns false when the gateway answered but resolved nothing: a local
+    /// member's `result` is its `approval.respond` answer, whose `resolved`
+    /// count is 0 once the request settled elsewhere. A peer member's receipt
+    /// carries no count and counts as delivered.
+    func groupsApprove(roomID: String, approval: GroupPendingApproval, choice: String) async throws -> Bool {
+        let result = try await rpc(
+            "groups.approve",
+            params: [
+                "room_id": roomID,
+                "member_id": approval.memberID,
+                "task_id": approval.taskID,
+                "execution_generation": approval.executionGeneration,
+                "choice": choice,
+                "request_id": approval.requestID,
+            ],
+            scoped: false
+        )
+        guard let receipt = result.objectValue?["result"]?.objectValue,
+              let resolved = receipt["resolved"] else { return true }
+        return (Self.exactIntValue(resolved) ?? 1) > 0
+    }
+
+    // delegateAgentActivity moved to StreamEventParser
 }
 
 // MARK: - Supporting Types
@@ -1063,6 +2591,69 @@ final class HermesClient: ObservableObject {
 struct ProviderInfo: Equatable {
     let name: String
     let models: [ModelInfo]
+    /// Display name and alternate spellings Hermes accepts for this row. A
+    /// saved `model.provider` can use any of them (e.g. `custom:<key>` for a
+    /// row whose slug is the bare key), so matching on `name` alone misses it.
+    var displayName: String? = nil
+    var aliases: [String] = []
+    /// Hermes marks the row backing the configured main model.
+    var isCurrent = false
+
+    /// True when `provider` names this row by slug, display name or alias,
+    /// mirroring Hermes Desktop's `catalogProviderMatches`.
+    func matches(_ provider: String) -> Bool {
+        let wanted = Self.normalized(provider)
+        guard !wanted.isEmpty else { return false }
+        return ([name, displayName ?? ""] + aliases).contains { Self.normalized($0) == wanted }
+    }
+
+    /// Picker label: the catalog's display name, else the slug.
+    var title: String {
+        let display = displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return display.isEmpty ? name : display
+    }
+
+    static func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+}
+
+/// The gateway's answer to `config.set model`.
+struct ModelSwitchOutcome: Equatable {
+    /// The model Hermes resolved the pick to (aliases expand).
+    let model: String
+    /// Nothing was switched; the user must confirm `confirmMessage` first.
+    let confirmRequired: Bool
+    let confirmMessage: String
+    /// The session is mid-turn; the switch applies when the next turn starts.
+    let deferred: Bool
+
+    init(model: String, confirmRequired: Bool = false, confirmMessage: String = "", deferred: Bool = false) {
+        self.model = model
+        self.confirmRequired = confirmRequired
+        self.confirmMessage = confirmMessage
+        self.deferred = deferred
+    }
+
+    init(from result: AnyCodable, requestedModel: String) {
+        let object = result.objectValue ?? [:]
+        // Hermes reports the resolved model name, but a gateway that echoes
+        // the raw request would hand back "<model> --provider <p> --session";
+        // keep only the model part so the flags never reach `runtime.model`.
+        let rawValue = object["value"]?.stringValue ?? ""
+        let value = (rawValue.range(of: " --").map { String(rawValue[..<$0.lowerBound]) } ?? rawValue)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // `warning` is Hermes' legacy alias for `confirm_message`.
+        let message = [object["confirm_message"]?.stringValue, object["warning"]?.stringValue]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty } ?? ""
+        self.init(
+            model: value.isEmpty ? requestedModel : value,
+            confirmRequired: object["confirm_required"]?.boolValue ?? false,
+            confirmMessage: message,
+            deferred: object["deferred"]?.boolValue ?? false
+        )
+    }
 }
 
 struct ModelInfo: Equatable {
@@ -1077,6 +2668,9 @@ extension ProviderInfo {
         guard let name = object["slug"]?.stringValue ?? object["id"]?.stringValue ?? object["name"]?.stringValue,
               !name.isEmpty else { return nil }
         self.name = name
+        self.displayName = object["name"]?.stringValue
+        self.aliases = (object["aliases"]?.arrayValue ?? []).compactMap(\.stringValue)
+        self.isCurrent = object["is_current"]?.boolValue ?? false
         self.models = (object["models"]?.arrayValue ?? []).compactMap { model in
             if let id = model.stringValue, !id.isEmpty {
                 return ModelInfo(id: id, label: nil, reasoningCapable: false)
@@ -1165,13 +2759,25 @@ enum HermesError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .invalidUrl: return "Invalid gateway URL."
-        case .invalidResponse: return "Hermes returned an incomplete response."
-        case .notConnected: return "Hermes is not connected."
-        case .connectionClosed: return "Hermes connection closed."
-        case .timeout(let method): return "Request timed out: \(method)"
-        case .steerRejected: return "Hermes could not steer the active response."
+        // Read by people who may not run servers: say what happened and
+        // what to do, never an RPC method name.
+        case .invalidUrl:
+            return AppLocalization.string("The dashboard address isn't valid. Check it in Settings > Connection.")
+        case .invalidResponse:
+            return AppLocalization.string("Hermes sent a reply Conduit didn't understand. Updating Hermes and Conduit usually fixes this.")
+        case .notConnected:
+            return AppLocalization.string("Conduit isn't connected to Hermes right now. It reconnects on its own, so try again in a moment.")
+        case .connectionClosed:
+            return AppLocalization.string("The connection to Hermes dropped. Conduit reconnects on its own, so try again in a moment.")
+        case .timeout:
+            return Self.timeoutMessage
+        case .steerRejected: return AppLocalization.string("Hermes could not steer the active response.")
         }
+    }
+
+    /// What any request to Hermes that ran out of time tells people.
+    static var timeoutMessage: String {
+        AppLocalization.string("Hermes didn't answer in time. Check that your Hermes server is running, then try again.")
     }
 }
 
@@ -1192,6 +2798,26 @@ extension AnyCodable {
 
 // MARK: - Message Normalization
 
+/// Hermes' persisted display-projection contract. Some model-facing records —
+/// model switches, personality pivots, auto-continuations, background-agent
+/// completions, internal wake notices — are persisted as `role=user` rows so
+/// strict OpenAI-compatible providers accept them mid-history, while
+/// `display_kind` tells clients they are not human-authored messages and
+/// `display_content` overrides the physical `content` with the text that
+/// should actually be visible. The recognized values mirror Hermes Desktop's
+/// transcript hydration; an unrecognized value is deliberately given no
+/// display semantics so a future kind can never delete or reinterpret an
+/// ordinary visible row.
+private enum HermesDisplayKind: String {
+    case hidden
+    case modelSwitch = "model_switch"
+    case personalitySwitch = "personality_switch"
+    case autoContinue = "auto_continue"
+    case asyncDelegationComplete = "async_delegation_complete"
+    case processComplete = "process_complete"
+    case internalNotification = "internal_notification"
+}
+
 enum MessageNormalizer {
 
     static func normalizeProjects(_ payload: AnyCodable, profile: String?) -> [ProjectSummary] {
@@ -1205,13 +2831,30 @@ enum MessageNormalizer {
         guard !id.isEmpty else { return nil }
         let title = firstNonEmptyString([
             object["label"], object["name"], object["title"]
-        ]) ?? "Untitled project"
+        ]) ?? AppLocalization.string("Untitled project")
         let previews = object["preview_sessions"]?.arrayValue
             ?? object["previewSessions"]?.arrayValue
             ?? []
-        let folderPath = object["folders"]?.arrayValue?
-            .compactMap { $0.objectValue?["path"]?.stringValue }
-            .first
+        let isHome = object["isNoProject"]?.boolValue ?? object["is_no_project"]?.boolValue ?? false
+        // Only projects created in Hermes have a projects.db row, and their ids
+        // are `p_<hex>`. When a gateway omits the flag, any non-Home id without
+        // that prefix is treated as auto, so rename and delete fail closed.
+        let isAuto = object["isAuto"]?.boolValue
+            ?? object["is_auto"]?.boolValue
+            ?? (!isHome && !id.hasPrefix("p_"))
+        let folderPath = firstNonEmptyString(
+            object["folders"]?.arrayValue?.compactMap { $0.objectValue?["path"]?.stringValue }.map(AnyCodable.string) ?? []
+        )
+        // `projects.tree` emits the project's `primary_path` as `path`, which
+        // is null for an explicit project that never had one assigned or
+        // whose primary folder was removed. The tree still seeds every
+        // declared folder as a repo node, so anchor new conversations at the
+        // first repo root, as Hermes Desktop does. Home is excluded from this
+        // fallback only: a repo node there must not turn detached sessions
+        // into folder-anchored ones.
+        let repoPath = isHome ? nil : firstNonEmptyString(
+            object["repos"]?.arrayValue?.compactMap { $0.objectValue?["path"]?.stringValue }.map(AnyCodable.string) ?? []
+        )
         let count = object["session_count"]?.intValue
             ?? object["sessionCount"]?.intValue
             ?? object["session_count"]?.stringValue.flatMap(Int.init)
@@ -1219,10 +2862,13 @@ enum MessageNormalizer {
         return ProjectSummary(
             id: id,
             title: title,
-            primaryPath: firstNonEmptyString([object["path"], object["primary_path"], object["primaryPath"]]) ?? folderPath,
+            primaryPath: firstNonEmptyString([object["path"], object["primary_path"], object["primaryPath"]])
+                ?? folderPath
+                ?? repoPath,
             icon: object["icon"]?.stringValue,
             colorHex: object["color"]?.stringValue,
-            isHome: object["isNoProject"]?.boolValue ?? object["is_no_project"]?.boolValue ?? false,
+            isHome: isHome,
+            isAuto: isAuto,
             sessionCount: count,
             previewSessions: normalizeSessions(.array(previews), profile: profile)
         )
@@ -1232,18 +2878,18 @@ enum MessageNormalizer {
         guard let project = payload.objectValue?["project"]?.objectValue else { return nil }
         let id = project["id"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !id.isEmpty else { return nil }
-        let title = firstNonEmptyString([project["label"], project["name"], project["title"]]) ?? "Project"
+        let title = firstNonEmptyString([project["label"], project["name"], project["title"]]) ?? AppLocalization.string("Project")
         let repos = project["repos"]?.arrayValue ?? []
         let multipleRepos = repos.count > 1
         var lanes: [ProjectSessionLane] = []
 
         for repo in repos {
             let repoObject = repo.objectValue ?? [:]
-            let repoLabel = firstNonEmptyString([repoObject["label"], repoObject["path"]]) ?? "Workspace"
+            let repoLabel = firstNonEmptyString([repoObject["label"], repoObject["path"]]) ?? AppLocalization.string("Workspace")
             for group in repoObject["groups"]?.arrayValue ?? [] {
                 let groupObject = group.objectValue ?? [:]
                 let groupID = groupObject["id"]?.stringValue ?? UUID().uuidString
-                let groupLabel = firstNonEmptyString([groupObject["label"], groupObject["path"]]) ?? "Sessions"
+                let groupLabel = firstNonEmptyString([groupObject["label"], groupObject["path"]]) ?? AppLocalization.string("Sessions")
                 let sessions = normalizeSessions(.array(groupObject["sessions"]?.arrayValue ?? []), profile: profile)
                 guard !sessions.isEmpty else { continue }
                 lanes.append(ProjectSessionLane(
@@ -1258,7 +2904,7 @@ enum MessageNormalizer {
             let previews = project["preview_sessions"]?.arrayValue ?? project["previewSessions"]?.arrayValue ?? []
             let sessions = normalizeSessions(.array(previews), profile: profile)
             if !sessions.isEmpty {
-                lanes = [ProjectSessionLane(id: "\(id)-recent", title: "Recent", sessions: sessions)]
+                lanes = [ProjectSessionLane(id: "\(id)-recent", title: AppLocalization.string("Recent"), sessions: sessions)]
             }
         }
         return ProjectSessionDetail(id: id, title: title, lanes: lanes)
@@ -1276,7 +2922,18 @@ enum MessageNormalizer {
 
         return records.enumerated().map { index, item in
             let obj = item.objectValue ?? [:]
-            let id = obj["session_id"]?.stringValue ?? obj["id"]?.stringValue ?? String(index)
+            let runtimeSessionId = obj["session_id"]?.stringValue
+            let id = runtimeSessionId ?? obj["id"]?.stringValue ?? String(index)
+            let explicitStoredSessionId = ["stored_session_id", "storedSessionId"]
+                .compactMap { obj[$0]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { !$0.isEmpty }
+            let storedSessionId = explicitStoredSessionId ?? {
+                // The legacy catalog shape exposes the durable ID as `id`
+                // alongside a separate runtime `session_id`. A lone `id` is
+                // ambiguous, so do not label it as a verified stored ID.
+                guard runtimeSessionId != nil else { return nil }
+                return obj["id"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+            }()
 
             // Collect alternate IDs
             let altKeys = ["session_id", "id", "stored_session_id", "runtime_session_id", "session_key"]
@@ -1299,26 +2956,84 @@ enum MessageNormalizer {
 
             return SessionSummary(
                 id: id,
+                storedSessionId: storedSessionId,
                 alternateIds: Array(altIds),
-                title: obj["title"]?.stringValue ?? obj["preview"]?.stringValue ?? "Untitled conversation",
+                title: obj["title"]?.stringValue ?? obj["preview"]?.stringValue ?? AppLocalization.string("Untitled conversation"),
                 model: obj["model"]?.stringValue ?? "Hermes",
                 updatedLabel: sessionUpdatedLabel(in: obj),
+                lastActivityAt: sessionActivityTimestamp(in: obj),
                 profile: explicitProfile ?? profile,
                 source: classifySource(obj),
                 isActive: false,
                 isArchived: obj["archived"]?.boolValue ?? false,
                 messageCount: messageCount,
+                isUnread: obj["unread"]?.boolValue,
+                readWatermark: obj["last_read_at"]?.doubleValue,
+                isPinned: obj["pinned"]?.boolValue,
                 lineageRootId: obj["_lineage_root_id"]?.stringValue
             )
         }
     }
 
+    /// The ordering instant for a session row, so restoration can rank
+    /// conversations by ACTUAL activity instead of list position. It reads the
+    /// same key list `sessionUpdatedLabel` walks, and deliberately DIVERGES
+    /// from it on one point: that function falls through to a weaker field
+    /// when a value cannot be formatted, while this returns nil, because an
+    /// instant taken from a different field than the one the gateway reported
+    /// ranks a row by a moment it does not describe. Units are normalized to
+    /// epoch seconds (s/ms/µs/ns).
+    ///
+    /// The FIRST field the gateway reports is authoritative activity: when it
+    /// is present but carries no machine-readable instant (a localized date
+    /// string, a placeholder, a non-scalar), the row has NO ordering evidence
+    /// and this returns nil. Scanning weaker fields would substitute a
+    /// DIFFERENT instant for the one the gateway chose — a wrong-but-plausible
+    /// value ranks a row it does not describe, which is worse than ranking it
+    /// behind every dated row. Only a MISSING or null field falls through to
+    /// the next key.
+    static func sessionActivityTimestamp(in object: [String: AnyCodable]) -> TimeInterval? {
+        for key in sessionActivityKeys {
+            guard let value = object[key], value != .null else { continue }
+            switch value {
+            case .number(let timestamp):
+                return normalizedSessionTimestamp(timestamp)
+            case .string(let text):
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let timestamp = Double(trimmed) else { return nil }
+                return normalizedSessionTimestamp(timestamp)
+            default:
+                return nil
+            }
+        }
+        return nil
+    }
+
+    /// A positive, finite epoch instant in SECONDS from whatever unit the
+    /// gateway reported. Gateways differ (and some have changed over time):
+    /// seconds are ~1.7e9, milliseconds ~1.7e12, microseconds ~1.7e15,
+    /// nanoseconds ~1.7e18. No real instant exceeds ~4e10 seconds (year 3300),
+    /// so scaling anything larger down by 1000 until it fits reads every unit
+    /// correctly — while a single divide (the old rule) left µs/ns payloads
+    /// ranking "newest" forever.
+    private static func normalizedSessionTimestamp(_ timestamp: Double) -> TimeInterval? {
+        guard timestamp.isFinite else { return nil }
+        var seconds = timestamp
+        while seconds > 40_000_000_000 {
+            seconds /= 1_000
+        }
+        guard seconds > 0 else { return nil }
+        return seconds
+    }
+
+    private static let sessionActivityKeys = [
+        "last_active", "lastActive", "updated_at", "updatedAt", "updated",
+        "last_message_at", "lastMessageAt", "latest_message_at", "latestMessageAt",
+        "modified_at", "modifiedAt", "created_at", "createdAt", "timestamp", "time"
+    ]
+
     private static func sessionUpdatedLabel(in object: [String: AnyCodable]) -> String {
-        let keys = [
-            "last_active", "lastActive", "updated_at", "updatedAt", "updated",
-            "last_message_at", "lastMessageAt", "latest_message_at", "latestMessageAt",
-            "modified_at", "modifiedAt", "created_at", "createdAt", "timestamp", "time"
-        ]
+        let keys = sessionActivityKeys
 
         for key in keys {
             guard let value = object[key], value != .null else { continue }
@@ -1340,7 +3055,11 @@ enum MessageNormalizer {
     }
 
     private static func formattedSessionTimestamp(_ timestamp: Double) -> String {
-        let seconds = timestamp > 10_000_000_000 ? timestamp / 1_000 : timestamp
+        // The SAME unit normalization the ordering instant uses: a µs/ns
+        // payload must not display one date and rank by another.
+        guard let seconds = normalizedSessionTimestamp(timestamp) else {
+            return String(timestamp)
+        }
         let date = Date(timeIntervalSince1970: seconds)
         guard date.timeIntervalSince1970 > 0 else { return String(timestamp) }
         if Calendar.current.isDateInToday(date) {
@@ -1366,14 +3085,6 @@ enum MessageNormalizer {
             $0 == "cron" || $0 == "scheduled" || $0 == "scheduler" || $0.hasPrefix("cron:") || $0.hasPrefix("cron_") || $0.hasPrefix("scheduled:")
         }) {
             return .cron
-        }
-
-        // Kanban worker sessions are agent-spawned board runs; they are
-        // surfaced through the Board tab, not the Sessions sidebar.
-        if allReported.contains(where: {
-            $0 == "kanban" || $0.hasPrefix("kanban:") || $0.hasPrefix("kanban_")
-        }) {
-            return .kanban
         }
 
         // Classify external sources (RETURN IMMEDIATELY — do not fall through)
@@ -1415,8 +3126,31 @@ enum MessageNormalizer {
                 ?? dataMessage
                 ?? [:]
             let obj = envelope.merging(nested) { _, nestedValue in nestedValue }
+
+            // Hermes' display projection is resolved before any content work.
+            // A hidden row is pure model-facing scaffolding (compaction
+            // handoffs, interrupted-turn checkpoints) that can be
+            // multi-megabyte, so it is dropped before Markdown, compaction
+            // scans, reasoning extraction, or tool interpretation — and
+            // regardless of its physical role.
+            let displayKind = HermesDisplayKind(
+                rawValue: (obj["display_kind"]?.stringValue ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+            if displayKind == .hidden { continue }
+
             let rawRole = (obj["role"]?.stringValue ?? obj["type"]?.stringValue ?? "").lowercased()
             let isToolResult = rawRole == "tool" || rawRole.contains("tool_result") || rawRole.contains("tool-result")
+            // A mid-turn steer is persisted as its own `role=user` row typed
+            // `display_kind: "steer"`, its text wrapped in Hermes'
+            // out-of-band marker. It stays a user row (it IS the user's
+            // words, and ordering evidence keeps counting it as a user
+            // boundary); only the model-facing marker is removed and the
+            // row is tagged so the transcript renders it as a steer.
+            let isSteerRow = !isToolResult
+                && rawRole == "user"
+                && (obj["display_kind"]?.stringValue ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines) == ChatMessage.steerDisplayKind
             var role: MessageRole
             switch rawRole {
             case "user": role = .user
@@ -1434,18 +3168,71 @@ enum MessageNormalizer {
                 ?? obj["message_id"]?.descriptiveStringValue
                 ?? String(index)
 
-            let rawContent = isToolResult
+            // `display_content` replaces the physical payload for
+            // conversational rows. Tool results keep their legacy handling:
+            // upstream only ever projects conversational rows, and a tool
+            // output that merely contains display-like fields must not be
+            // rewritten. The `??` keeps the physical carrier un-extracted
+            // whenever a projection exists.
+            let projectedContent = isToolResult ? nil : projectedDisplayContent(in: obj)
+            let extractedContent = isToolResult
                 ? extractToolOutput(obj)
-                : extractContent(obj["content"] ?? obj["text"] ?? .null)
+                : projectedContent ?? extractContent(obj["content"] ?? obj["text"] ?? .null)
+            // Compaction bookkeeping is removed before role/system/runtime
+            // normalization so no summary text — standalone or merged onto a
+            // real prompt — can reach a ChatMessage and the renderer.
+            //
+            // With an explicit display projection the physical carrier is
+            // never scanned and the projected text is never re-judged: the
+            // legacy delimiter search, the `_compressed_summary` flag, and
+            // the summary-prefix guard cannot discard authentic
+            // `display_content` (ordering matters here — the compatibility
+            // filters are only for rows lacking display metadata).
+            let rawContent: String?
+            if let projected = projectedContent {
+                rawContent = projected
+            } else {
+                rawContent = visibleContentRemovingCompaction(
+                    from: obj,
+                    content: extractedContent,
+                    isToolResult: isToolResult
+                )
+            }
+            guard var rawContent else {
+                continue
+            }
+            if isSteerRow {
+                rawContent = steerText(fromMarker: rawContent)
+            }
             let modelChange = modelChangeActivity(fromText: rawContent)
             let systemNotice = systemNoticeText(fromText: rawContent)
-            if modelChange != nil || systemNotice != nil { role = .system }
+            // A known synthetic display kind never renders as a human turn,
+            // even when its persisted role is `user` and its text matches no
+            // legacy marker. Unknown kinds keep ordinary normalization.
+            if modelChange != nil || systemNotice != nil || (displayKind != nil && !isToolResult) {
+                role = .system
+            }
             let userContent: (content: String, rawContent: String?, attachments: [Attachment]?) = role == .user
-                ? splitUserImageReferences(rawContent, messageId: id)
+                ? splitUserAttachmentReferences(rawContent, messageId: id)
                 : (content: rawContent, rawContent: nil, attachments: nil)
-            let content = modelChange.map {
-                "[Model has been changed to \($0.provider)/\($0.model)]"
-            } ?? systemNotice ?? userContent.content
+            let content: String
+            if let displayKind, !isToolResult {
+                // `displayKind` is non-nil here only for the known synthetic
+                // timeline kinds: hidden rows were already dropped and
+                // unknown values fail raw-value decoding above.
+                content = timelineNoticeContent(
+                    for: displayKind,
+                    projected: projectedContent,
+                    metadata: obj["display_metadata"],
+                    modelChange: modelChange,
+                    systemNotice: systemNotice,
+                    rawVisible: rawContent
+                )
+            } else {
+                content = modelChange.map {
+                    "[Model has been changed to \($0.provider)/\($0.model)]"
+                } ?? systemNotice ?? userContent.content
+            }
 
             let reasoning = role == .assistant ? extractContent(obj["reasoning"] ?? obj["reasoning_content"] ?? .null) : nil
             // This deliberately follows Desktop's persisted-transcript parser:
@@ -1515,7 +3302,12 @@ enum MessageNormalizer {
                 ))
             }
 
-            let review = role == .system ? reviewActivity(from: obj, eventSessionId: nil) : nil
+            // Timeline-projected rows are never self-improvement reviews, and
+            // skipping detection also keeps their physical carrier
+            // un-extracted.
+            let review = role == .system && displayKind == nil
+                ? reviewActivity(from: obj, eventSessionId: nil)
+                : nil
             let base = ChatMessage(
                 id: id,
                 role: role,
@@ -1525,7 +3317,11 @@ enum MessageNormalizer {
                 author: extractAuthor(obj),
                 reasoning: nil,
                 review: review,
-                attachments: userContent.attachments
+                attachments: userContent.attachments,
+                displayKind: displayKind?.rawValue
+                    ?? (isSteerRow && role == .user ? ChatMessage.steerDisplayKind : nil),
+                rowId: durableRowId(in: obj),
+                reactions: messageReactions(fromMetadata: obj["display_metadata"])
             )
 
             // External session history occasionally includes a role-less
@@ -1550,6 +3346,168 @@ enum MessageNormalizer {
         }
 
         return collapseDuplicateInterruptCorrections(in: messages)
+    }
+
+    /// `display_content` is the authoritative visible payload whenever the
+    /// field exists — including an explicit empty string, JSON null, or an
+    /// odd scalar, all of which resolve to authoritative empty text rather
+    /// than a fallback. Field presence is the authority boundary: once the
+    /// field exists, the physical carrier must never resurface, because a
+    /// malformed projection falling back to physical content could expose
+    /// model-facing internal rows. Nil return therefore means exactly
+    /// "field absent".
+    private static func projectedDisplayContent(in obj: [String: AnyCodable]) -> String? {
+        guard let value = obj["display_content"] else { return nil }
+        return extractContent(value)
+    }
+
+    /// `display_metadata` may arrive as a JSON object (current servers) or as
+    /// unparsed JSON text (older backends). Anything malformed degrades to
+    /// nil so a bad sidecar can never fail session normalization.
+    private static func displayMetadataObject(_ value: AnyCodable?) -> [String: AnyCodable]? {
+        guard let value else { return nil }
+        if let object = value.objectValue { return object }
+        guard let text = value.stringValue,
+              let data = text.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data),
+              let object = parsed as? [String: Any] else {
+            return nil
+        }
+        return object.mapValues { AnyCodable.from($0) }
+    }
+
+    /// The durable `messages.id` a reaction addresses. A gateway resume row
+    /// names it `row_id`; a REST transcript row carries it as its numeric
+    /// `id` (a string `id` is some other identity, never a row address).
+    static func durableRowId(in obj: [String: AnyCodable]) -> Int? {
+        let rowId = HermesClient.exactIntValue(obj["row_id"])
+            ?? HermesClient.exactIntValue(obj["id"])
+        guard let rowId, rowId > 0 else { return nil }
+        return rowId
+    }
+
+    /// Reactions persisted under `display_metadata.reactions`. Entries
+    /// without an emoji or an author are skipped; anything malformed reads
+    /// as none.
+    static func messageReactions(fromMetadata metadata: AnyCodable?) -> [MessageReaction] {
+        messageReactions(from: displayMetadataObject(metadata)?["reactions"])
+    }
+
+    /// A `MessageReaction` list as Hermes sends it (`message.react` result,
+    /// `message.reaction` event, stored metadata).
+    static func messageReactions(from value: AnyCodable?) -> [MessageReaction] {
+        (value?.arrayValue ?? []).compactMap { entry in
+            guard let object = entry.objectValue,
+                  let emoji = object["emoji"]?.stringValue?
+                      .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !emoji.isEmpty else { return nil }
+            guard let author = object["author"]?.stringValue?
+                      .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !author.isEmpty else { return nil }
+            return MessageReaction(emoji: emoji, author: author, at: object["at"]?.doubleValue)
+        }
+    }
+
+    /// The one-line title Hermes stamps on a background completion's
+    /// `display_metadata.display_text` (Desktop's `timelineDisplayText`).
+    /// Blank or non-string values degrade to nil.
+    private static func timelineDisplayText(metadata: AnyCodable?) -> String? {
+        guard let text = displayMetadataObject(metadata)?["display_text"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else { return nil }
+        return text
+    }
+
+    /// Upstream persists `task_count` on `async_delegation_complete` rows so
+    /// clients can phrase the completion notice. The count goes through
+    /// `doubleValue` + `Int(exactly:)` so non-representable numbers (1e100,
+    /// NaN, fractional) degrade to the generic notice instead of trapping
+    /// normalization — malformed metadata must never fail hydration.
+    private static func delegationTaskCount(metadata: AnyCodable?) -> Int? {
+        guard let count = displayMetadataObject(metadata)?["task_count"]?.doubleValue,
+              let taskCount = Int(exactly: count),
+              taskCount > 0 else { return nil }
+        return taskCount
+    }
+
+    private static func delegationCompleteNotice(metadata: AnyCodable?) -> String {
+        guard let taskCount = delegationTaskCount(metadata: metadata) else {
+            return AppLocalization.string("Background agent work finished")
+        }
+        return AppLocalization.string("\(taskCount) background agents finished")
+    }
+
+    /// Final visible text for a row Hermes tags with a known synthetic
+    /// display kind. These rows are timeline events — Hermes Desktop renders
+    /// canned labels for them — so the physical scaffold text is never shown
+    /// unless an explicit `display_content` projection supplies better copy.
+    private static func timelineNoticeContent(
+        for kind: HermesDisplayKind,
+        projected: String?,
+        metadata: AnyCodable?,
+        modelChange: (model: String, provider: String)?,
+        systemNotice: String?,
+        rawVisible: String
+    ) -> String {
+        // `projected` is non-nil only when the `display_content` field
+        // exists, and its value — including an explicit empty string — is
+        // authoritative: trimming an empty projection back into absence
+        // would fall through to canned labels or the physical carrier,
+        // which must never resurface.
+        switch kind {
+        case .hidden:
+            // Defense in depth: hidden rows are dropped before content work.
+            // Never echo the physical carrier if that invariant ever breaks.
+            return AppLocalization.string("Hidden system event")
+        case .modelSwitch:
+            // An explicit projection outranks the marker-derived card text;
+            // without one, the persisted marker matches Conduit's existing
+            // model-change card detection and keeps that presentation. A
+            // marker the card regex cannot parse is still model scaffold, so
+            // it degrades to the canned label rather than rendering raw.
+            if let projected {
+                return projected
+            }
+            if let modelChange {
+                return "[Model has been changed to \(modelChange.provider)/\(modelChange.model)]"
+            }
+            return AppLocalization.string("Model changed")
+        case .personalitySwitch:
+            // The physical marker embeds the full persona prompt; surface a
+            // canned label instead, like Hermes Desktop does.
+            return projected ?? AppLocalization.string("Personality changed")
+        case .autoContinue:
+            return projected ?? AppLocalization.string("Resumed interrupted turn")
+        case .asyncDelegationComplete:
+            // The localized count notice outranks Hermes' English
+            // `display_text`; the title covers rows that carry no usable count.
+            if let projected { return projected }
+            if delegationTaskCount(metadata: metadata) == nil,
+               let title = timelineDisplayText(metadata: metadata) {
+                return title
+            }
+            return delegationCompleteNotice(metadata: metadata)
+        case .processComplete:
+            // A background-process completion is a self-injected turn whose
+            // physical text is the whole `[IMPORTANT: …]` output wall written
+            // for the model. Hermes stamps a compact title in
+            // `display_text`; the canned label covers rows without one.
+            return projected
+                ?? timelineDisplayText(metadata: metadata)
+                ?? AppLocalization.string("Background process finished")
+        case .internalNotification:
+            // The row content is the operational notice itself (wake events,
+            // background completions); show it as a system notice. An
+            // explicit projection — including an empty one — is authoritative
+            // and rendered verbatim; the canned label is only for rows that
+            // have no projection at all, and the `[System: …]` strip applies
+            // only to that no-projection fallback.
+            if let projected {
+                return projected
+            }
+            let visible = systemNotice ?? rawVisible
+            return visible.isEmpty ? AppLocalization.string("System notification") : visible
+        }
     }
 
     static func modelChangeActivity(fromText text: String) -> (model: String, provider: String)? {
@@ -1586,9 +3544,29 @@ enum MessageNormalizer {
             return body.isEmpty ? nil : body
         }
         if isUserCorrectionInterruptionNotice(trimmed) {
-            return "Response interrupted by a user correction."
+            return AppLocalization.string("Response interrupted by a user correction.")
         }
         return nil
+    }
+
+    /// Hermes wraps a delivered steer as
+    /// `[OUT-OF-BAND USER MESSAGE — …]\n<text>\n[/OUT-OF-BAND USER MESSAGE]`
+    /// so the model trusts it. Returns the user's own text; anything that
+    /// does not carry the marker is returned trimmed but otherwise as is.
+    static func steerText(fromMarker text: String) -> String {
+        var body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let opener = "[OUT-OF-BAND USER MESSAGE"
+        let closer = "[/OUT-OF-BAND USER MESSAGE]"
+        // The header ends at its own `]` on the first line; never scan into
+        // the user's text, which may contain brackets.
+        let headerLine = body.prefix(while: { $0 != "\n" })
+        if body.hasPrefix(opener), let end = headerLine.firstIndex(of: "]") {
+            body = String(body[body.index(after: end)...])
+        }
+        if body.hasSuffix(closer) {
+            body = String(body.dropLast(closer.count))
+        }
+        return body.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static func isUserCorrectionInterruptionNotice(_ text: String) -> Bool {
@@ -1596,50 +3574,218 @@ enum MessageNormalizer {
             .caseInsensitiveCompare("[This response was interrupted by a user correction.]") == .orderedSame
     }
 
-    /// Normalizes the gateway's native clarification event. Current Hermes
-    /// sends string choices, while older integrations may send label/value
-    /// objects; accepting both keeps the card answerable across gateways.
+    /// Hermes persists context-compaction summaries as ordinary transcript
+    /// records — usually under a conversational role, and sometimes appended
+    /// to a row that still holds the genuine user prompt. They are
+    /// model-context bookkeeping, not chat messages, and can be large enough
+    /// to stall the Markdown pipeline when mistaken for a visible bubble.
+    /// Returns the content that should remain visible, or nil when the whole
+    /// record is compaction bookkeeping and must not produce a ChatMessage.
+    /// Tool-result rows bypass the filter: compaction artifacts only ride
+    /// conversational roles, while a tool's own output may legitimately print
+    /// the delimiter text.
+    private static func visibleContentRemovingCompaction(
+        from obj: [String: AnyCodable],
+        content: String,
+        isToolResult: Bool
+    ) -> String? {
+        if isToolResult { return content }
+
+        // Standalone summaries announce themselves within the first bytes.
+        // Dropping them here skips the merged-delimiter search, which would
+        // otherwise walk a potentially multi-megabyte payload end-to-end.
+        if hasCompactionSummaryPrefix(content) { return nil }
+
+        if let range = content.range(of: compactionSummaryDelimiter) {
+            // Merged row: the genuine prompt sits before the delimiter behind
+            // an optional wrapper header; the summary suffix is never shown.
+            // The flag does not preempt this branch — it marks the record as
+            // carrying a summary, not as lacking a genuine prompt.
+            var visible = String(content[..<range.lowerBound])
+            // Strip the wrapper only as a leading header — a copy the user
+            // quoted mid-message belongs to their message.
+            if visible.trimmingCharacters(in: .whitespacesAndNewlines)
+                .hasPrefix(priorContextWrapperHeader),
+                let wrapperRange = visible.range(of: priorContextWrapperHeader) {
+                visible.removeSubrange(wrapperRange)
+            }
+            let trimmed = visible.trimmingCharacters(in: .whitespacesAndNewlines)
+            // After a second compaction the retained prefix can itself be an
+            // older summary rather than a genuine prompt.
+            guard !trimmed.isEmpty, !hasCompactionSummaryPrefix(trimmed) else { return nil }
+            return trimmed
+        }
+
+        let flaggedAsSummary = obj["_compressed_summary"]?.boolValue == true
+            || obj["metadata"]?.objectValue?["_compressed_summary"]?.boolValue == true
+        // Flagged with no merged form is pure bookkeeping.
+        return flaggedAsSummary ? nil : content
+    }
+
+    private static let compactionSummaryDelimiter =
+        "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]"
+
+    private static let priorContextWrapperHeader =
+        "[PRIOR CONTEXT — for reference only; not a new message]"
+
+    /// Hermes emits multiple generations of compaction headers, and the
+    /// reload path can drop the `_compressed_summary` flag while keeping the
+    /// recognizable text. Match case-insensitively like the other Hermes
+    /// bracketed notices, anchored at the start of the content so ordinary
+    /// discussion of "context compaction" is never mistaken for a summary.
+    /// Classification reads only a bounded head: leading whitespace is
+    /// skipped by index and only the next 32 characters are compared, so a
+    /// multi-megabyte summary is never copied or tail-scanned to classify it.
+    static func hasCompactionSummaryPrefix(_ content: String) -> Bool {
+        var headStart = content.startIndex
+        while headStart < content.endIndex, content[headStart].isWhitespace {
+            headStart = content.index(after: headStart)
+        }
+        let head = content[headStart...].prefix(32).lowercased()
+        return head.hasPrefix("[context compaction")
+            || head.hasPrefix("[context summary]:")
+            || head.hasPrefix("[recent summary (")
+    }
+
+    /// Normalizes the gateway's native clarification event into one
+    /// batch-capable activity. Current Hermes sends
+    /// `clarify.request { questions: [{qid, question, choices, multi_select}] }`;
+    /// older shapes send one scalar `question`. The scalar form normalizes
+    /// into a one-question batch so the rest of the app never branches on the
+    /// wire generation. Returns nil for payloads with no request id or no
+    /// answerable question — deliberately dropped, never half-presented.
     static func clarifyActivity(from payload: [String: AnyCodable]) -> ClarifyActivity? {
         let requestIDCandidates = ["request_id", "requestId", "id"]
             .compactMap { payload[$0]?.stringValue }
         let requestId = requestIDCandidates
             .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let questionCandidates = ["question", "prompt", "text"]
-            .compactMap { key in payload[key].map { extractContent($0) } }
-        let question = questionCandidates
-            .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !requestId.isEmpty, !question.isEmpty else { return nil }
+        guard !requestId.isEmpty else { return nil }
 
-        let rawChoices = payload["choices"]?.arrayValue ?? payload["options"]?.arrayValue ?? []
+        if let rawQuestions = payload["questions"]?.arrayValue, !rawQuestions.isEmpty {
+            // Preserve gateway order; drop duplicate qids — questions key the
+            // UI (Identifiable ForEach) and per-question respond, so a repeat
+            // qid would crash the render and make answers ambiguous.
+            var questions: [ClarifyQuestion] = []
+            for entry in rawQuestions {
+                guard let question = clarifyQuestion(from: entry.objectValue ?? [:]) else { continue }
+                if !questions.contains(where: { $0.id == question.id }) {
+                    questions.append(question)
+                }
+            }
+            if !questions.isEmpty {
+                return ClarifyActivity(requestId: requestId, questions: questions)
+            }
+            // A `questions[]` payload where nothing survived parsing falls
+            // through to the scalar shape so a hypothetical hybrid payload
+            // still presents; otherwise it drops below.
+        }
+
+        // Legacy scalar shape (also the single-question form current gateways
+        // still emit — it keeps the exact pre-batch payload).
+        guard let question = scalarClarifyText(in: payload), !question.isEmpty else {
+            return nil
+        }
+        let choices = clarifyChoices(from: payload)
+        let multiSelect = payload["multi_select"]?.boolValue == true && !choices.isEmpty
+        return ClarifyActivity(
+            requestId: requestId,
+            questions: [
+                ClarifyQuestion(
+                    id: "q0",
+                    question: question,
+                    choices: choices,
+                    multiSelect: multiSelect,
+                    // Locally minted UI identity: it must never ride the
+                    // wire as question_id (real gateway batches also use
+                    // q0-style ids, so the flag — not the value — decides).
+                    isSyntheticID: true
+                )
+            ]
+        )
+    }
+
+    /// One batch question. The gateway `qid` is the identity and is preserved
+    /// verbatim — it is what per-question `clarify.respond` keys on. A qid-less
+    /// entry has no per-question protocol address (an absent `question_id`
+    /// would cancel the whole request server-side) and a question with no text
+    /// is unanswerable; both are rejected deliberately.
+    private static func clarifyQuestion(from object: [String: AnyCodable]) -> ClarifyQuestion? {
+        let text = scalarClarifyText(in: object) ?? ""
+        guard !text.isEmpty else { return nil }
+        // Explicit [String] annotation: the inline literal plus a multiline
+        // closure body otherwise confuses the type-checker into the wrong
+        // Dictionary subscript overload.
+        let qidKeys: [String] = ["qid", "question_id", "id"]
+        let qidCandidates = qidKeys.compactMap { key -> String? in
+            object[key]?.stringValue?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        .filter { !$0.isEmpty }
+        guard let qid = qidCandidates.first else { return nil }
+        let choices = clarifyChoices(from: object)
+        let multiSelect = object["multi_select"]?.boolValue == true && !choices.isEmpty
+        return ClarifyQuestion(id: qid, question: text, choices: choices, multiSelect: multiSelect)
+    }
+
+    private static func scalarClarifyText(in object: [String: AnyCodable]) -> String? {
+        ["question", "prompt", "text"]
+            .compactMap { key in object[key].map { extractContent($0) } }
+            .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Choices accept the native string form plus the older label/value object
+    /// integration; duplicates by value are dropped.
+    private static func clarifyChoices(from object: [String: AnyCodable]) -> [ClarifyChoice] {
+        let rawChoices = object["choices"]?.arrayValue ?? object["options"]?.arrayValue ?? []
         let choices = rawChoices.compactMap { choice -> ClarifyChoice? in
             if let text = choice.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
                 return ClarifyChoice(label: text, value: text)
             }
-            guard let object = choice.objectValue else { return nil }
+            guard let choice = choice.objectValue else { return nil }
             let labelCandidates = ["label", "title", "text", "name", "value"]
-                .compactMap { key in object[key].map { extractContent($0) } }
+                .compactMap { key in choice[key].map { extractContent($0) } }
             let label = labelCandidates
                 .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let valueCandidates = ["value", "answer", "id"]
-                .compactMap { key in object[key].map { extractContent($0) } }
+                .compactMap { key in choice[key].map { extractContent($0) } }
             let value = valueCandidates
                 .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? label
             guard !label.isEmpty, !value.isEmpty else { return nil }
             return ClarifyChoice(label: label, value: value)
         }
-        let uniqueChoices = choices.reduce(into: [ClarifyChoice]()) { result, choice in
+        return choices.reduce(into: [ClarifyChoice]()) { result, choice in
             if !result.contains(where: { $0.value == choice.value }) { result.append(choice) }
         }
-        return ClarifyActivity(
-            requestId: requestId,
-            question: question,
-            choices: uniqueChoices,
-            status: .pending
-        )
+    }
+
+    /// Reconstructs a clarification from the gateway's authoritative
+    /// `pending_clarify` snapshot (`session.resume`): the same payload as the
+    /// one-shot `clarify.request`, plus the answers locked before the client
+    /// detached, keyed by `qid`. Locked answers are accepted in either wire
+    /// form — the array string the app sends, or a real JSON array echo.
+    static func pendingClarifyActivity(from payload: [String: AnyCodable]) -> ClarifyActivity? {
+        guard var activity = clarifyActivity(from: payload) else { return nil }
+        let answers = payload["answers"]?.objectValue ?? [:]
+        guard !answers.isEmpty else { return activity }
+        for index in activity.questions.indices {
+            guard let raw = answers[activity.questions[index].id], raw != .null else { continue }
+            let answer: String?
+            if let text = raw.stringValue {
+                answer = text
+            } else if let values = raw.arrayValue?.compactMap(\.stringValue) {
+                answer = ClarifyQuestion.multiSelectAnswer(values)
+            } else {
+                answer = nil
+            }
+            guard let answer, !answer.isEmpty else { continue }
+            activity.questions[index].status = .answered
+            activity.questions[index].answer = answer
+        }
+        return activity
     }
 
     /// Normalizes Hermes' session-scoped command approval event. The current
@@ -1651,6 +3797,9 @@ enum MessageNormalizer {
     ) -> ApprovalActivity? {
         let normalizedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedSessionId.isEmpty else { return nil }
+        let requestId = ["request_id", "requestId"]
+            .compactMap { payload[$0]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
 
         let command = ["command", "code", "text"]
             .compactMap { payload[$0]?.stringValue }
@@ -1659,7 +3808,7 @@ enum MessageNormalizer {
         let description = ["description", "message", "prompt"]
             .compactMap { payload[$0]?.stringValue }
             .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "Approval required"
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? AppLocalization.string("Approval required")
         let choices = payload["choices"]?.arrayValue?
             .compactMap { $0.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -1671,6 +3820,7 @@ enum MessageNormalizer {
 
         return ApprovalActivity(
             sessionId: normalizedSessionId,
+            requestId: requestId,
             command: command,
             description: description,
             choices: uniqueChoices?.isEmpty == true ? nil : uniqueChoices,
@@ -1699,6 +3849,99 @@ enum MessageNormalizer {
             // enough; retain the interruption marker and original user row.
         }
         return collapsed
+    }
+
+    /// A user prompt's visible text once `@image:` tokens, leading `@file:`
+    /// references and Hermes' attached-context footer are projected out —
+    /// what a persisted user row's `content` holds.
+    static func visibleUserText(_ source: String) -> String {
+        splitUserAttachmentReferences(source, messageId: "").content
+    }
+
+    /// A persisted user prompt as its bubble shows it: images (`@image:`
+    /// tokens) and staged files (leading `@file:` lines, how Conduit and
+    /// Desktop send them) become attachments, and the context Hermes
+    /// expanded for the model below the typed text is dropped. The original
+    /// prompt is retained for replay/branch operations.
+    private static func splitUserAttachmentReferences(
+        _ source: String,
+        messageId: String
+    ) -> (content: String, rawContent: String?, attachments: [Attachment]?) {
+        let images = splitUserImageReferences(source, messageId: messageId)
+        let files = splitLeadingFileReferences(
+            removingContextFooter(images.content),
+            messageId: messageId
+        )
+        guard files.content != images.content else { return images }
+        let attachments = files.attachments + (images.attachments ?? [])
+        return (files.content, source, attachments.isEmpty ? nil : attachments)
+    }
+
+    /// Hermes appends what it expanded for `@file:`/`@url:` references below
+    /// the typed text ("--- Context Warnings ---", "--- Attached Context ---").
+    /// That is for the model; like Desktop, the bubble shows only the text.
+    /// Hermes only adds the footer to a prompt holding a reference, so a
+    /// heading typed in a message without one stays.
+    static func removingContextFooter(_ text: String) -> String {
+        guard let footer = text.range(
+            of: #"(?:^|\n)--- (?:Context Warnings|Attached Context) ---[ \t]*(?:\r?\n|$)"#,
+            options: .regularExpression
+        ) else { return text }
+        let visible = String(text[..<footer.lowerBound])
+        // Hermes' reference shapes (`context_references.REFERENCE_PATTERN`
+        // and its plugin fallback): `@diff`, `@staged`, or `@kind:value`.
+        guard visible.range(
+            of: #"(?<![\w/])@(?:diff\b|staged\b|[A-Za-z][A-Za-z0-9_-]*:\S)"#,
+            options: .regularExpression
+        ) != nil else { return text }
+        return visible.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// One whole line holding one `@file:` reference, its value quoted the
+    /// way Hermes quotes one (`format_reference_value`) or bare.
+    private static let fileReferenceLine = try? NSRegularExpression(
+        pattern: #"^@file:(?:`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'|(\S+))$"#
+    )
+
+    /// The run of `@file:` lines a prompt opens with becomes document
+    /// attachments; a reference typed inside the text stays where it is.
+    private static func splitLeadingFileReferences(
+        _ text: String,
+        messageId: String
+    ) -> (content: String, attachments: [Attachment]) {
+        guard let expression = fileReferenceLine else { return (text, []) }
+        var lines = text.components(separatedBy: "\n")
+        var paths: [String] = []
+        while let first = lines.first {
+            let line = first.replacingOccurrences(of: #"\s+$"#, with: "", options: .regularExpression)
+            let range = NSRange(line.startIndex..<line.endIndex, in: line)
+            guard let match = expression.firstMatch(in: line, range: range) else { break }
+            var path: String?
+            for group in 1..<match.numberOfRanges {
+                if let valueRange = Range(match.range(at: group), in: line) {
+                    path = String(line[valueRange])
+                    break
+                }
+            }
+            guard let path, !path.isEmpty else { break }
+            paths.append(path)
+            lines.removeFirst()
+        }
+        guard !paths.isEmpty else { return (text, []) }
+        let content = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        let attachments = paths.enumerated().map { index, path in
+            let url = URL(fileURLWithPath: path)
+            let name = url.lastPathComponent
+            let type = url.pathExtension.isEmpty ? nil : UTType(filenameExtension: url.pathExtension)
+            return Attachment(
+                id: "\(messageId)-gateway-file-\(index)",
+                name: name.isEmpty ? AppLocalization.string("Attached file") : name,
+                uri: path,
+                mimeType: AttachmentTypePolicy.mimeType(for: type),
+                kind: AttachmentTypePolicy.kind(for: type)
+            )
+        }
+        return (content, attachments)
     }
 
     /// Desktop persists uploaded images as `@image:/gateway/path/file.ext`
@@ -1754,7 +3997,7 @@ enum MessageNormalizer {
             let name = URL(fileURLWithPath: path).lastPathComponent
             return Attachment(
                 id: "\(messageId)-gateway-image-\(index)",
-                name: name.isEmpty ? "Attached image" : name,
+                name: name.isEmpty ? AppLocalization.string("Attached image") : name,
                 uri: path,
                 mimeType: imageMimeType(for: path),
                 kind: .image
@@ -1777,10 +4020,22 @@ enum MessageNormalizer {
         }
     }
 
-    static func reviewActivity(from payload: [String: AnyCodable], eventSessionId: String?) -> ReviewActivity? {
+    /// `allowUnprefixedSummary` is for the `review.summary` STREAM event only:
+    /// like Hermes Desktop, any non-empty summary there is a memory write
+    /// worth a row. Persisted system rows keep requiring the
+    /// "💾 Self-improvement review:" prose, or every `[System: …]` notice
+    /// would render as a review card.
+    static func reviewActivity(
+        from payload: [String: AnyCodable],
+        eventSessionId: String?,
+        allowUnprefixedSummary: Bool = false
+    ) -> ReviewActivity? {
         let text = extractContent(payload["text"] ?? payload["content"] ?? .null)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let activity = reviewActivity(fromText: text) else { return nil }
+        guard let activity = reviewActivity(fromText: text)
+            ?? (allowUnprefixedSummary ? plainReviewActivity(fromText: text) : nil) else {
+            return nil
+        }
 
         var details = activity.details ?? []
         for key in ["details", "transcript", "messages", "output"] {
@@ -1805,6 +4060,14 @@ enum MessageNormalizer {
         )
     }
 
+    private static func plainReviewActivity(fromText text: String) -> ReviewActivity? {
+        // Desktop strips the leading glyph (the row draws its own).
+        let summary = String(text.drop { !$0.isLetter && !$0.isNumber })
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !summary.isEmpty else { return nil }
+        return ReviewActivity(summary: summary, details: nil, fullSessionId: nil)
+    }
+
     static func reviewActivity(fromText text: String) -> ReviewActivity? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let prefix = "💾 Self-improvement review:"
@@ -1816,15 +4079,15 @@ enum MessageNormalizer {
         guard !details.isEmpty else { return ReviewActivity(summary: body, details: nil, fullSessionId: nil) }
         let labels = Set(details.compactMap { detail -> String? in
             let lower = detail.lowercased()
-            if lower.hasPrefix("user profile") { return "User profile" }
-            if lower.hasPrefix("memory") { return "Memory" }
-            if lower.hasPrefix("skill") { return "Skill" }
+            if lower.hasPrefix("user profile") { return AppLocalization.string("User profile") }
+            if lower.hasPrefix("memory") { return AppLocalization.string("Memory") }
+            if lower.hasPrefix("skill") { return AppLocalization.string("Skill") }
             return nil
         })
         let summary: String
-        if labels.count == 1, let label = labels.first { summary = "\(label) updated" }
-        else if labels.count > 1 { summary = "Memory and skills updated" }
-        else { summary = "Self-improvement updates saved" }
+        if labels.count == 1, let label = labels.first { summary = AppLocalization.string("\(label) updated") }
+        else if labels.count > 1 { summary = AppLocalization.string("Memory and skills updated") }
+        else { summary = AppLocalization.string("Self-improvement updates saved") }
         return ReviewActivity(summary: summary, details: details, fullSessionId: nil)
     }
 
@@ -1876,7 +4139,7 @@ enum MessageNormalizer {
                 id: firstNonEmptyString([cobj["id"], cobj["tool_call_id"], cobj["call_id"]]),
                 name: firstNonEmptyString([
                     cobj["name"], cobj["tool_name"], fn["name"], input["name"]
-                ]) ?? "Tool",
+                ]) ?? AppLocalization.string("Tool"),
                 input: {
                     let raw = fn["arguments"] ?? cobj["input"] ?? cobj["arguments"] ?? cobj["args"] ?? cobj["command"] ?? cobj["code"] ?? .null
                     let s = raw.descriptiveStringValue ?? extractContent(raw)

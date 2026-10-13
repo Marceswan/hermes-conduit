@@ -89,6 +89,751 @@ final class MessageNormalizerTests: XCTestCase {
         XCTAssertEqual(sessions.compactMap(\.profile), ["work", "personal"])
     }
 
+    func testSessionNormalizationKeepsStoredIDSeparateFromRuntimeID() {
+        let sessions = MessageNormalizer.normalizeSessions(
+            .object([
+                "sessions": .array([
+                    .object([
+                        "session_id": .string("runtime-123"),
+                        "id": .string("stored-123"),
+                        "profile": .string("default")
+                    ])
+                ])
+            ]),
+            profile: "default"
+        )
+
+        XCTAssertEqual(sessions.first?.storedSessionId, "stored-123")
+        XCTAssertTrue(sessions.first?.alternateIds.contains("stored-123") == true)
+    }
+
+    func testSessionNormalizationDoesNotTreatLoneIDAsVerifiedStoredID() {
+        let sessions = MessageNormalizer.normalizeSessions(
+            .object([
+                "sessions": .array([
+                    .object(["id": .string("ambiguous-123")])
+                ])
+            ]),
+            profile: "default"
+        )
+
+        XCTAssertNil(sessions.first?.storedSessionId)
+    }
+
+    func testNotificationRuntimeIDResolvesToStoredSessionID() {
+        let session = SessionSummary(
+            id: "runtime-123",
+            storedSessionId: "stored-123",
+            alternateIds: ["stored-123"],
+            title: "A session",
+            model: "Hermes",
+            updatedLabel: "now",
+            profile: "default",
+            source: .chat,
+            isActive: false,
+            isArchived: false
+        )
+
+        XCTAssertEqual(
+            NotificationSessionResolver.route(
+                target: ConduitNotificationTarget(profile: nil, sessionId: "runtime-123", type: nil),
+                catalog: [session],
+                identityIndex: ConversationIdentityIndex(),
+                profile: "default"
+            ),
+            NotificationSessionResolver.Route(
+                resumeTargetID: "stored-123",
+                durableSessionID: "stored-123",
+                basis: .catalogAlias
+            )
+        )
+    }
+
+    func testNotificationResolverTrimsUnknownRuntimeID() {
+        XCTAssertEqual(
+            NotificationSessionResolver.route(
+                target: ConduitNotificationTarget(profile: nil, sessionId: "  runtime-123  ", type: nil),
+                catalog: [],
+                identityIndex: ConversationIdentityIndex(),
+                profile: "default"
+            ),
+            NotificationSessionResolver.Route(
+                resumeTargetID: "runtime-123",
+                durableSessionID: nil,
+                basis: .legacyRuntime
+            ),
+            "An unknown runtime id flows through as itself — never reinterpreted as a durable id"
+        )
+    }
+
+    func testFailedNotificationRouteClearsPendingTarget() {
+        let service = PushNotificationService.shared
+        defer {
+            if let pendingTarget = service.pendingTarget {
+                service.clearPendingTarget(pendingTarget)
+            }
+        }
+        service.receiveNotificationPayload([
+            "conduit": [
+                "session_id": "runtime-123",
+                "type": "response_ready"
+            ] as [String: Any]
+        ])
+
+        guard let target = service.pendingTarget else {
+            return XCTFail("Expected the notification target to be pending")
+        }
+
+        service.clearPendingTarget(target)
+
+        XCTAssertNil(service.pendingTarget)
+    }
+
+    func testNotificationPayloadCarriesApprovalDecision() {
+        let service = PushNotificationService(retryDelay: .zero)
+        defer {
+            if let target = service.pendingTarget {
+                service.clearPendingTarget(target)
+            }
+        }
+        service.receiveNotificationPayload([
+            "conduit": [
+                "session_id": "runtime-1",
+                "profile": "default",
+                "type": "approval.needed",
+                "decision": [
+                    "kind": "approval",
+                    "session_key": "runtime-1",
+                    "description": "Run a dangerous shell command",
+                    "choices": ["once", "deny"],
+                ] as [String: Any],
+            ] as [String: Any],
+        ])
+
+        guard case let .approval(sessionKey, description, choices) = service.pendingTarget?.decision else {
+            return XCTFail("Expected an approval decision carried on the notification target")
+        }
+        XCTAssertEqual(sessionKey, "runtime-1")
+        XCTAssertEqual(description, "Run a dangerous shell command")
+        XCTAssertEqual(choices, ["once", "deny"])
+    }
+
+    func testNotificationPayloadDecisionAbsentForNonDecisionEvents() {
+        let service = PushNotificationService(retryDelay: .zero)
+        defer {
+            if let target = service.pendingTarget {
+                service.clearPendingTarget(target)
+            }
+        }
+        service.receiveNotificationPayload([
+            "conduit": [
+                "session_id": "session-1",
+                "type": "response.ready",
+            ] as [String: Any],
+        ])
+        XCTAssertNil(service.pendingTarget?.decision, "Non-decision notifications must not carry a decision")
+    }
+
+    func testNotificationPayloadDecisionRejectedWithoutSessionKey() {
+        let service = PushNotificationService(retryDelay: .zero)
+        defer {
+            if let target = service.pendingTarget {
+                service.clearPendingTarget(target)
+            }
+        }
+        // An approval with no answerable session key is not useful; drop it.
+        service.receiveNotificationPayload([
+            "conduit": [
+                "session_id": "session-1",
+                "type": "approval.needed",
+                "decision": ["kind": "approval", "description": "something"] as [String: Any],
+            ] as [String: Any],
+        ])
+        XCTAssertNil(service.pendingTarget?.decision)
+    }
+
+    func testNotificationPayloadDecisionRejectedWithoutDisplayText() {
+        let service = PushNotificationService(retryDelay: .zero)
+        defer {
+            if let target = service.pendingTarget {
+                service.clearPendingTarget(target)
+            }
+        }
+        service.receiveNotificationPayload([
+            "conduit": [
+                "session_id": "session-1",
+                "type": "approval.needed",
+                "decision": [
+                    "kind": "approval",
+                    "session_key": "session-1",
+                    "description": "   ",
+                    "choices": ["once", "deny"],
+                ] as [String: Any],
+            ] as [String: Any],
+        ])
+        XCTAssertNil(service.pendingTarget?.decision, "An approval with no display text must degrade to a routing target")
+    }
+
+    func testNotificationPayloadDecisionRejectedWithoutUsableChoices() {
+        let service = PushNotificationService(retryDelay: .zero)
+        defer {
+            if let target = service.pendingTarget {
+                service.clearPendingTarget(target)
+            }
+        }
+        // Absent choices.
+        service.receiveNotificationPayload([
+            "conduit": [
+                "session_id": "session-1",
+                "type": "approval.needed",
+                "decision": ["kind": "approval", "session_key": "session-1", "description": "d"] as [String: Any],
+            ] as [String: Any],
+        ])
+        XCTAssertNil(service.pendingTarget?.decision, "Absent choices must degrade to a routing target")
+
+        // All-empty/invalid choices.
+        service.receiveNotificationPayload([
+            "conduit": [
+                "session_id": "session-1",
+                "type": "approval.needed",
+                "decision": [
+                    "kind": "approval",
+                    "session_key": "session-1",
+                    "description": "d",
+                    "choices": ["  ", ""],
+                ] as [String: Any],
+            ] as [String: Any],
+        ])
+        XCTAssertNil(service.pendingTarget?.decision, "Choices with no usable entries must degrade to a routing target")
+    }
+
+    func testNotificationPreferencesRoundTripDecisionCardsKey() throws {
+        var preferences = ConduitNotificationPreferences()
+        XCTAssertTrue(preferences.decisionCards, "Decision cards default on, independent of show previews")
+        XCTAssertFalse(preferences.showPreviews)
+
+        preferences.decisionCards = false
+        let data = try JSONEncoder().encode(preferences)
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        XCTAssertEqual(object?["decision_cards"] as? Bool, false, "The relay expects the snake_case decision_cards key")
+
+        let decoded = try JSONDecoder().decode(ConduitNotificationPreferences.self, from: data)
+        XCTAssertFalse(decoded.decisionCards)
+    }
+
+    func testNotificationPreferencesRoundTripAttentionSoundKey() throws {
+        var preferences = ConduitNotificationPreferences()
+        XCTAssertTrue(preferences.attentionSound, "Approval and input sounds default on")
+
+        preferences.attentionSound = false
+        let data = try JSONEncoder().encode(preferences)
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        XCTAssertEqual(object?["attention_sound"] as? Bool, false, "The relay expects the snake_case attention_sound key")
+
+        let decoded = try JSONDecoder().decode(ConduitNotificationPreferences.self, from: data)
+        XCTAssertFalse(decoded.attentionSound)
+    }
+
+    func testNotificationPreferencesDecodeLegacyRegistrationWithoutDecisionCardsKey() throws {
+        // A registration persisted by a build that predated decision_cards.
+        // Decoding must fall back to the default rather than throwing — a
+        // throw would make the `try?` in the service init drop the whole
+        // stored registration and silently disable push on upgrade.
+        let legacyJSON = """
+        {
+          "enabled": true,
+          "approval_needed": false,
+          "input_needed": true,
+          "response_ready": true,
+          "turn_failed": true,
+          "background_task_finished": true,
+          "completion_sound": true,
+          "show_previews": true
+        }
+        """
+        let decoded = try JSONDecoder().decode(
+            ConduitNotificationPreferences.self,
+            from: Data(legacyJSON.utf8)
+        )
+        XCTAssertFalse(decoded.approvalNeeded, "Persisted values must survive")
+        XCTAssertTrue(decoded.showPreviews, "Persisted values must survive")
+        XCTAssertTrue(decoded.decisionCards, "Absent decision_cards must fall back to the default-on value")
+        XCTAssertTrue(decoded.attentionSound, "Absent attention_sound must fall back to the default-on value")
+    }
+
+    func testRelayMetaDecodingAndCapabilityChecks() throws {
+        let json = """
+        {
+          "version": "0.2.0",
+          "capabilities": ["decisions", "decision-cards", "meta"],
+          "gateways": [
+            {
+              "id": "gw-1",
+              "name": "Mac Studio Hermes",
+              "plugin_version": "0.2.0",
+              "plugin_capabilities": ["approval-decisions", "clarify-loop", "version-reporting"]
+            },
+            {
+              "id": "gw-2",
+              "name": "Old laptop",
+              "plugin_version": null,
+              "plugin_capabilities": [],
+              "last_event_at": "2026-08-15T01:00:00Z"
+            },
+            {
+              "id": "gw-3",
+              "name": "Fresh pair",
+              "plugin_version": null,
+              "plugin_capabilities": [],
+              "last_event_at": null
+            }
+          ]
+        }
+        """
+        let meta = try JSONDecoder().decode(RelayMetaInfo.self, from: Data(json.utf8))
+
+        XCTAssertTrue(meta.supportsDecisionCards)
+        XCTAssertEqual(meta.gateways.count, 3)
+
+        let current = meta.gateways[0]
+        XCTAssertTrue(current.supportsApprovalCards)
+        XCTAssertTrue(current.supportsClarifyCards)
+
+        // Events sent but never a plugin version = pre-0.2 notifier: prompt
+        // the update instead of showing "waiting for the first notification".
+        let legacy = meta.gateways[1]
+        XCTAssertNil(legacy.pluginVersion)
+        XCTAssertNotNil(legacy.lastEventAt)
+        XCTAssertTrue(legacy.hasSentEventsButNeverReported)
+
+        // A gateway that has sent nothing keeps the waiting state — it is not
+        // evidence of an old plugin, so no contradictory update prompt.
+        let neverSent = meta.gateways[2]
+        XCTAssertNil(neverSent.pluginVersion)
+        XCTAssertNil(neverSent.lastEventAt)
+        XCTAssertFalse(neverSent.hasSentEventsButNeverReported)
+    }
+
+    func testRelayMetaDecodingDropsMalformedGatewayRowsLossily() throws {
+        // One incompatible gateway record must not hide the whole section.
+        let json = """
+        {
+          "version": "0.2.0",
+          "capabilities": ["decisions"],
+          "gateways": [
+            { "id": "gw-bad" },
+            { "id": "gw-good", "name": "Main", "plugin_version": "0.2.0", "plugin_capabilities": ["clarify-loop"] }
+          ]
+        }
+        """
+        let meta = try JSONDecoder().decode(RelayMetaInfo.self, from: Data(json.utf8))
+        XCTAssertEqual(meta.gateways.map(\.id), ["gw-good"])
+        XCTAssertTrue(meta.supportsDecisionCards)
+    }
+
+    func testNotificationPairingsShowOnlyTheActiveDashboards() throws {
+        let main = UUID()
+        let review = UUID()
+        let removed = UUID()
+        let json = """
+        {
+          "version": "0.2.0",
+          "capabilities": ["decisions"],
+          "gateways": [
+            { "id": "gw-main", "name": "Mac Hermes", "plugin_version": "0.4.0",
+              "plugin_capabilities": ["approval-decisions", "clarify-loop"], "dashboard_id": "\(main.uuidString.lowercased())" },
+            { "id": "gw-review", "name": "Mac Hermes", "plugin_version": "0.3.0",
+              "plugin_capabilities": ["approval-decisions", "clarify-loop"], "dashboard_id": "\(review.uuidString)" },
+            { "id": "gw-removed", "name": "Old", "plugin_version": "0.4.0",
+              "plugin_capabilities": [], "dashboard_id": "\(removed.uuidString)" },
+            { "id": "gw-malformed", "name": "Bad", "plugin_version": null,
+              "plugin_capabilities": [], "dashboard_id": "not-a-uuid" },
+            { "id": "gw-legacy", "name": "Legacy", "plugin_version": "0.2.0",
+              "plugin_capabilities": [], "dashboard_id": null }
+          ]
+        }
+        """
+        let meta = try JSONDecoder().decode(RelayMetaInfo.self, from: Data(json.utf8))
+
+        // On the review dashboard, the main dashboard's up-to-date pairing
+        // never stands in for the review dashboard's own.
+        let onReview = NotificationDashboardPairings(
+            gateways: meta.gateways, activeDashboardID: review, savedDashboardIDs: [main, review]
+        )
+        XCTAssertEqual(onReview.thisDashboard.map(\.id), ["gw-review"])
+        XCTAssertEqual(onReview.thisDashboard.first?.pluginVersion, "0.3.0")
+        // A pre-dashboard pairing can't be attributed while two are saved.
+        XCTAssertEqual(onReview.unscoped.map(\.id), ["gw-legacy"])
+        XCTAssertEqual(onReview.otherDashboardsCount, 1)
+        // A removed dashboard's pairing, or a malformed binding, is not
+        // "another dashboard": there is nothing to switch to.
+        XCTAssertEqual(onReview.unrecognizedCount, 2)
+
+        let onMain = NotificationDashboardPairings(
+            gateways: meta.gateways, activeDashboardID: main, savedDashboardIDs: [main, review]
+        )
+        XCTAssertEqual(onMain.thisDashboard.map(\.id), ["gw-main"])
+    }
+
+    func testNotificationPairingsWithOneDashboardKeepLegacyPairings() {
+        let only = UUID()
+        let gateway = { (id: String, dashboardID: String?) in
+            RelayMetaInfo.Gateway(
+                id: id, name: id, pluginVersion: nil, pluginCapabilities: [], lastEventAt: nil, dashboardID: dashboardID
+            )
+        }
+        let pairings = NotificationDashboardPairings(
+            gateways: [gateway("legacy", nil), gateway("blank", "  "), gateway("scoped", only.uuidString)],
+            activeDashboardID: only,
+            savedDashboardIDs: [only]
+        )
+        // Same rule as push routing: with one dashboard saved, an unscoped
+        // pairing's pushes route to it, so it is this dashboard's.
+        XCTAssertEqual(pairings.thisDashboard.map(\.id), ["legacy", "blank", "scoped"])
+        XCTAssertTrue(pairings.unscoped.isEmpty)
+        XCTAssertEqual(pairings.otherDashboardsCount, 0)
+
+        // With the selected dashboard removed, nothing is judged: push
+        // routing would send the legacy pairing to the one saved dashboard,
+        // but listing it would present it as the selected dashboard's.
+        let noneActive = NotificationDashboardPairings(
+            gateways: [gateway("legacy", nil), gateway("scoped", only.uuidString)],
+            activeDashboardID: nil,
+            savedDashboardIDs: [only]
+        )
+        XCTAssertEqual(noneActive, NotificationDashboardPairings(gateways: [], activeDashboardID: nil, savedDashboardIDs: []))
+        XCTAssertTrue(noneActive.thisDashboard.isEmpty)
+        XCTAssertEqual(noneActive.otherDashboardsCount, 0)
+
+        // With every dashboard removed, the same: nothing is listed or counted.
+        let noneSaved = NotificationDashboardPairings(
+            gateways: [gateway("scoped", only.uuidString)], activeDashboardID: nil, savedDashboardIDs: []
+        )
+        XCTAssertEqual(noneSaved.unrecognizedCount, 0)
+        XCTAssertTrue(noneSaved.unscoped.isEmpty)
+    }
+
+    func testExpiredPromptErrorClassification() {
+        // The gateway's one-shot prompt timeout: JSON-RPC 4009.
+        XCTAssertTrue(AppState.isExpiredPromptError(RpcError(code: 4009, message: "no pending approval request")))
+        // Code-less variants still classify via the message, case-insensitively.
+        XCTAssertTrue(AppState.isExpiredPromptError(RpcError(code: nil, message: "No Pending clarify request")))
+        // Genuine failures must not be misread as expiry.
+        XCTAssertFalse(AppState.isExpiredPromptError(RpcError(code: 4004, message: "session not found")))
+        XCTAssertFalse(AppState.isExpiredPromptError(HermesError.timeout("approval.respond")))
+        XCTAssertFalse(AppState.isExpiredPromptError(HermesError.notConnected))
+    }
+
+    func testNotificationPayloadCarriesClarifyDecision() {
+        let service = PushNotificationService(retryDelay: .zero)
+        defer {
+            if let target = service.pendingTarget {
+                service.clearPendingTarget(target)
+            }
+        }
+        service.receiveNotificationPayload([
+            "conduit": [
+                "session_id": "runtime-1",
+                "profile": "default",
+                "type": "input.needed",
+                "decision": [
+                    "kind": "clarify",
+                    "request_id": "conduit-push-abc123",
+                    "question": "Which color?",
+                    "choices": ["Red", "Blue"],
+                ] as [String: Any],
+            ] as [String: Any],
+        ])
+
+        guard case let .clarify(requestId, question, choices) = service.pendingTarget?.decision else {
+            return XCTFail("Expected a clarify decision carried on the notification target")
+        }
+        XCTAssertEqual(requestId, "conduit-push-abc123")
+        XCTAssertEqual(question, "Which color?")
+        XCTAssertEqual(choices, ["Red", "Blue"])
+    }
+
+    func testNotificationPayloadCarriesBatchClarifyDecision() {
+        // Current notifier: the pushed decision preserves the FULL question
+        // set — qids, choices, and multi_select — with no reduction to the
+        // first question.
+        let service = PushNotificationService(retryDelay: .zero)
+        defer {
+            if let target = service.pendingTarget {
+                service.clearPendingTarget(target)
+            }
+        }
+        service.receiveNotificationPayload([
+            "conduit": [
+                "session_id": "runtime-1",
+                "profile": "default",
+                "type": "input.needed",
+                "decision": [
+                    "kind": "clarify",
+                    "request_id": "conduit-push-batch1",
+                    "questions": [
+                        ["qid": "environment", "question": "Which environment?", "choices": ["staging", "prod"], "multi_select": false],
+                        ["qid": "tests", "question": "Which tests?", "choices": ["unit", "ui"], "multi_select": true],
+                        ["qid": "notes", "question": "Any additional notes?", "choices": []]
+                    ] as [[String: Any]],
+                ] as [String: Any],
+            ] as [String: Any],
+        ])
+
+        guard case let .clarifyBatch(requestId, questions) = service.pendingTarget?.decision else {
+            return XCTFail("Expected a batch clarify decision carried on the notification target")
+        }
+        XCTAssertEqual(requestId, "conduit-push-batch1")
+        XCTAssertEqual(questions.map(\.id), ["environment", "tests", "notes"], "qids are preserved as identity")
+        XCTAssertEqual(questions.map(\.question), ["Which environment?", "Which tests?", "Any additional notes?"])
+        XCTAssertEqual(questions[0].choices.map(\.value), ["staging", "prod"])
+        XCTAssertTrue(questions[1].multiSelect, "multi_select must survive the push payload")
+        XCTAssertFalse(questions[0].multiSelect)
+        XCTAssertTrue(questions[2].choices.isEmpty, "Free-text questions survive the push payload")
+        XCTAssertFalse(questions[0].isSyntheticID, "Pushed batch qids are gateway identities, not synthetic")
+    }
+
+    func testNotificationPayloadBatchClarifyFallsBackToScalarWhenQuestionsUnusable() {
+        let service = PushNotificationService(retryDelay: .zero)
+        defer {
+            if let target = service.pendingTarget {
+                service.clearPendingTarget(target)
+            }
+        }
+        service.receiveNotificationPayload([
+            "conduit": [
+                "session_id": "runtime-1",
+                "profile": "default",
+                "type": "input.needed",
+                "decision": [
+                    "kind": "clarify",
+                    "request_id": "conduit-push-batch2",
+                    "questions": [["question": "No qid"]] as [[String: Any]],
+                    "question": "Scalar fallback",
+                    "choices": ["a"]
+                ] as [String: Any],
+            ] as [String: Any],
+        ])
+        guard case let .clarify(requestId, question, choices) = service.pendingTarget?.decision else {
+            return XCTFail("Expected the legacy scalar decode when no batch question survives")
+        }
+        XCTAssertEqual(requestId, "conduit-push-batch2")
+        XCTAssertEqual(question, "Scalar fallback")
+        XCTAssertEqual(choices, ["a"])
+    }
+
+    // MARK: - APNs payload layout selection (notifier 0.3+ single-copy shape)
+
+    /// Wraps a Conduit payload in the raw APNs notification layout.
+    private func receiveAPNsPayload(_ service: PushNotificationService, payload: [String: Any]) {
+        service.receiveNotificationPayload(payload)
+    }
+
+    func testNotificationPayloadNestedRichConduitParsesBatchDecision() {
+        // Notifier 0.3+ optimized layout: top-level conduit is a routing
+        // stub, body.conduit carries the structured decision. The nested
+        // copy must win — a `direct ?? nested` choice would silently drop
+        // the answerable card.
+        let service = PushNotificationService(retryDelay: .zero)
+        defer {
+            if let target = service.pendingTarget {
+                service.clearPendingTarget(target)
+            }
+        }
+        receiveAPNsPayload(service, payload: [
+            "aps": ["alert": ["title": "Input needed", "body": "Which environment?"]],
+            "body": [
+                "conduit": [
+                    "type": "input.needed",
+                    "session_id": "runtime-1",
+                    "profile": "default",
+                    "decision": [
+                        "kind": "clarify",
+                        "request_id": "conduit-push-opt1",
+                        "question": "Which environment?",
+                        "questions": [
+                            ["qid": "q0", "question": "Which environment?", "choices": ["staging", "prod"], "multi_select": false],
+                            ["qid": "q1", "question": "Which tests?", "choices": ["unit", "ui"], "multi_select": true],
+                        ] as [[String: Any]],
+                    ] as [String: Any],
+                ] as [String: Any],
+            ],
+            "conduit": [
+                "type": "input.needed",
+                "session_id": "runtime-1",
+                "profile": "default",
+            ] as [String: Any],
+        ])
+
+        guard case let .clarifyBatch(requestId, questions) = service.pendingTarget?.decision else {
+            return XCTFail("The nested rich decision must be selected over the routing-only stub")
+        }
+        XCTAssertEqual(requestId, "conduit-push-opt1")
+        XCTAssertEqual(questions.map(\.id), ["q0", "q1"], "the full batch survives the payload selection")
+    }
+
+    func testNotificationPayloadNestedOnlyConduitStillParses() {
+        // Current-generation layout without a top-level copy at all.
+        let service = PushNotificationService(retryDelay: .zero)
+        defer {
+            if let target = service.pendingTarget {
+                service.clearPendingTarget(target)
+            }
+        }
+        service.receiveNotificationPayload([
+            "body": [
+                "conduit": [
+                    "session_id": "runtime-1",
+                    "type": "input.needed",
+                    "decision": [
+                        "kind": "clarify",
+                        "request_id": "conduit-push-nested1",
+                        "question": "Which color?",
+                        "choices": ["Red", "Blue"],
+                    ] as [String: Any],
+                ] as [String: Any],
+            ] as [String: Any],
+        ])
+        guard case let .clarify(requestId, question, choices) = service.pendingTarget?.decision else {
+            return XCTFail("Expected the nested-only decision to parse")
+        }
+        XCTAssertEqual(requestId, "conduit-push-nested1")
+        XCTAssertEqual(question, "Which color?")
+        XCTAssertEqual(choices, ["Red", "Blue"])
+    }
+
+    func testNotificationPayloadLegacyTopLevelConduitStillParses() {
+        // Legacy layout: only the top-level conduit copy exists.
+        let service = PushNotificationService(retryDelay: .zero)
+        defer {
+            if let target = service.pendingTarget {
+                service.clearPendingTarget(target)
+            }
+        }
+        service.receiveNotificationPayload([
+            "conduit": [
+                "session_id": "runtime-1",
+                "profile": "default",
+                "type": "input.needed",
+                "decision": [
+                    "kind": "clarify",
+                    "request_id": "conduit-push-legacy1",
+                    "question": "Legacy?",
+                    "choices": ["a"],
+                ] as [String: Any],
+            ] as [String: Any],
+        ])
+        guard case let .clarify(requestId, question, _) = service.pendingTarget?.decision else {
+            return XCTFail("Expected the legacy top-level decision to parse")
+        }
+        XCTAssertEqual(requestId, "conduit-push-legacy1")
+        XCTAssertEqual(question, "Legacy?")
+    }
+
+    func testNotificationPayloadWithoutDecisionNavigatesWithoutInventingACard() {
+        // Plain fallback banner (decision stripped or disabled): routing must
+        // still work, and no ClarifyActivity may be invented.
+        let service = PushNotificationService(retryDelay: .zero)
+        defer {
+            if let target = service.pendingTarget {
+                service.clearPendingTarget(target)
+            }
+        }
+        service.receiveNotificationPayload([
+            "body": [
+                "conduit": [
+                    "type": "input.needed",
+                    "session_id": "runtime-1",
+                    "profile": "default",
+                ] as [String: Any],
+            ] as [String: Any],
+            "conduit": [
+                "type": "input.needed",
+                "session_id": "runtime-1",
+                "profile": "default",
+            ] as [String: Any],
+        ])
+        let target = service.pendingTarget
+        XCTAssertNotNil(target, "The plain notification still routes to the session")
+        XCTAssertEqual(target?.sessionId, "runtime-1")
+        XCTAssertNil(target?.decision, "A plain fallback banner must never invent an answerable card")
+    }
+
+    func testNotificationPayloadClarifyDecisionRejectedWithoutRequestId() {
+        let service = PushNotificationService(retryDelay: .zero)
+        defer {
+            if let target = service.pendingTarget {
+                service.clearPendingTarget(target)
+            }
+        }
+        // Without the plugin-minted id the card is not answerable; degrade.
+        service.receiveNotificationPayload([
+            "conduit": [
+                "session_id": "session-1",
+                "type": "input.needed",
+                "decision": ["kind": "clarify", "question": "Which color?"] as [String: Any],
+            ] as [String: Any],
+        ])
+        XCTAssertNil(service.pendingTarget?.decision)
+
+        // A non-prefixed id would be routed to the gateway's clarify.respond,
+        // which can never resolve a plugin-minted decision; reject it too.
+        service.receiveNotificationPayload([
+            "conduit": [
+                "session_id": "session-1",
+                "type": "input.needed",
+                "decision": ["kind": "clarify", "request_id": "gateway-rid-1", "question": "Which color?"] as [String: Any],
+            ] as [String: Any],
+        ])
+        XCTAssertNil(service.pendingTarget?.decision)
+
+        // The bare prefix with no unique suffix is equally unanswerable.
+        service.receiveNotificationPayload([
+            "conduit": [
+                "session_id": "session-1",
+                "type": "input.needed",
+                "decision": ["kind": "clarify", "request_id": "conduit-push-", "question": "Which color?"] as [String: Any],
+            ] as [String: Any],
+        ])
+        XCTAssertNil(service.pendingTarget?.decision)
+    }
+
+    func testFailedNotificationRouteRetriesOnceThenClearsTarget() async {
+        let service = PushNotificationService(retryDelay: .zero)
+        service.receiveNotificationPayload([
+            "conduit": [
+                "session_id": "runtime-123",
+                "type": "response_ready"
+            ] as [String: Any]
+        ])
+        guard let target = service.pendingTarget else {
+            return XCTFail("Expected the notification target to be pending")
+        }
+
+        let initialAttempt = service.navigationAttempt
+        XCTAssertTrue(service.handleFailedNotificationRoute(target))
+        // A cap, not a timing: the loop exits as soon as the retry lands. A
+        // busy simulator can stall the main actor for seconds inside one
+        // yield, and a 1s cap then expired before the retry got its turn.
+        let retryDeadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while service.navigationAttempt == initialAttempt,
+              ContinuousClock.now < retryDeadline {
+            await Task.yield()
+        }
+        XCTAssertEqual(service.navigationAttempt, initialAttempt + 1)
+        XCTAssertEqual(service.pendingTarget, target)
+
+        XCTAssertFalse(service.handleFailedNotificationRoute(target))
+        XCTAssertNil(service.pendingTarget)
+        let terminalAttempt = service.navigationAttempt
+        let terminalDeadline = ContinuousClock.now.advanced(by: .milliseconds(100))
+        while service.navigationAttempt == terminalAttempt,
+              ContinuousClock.now < terminalDeadline {
+            await Task.yield()
+        }
+        XCTAssertEqual(service.navigationAttempt, terminalAttempt)
+    }
+
     func testSessionNormalizationDoesNotInventOwnershipWithoutFallback() {
         let sessions = MessageNormalizer.normalizeSessions(
             .object([
@@ -162,6 +907,92 @@ final class MessageNormalizerTests: XCTestCase {
         XCTAssertEqual(projects[0].primaryPath, "/workspace")
         XCTAssertEqual(projects[0].sessionCount, 2)
         XCTAssertEqual(projects[0].previewSessions.map(\.title), ["Plan the trip"])
+    }
+
+    func testProjectTreeMarksAutoDiscoveredReposAsNotEditable() {
+        let projects = MessageNormalizer.normalizeProjects(
+            .object([
+                "projects": .array([
+                    .object(["id": .string("p1"), "label": .string("Skunkworks"), "isAuto": .bool(false)]),
+                    .object(["id": .string("auto:repo"), "label": .string("repo"), "isAuto": .bool(true)])
+                ])
+            ]),
+            profile: "default"
+        )
+
+        XCTAssertEqual(projects.map(\.isAuto), [false, true])
+    }
+
+    func testOnlyCreatedProjectIDsAreEditableWhenTheFlagIsMissing() {
+        // Created projects are `p_<hex>`; without the flag, any other id
+        // counts as auto so editability fails closed.
+        let projects = MessageNormalizer.normalizeProjects(
+            .object([
+                "projects": .array([
+                    .object(["id": .string("p_1a2b3c4d"), "label": .string("Skunkworks")]),
+                    .object(["id": .string("/srv/repos/conduit"), "label": .string("conduit")]),
+                    .object(["id": .string("auto:repo"), "label": .string("repo")]),
+                    .object(["id": .string("__no_project__"), "label": .string("Home"), "is_no_project": .bool(true)])
+                ])
+            ]),
+            profile: "default"
+        )
+
+        XCTAssertEqual(projects.map(\.isAuto), [false, true, true, false], "Home is not an auto repo")
+    }
+
+    func testProjectWithoutPrimaryPathAnchorsAtFirstRepoRoot() {
+        // `projects.tree` emits `path: null` for an explicit project whose
+        // primary_path was never set, but still seeds its folders as repos.
+        let projects = MessageNormalizer.normalizeProjects(
+            .object([
+                "projects": .array([
+                    .object([
+                        "id": .string("p_multi"),
+                        "label": .string("Multi"),
+                        "path": .null,
+                        "isNoProject": .bool(false),
+                        "sessionCount": .number(0),
+                        "repos": .array([
+                            .object(["id": .string("r0"), "label": .string("none"), "path": .null]),
+                            .object(["id": .string("rn"), "label": .string("bad"), "path": .number(7)]),
+                            .object(["id": .string("r1"), "label": .string("app"), "path": .string("/work/app")])
+                        ]),
+                        "previewSessions": .array([])
+                    ]),
+                    .object([
+                        "id": .string("__no_project__"),
+                        "label": .string("Home"),
+                        "path": .null,
+                        "isNoProject": .bool(true),
+                        "repos": .array([
+                            .object(["id": .string("__no_project__"), "path": .string("/should/not/use")])
+                        ])
+                    ])
+                ])
+            ]),
+            profile: "default"
+        )
+
+        XCTAssertEqual(projects.map(\.id), ["p_multi", "__no_project__"])
+        XCTAssertEqual(projects[0].primaryPath, "/work/app")
+        XCTAssertNil(projects[1].primaryPath)
+    }
+
+    func testProjectPrimaryPathWinsOverRepoRoots() {
+        let project = MessageNormalizer.normalizeProject(
+            .object([
+                "id": .string("p_app"),
+                "label": .string("App"),
+                "path": .string("/work/primary"),
+                "repos": .array([
+                    .object(["path": .string("/work/other")])
+                ])
+            ]),
+            profile: "default"
+        )
+
+        XCTAssertEqual(project?.primaryPath, "/work/primary")
     }
 
     func testProjectSessionNormalizationKeepsWorkspaceLanes() {
@@ -360,6 +1191,182 @@ final class MessageNormalizerTests: XCTestCase {
         XCTAssertEqual(messages[0].attachments?.first?.mimeType, "image/png")
     }
 
+    func testStagedFileReferenceBecomesADocumentAttachment() {
+        let original = """
+        @file:/root/.hermes/attachments/report.pdf
+
+        Summarise this.
+
+        --- Attached Context ---
+
+        📎 @file:/root/.hermes/attachments/report.pdf (application/pdf, 1.2 MB) — binary file, not inlined as text. \
+        It is available on disk at `/root/.hermes/attachments/report.pdf`. Use your tools to work with it.
+        """
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(61),
+                "role": .string("user"),
+                "content": .string(original)
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].content, "Summarise this.")
+        XCTAssertEqual(messages[0].rawContent, original)
+        XCTAssertEqual(messages[0].attachments?.count, 1)
+        XCTAssertEqual(messages[0].attachments?.first?.name, "report.pdf")
+        XCTAssertEqual(messages[0].attachments?.first?.uri, "/root/.hermes/attachments/report.pdf")
+        XCTAssertEqual(messages[0].attachments?.first?.mimeType, "application/pdf")
+        XCTAssertEqual(messages[0].attachments?.first?.kind, .document)
+    }
+
+    func testQuotedFileReferenceKeepsTheWholeName() {
+        let original = """
+        @file:`/root/.hermes/attachments/Q3 Report.pdf`
+        @file:/root/.hermes/attachments/notes.txt
+
+        --- Attached Context ---
+
+        📎 @file:`/root/.hermes/attachments/Q3 Report.pdf` (application/pdf, 80 KB) — binary file.
+        """
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(62),
+                "role": .string("user"),
+                "content": .string(original)
+            ])
+        ])
+
+        XCTAssertEqual(messages[0].content, "")
+        XCTAssertEqual(messages[0].attachments?.map(\.name), ["Q3 Report.pdf", "notes.txt"])
+        XCTAssertEqual(messages[0].attachments?.map(\.uri), [
+            "/root/.hermes/attachments/Q3 Report.pdf",
+            "/root/.hermes/attachments/notes.txt"
+        ])
+    }
+
+    func testFilesAndImagesFromOneTurnBothBecomeAttachments() {
+        let original = """
+        @file:/root/.hermes/attachments/notes.txt
+
+        Look at both
+
+        --- Attached Context ---
+
+        📌 @file:/root/.hermes/attachments/notes.txt (3 tokens)
+        hello
+        @image:/root/.hermes/images/upload_20261006_1.png
+        """
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(63),
+                "role": .string("user"),
+                "content": .string(original)
+            ])
+        ])
+
+        XCTAssertEqual(messages[0].content, "Look at both")
+        XCTAssertEqual(messages[0].attachments?.map(\.name), ["notes.txt", "upload_20261006_1.png"])
+        XCTAssertEqual(messages[0].attachments?.map(\.kind), [Attachment.Kind.document, .image])
+    }
+
+    func testFileReferenceTypedInTheTextStaysInTheText() {
+        let original = """
+        Compare @file:src/main.py with the spec
+
+        --- Context Warnings ---
+        - @file:src/main.py: file not found
+        """
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(64),
+                "role": .string("user"),
+                "content": .string(original)
+            ])
+        ])
+
+        XCTAssertEqual(messages[0].content, "Compare @file:src/main.py with the spec")
+        XCTAssertEqual(messages[0].rawContent, original)
+        XCTAssertNil(messages[0].attachments)
+    }
+
+    func testContextHeadingTypedWithoutAReferenceStays() {
+        let original = """
+        Hermes printed this:
+
+        --- Attached Context ---
+
+        and then stopped.
+        """
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(65),
+                "role": .string("user"),
+                "content": .string(original)
+            ])
+        ])
+
+        XCTAssertEqual(messages[0].content, original)
+        XCTAssertNil(messages[0].attachments)
+    }
+
+    func testFileAttachReplyWithoutAFileReferenceUsesThePath() {
+        XCTAssertEqual(
+            HermesClient.fileAttachmentReference(from: .object([
+                "ref_path": .string("/root/.hermes/attachments/report.pdf"),
+                "ref_text": .string("report.pdf")
+            ])),
+            "@file:/root/.hermes/attachments/report.pdf",
+            "A ref_text that isn't an @file: reference gives way to the staged path"
+        )
+        XCTAssertEqual(
+            HermesClient.fileAttachmentReference(from: .object([
+                "path": .string("/root/.hermes/attachments/report.pdf")
+            ])),
+            "@file:/root/.hermes/attachments/report.pdf"
+        )
+    }
+
+    func testContextFooterBelowAnyHermesReferenceIsDropped() {
+        for typed in [
+            "Summarise @url:https://example.com/post",
+            "Review @diff please",
+            "Read @file:\"notes/Q3 plan.md\""
+        ] {
+            let original = "\(typed)\n\n--- Attached Context ---\n\n🌐 expanded content"
+            let messages = MessageNormalizer.normalizeMessages([
+                .object([
+                    "id": .number(66),
+                    "role": .string("user"),
+                    "content": .string(original)
+                ])
+            ])
+            XCTAssertEqual(messages[0].content, typed, typed)
+        }
+    }
+
+    func testFileAttachReplyGivesThePromptReference() {
+        XCTAssertEqual(
+            HermesClient.fileAttachmentReference(from: .object([
+                "attached": .bool(true),
+                "path": .string("/root/.hermes/attachments/Q3 Report.pdf"),
+                "ref_text": .string("@file:`/root/.hermes/attachments/Q3 Report.pdf`")
+            ])),
+            "@file:`/root/.hermes/attachments/Q3 Report.pdf`"
+        )
+        XCTAssertEqual(
+            HermesClient.fileAttachmentReference(from: .object([
+                "attached": .bool(true),
+                "path": .string("/root/.hermes/attachments/Q3 Report.pdf")
+            ])),
+            "@file:`/root/.hermes/attachments/Q3 Report.pdf`",
+            "A reply without ref_text still names the staged file"
+        )
+        XCTAssertNil(HermesClient.fileAttachmentReference(from: .object(["attached": .bool(true)])))
+        XCTAssertEqual(HermesClient.formatReferenceValue("/tmp/a.pdf"), "/tmp/a.pdf")
+        XCTAssertEqual(HermesClient.formatReferenceValue("/tmp/it's `odd`.pdf"), "\"/tmp/it's `odd`.pdf\"")
+    }
+
     func testModelRuntimeNoticeBecomesACompactSystemActivity() {
         let original = """
         [System: The active model for this chat has changed to glm-5.2 via provider zai. From this point forward, use this runtime metadata when answering questions about what model/provider is active.]
@@ -401,9 +1408,10 @@ final class MessageNormalizerTests: XCTestCase {
         ])
 
         XCTAssertEqual(activity?.requestId, "clarify-1")
-        XCTAssertEqual(activity?.question, "Which environment should I use?")
-        XCTAssertEqual(activity?.choices.map(\.label), ["Staging", "Production"])
-        XCTAssertEqual(activity?.choices.map(\.value), ["Staging", "Production"])
+        XCTAssertEqual(activity?.questions.count, 1)
+        XCTAssertEqual(activity?.questions[0].question, "Which environment should I use?")
+        XCTAssertEqual(activity?.questions[0].choices.map(\.label), ["Staging", "Production"])
+        XCTAssertEqual(activity?.questions[0].choices.map(\.value), ["Staging", "Production"])
     }
 
     func testClarifyActivityKeepsLegacyStructuredChoices() {
@@ -416,8 +1424,238 @@ final class MessageNormalizerTests: XCTestCase {
         ])
 
         XCTAssertEqual(activity?.requestId, "clarify-2")
-        XCTAssertEqual(activity?.question, "Pick one")
-        XCTAssertEqual(activity?.choices, [ClarifyChoice(label: "Use current branch", value: "current")])
+        XCTAssertEqual(activity?.questions[0].question, "Pick one")
+        XCTAssertEqual(activity?.questions[0].choices, [ClarifyChoice(label: "Use current branch", value: "current")])
+    }
+
+    func testClarifyActivityNormalizesLegacyScalarIntoOneQuestionBatch() {
+        // The legacy scalar payload must normalize into the SAME batch model
+        // the current questions[] protocol produces — one internal shape, no
+        // parallel scalar implementation.
+        let activity = MessageNormalizer.clarifyActivity(from: [
+            "request_id": .string("clarify-3"),
+            "question": .string("Solo"),
+            "choices": .array([.string("a")])
+        ])
+        XCTAssertEqual(activity?.questions.count, 1)
+        XCTAssertEqual(activity?.displayQuestion, "Solo")
+        XCTAssertEqual(activity?.correlationQuestion, "Solo")
+        XCTAssertEqual(activity?.status, .pending)
+    }
+
+    func testClarifyActivityParsesCurrentBatchQuestionsProtocol() {
+        let activity = MessageNormalizer.clarifyActivity(from: [
+            "request_id": .string("req-1"),
+            "questions": .array([
+                .object([
+                    "qid": .string("environment"),
+                    "question": .string("Which environment?"),
+                    "choices": .array([.string("staging"), .string("prod")]),
+                    "multi_select": .bool(false)
+                ]),
+                .object([
+                    "qid": .string("tests"),
+                    "question": .string("Which tests should run?"),
+                    "choices": .array([.string("unit"), .string("integration"), .string("ui")]),
+                    "multi_select": .bool(true)
+                ]),
+                .object([
+                    "qid": .string("notes"),
+                    "question": .string("Any additional notes?"),
+                    "choices": .array([])
+                ])
+            ])
+        ])
+
+        XCTAssertEqual(activity?.questions.map(\.id), ["environment", "tests", "notes"])
+        XCTAssertEqual(activity?.displayQuestion, "Which environment?\nWhich tests should run?\nAny additional notes?")
+        XCTAssertEqual(activity?.correlationQuestion, "Which environment?", "Supersede correlation uses the first question, matching the notifier's reduction")
+        XCTAssertEqual(activity?.questions[1].multiSelect, true)
+        XCTAssertEqual(activity?.questions[2].choices.isEmpty, true)
+    }
+
+    func testPendingClarifyActivityRestoresAnswersKeyedByQID() {
+        let activity = MessageNormalizer.pendingClarifyActivity(from: [
+            "request_id": .string("req-batch"),
+            "questions": .array([
+                .object([
+                    "qid": .string("environment"),
+                    "question": .string("Which environment?"),
+                    "choices": .array([.string("staging"), .string("prod")]),
+                    "multi_select": .bool(false)
+                ]),
+                .object([
+                    "qid": .string("notes"),
+                    "question": .string("Notes?"),
+                    "choices": .array([])
+                ])
+            ]),
+            "answers": .object(["environment": .string("staging")])
+        ])
+
+        XCTAssertEqual(activity?.requestId, "req-batch")
+        XCTAssertEqual(activity?.questions[0].status, .answered, "Answers locked before the detach restore locked")
+        XCTAssertEqual(activity?.questions[0].answer, "staging")
+        XCTAssertEqual(activity?.questions[1].status, .pending)
+    }
+
+    func testPendingClarifyActivityWithoutAnswersLeavesEverythingAnswerable() {
+        let activity = MessageNormalizer.pendingClarifyActivity(from: [
+            "request_id": .string("req-batch"),
+            "questions": .array([
+                .object(["qid": .string("a"), "question": .string("Q?"), "choices": .array([.string("x")])])
+            ])
+        ])
+        XCTAssertEqual(activity?.questions[0].status, .pending)
+    }
+
+    func testPendingClarifyActivityAcceptsArrayValuedAnswers() {
+        // A gateway may echo a locked multi-select answer as a real JSON
+        // array rather than the array string the app sends; restore it either
+        // way so a locked question never reopens.
+        let activity = MessageNormalizer.pendingClarifyActivity(from: [
+            "request_id": .string("req-batch"),
+            "questions": .array([
+                .object([
+                    "qid": .string("tests"),
+                    "question": .string("Which tests?"),
+                    "choices": .array([.string("unit"), .string("ui")]),
+                    "multi_select": .bool(true)
+                ])
+            ]),
+            "answers": .object(["tests": .array([.string("unit"), .string("ui")])])
+        ])
+
+        XCTAssertEqual(activity?.questions[0].status, .answered)
+        XCTAssertEqual(activity?.questions[0].resolvedAnswer, "unit, ui")
+    }
+
+    func testPendingClarifyActivityRejectsPayloadWithoutQuestions() {
+        XCTAssertNil(MessageNormalizer.pendingClarifyActivity(from: [
+            "request_id": .string("req-1")
+        ]))
+    }
+
+    func testNotificationPayloadBatchClarifyDeduplicatesIdentities() {
+        // Duplicate qids and duplicate choice values collapse (first wins) —
+        // they would render as duplicate Identifiable rows and answer
+        // ambiguously per question.
+        let service = PushNotificationService(retryDelay: .zero)
+        defer {
+            if let target = service.pendingTarget {
+                service.clearPendingTarget(target)
+            }
+        }
+        service.receiveNotificationPayload([
+            "conduit": [
+                "session_id": "runtime-1",
+                "profile": "default",
+                "type": "input.needed",
+                "decision": [
+                    "kind": "clarify",
+                    "request_id": "conduit-push-dedupe",
+                    "questions": [
+                        ["qid": "q0", "question": "Which environment?", "choices": ["staging", "staging", "prod"], "multi_select": false],
+                        ["qid": "q0", "question": "Duplicate qid dropped", "choices": ["x"], "multi_select": false],
+                        ["qid": "q1", "question": "Which tests?", "choices": ["unit", "ui"], "multi_select": true],
+                    ] as [[String: Any]],
+                ] as [String: Any],
+            ] as [String: Any],
+        ])
+
+        guard case let .clarifyBatch(requestId, questions) = service.pendingTarget?.decision else {
+            return XCTFail("Expected a batch clarify decision carried on the notification target")
+        }
+        XCTAssertEqual(requestId, "conduit-push-dedupe")
+        XCTAssertEqual(questions.map(\.id), ["q0", "q1"], "duplicate qids collapse to the first occurrence")
+        XCTAssertEqual(questions[0].choices.map(\.value), ["staging", "prod"], "duplicate choice values collapse")
+        XCTAssertEqual(questions[0].question, "Which environment?", "the surviving qid keeps the FIRST entry's text")
+    }
+
+    func testRelayTransportPolicyRequiresHTTPSExceptLoopback() {
+        func url(_ string: String) -> URL { URL(string: string)! }
+        // HTTPS is always allowed.
+        XCTAssertTrue(RelayTransportPolicy.allowsCredentialTransport(url("https://push.milim.dev/v1/meta")))
+        // The pairing credential is a bearer secret: arbitrary cleartext
+        // relays are refused.
+        XCTAssertFalse(RelayTransportPolicy.allowsCredentialTransport(url("http://push.milim.dev/v1/meta")))
+        XCTAssertFalse(RelayTransportPolicy.allowsCredentialTransport(url("http://192.168.1.10:8080/v1/meta")))
+        XCTAssertFalse(RelayTransportPolicy.allowsCredentialTransport(url("ftp://push.milim.dev")))
+        // Bounded development exception: a loopback relay never exposes the
+        // credential off the machine.
+        XCTAssertTrue(RelayTransportPolicy.allowsCredentialTransport(url("http://localhost:8080/v1/meta")))
+        XCTAssertTrue(RelayTransportPolicy.allowsCredentialTransport(url("http://127.0.0.1:9000/v1/decisions/x/respond")))
+        XCTAssertTrue(RelayTransportPolicy.allowsCredentialTransport(url("http://[::1]:8080/v1/meta")))
+    }
+
+    func testConfiguredRelayURLFallsBackToDefaultWhenBlank() {
+        let fallback = PushNotificationService.defaultRelayURL
+        XCTAssertEqual(fallback.absoluteString, "https://push.milim.dev")
+        XCTAssertEqual(PushNotificationService.configuredRelayURL(from: nil), fallback)
+        XCTAssertEqual(PushNotificationService.configuredRelayURL(from: ""), fallback)
+        XCTAssertEqual(PushNotificationService.configuredRelayURL(from: "  \n"), fallback)
+        XCTAssertEqual(PushNotificationService.configuredRelayURL(from: "https:"), fallback, "a value with no host is never used as the relay")
+        XCTAssertEqual(
+            PushNotificationService.configuredRelayURL(from: " https://relay.example.com "),
+            URL(string: "https://relay.example.com")!
+        )
+    }
+
+    func testCredentialRequestsGoToIssuingRelayNotConfiguredOne() {
+        let configured = URL(string: "https://relay-b.example.com")!
+        XCTAssertEqual(
+            PushNotificationService.requestRelayURL(issuer: "https://relay-a.example.com", configured: configured),
+            URL(string: "https://relay-a.example.com")!,
+            "a registration's credential never follows an edited Settings value"
+        )
+        XCTAssertEqual(
+            PushNotificationService.requestRelayURL(issuer: nil, configured: configured),
+            configured,
+            "with no registration the configured relay applies"
+        )
+        XCTAssertNil(
+            PushNotificationService.requestRelayURL(issuer: "", configured: configured),
+            "an issuer that doesn't parse sends the credential nowhere, never to the configured relay"
+        )
+        XCTAssertNil(
+            PushNotificationService.requestRelayURL(issuer: "https:", configured: configured),
+            "an issuer that parses but names no host is just as unusable"
+        )
+        XCTAssertFalse(
+            PushNotificationService.isSameRelay("https:", configured),
+            "an unusable issuer never matches, so Settings offers a move that recovers"
+        )
+        XCTAssertFalse(
+            RelayTransportPolicy.allowsCredentialTransport(PushNotificationService.unusableRelayURL),
+            "the stand-in for an unusable issuer must be refused before any request is sent"
+        )
+    }
+
+    func testSameRelayIgnoresCosmeticDifferences() {
+        func same(_ issuer: String, _ configured: String) -> Bool {
+            PushNotificationService.isSameRelay(issuer, URL(string: configured)!)
+        }
+        XCTAssertTrue(same("https://relay.example.com", "https://relay.example.com/"))
+        XCTAssertTrue(same("https://relay.example.com", "HTTPS://Relay.Example.com"))
+        XCTAssertTrue(same("https://relay.example.com", "https://relay.example.com:443"))
+        XCTAssertTrue(same("https://relay.example.com/push", "https://relay.example.com/push/"))
+        XCTAssertFalse(same("https://relay.example.com", "https://other.example.com"))
+        XCTAssertFalse(same("https://relay.example.com", "http://relay.example.com"))
+        XCTAssertFalse(same("https://relay.example.com", "https://relay.example.com:8443"))
+        XCTAssertFalse(same("https://relay.example.com", "https://relay.example.com/push"))
+        XCTAssertFalse(PushNotificationService.isSameRelay(nil, URL(string: "https://relay.example.com")!))
+    }
+
+    func testRelayInputValidationRejectsValuesThatWouldFallBackSilently() {
+        XCTAssertTrue(PushNotificationService.isValidRelayInput(""), "blank means the default relay")
+        XCTAssertTrue(PushNotificationService.isValidRelayInput("  "))
+        XCTAssertTrue(PushNotificationService.isValidRelayInput("https://relay.example.com"))
+        XCTAssertTrue(PushNotificationService.isValidRelayInput(" http://localhost:8080 "), "loopback HTTP is the development exception")
+        XCTAssertFalse(PushNotificationService.isValidRelayInput("http://relay.example.com"), "cleartext relays would be refused after saving")
+        XCTAssertFalse(PushNotificationService.isValidRelayInput("my relay.com"))
+        XCTAssertFalse(PushNotificationService.isValidRelayInput("relay.example.com"), "a bare host has no scheme")
+        XCTAssertFalse(PushNotificationService.isValidRelayInput("ftp://relay.example.com"))
+        XCTAssertFalse(PushNotificationService.isValidRelayInput("https://"))
     }
 
     func testApprovalActivityNormalizesGatewayChoices() {
@@ -468,6 +1706,446 @@ final class MessageNormalizerTests: XCTestCase {
         XCTAssertEqual(messages[0].rawContent, original)
     }
 
+    // MARK: - Persisted context-compaction summaries
+
+    func testPersistedCompactionSummaryFlaggedByMetadataIsOmitted() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(81),
+                "role": .string("user"),
+                "_compressed_summary": .bool(true),
+                "content": .string("[CONTEXT COMPACTION 12:04 — 48% of window used]")
+            ]),
+            // The flag may survive only inside the record's metadata object
+            // after a persistence round-trip.
+            .object([
+                "id": .number(82),
+                "role": .string("user"),
+                "metadata": .object(["_compressed_summary": .bool(true)]),
+                "content": .string("Summary of the session so far without the top-level flag")
+            ])
+        ])
+
+        XCTAssertTrue(messages.isEmpty)
+    }
+
+    func testPersistedCompactionSummaryRecognizedByCurrentPrefixWithoutMetadata() {
+        // Large on purpose: the prefix detector must decide from a bounded
+        // head without copying a summary-sized payload.
+        let largeSummary = "[CONTEXT COMPACTION 12:04 — 48% of window used]\n"
+            + String(repeating: "The user asked about the deploy pipeline and a config bug was fixed. ", count: 20_000)
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(83),
+                "role": .string("user"),
+                "content": .string(largeSummary)
+            ])
+        ])
+
+        XCTAssertTrue(messages.isEmpty)
+    }
+
+    func testPersistedLegacyContextSummaryPrefixIsOmitted() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(84),
+                "role": .string("user"),
+                "content": .string("[CONTEXT SUMMARY]: Earlier the user asked about the deploy pipeline.")
+            ])
+        ])
+
+        XCTAssertTrue(messages.isEmpty)
+    }
+
+    func testPersistedCompactionSummaryIsOmittedRegardlessOfRole() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(85),
+                "role": .string("assistant"),
+                "_compressed_summary": .bool(true),
+                "content": .string("Summary of everything the assistant did so far in this session.")
+            ])
+        ])
+
+        XCTAssertTrue(messages.isEmpty)
+    }
+
+    func testMergedPriorContextRecordKeepsOnlyGenuineUserContent() {
+        let genuine = "This is the user's real message."
+        let merged = "[PRIOR CONTEXT — for reference only; not a new message]\n\n"
+            + genuine
+            + "\n\n[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\n\n"
+            + "[CONTEXT COMPACTION 12:04]\n"
+            + String(repeating: "Summary of the prior turns. ", count: 1_000)
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(86),
+                "role": .string("user"),
+                "content": .string(merged)
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .user)
+        XCTAssertEqual(messages[0].content, genuine)
+        XCTAssertFalse(messages[0].content.contains("PRIOR CONTEXT"))
+        XCTAssertFalse(messages[0].content.contains("COMPACTION"))
+    }
+
+    func testMergedCompactionRecordWithoutGenuineContentIsOmitted() {
+        let merged = "[PRIOR CONTEXT — for reference only; not a new message]\n\n"
+            + "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\n\n"
+            + "[CONTEXT SUMMARY]: Everything before this point.\n"
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(87),
+                "role": .string("user"),
+                "content": .string(merged)
+            ])
+        ])
+
+        XCTAssertTrue(messages.isEmpty)
+    }
+
+    func testMergedRecordWhosePrefixIsItselfASummaryIsOmitted() {
+        // Double compaction: the row above the delimiter is an older summary,
+        // not a genuine prompt. Splitting at the delimiter alone would keep
+        // the older summary as a visible bubble.
+        let merged = "[CONTEXT COMPACTION 12:04]\n"
+            + String(repeating: "Prior summary of the session. ", count: 2_000)
+            + "\n\n[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\n\n"
+            + "[CONTEXT COMPACTION 12:05]\n"
+            + String(repeating: "Newer summary of the session. ", count: 2_000)
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(91),
+                "role": .string("user"),
+                "content": .string(merged)
+            ])
+        ])
+
+        XCTAssertTrue(messages.isEmpty)
+    }
+
+    func testMergedRecordKeepsGenuineContentEvenWhenFlagged() {
+        // The flag marks the row as carrying a summary, not as lacking a
+        // genuine prompt; the merged split still owns it.
+        let genuine = "Rebuild the release after the config change."
+        let merged = "[PRIOR CONTEXT — for reference only; not a new message]\n\n"
+            + genuine
+            + "\n\n[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\n\n"
+            + "[CONTEXT COMPACTION 12:04]\nSummary follows."
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(92),
+                "role": .string("user"),
+                "_compressed_summary": .bool(true),
+                "content": .string(merged)
+            ])
+        ])
+
+        XCTAssertEqual(messages.map(\.content), [genuine])
+    }
+
+    func testBareDelimiterRecordWithEmptyPrefixIsOmitted() {
+        let merged = "\n\n[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\n\n"
+            + "[CONTEXT SUMMARY]: Everything before this point.\n"
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(93),
+                "role": .string("user"),
+                "content": .string(merged)
+            ])
+        ])
+
+        XCTAssertTrue(messages.isEmpty)
+    }
+
+    func testDelimiterRecordWithoutWrapperKeepsGenuineContent() {
+        // The wrapper header is optional; the delimiter alone marks the merge.
+        let genuine = "Please rerun the migration tests."
+        let merged = genuine
+            + "\n\n[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\n\n"
+            + "[CONTEXT COMPACTION 12:04]\nSummary follows."
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(95),
+                "role": .string("user"),
+                "content": .string(merged)
+            ])
+        ])
+
+        XCTAssertEqual(messages.map(\.content), [genuine])
+    }
+
+    func testQuotedWrapperInsideGenuineContentIsPreserved() {
+        // The wrapper is only stripped as a leading header; a copy the user
+        // quoted mid-message belongs to their message.
+        let genuine = "The transcript marker looks like this:\n"
+            + "[PRIOR CONTEXT — for reference only; not a new message]\n"
+            + "and then my question follows."
+        let merged = genuine
+            + "\n\n[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\n\n"
+            + "[CONTEXT COMPACTION 12:04]\nSummary follows."
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(96),
+                "role": .string("user"),
+                "content": .string(merged)
+            ])
+        ])
+
+        XCTAssertEqual(messages.map(\.content), [genuine])
+    }
+
+    func testToolResultContainingCompactionDelimiterIsNotTruncated() {
+        // Compaction artifacts ride conversational roles; a tool output that
+        // merely prints the delimiter text must keep its full content.
+        let output = "grep results:\n[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\nmatched 3 lines"
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(94),
+                "role": .string("tool"),
+                "tool_call_id": .string("call-9"),
+                "tool_name": .string("run_grep"),
+                "content": .string(output)
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .tool)
+        XCTAssertEqual(messages[0].tool?.output, output)
+    }
+
+    func testOrdinaryCompactionDiscussionIsNotHidden() {
+        let content = "Can you explain how context compaction works?"
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(88),
+                "role": .string("user"),
+                "content": .string(content)
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .user)
+        XCTAssertEqual(messages[0].content, content)
+    }
+
+    func testLargePersistedCompactionSummaryNeverReachesChatMessages() {
+        // A multi-megabyte summary must be dropped during normalization, not
+        // handed to the Markdown/UI rendering pipeline as a user bubble.
+        let hugeSummary = "[CONTEXT COMPACTION 12:04]\n"
+            + String(repeating: "The session covered implementation details and open questions. ", count: 30_000)
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(89),
+                "role": .string("user"),
+                "_compressed_summary": .bool(true),
+                "content": .string(hugeSummary)
+            ]),
+            .object([
+                "id": .number(90),
+                "role": .string("assistant"),
+                "content": .string("Still here after the summary was dropped.")
+            ])
+        ])
+
+        XCTAssertEqual(messages.map(\.role), [.assistant])
+        XCTAssertEqual(messages.first?.content, "Still here after the summary was dropped.")
+    }
+
+    func testLargeStandalonePrefixSummaryIsDroppedByPrefixAlone() {
+        // No flag and no merged delimiter anywhere: classification must rest
+        // on the prefix alone, without the full-payload delimiter search.
+        let hugeSummary = "[CONTEXT COMPACTION 12:04 — 48% of window used]\n"
+            + String(repeating: "Turn summary with no merged marker in the body. ", count: 100_000)
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(97),
+                "role": .string("user"),
+                "content": .string(hugeSummary)
+            ]),
+            .object([
+                "id": .number(98),
+                "role": .string("assistant"),
+                "content": .string("Neighbor row survives.")
+            ])
+        ])
+
+        XCTAssertEqual(messages.map(\.content), ["Neighbor row survives."])
+    }
+
+    func testCompactionPrefixHelperClassifiesFromABoundedHead() {
+        // Multi-megabyte payloads must be classifiable from their head
+        // without trimming or copying the whole string.
+        let hugeTail = String(repeating: "Summary detail line. ", count: 250_000)
+
+        XCTAssertTrue(MessageNormalizer.hasCompactionSummaryPrefix(
+            "[CONTEXT COMPACTION 12:04]\n" + hugeTail + "\n  \n"
+        ))
+        XCTAssertTrue(MessageNormalizer.hasCompactionSummaryPrefix(
+            "\n\t  [context summary]: legacy opening\n" + hugeTail
+        ))
+        XCTAssertTrue(MessageNormalizer.hasCompactionSummaryPrefix(
+            "[Recent Summary (d0, node 342)]\n" + hugeTail
+        ))
+        // The Recent Summary anchor includes the opening parenthesis, so a
+        // different bracketed notice with the same words stays visible.
+        XCTAssertFalse(MessageNormalizer.hasCompactionSummaryPrefix(
+            "[Recent Summary quoted without the node anchor]?\n" + hugeTail
+        ))
+        XCTAssertFalse(MessageNormalizer.hasCompactionSummaryPrefix(
+            "Can you explain how context compaction works?\n" + hugeTail
+        ))
+        XCTAssertFalse(MessageNormalizer.hasCompactionSummaryPrefix("   \n\t"))
+        XCTAssertFalse(MessageNormalizer.hasCompactionSummaryPrefix(""))
+    }
+
+    // MARK: - Hermes "Recent Summary" headers (third compaction generation)
+
+    func testPersistedRecentSummaryHeaderIsOmittedForUserRecord() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(101),
+                "role": .string("user"),
+                "content": .string("[Recent Summary (d0, node 342)]\nEarlier the user asked about the deploy pipeline.")
+            ])
+        ])
+
+        XCTAssertTrue(messages.isEmpty)
+    }
+
+    func testPersistedRecentSummaryHeaderIsOmittedRegardlessOfRole() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(102),
+                "role": .string("assistant"),
+                "content": .string("[Recent Summary (d0, node 342)]\nSummary of the assistant's prior turns.")
+            ])
+        ])
+
+        XCTAssertTrue(messages.isEmpty)
+    }
+
+    func testRecentSummaryHeaderWithLeadingWhitespaceIsOmitted() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(103),
+                "role": .string("user"),
+                "content": .string("   \n\t[Recent Summary (d0, node 342)]\nSummary follows.")
+            ])
+        ])
+
+        XCTAssertTrue(messages.isEmpty)
+    }
+
+    func testRecentSummaryHeaderAcceptsArbitraryDepthAndNodeNumbers() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(104),
+                "role": .string("user"),
+                "content": .string("[Recent Summary (d1, node 17)]\nSummary A.")
+            ]),
+            .object([
+                "id": .number(105),
+                "role": .string("assistant"),
+                "content": .string("[Recent Summary (d12, node 9001)]\nSummary B.")
+            ])
+        ])
+
+        XCTAssertTrue(messages.isEmpty)
+    }
+
+    func testRecentSummaryHeaderIsCaseInsensitive() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(106),
+                "role": .string("user"),
+                "content": .string("[recent summary (d0, node 342)]\nSummary follows.")
+            ])
+        ])
+
+        XCTAssertTrue(messages.isEmpty)
+    }
+
+    func testOrdinaryRecentSummaryDiscussionIsNotHidden() {
+        let content = "Can you explain what [Recent Summary (d0, node 342)] means?"
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(107),
+                "role": .string("user"),
+                "content": .string(content)
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .user)
+        XCTAssertEqual(messages[0].content, content)
+    }
+
+    func testRecentSummaryMentionLaterInMessageIsNotHidden() {
+        // Detection stays start-anchored: a header quoted later inside a
+        // normal message belongs to the user's own text.
+        let content = "My transcript shows a header like\n"
+            + "[Recent Summary (d0, node 342)]\n"
+            + "mid-session — what produces it?"
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(108),
+                "role": .string("user"),
+                "content": .string(content)
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .user)
+        XCTAssertEqual(messages[0].content, content)
+    }
+
+    func testLargeRecentSummaryNeverReachesChatMessages() {
+        // A multi-megabyte Recent Summary must be dropped by the bounded
+        // prefix check alone — no flag, no merged delimiter in the body —
+        // so it never reaches the Markdown/UI rendering pipeline.
+        let hugeSummary = "[Recent Summary (d2, node 1188)]\n"
+            + String(repeating: "The session covered implementation details and open questions. ", count: 30_000)
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(109),
+                "role": .string("user"),
+                "content": .string(hugeSummary)
+            ]),
+            .object([
+                "id": .number(110),
+                "role": .string("assistant"),
+                "content": .string("Still here after the recent summary was dropped.")
+            ])
+        ])
+
+        XCTAssertEqual(messages.map(\.role), [.assistant])
+        XCTAssertEqual(messages.first?.content, "Still here after the recent summary was dropped.")
+    }
+
+    func testMergedRecentSummaryBehindWrapperNeverReachesChatMessages() {
+        // Second compaction: a merged row whose retained prefix is itself a
+        // generation-3 summary must be dropped after the delimiter split,
+        // not kept as a visible bubble above the newest summary.
+        let merged = "[PRIOR CONTEXT — for reference only; not a new message]\n"
+            + "[Recent Summary (d0, node 342)]\n"
+            + "Earlier turns, compacted.\n"
+            + "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\n"
+            + "Newest compacted turns."
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(111),
+                "role": .string("user"),
+                "content": .string(merged)
+            ])
+        ])
+
+        XCTAssertTrue(messages.isEmpty)
+    }
+
     func testInterruptedIdenticalCorrectionDoesNotCreateASecondUserBubble() {
         let messages = MessageNormalizer.normalizeMessages([
             .object([
@@ -492,20 +2170,734 @@ final class MessageNormalizerTests: XCTestCase {
         XCTAssertEqual(messages.last?.content, "Response interrupted by a user correction.")
     }
 
-    func testClassifySourceKanbanMapsToKanbanCase() {
-        XCTAssertEqual(MessageNormalizer.classifySource(["source": .string("kanban")]), .kanban)
-        XCTAssertEqual(MessageNormalizer.classifySource(["origin": .string("kanban_worker")]), .kanban)
-        XCTAssertEqual(MessageNormalizer.classifySource(["platform": .string("kanban:default")]), .kanban)
+    // MARK: - Hermes display projection (display_kind / display_content)
+
+    /// Hermes persists some model-facing rows as `role=user` for provider
+    /// history semantics while `display_kind`/`display_content` tell clients
+    /// how they must actually be presented. Conduit must honor that contract
+    /// at the normalization boundary instead of mapping the physical role
+    /// straight onto a human user bubble.
+
+    func testSteerRowStaysUserRowWithMarkerRemoved() {
+        // Hermes persists a mid-turn steer as its own user row, wrapped in
+        // the out-of-band marker the model trusts (issue #337).
+        let marker = "\n\n[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]\nUse the staging database instead\n[/OUT-OF-BAND USER MESSAGE]"
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(310),
+                "role": .string("user"),
+                "content": .string(marker),
+                "display_kind": .string("steer")
+            ])
+        ])
+
+        let row = messages.first
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(row?.role, .user)
+        XCTAssertEqual(row?.content, "Use the staging database instead")
+        XCTAssertEqual(row?.isSteer, true)
     }
 
-    func testClassifySourceKanbanDoesNotDisturbCronOrChat() {
+    func testVisibleUserTextMovesImageTokensOut() {
         XCTAssertEqual(
-            MessageNormalizer.classifySource(["source": .string("kanban"), "cron_job_id": .string("j1")]),
-            .cron,
-            "Cron metadata outranks the kanban source string"
+            MessageNormalizer.visibleUserText("Here is the screenshot.\n@image:/root/x.png")
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            "Here is the screenshot."
         )
-        XCTAssertEqual(MessageNormalizer.classifySource(["source": .string("desktop")]), .chat)
-        XCTAssertEqual(MessageNormalizer.classifySource(["source": .string("discord")]), .discord)
+        XCTAssertEqual(MessageNormalizer.visibleUserText("No images"), "No images")
+    }
+
+    func testSteerTextWithoutMarkerIsKept() {
+        XCTAssertEqual(MessageNormalizer.steerText(fromMarker: "  plain steer \n"), "plain steer")
+    }
+
+    func testOrdinaryUserRowIsNotSteer() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(311),
+                "role": .string("user"),
+                "content": .string("Hello")
+            ])
+        ])
+
+        XCTAssertEqual(messages.first?.isSteer, false)
+    }
+
+    func testHiddenUserRowIsDroppedEntirely() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(301),
+                "role": .string("user"),
+                "content": .string("INTERNAL MODEL SCAFFOLD"),
+                "display_kind": .string("hidden")
+            ])
+        ])
+
+        XCTAssertTrue(messages.isEmpty)
+    }
+
+    func testHiddenAssistantRowIsDroppedEntirely() {
+        // Hiding is a property of the row, not of its physical role.
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(302),
+                "role": .string("assistant"),
+                "content": .string("Interrupted-turn checkpoint payload"),
+                "display_kind": .string("hidden")
+            ])
+        ])
+
+        XCTAssertTrue(messages.isEmpty)
+    }
+
+    func testHiddenRowWithDisplayContentIsStillDropped() {
+        // Explicit hiding wins over any projection: upstream only co-locates
+        // these when the row must not be shown at all.
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(303),
+                "role": .string("user"),
+                "content": .string("internal carrier"),
+                "display_content": .string("Supposedly visible"),
+                "display_kind": .string("hidden")
+            ])
+        ])
+
+        XCTAssertTrue(messages.isEmpty)
+    }
+
+    func testHiddenRowIsDroppedBeforeLargeBodyIsProcessed() {
+        // The hidden verdict must come from the metadata alone — a
+        // multi-megabyte model-facing body is never scanned or copied.
+        let hugeBody = "[CONTEXT COMPACTION 12:04]\n"
+            + String(repeating: "Compacted scaffold body. ", count: 30_000)
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(304),
+                "role": .string("user"),
+                "content": .string(hugeBody),
+                "display_kind": .string("hidden")
+            ]),
+            .object([
+                "id": .number(305),
+                "role": .string("assistant"),
+                "content": .string("Neighbor row survives.")
+            ])
+        ])
+
+        XCTAssertEqual(messages.map(\.content), ["Neighbor row survives."])
+    }
+
+    func testDisplayContentOverridesPhysicalCarrier() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(306),
+                "role": .string("user"),
+                "content": .string("internal summary scaffold\n\nREAL ASK"),
+                "display_content": .string("REAL ASK")
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .user)
+        XCTAssertEqual(messages[0].content, "REAL ASK")
+        XCTAssertFalse(messages[0].content.contains("scaffold"))
+    }
+
+    func testDisplayContentWinsOverCompactionCarrierWithoutDroppingTheRow() {
+        // Ordering: the physical content contains a legacy compaction
+        // delimiter, but the explicit projection is authoritative — the row
+        // must present the projected prompt, not be discarded wholesale.
+        let carrier = "Pull the logs before triage.\n\n"
+            + "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\n\n"
+            + "[CONTEXT COMPACTION 12:04]\n"
+            + String(repeating: "Summary body. ", count: 2_000)
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(307),
+                "role": .string("user"),
+                "content": .string(carrier),
+                "display_content": .string("Pull the logs before triage.")
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .user)
+        XCTAssertEqual(messages[0].content, "Pull the logs before triage.")
+    }
+
+    func testDisplayContentWinsOverCompressedSummaryFlag() {
+        // The REST projection keeps `_compressed_summary` metadata on a
+        // recovered carrier row; the flag must not discard the projected ask.
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(308),
+                "role": .string("user"),
+                "content": .string("Summary of prior turns."),
+                "metadata": .object(["_compressed_summary": .bool(true)]),
+                "display_content": .string("The actual recovered ask.")
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].content, "The actual recovered ask.")
+    }
+
+    func testDisplayContentWinsEvenWhenProjectedTextStartsWithACompactionHeader() {
+        // The compatibility filters never re-judge projected text: only rows
+        // lacking display metadata are subject to the summary-prefix guard.
+        let projected = "[CONTEXT COMPACTION 12:04]\nServer-declared visible text."
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(330),
+                "role": .string("user"),
+                "content": .string("physical carrier"),
+                "display_content": .string(projected)
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .user)
+        XCTAssertEqual(messages[0].content, projected)
+    }
+
+    func testExplicitEmptyDisplayContentNeverFallsBackToPhysicalContent() {
+        // Field presence — not a non-empty value — makes the projection
+        // authoritative. The genuinely empty row follows the existing
+        // empty-message rules, but the physical carrier must never reappear.
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(309),
+                "role": .string("user"),
+                "content": .string("DO NOT SHOW ME"),
+                "display_content": .string("")
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .user)
+        XCTAssertEqual(messages[0].content, "")
+        XCTAssertFalse(
+            messages.contains { $0.content.contains("DO NOT SHOW ME") },
+            "The physical content must never resurface behind an empty projection"
+        )
+    }
+
+    func testAutoContinueKindProjectsToSystemTimelineNotice() {
+        let scaffold = "[System note: Your previous turn was interrupted mid-run. Resuming from the last checkpoint.]"
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(310),
+                "role": .string("user"),
+                "content": .string(scaffold),
+                "display_kind": .string("auto_continue")
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .system)
+        XCTAssertEqual(messages[0].displayKind, "auto_continue")
+        XCTAssertEqual(messages[0].content, "Resumed interrupted turn")
+        XCTAssertFalse(messages[0].content.contains("System note"))
+    }
+
+    func testModelSwitchKindKeepsExistingModelChangePresentation() {
+        // The persisted marker rides as role=user; display_kind makes the
+        // timeline outcome explicit while the existing model-change card
+        // detection (driven by rawContent in ChatView) keeps working.
+        let marker = "[System: The active model for this chat has changed to GLM-5.3-Flash via provider zai. From this point forward, use this runtime metadata when answering questions about what model/provider is active.]"
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(311),
+                "role": .string("user"),
+                "content": .string(marker),
+                "display_kind": .string("model_switch")
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .system)
+        XCTAssertEqual(messages[0].displayKind, "model_switch")
+        XCTAssertEqual(messages[0].content, "[Model has been changed to zai/GLM-5.3-Flash]")
+        XCTAssertNotNil(
+            MessageNormalizer.modelChangeActivity(fromText: messages[0].rawContent ?? messages[0].content),
+            "ChatView's model-change card detection must still fire for the projected row"
+        )
+    }
+
+    func testModelSwitchKindWithUnrecognizedTextFallsBackToCannedNotice() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(312),
+                "role": .string("user"),
+                "content": .string("model runtime pivot"),
+                "display_kind": .string("model_switch")
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .system)
+        XCTAssertEqual(messages[0].content, "Model changed")
+    }
+
+    func testModelSwitchKindPrefersExplicitDisplayContentOverMarkerCard() {
+        // When Hermes explicitly projects display content onto a model_switch
+        // row, that copy is authoritative even over the marker-derived card.
+        let marker = "[System: The active model for this chat has changed to GLM-5.3-Flash via provider zai. From this point forward, use this runtime metadata when answering questions about what model/provider is active.]"
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(331),
+                "role": .string("user"),
+                "content": .string(marker),
+                "display_content": .string("Switched to GLM-5.3-Flash via zai."),
+                "display_kind": .string("model_switch")
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .system)
+        XCTAssertEqual(messages[0].content, "Switched to GLM-5.3-Flash via zai.")
+    }
+
+    func testKnownKindOnAssistantRowStillProjectsToTimeline() {
+        // Upstream only ever tags user rows, but the projection is a property
+        // of the row: a known synthetic kind never stays a human turn.
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(332),
+                "role": .string("assistant"),
+                "content": .string("[System note: Your previous turn was interrupted mid-run.]"),
+                "display_kind": .string("auto_continue")
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .system)
+        XCTAssertEqual(messages[0].content, "Resumed interrupted turn")
+    }
+
+    func testDisplayKindMatchingToleratesSurroundingWhitespaceOnly() {
+        // Whitespace around the canonical value is trimmed; case is matched
+        // exactly like Hermes Desktop, so casing drift stays conservative.
+        let trimmed = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(333),
+                "role": .string("user"),
+                "content": .string("scaffold"),
+                "display_kind": .string("  hidden  ")
+            ])
+        ])
+        let wrongCase = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(334),
+                "role": .string("assistant"),
+                "content": .string("Visible assistant text"),
+                "display_kind": .string("Hidden")
+            ])
+        ])
+
+        XCTAssertTrue(trimmed.isEmpty)
+        XCTAssertEqual(wrongCase.count, 1)
+        XCTAssertEqual(wrongCase[0].role, .assistant)
+    }
+
+    func testPersonalitySwitchKindProjectsToTimelineNoticeWithoutPersonaScaffold() {
+        let marker = "[System: The user has changed the assistant's personality. From this point forward, adopt the following persona and respond accordingly: You are a terse pirate first mate.]"
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(313),
+                "role": .string("user"),
+                "content": .string(marker),
+                "display_kind": .string("personality_switch")
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .system)
+        XCTAssertEqual(messages[0].displayKind, "personality_switch")
+        XCTAssertEqual(messages[0].content, "Personality changed")
+        XCTAssertFalse(messages[0].content.contains("pirate"))
+    }
+
+    func testAsyncDelegationCompleteUsesObjectMetadataTaskCount() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(314),
+                "role": .string("user"),
+                "content": .string("Background delegation report scaffold"),
+                "display_kind": .string("async_delegation_complete"),
+                "display_metadata": .object(["task_count": .number(2)])
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .system)
+        XCTAssertEqual(messages[0].content, "2 background agents finished")
+        XCTAssertFalse(messages[0].content.contains("scaffold"))
+    }
+
+    func testAsyncDelegationCompleteUsesSingularForOneTask() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(315),
+                "role": .string("user"),
+                "content": .string("Background delegation report scaffold"),
+                "display_kind": .string("async_delegation_complete"),
+                "display_metadata": .object(["task_count": .number(1)])
+            ])
+        ])
+
+        XCTAssertEqual(messages[0].content, "1 background agent finished")
+    }
+
+    func testAsyncDelegationCompleteParsesJSONStringMetadata() {
+        // Older backends serve display_metadata as unparsed JSON text.
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(316),
+                "role": .string("user"),
+                "content": .string("Background delegation report scaffold"),
+                "display_kind": .string("async_delegation_complete"),
+                "display_metadata": .string("{\"task_count\": 3, \"failed_count\": 0}")
+            ])
+        ])
+
+        XCTAssertEqual(messages[0].content, "3 background agents finished")
+    }
+
+    func testAsyncDelegationCompleteMalformedMetadataDegradesToGenericNotice() {
+        let variants: [AnyCodable] = [
+            .string("{definitely not json"),
+            .array([.number(1), .number(2)]),
+            .object(["task_count": .string("two")]),
+            .object(["task_count": .number(0)]),
+            .object(["task_count": .number(-1)]),
+            .object(["task_count": .number(2.5)]),
+            .null
+        ]
+        for (index, metadata) in variants.enumerated() {
+            let messages = MessageNormalizer.normalizeMessages([
+                .object([
+                    "id": .number(Double(320 + index)),
+                    "role": .string("user"),
+                    "content": .string("Background delegation report scaffold"),
+                    "display_kind": .string("async_delegation_complete"),
+                    "display_metadata": metadata
+                ])
+            ])
+
+            XCTAssertEqual(messages.count, 1, "variant \(index) must still produce its notice")
+            XCTAssertEqual(messages[0].role, .system, "variant \(index) must not stay a user bubble")
+            XCTAssertEqual(
+                messages[0].content,
+                "Background agent work finished",
+                "variant \(index) must degrade to the generic label"
+            )
+        }
+    }
+
+    func testAsyncDelegationCompleteKeepsLocalizedCountOverStampedDisplayText() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(330),
+                "role": .string("user"),
+                "content": .string("[ASYNC DELEGATION COMPLETE scaffold]"),
+                "display_kind": .string("async_delegation_complete"),
+                "display_metadata": .object([
+                    "task_count": .number(1),
+                    "display_text": .string("Subagent Task Completed: Tidy the notes")
+                ])
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].content, "1 background agent finished")
+    }
+
+    func testAsyncDelegationCompleteUsesDisplayTextWithoutCount() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(333),
+                "role": .string("user"),
+                "content": .string("[ASYNC DELEGATION COMPLETE scaffold]"),
+                "display_kind": .string("async_delegation_complete"),
+                "display_metadata": .object([
+                    "display_text": .string("Subagent Task Completed: Tidy the notes")
+                ])
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].content, "Subagent Task Completed: Tidy the notes")
+    }
+
+    /// Hermes (2026-09-13) types background-process completion turns as
+    /// `process_complete` and stamps a compact title; the model-facing output
+    /// wall must never render as a user bubble.
+    func testProcessCompleteRendersItsStampedTitleAsSystemNotice() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(331),
+                "role": .string("user"),
+                "content": .string("[IMPORTANT: Background process proc_1 completed normally (exit code 0). Command: make. Output: scaffold]"),
+                "display_kind": .string("process_complete"),
+                "display_metadata": .object([
+                    "display_text": .string("Background Process Finished: make")
+                ])
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .system)
+        XCTAssertEqual(messages[0].displayKind, "process_complete")
+        XCTAssertEqual(messages[0].content, "Background Process Finished: make")
+        XCTAssertFalse(messages[0].content.contains("scaffold"))
+    }
+
+    func testProcessCompleteWithoutTitleFallsBackToGenericNotice() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(332),
+                "role": .string("user"),
+                "content": .string("[IMPORTANT: Background process proc_2 completed. Output: scaffold]"),
+                "display_kind": .string("process_complete"),
+                "display_metadata": .object(["display_text": .string("   ")])
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .system)
+        XCTAssertEqual(messages[0].content, "Background process finished")
+    }
+
+    /// The unprefixed review fallback belongs to the `review.summary` stream
+    /// event only: a persisted system row is never reclassified as a review.
+    func testPersistedSystemRowIsNotAReviewCard() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(334),
+                "role": .string("system"),
+                "content": .string("Workspace switched to /srv/app")
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .system)
+        XCTAssertNil(messages[0].review)
+    }
+
+    func testInternalNotificationKindNeverRendersAsHumanUser() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(324),
+                "role": .string("user"),
+                "content": .string("Background watch fired: nightly build finished."),
+                "display_kind": .string("internal_notification")
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .system)
+        XCTAssertEqual(messages[0].displayKind, "internal_notification")
+        XCTAssertEqual(messages[0].content, "Background watch fired: nightly build finished.")
+    }
+
+    func testInternalNotificationKindStripsSystemWrapper() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(325),
+                "role": .string("user"),
+                "content": .string("[System: Resume wake-up notice for the scheduled task.]"),
+                "display_kind": .string("internal_notification")
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .system)
+        XCTAssertEqual(messages[0].content, "Resume wake-up notice for the scheduled task.")
+    }
+
+    func testUnknownDisplayKindPreservesTheRowConservatively() {
+        // A future kind must neither crash normalization nor delete or
+        // reinterpret an otherwise ordinary visible row.
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(326),
+                "role": .string("assistant"),
+                "content": .string("Visible assistant text"),
+                "display_kind": .string("future_kind")
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .assistant)
+        XCTAssertEqual(messages[0].content, "Visible assistant text")
+        XCTAssertNil(messages[0].displayKind)
+    }
+
+    func testUnknownDisplayKindStillHonorsDisplayContent() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(327),
+                "role": .string("user"),
+                "content": .string("physical carrier"),
+                "display_content": .string("Projected ask"),
+                "display_kind": .string("future_kind")
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .user)
+        XCTAssertEqual(messages[0].content, "Projected ask")
+    }
+
+    func testToolRowsKeepLegacyHandlingAgainstDisplayFields() {
+        // A tool row carrying display-shaped fields must not be rewritten:
+        // upstream only ever projects conversational rows, so the tool card
+        // keeps its own output exactly.
+        let output = "grep results:\n[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\nmatched 3 lines"
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(328),
+                "role": .string("tool"),
+                "tool_call_id": .string("call-301"),
+                "tool_name": .string("run_grep"),
+                "content": .string(output),
+                "display_content": .string("Tampered projection"),
+                "display_kind": .string("model_switch")
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .tool)
+        XCTAssertEqual(messages[0].tool?.output, output)
+        XCTAssertEqual(messages[0].tool?.name, "run_grep")
+        XCTAssertNil(messages[0].displayKind)
+    }
+
+    func testHiddenToolRowIsStillDropped() {
+        // Hiding is explicit presentation semantics for the row and applies
+        // regardless of physical role — the same rule the gateway's resume
+        // projection applies to every role.
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(329),
+                "role": .string("tool"),
+                "tool_call_id": .string("call-302"),
+                "tool_name": .string("read_file"),
+                "content": .string("internal checkpoint payload"),
+                "display_kind": .string("hidden")
+            ])
+        ])
+
+        XCTAssertTrue(messages.isEmpty)
+    }
+
+    func testKindRowWithoutProjectionYieldsToLegacyCompactionFilter() {
+        // Precedence pin: a synthetic row lacking display_content still goes
+        // through the legacy filters, so a pure summary carrier is dropped
+        // whole instead of being replaced by the canned notice.
+        let carrier = "[CONTEXT COMPACTION 12:04]\n"
+            + String(repeating: "Summary body. ", count: 2_000)
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(340),
+                "role": .string("user"),
+                "content": .string(carrier),
+                "display_kind": .string("auto_continue")
+            ])
+        ])
+
+        XCTAssertTrue(messages.isEmpty)
+    }
+
+    func testMalformedScalarDisplayContentNeverFallsBackToPhysicalCarrier() {
+        // Field presence is the authority boundary: a stray scalar is an
+        // explicit (odd) projection resolving to empty text, never a reason
+        // to reveal the physical carrier.
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(341),
+                "role": .string("user"),
+                "content": .string("DO NOT SHOW PHYSICAL"),
+                "display_content": .number(42)
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .user)
+        XCTAssertEqual(messages[0].content, "")
+        XCTAssertFalse(
+            messages.contains { $0.content.contains("DO NOT SHOW PHYSICAL") },
+            "The physical content must never resurface behind a malformed projection"
+        )
+    }
+
+    func testExplicitNullDisplayContentNeverFallsBackToPhysicalContent() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(342),
+                "role": .string("user"),
+                "content": .string("DO NOT SHOW PHYSICAL"),
+                "display_content": .null
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .user)
+        XCTAssertEqual(messages[0].content, "")
+        XCTAssertFalse(
+            messages.contains { $0.content.contains("DO NOT SHOW PHYSICAL") },
+            "An explicit null projection must not expose the physical content"
+        )
+    }
+
+    func testExplicitEmptyProjectionOnTimelineKindRemainsAuthoritative() {
+        // For synthetic kinds an empty projection must not be trimmed back
+        // into absence: that would substitute canned labels or fall through
+        // to the physical synthetic payload.
+        let rows: [(Double, String, String)] = [
+            (343, "internal_notification", "DO NOT SHOW PHYSICAL"),
+            (344, "auto_continue", "AUTO CONTINUE INTERNAL SCAFFOLD"),
+            (346, "model_switch", "DO NOT SHOW PHYSICAL"),
+            (347, "personality_switch", "DO NOT SHOW PHYSICAL"),
+            (348, "async_delegation_complete", "DO NOT SHOW PHYSICAL")
+        ]
+        for (id, kind, carrier) in rows {
+            let messages = MessageNormalizer.normalizeMessages([
+                .object([
+                    "id": .number(id),
+                    "role": .string("user"),
+                    "content": .string(carrier),
+                    "display_kind": .string(kind),
+                    "display_content": .string("")
+                ])
+            ])
+
+            XCTAssertEqual(messages.count, 1, kind)
+            XCTAssertEqual(messages[0].role, .system, kind)
+            XCTAssertEqual(messages[0].content, "", kind)
+            XCTAssertFalse(
+                messages.contains { $0.content.contains(carrier) },
+                "\(kind): the physical payload must never resurface"
+            )
+        }
+    }
+
+    func testHugeTaskCountDegradesToGenericNoticeWithoutTrapping() {
+        let messages = MessageNormalizer.normalizeMessages([
+            .object([
+                "id": .number(345),
+                "role": .string("user"),
+                "content": .string("Background delegation report scaffold"),
+                "display_kind": .string("async_delegation_complete"),
+                "display_metadata": .object(["task_count": .number(1e100)])
+            ])
+        ])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .system)
+        XCTAssertEqual(messages[0].content, "Background agent work finished")
     }
 
     private func message(

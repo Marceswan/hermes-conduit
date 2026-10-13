@@ -1,0 +1,1540 @@
+#!/usr/bin/env python3
+"""Localization catalog coverage: every localizable call site must resolve
+against a runtime-accurate key, and every SHIPPED language must carry a
+real translation of every key.
+
+Languages are data, not code. The checker reads them from the String
+Catalogs and Conduit/Info.plist, so adding a language is a catalog change:
+
+  * source language - the catalogs' "sourceLanguage". Keys are its strings
+    and every other language falls back to them.
+  * draft languages - Info.plist's ConduitDraftLanguages array: translation
+    still in progress. The build strips their lprojs
+    (scripts/strip-draft-localizations.py) and the app never offers them,
+    so only their integrity is checked, not their completeness.
+  * shipped languages - every other language that appears in any catalog.
+
+Scans Conduit Swift sources for sites that look up String Catalog keys -
+
+  1. AppLocalization.string("...") / String(localized: "...") - the
+     skeleton must exist in Localizable.xcstrings with the SAME placeholder
+     types the runtime will request: `\\(String(x))`-style interpolations
+     request %@, integer-shaped expressions (Int casts, .count/.index/
+     .total, count-like identifiers, digit arithmetic) request %lld.
+     Placeholders are never normalized across type families, so a source
+     Int interpolation against a %@ catalog key (or vice versa) fails.
+  2. SwiftUI literal initializers (Text/Button/Label/TextField/SecureField/
+     Toggle/NavigationLink/Picker/ProgressView/ContentUnavailableView/
+     Section/Menu/GroupBox/Stepper/LabeledContent) - a leading string literal is a
+     LocalizedStringKey and is checked the same way.
+  3. LocalizedStringKey modifiers (.alert / .confirmationDialog /
+     .navigationTitle / .accessibilityLabel / .accessibilityHint /
+     .accessibilityValue).
+  4. Raw user-facing String assignments/arguments that flow into
+     Text/Label/alert rendering: `errorMessage = "..."`, `help: "..."`,
+     `purposeText: "..."`.
+
+For every required key (static call sites plus the explicit REGRESSION_KEYS
+below - dynamic/ternary sites that cannot be extracted statically), the
+checker then validates every catalog (Localizable, AppShortcuts,
+InfoPlist):
+
+  * the key must exist, and appear only once in the catalog JSON;
+  * every shipped non-source language must have a localization (a key
+    with only some languages fails);
+  * every stringUnit leaf of a shipped language (source included) - direct
+    or inside plural/device variations - must have state == "translated"
+    and a non-empty value;
+  * an integer placeholder is a count: the source varies it by plural,
+    a key holds at most one, and label numbers are exempt (alone in
+    parentheses at the end, "Runs (%lld)", or ending the string after a
+    colon, "Jobs: %lld"); a count interpolated as String(...) in front of
+    a plural noun is reported at its call site;
+  * every permission prompt (NS...UsageDescription) in the app's and the
+    Watch's Info.plist has an entry in the InfoPlist catalog beside it;
+  * a raw string literal passed as a ternary branch to a SwiftUI title
+    (Text(flag ? "A" : "B")) is reported at its call site: it binds the
+    verbatim String overload and is never looked up;
+  * the same goes for Conduit's own String display parameters
+    (STRING_DISPLAY_PARAMETERS: SettingsMetricRow(label:value:),
+    homeSection(_:), ...) and display properties (STRING_DISPLAY_PROPERTIES:
+    displayName, errorDescription, ...): a raw letter-bearing literal passed
+    to one or returned from one - directly, as a ternary branch, as a `??`
+    fallback or in an array - is reported, brand names excepted
+    (DISPLAY_BRAND_NAMES, EXEMPT_KEYS); so is one a ternary or `??` inside
+    an interpolation of a localized literal produces
+    ("\\(isUser ? "You" : name): %@");
+  * the printf placeholders of every value in ANY language, drafts
+    included, must match the key's placeholder TYPE FAMILIES (object vs
+    integer vs float) in count, order, and positional index validity -
+    %@ and %lld are never interchangeable;
+  * no value may contain malformed literal Unicode escape sequences (e.g.
+    the text "\\u4e00") - those are double-escaped authoring bugs, not
+    legitimate backslash content.
+
+Any violation is reported with file:line (call sites) or by key and
+language (catalog) and fails the run.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import plistlib
+import re
+import sys
+import xml.parsers.expat
+
+# Info.plist array of draft localization identifiers. The app reads the
+# same key (AppLocalizations.draftLanguagesInfoKey), and so does the build's
+# draft-stripping phase.
+DRAFT_LANGUAGES_KEY = "ConduitDraftLanguages"
+
+# SwiftUI initializers whose first argument is a LocalizedStringKey when a
+# string literal is passed directly. Variables/interpolations elsewhere are
+# not statically checkable and are simply skipped.
+SWIFTUI_LOCALIZED_INITIALIZERS = (
+    "Text", "Button", "Label", "TextField", "SecureField",
+    "Toggle", "NavigationLink", "Picker",
+    "ProgressView", "ContentUnavailableView", "Section", "Menu", "GroupBox",
+    "Stepper", "LabeledContent",
+)
+
+# Modifier-style APIs whose first argument is a LocalizedStringKey when a
+# string literal is passed directly (there are String overloads too, but a
+# raw literal in a String-position branch is exactly the bug class this
+# checker exists for, so literal sites are always required to be keys).
+SWIFTUI_LOCALIZED_MODIFIERS = (
+    "alert", "confirmationDialog", "navigationTitle",
+    "accessibilityLabel", "accessibilityHint", "accessibilityValue",
+)
+
+# Raw user-facing String assignments/arguments that later flow into
+# Text/Label/alert rendering. Only literal right-hand sides are flagged.
+RAW_STRING_ASSIGNMENT_RE = re.compile(
+    r"\b(?:errorMessage|help|purposeText)\s*[:=]\s*\"")
+
+# Keys that are intentionally not statically present in the catalog: pure
+# variable passthroughs, separators, brand/protocol names, and placeholder
+# tokens that must never be translated.
+EXEMPT_KEYS = frozenset({
+    "%@",            # verbatim variable passthrough
+    "%lld",          # bare numeric counter chip
+    "%@ %@",         # two-variable passthrough
+    "%@: %@",        # speaker/field label passthrough ("You: text")
+    "%@/%@",         # numeric done/total counters (string-wrapped)
+    "%lld/%lld",     # numeric done/total counters (int interpolation)
+    "%@.",           # numbered step prefix ("1.")
+    "/", "•",        # separators
+    "v%@",           # version prefix ("v1.2.3")
+    "×%@",           # multiplier badge
+    "×%lld",         # multiplier badge (int interpolation)
+    "A",             # typography size sample glyph
+    "Conduit", "GitHub", "Hermes", "HTTP", "HTTPS",  # brand/protocol names
+    "https://hermes.example", "https://push.milim.dev",  # literal URLs
+    "skill-name",    # example placeholder token
+})
+
+# Conduit's own views and view helpers that show a String parameter as text
+# (Text(title), Label(title, systemImage:), Button(title)). A String binds
+# no LocalizedStringKey, so a raw literal passed to one is never looked up
+# and shows English in every language: the call site wraps it in
+# AppLocalization.string. Callee -> the labels of its display parameters,
+# "_" for an unlabeled first parameter. A parameter that takes an array
+# ([String]) has each element checked.
+STRING_DISPLAY_PARAMETERS = {
+    # Views
+    "ConduitSettingsSection": ("title",),
+    "ConduitSheetHeader": ("title",),
+    "SettingsMetricRow": ("label", "value"),
+    "NotificationSetupCommand": ("title",),
+    "ModelPickerSection": ("title",),
+    "BotModeNoticeRow": ("message",),
+    "LiveVoiceCallSheet": ("title", "statusText", "note"),
+    "GeminiLiveBarContent": ("name",),
+    "LiveVoiceBarRow": ("name", "status"),
+    "GuardedSourceCard": ("title",),
+    "SelectableTextView": ("text",),
+    # View helpers
+    "homeSection": ("_",),
+    "settingsLink": ("title", "detail"),
+    "settingsActionRow": ("title", "detail"),
+    "themeChoice": ("title",),
+    "busyModeChoice": ("detail",),
+    "displayToggle": ("title", "detail"),
+    "compatibilityRow": ("title", "detail"),
+    "notificationToggle": ("_", "detail"),
+    "providerSection": ("title",),
+    "dependencyGroup": ("title",),
+    "loadFailureView": ("_",),
+    "managementNoticeCard": ("_",),
+    "createCard": ("title",),
+    "labeled": ("_",),
+    "answerRow": ("_",),
+    "methodCard": ("title", "supporting", "badge"),
+    "branchShell": ("title", "intro", "needs"),
+    "guidanceBullet": ("_",),
+    "continueButton": ("_",),
+    "nextButton": ("_",),
+    "appendSlashOutput": ("_",),
+    "GatewayRestartRow": ("title", "detail"),
+}
+
+# Computed String properties whose value is shown as text (a label, a
+# VoiceOver word, an error's description). A raw literal one returns is
+# never looked up, whichever view shows it.
+STRING_DISPLAY_PROPERTIES = (
+    "displayName", "label", "title", "message", "statusText",
+    "statusLabel", "statusTitle", "stateDescription", "subtitleText",
+    "objectiveLabel", "runningLabel", "successLabel", "accessibilityState",
+    "userTitle", "userMessage", "errorDescription", "failureReason",
+    "recoverySuggestion",
+)
+
+# Names no language translates, allowed as a raw display literal (the
+# EXEMPT_KEYS brand names count too).
+DISPLAY_BRAND_NAMES = frozenset({
+    "Cloudflare Access", "Hermes Conduit", "Gemini Live", "Grok Live",
+    "GPT-Live", "LaTeX", "Mermaid", "Discord", "Telegram", "API",
+    "Tailscale",
+})
+
+# Dynamic sites the extractor cannot see: variable-key lookups where the
+# catalog key is computed at runtime. Conditional-branch literals are NOT
+# here anymore — they are wrapped in AppLocalization.string at the source
+# (Text(condition ? "A" : "B") binds the verbatim String overload, so raw
+# ternary branches never localize) and are statically extracted now. When
+# adding a new dynamic localizable site, add its key here.
+REGRESSION_KEYS = (
+    # ProfileConfigValueDisplay table (value → display label map)
+    "Manual",
+    "Smart",
+    "YOLO mode",
+    "Automatic",
+    "Native images",
+    "Text only",
+    "Default",
+    "Helpful",
+    "Concise",
+    "Technical",
+    "Creative",
+    "Teacher",
+    "Kawaii",
+    "Catgirl",
+    "Pirate",
+    "Shakespeare",
+    "Surfer",
+    "Noir",
+    "Philosopher",
+    "Hype",
+    "Session",
+    "Skills & extensions",
+)
+
+CALL_RE = re.compile(
+    r"\b(?:String\s*\(\s*localized\s*:|AppLocalization\s*\.\s*string\s*\()")
+SWIFTUI_RE = re.compile(
+    r"\b(" + "|".join(SWIFTUI_LOCALIZED_INITIALIZERS) + r")\s*\(")
+MODIFIER_RE = re.compile(
+    r"\.\s*(" + "|".join(SWIFTUI_LOCALIZED_MODIFIERS) + r")\s*\(")
+
+# Malformed literal Unicode escapes in catalog VALUES, e.g. the text
+# "\u91cd" arriving as six visible characters instead of 重. Only the
+# backslash-u-hex shape is targeted; ordinary backslashes stay legal.
+MALFORMED_ESCAPE_RE = re.compile("\\\\u[0-9a-fA-F]{4}")
+
+# Flags, width and precision (%.1f, %5lld, %-8@, %+d, %'d) count like the
+# bare form. No space flag ("5% increase" is prose, not "% i") and no "#"
+# ("%#@name@" is a plural substitution, not an argument). A bare %d, %i,
+# %u or %f (or %td) glued to a following Latin letter is prose too: German
+# "100%ig", "100%fest", French "%ième". A CJK character may follow ("%d件"),
+# and the forms Swift generates keep a following letter ("%lldh %lldm").
+_GLUED_LETTER = "(?![A-Za-z\u00c0-\u024f])"
+_PLACEHOLDER_RE = re.compile(
+    r"%(?:(\d+)\$)?(?:[-+']*\d*(?:\.\d+)?(?=[@dfiltu]))?"
+    r"(@|l{1,2}[diu]|lf|(?:t?[diu]|f)" + _GLUED_LETTER + r"|%)")
+
+# Interpolation expressions that request an INTEGER runtime placeholder
+# (%lld) rather than an object (%@). String-hint wins: a number that isn't
+# a count is String()-wrapped (it stays out of plural rules), so an
+# explicit String(...) means %@. Counts are Ints with plural forms.
+_STRING_HINT_RE = re.compile(
+    r"\bString\s*\(|localizedDescription|\.description\b|\.name\b|\.id\b"
+    r"|\.title\b|\.text\b|\.message\b|\.displayName\b|\.key\b")
+_INT_HINT_RE = re.compile(
+    r"\b(?:Int|UInt|Int8|Int16|Int32|Int64)\s*\("
+    r"|\.\s*count\b|\.\s*index\b|\.\s*total\b"
+    r"|\w*[Cc]ount\b|\w*[Ii]ndex\b|\w*[Tt]otal\b"
+    r"|^\s*[\d\s+\-*/().]+\s*$")
+
+
+def is_int_interpolation(expression: str) -> bool:
+    """Focused heuristic: does this interpolation request %lld at runtime?
+
+    Conservative by design - anything not matching the integer shapes below
+    is treated as an object (%@) placeholder, matching the codebase
+    convention of String()-wrapping non-plural interpolations.
+    """
+    if _STRING_HINT_RE.search(expression):
+        return False
+    return bool(_INT_HINT_RE.search(expression))
+
+
+def typed_skeleton(literal: str, expressions) -> str:
+    """Rebuild a literal with one placeholder per interpolation, typed by
+    the runtime argument family (%@ object / %lld integer)."""
+    parts = literal.split("%@")
+    if len(parts) - 1 != len(expressions):
+        return literal
+    out = []
+    for i, part in enumerate(parts):
+        out.append(part)
+        if i < len(expressions):
+            out.append("%lld" if is_int_interpolation(expressions[i]) else "%@")
+    return "".join(out)
+
+
+def placeholder_specs(formatted: str) -> list:
+    """Extract (position, type) pairs from a printf-style format string.
+
+    %% escapes are ignored. Positional forms (%1$@) keep their index;
+    non-positional forms get None. Type families: object / int / float.
+    """
+    specs = []
+    i = 0
+    while i < len(formatted):
+        if formatted[i] != "%":
+            i += 1
+            continue
+        match = _PLACEHOLDER_RE.match(formatted, i)
+        if not match:
+            i += 1
+            continue
+        i = match.end()
+        if match.group(0) == "%%":
+            continue
+        position = int(match.group(1)) if match.group(1) else None
+        body = match.group(2)
+        if body == "@":
+            kind = "object"
+        elif body in ("f", "lf"):
+            kind = "float"
+        else:
+            kind = "int"
+        specs.append((position, kind))
+    return specs
+
+
+def parse_swift_string_literal(source: str, start: int):
+    """Parse a Swift string literal starting at source[start] == '"'.
+
+    Returns (skeleton, end_index, has_interpolation) or None when the
+    literal is unterminated at EOF. Interpolations \\(...) collapse to a
+    single placeholder; nested strings inside them are skipped.
+    """
+    parsed = parse_swift_literal_parts(source, start)
+    if parsed is None:
+        return None
+    skeleton, end, exprs = parsed
+    return skeleton, end, bool(exprs)
+
+
+def parse_swift_literal_parts(source: str, start: int):
+    """Like parse_swift_string_literal but also returns the raw text of each
+    \\(...) interpolation expression, in order: (skeleton, end, exprs)."""
+    assert source[start] == '"'
+    out = []
+    exprs = []
+    i = start + 1
+    while i < len(source):
+        ch = source[i]
+        if ch == "\\":
+            if i + 1 >= len(source):
+                return None
+            nxt = source[i + 1]
+            if nxt == "(":
+                # Interpolation: skip to the matching close paren.
+                depth = 1
+                j = i + 2
+                expr_start = j
+                while j < len(source) and depth:
+                    if source[j] == '"':
+                        parsed = parse_swift_literal_parts(source, j)
+                        if parsed is None:
+                            return None
+                        j = parsed[1] - 1
+                    elif source[j] == "(":
+                        depth += 1
+                    elif source[j] == ")":
+                        depth -= 1
+                    j += 1
+                if depth:
+                    return None
+                exprs.append(source[expr_start:j - 1])
+                out.append("%@")
+                i = j
+            else:
+                escapes = {"n": "\n", "t": "\t", "r": "\r", "0": "\0",
+                           "\\": "\\", '"': '"', "'": "'"}
+                out.append(escapes.get(nxt, nxt))
+                i += 2
+        elif ch == '"':
+            return "".join(out), i + 1, exprs
+        else:
+            out.append(ch)
+            i += 1
+    return None
+
+
+def strip_comment_lines(source: str) -> str:
+    """Drop full-line // comments so doc diagrams can't look like call sites.
+
+    Only WHOLE-LINE comments are removed - code with trailing comments is
+    kept intact, and '//' inside string literals lives on code lines.
+    """
+    kept = []
+    for line in source.split("\n"):
+        # Blank, not dropped, so reported line numbers stay the file's.
+        kept.append("" if line.lstrip().startswith("//") else line)
+    return "\n".join(kept)
+
+
+def extract_sites(source: str):
+    """Yield (key_skeleton, offset) for every checkable call site.
+
+    Skeletons are runtime-accurate: each interpolation contributes %@ or
+    %lld according to the argument's type family.
+    """
+    for skeleton, _expressions, offset in _localized_literals(source):
+        yield skeleton, offset
+
+
+# String(x) around something that reads as a count: `String(items.count)`,
+# `String(failedCount)`, `String(total)`.
+_STRING_WRAPPED_COUNT_RE = re.compile(
+    r"^\s*String\s*\((.*(?:(?<![a-z])count\b|Count\b|(?<![a-z])total\b|Total\b).*)\)\s*$", re.S)
+# What follows a counted number in English: up to two words, then a plural
+# noun ("%@ tasks", "%@ background agents"). Label numbers don't match
+# ("%@ of %@ left", "%@/%@"), and neither do verbs ("%@ is").
+_COUNTED_NOUN_RE = re.compile(
+    r"\s+(?:[A-Za-z]+\s+){0,2}(?!(?:is|was|has|does)\b)[A-Za-z]+s\b")
+
+
+def string_wrapped_counts(source: str):
+    """Yield (expression, offset) for each count a localized literal
+    interpolates as String(...) in front of a plural noun. A %@ argument
+    never selects a plural form, so "\\(String(count)) tasks" reads
+    "1 tasks" in English and is wrong in most other languages: interpolate
+    the Int and give the key plural forms."""
+    for skeleton, expressions, offset in _localized_literals(source):
+        after = skeleton.replace("%lld", "%@").split("%@")[1:]
+        for expression, text in zip(expressions, after):
+            if _STRING_WRAPPED_COUNT_RE.match(expression) and _COUNTED_NOUN_RE.match(text):
+                yield expression.strip(), offset
+
+
+def _skip_literal(source: str, i: int):
+    """Index just past the string literal starting at source[i] == '"'
+    (multi-line \"\"\" literals included), or None when unterminated."""
+    if source.startswith('"""', i):
+        end = source.find('"""', i + 3)
+        return None if end < 0 else end + 3
+    parsed = parse_swift_literal_parts(source, i)
+    return None if parsed is None else parsed[1]
+
+
+def _first_argument(source: str, start: int):
+    """The text of the first argument of the call whose '(' ends just
+    before `start`, up to its top-level ',' or ')'; None when unbalanced."""
+    depth = 0
+    i = start
+    while i < len(source):
+        ch = source[i]
+        if ch == '"':
+            i = _skip_literal(source, i)
+            if i is None:
+                return None
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                return source[start:i]
+            depth -= 1
+        elif ch == "," and depth == 0:
+            return source[start:i]
+        i += 1
+    return None
+
+
+def _top_level(text: str, token: str, start: int = 0) -> int:
+    """Offset of the first ` token ` (spaced, outside brackets and string
+    literals) in `text` at or after `start`, or -1."""
+    depth = 0
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if ch == '"':
+            i = _skip_literal(text, i)
+            if i is None:
+                return -1
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif (depth == 0 and ch == token and i > 0 and text[i - 1].isspace()
+              and i + 1 < len(text) and text[i + 1].isspace()):
+            return i
+        i += 1
+    return -1
+
+
+def _ternary_split(text: str):
+    """(offset of `?`, offset of its `:`) for the top-level ternary in
+    `text`, or None. A ternary in the true branch nests: in
+    `a ? b ? "Y" : c : "Z"` the outer `:` is the second one."""
+    question = _top_level(text, "?")
+    if question < 0:
+        return None
+    pending = 1
+    i = question + 1
+    while True:
+        colon = _top_level(text, ":", i)
+        if colon < 0:
+            return None
+        nested = _top_level(text, "?", i)
+        if 0 <= nested < colon:
+            pending += 1
+            i = nested + 1
+            continue
+        pending -= 1
+        if pending == 0:
+            return question, colon
+        i = colon + 1
+
+
+def _top_level_operands(text: str, token: str) -> list:
+    """The operands of a top-level ` token ` chain in `text`, or [] when
+    it has none."""
+    operands = []
+    start = 0
+    position = _top_level(text, token)
+    while position >= 0:
+        operands.append(text[start:position])
+        start = position + 1
+        position = _top_level(text, token, start)
+    if operands:
+        operands.append(text[start:])
+    return operands
+
+
+def _ternary_branch_literals(argument: str):
+    """Yield the skeleton of each raw string literal that is a branch of a
+    top-level ternary in `argument` (nested ternaries included)."""
+    split = _ternary_split(argument)
+    if split is None:
+        return
+    question, colon = split
+    for branch in (argument[question + 1:colon], argument[colon + 1:]):
+        branch = branch.strip()
+        if branch.startswith('"') and not branch.startswith('"""'):
+            parsed = parse_swift_literal_parts(branch, 0)
+            if parsed is not None and parsed[1] == len(branch):
+                yield parsed[0]
+                continue
+        yield from _ternary_branch_literals(branch)
+
+
+def raw_ternary_literals(source: str):
+    """Yield (skeleton, offset) for each raw string literal that is a
+    ternary branch passed straight to a SwiftUI initializer or modifier.
+    Text(flag ? "A" : "B") binds the verbatim String overload, so neither
+    branch is looked up in the catalog: each branch needs
+    AppLocalization.string. Glyph-only literals ("•", "—") are text no
+    language translates, and are left alone."""
+    for regex in (SWIFTUI_RE, MODIFIER_RE):
+        for match in regex.finditer(source):
+            argument = _first_argument(source, match.end())
+            if argument is None or re.match(r"\s*\w+\s*:(?!:)", argument):
+                continue  # a labeled argument (verbatim:, value:) isn't a title
+            for skeleton in _ternary_branch_literals(_without_parentheses(argument)):
+                if re.search(r"[^\W\d_]", skeleton.replace("%@", "")):
+                    yield skeleton, match.start()
+
+
+DISPLAY_CALL_RE = re.compile(
+    r"\b(" + "|".join(sorted(STRING_DISPLAY_PARAMETERS, key=len, reverse=True)) + r")\s*\(")
+DISPLAY_PROPERTY_RE = re.compile(
+    r"\bvar\s+(" + "|".join(STRING_DISPLAY_PROPERTIES) + r")\s*:\s*String\??\s*\{")
+
+
+def _is_display_text(skeleton: str) -> bool:
+    """Text some language translates: it has a letter, and it isn't a
+    brand or protocol name (EXEMPT_KEYS, DISPLAY_BRAND_NAMES)."""
+    return (bool(re.search(r"[^\W\d_]", skeleton.replace("%@", "")))
+            and skeleton not in EXEMPT_KEYS and skeleton not in DISPLAY_BRAND_NAMES)
+
+
+def _arguments(source: str, start: int) -> list:
+    """The text of each top-level argument of the call (or array literal)
+    whose bracket ends just before `start`."""
+    arguments = []
+    while True:
+        argument = _first_argument(source, start)
+        if argument is None:
+            return arguments
+        arguments.append(argument)
+        end = start + len(argument)
+        if end >= len(source) or source[end] != ",":
+            return arguments
+        start = end + 1
+
+
+def _nil_coalescing_operands(expression: str) -> list:
+    """Each operand of a top-level `??` chain in `expression`, or [] when
+    it has none."""
+    depth = 0
+    operands = []
+    start = 0
+    i = 0
+    while i < len(expression):
+        ch = expression[i]
+        if ch == '"':
+            i = _skip_literal(expression, i)
+            if i is None:
+                return []
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif depth == 0 and expression.startswith("??", i):
+            operands.append(expression[start:i])
+            start = i + 2
+            i += 2
+            continue
+        i += 1
+    if operands:
+        operands.append(expression[start:])
+    return operands
+
+
+def _without_parentheses(expression: str) -> str:
+    """`expression` without the parentheses wrapping all of it:
+    `(on ? "A" : "B")` is the ternary inside."""
+    expression = expression.strip()
+    while expression.startswith("(") and expression.endswith(")"):
+        inner = _first_argument(expression, 1)
+        if inner is None or len(inner) != len(expression) - 2:
+            break
+        expression = inner.strip()
+    return expression
+
+
+def _raw_literals(expression: str):
+    """The skeleton of each raw string literal `expression` can evaluate
+    to or contain: the expression itself, a ternary branch, any operand of
+    a `??` chain or a `+` concatenation, or an element of an array
+    literal, through parentheses."""
+    expression = expression.strip()
+    if expression.startswith('"') and not expression.startswith('"""'):
+        parsed = parse_swift_literal_parts(expression, 0)
+        if parsed is not None and parsed[1] == len(expression):
+            yield parsed[0]
+            return
+    if expression.startswith("[") and expression.endswith("]"):
+        for element in _arguments(expression, 1):
+            yield from _raw_literals(element)
+        return
+    inner = _without_parentheses(expression)
+    if inner != expression:
+        yield from _raw_literals(inner)
+        return
+    # A ternary binds looser than `??`, and `??` looser than `+`, so a
+    # top-level ternary is the whole expression: its branches are what it
+    # evaluates to.
+    split = _ternary_split(expression)
+    if split is not None:
+        question, colon = split
+        yield from _raw_literals(expression[question + 1:colon])
+        yield from _raw_literals(expression[colon + 1:])
+        return
+    for operand in _nil_coalescing_operands(expression) or _top_level_operands(expression, "+"):
+        yield from _raw_literals(operand)
+
+
+def raw_display_literals(source: str):
+    """Yield (callee, label, skeleton, offset) for each raw string literal
+    passed to a STRING_DISPLAY_PARAMETERS parameter, directly, as a ternary
+    branch, as a `??` fallback or in an array. The callee shows it with
+    Text(String), which is never looked up in the catalog."""
+    for match in DISPLAY_CALL_RE.finditer(source):
+        if re.search(r"\bfunc\s+$", source[max(0, match.start() - 40):match.start()]):
+            continue  # the declaration, not a call
+        wanted = STRING_DISPLAY_PARAMETERS[match.group(1)]
+        for position, argument in enumerate(_arguments(source, match.end())):
+            labeled = re.match(r"\s*(\w+)\s*:(?!:)", argument)
+            label = labeled.group(1) if labeled else ("_" if position == 0 else None)
+            if label not in wanted:
+                continue
+            value = argument[labeled.end():] if labeled else argument
+            for skeleton in _raw_literals(value):
+                if _is_display_text(skeleton):
+                    yield match.group(1), label, skeleton, match.start()
+
+
+def _block_end(source: str, start: int):
+    """Index of the '}' closing the block whose '{' ends just before
+    `start`, or None when unbalanced."""
+    depth = 1
+    i = start
+    while i < len(source):
+        ch = source[i]
+        if ch == '"':
+            i = _skip_literal(source, i)
+            if i is None:
+                return None
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return None
+
+
+def raw_display_property_literals(source: str):
+    """Yield (property, skeleton, offset) for each raw string literal a
+    STRING_DISPLAY_PROPERTIES getter returns: after `return`, as a `case`
+    or `default` result, as the getter's single expression, as a ternary
+    branch or `??` fallback, or joined on with `+`, outside any call's
+    parentheses."""
+    for match in DISPLAY_PROPERTY_RE.finditer(source):
+        end = _block_end(source, match.end())
+        if end is None:
+            continue
+        depth = 0
+        i = match.end()
+        while i < end:
+            ch = source[i]
+            if ch == '"':
+                after = _skip_literal(source, i)
+                if after is None:
+                    break
+                before = source[match.end():i].rstrip()
+                if (depth == 0 and not source.startswith('"""', i)
+                        and (not before or re.search(r"(?:\breturn|[?:{+])$", before))):
+                    parsed = parse_swift_literal_parts(source, i)
+                    if parsed is not None and _is_display_text(parsed[0]):
+                        yield match.group(1), parsed[0], i
+                i = after
+                continue
+            if ch in "([":
+                depth += 1
+            elif ch in ")]":
+                depth -= 1
+            i += 1
+
+
+def raw_interpolated_literals(source: str):
+    """Yield (skeleton, offset) for each raw string literal an
+    interpolation of a localized literal can produce, as a ternary branch
+    or `??` fallback: "\\(isUser ? "You" : name): \\(text)" looks up
+    "%@: %@", and the "You" it inserts is never translated."""
+    for _key, expressions, offset in _localized_literals(source):
+        for expression in expressions:
+            for skeleton in _raw_literals(expression):
+                if _is_display_text(skeleton):
+                    yield skeleton, offset
+
+
+def _localized_literals(source: str):
+    """Yield (key_skeleton, interpolated_expressions, offset) for every
+    checkable call site."""
+    source = strip_comment_lines(source)
+    for regex in (CALL_RE, SWIFTUI_RE, MODIFIER_RE):
+        for match in regex.finditer(source):
+            i = match.end()
+            while i < len(source) and source[i] in " \t\n":
+                i += 1
+            if i < len(source) and source[i] == '"':
+                parsed = parse_swift_literal_parts(source, i)
+                if parsed is not None and parsed[0]:
+                    skeleton = typed_skeleton(parsed[0], parsed[2])
+                    yield skeleton, parsed[2], match.start()
+    for match in RAW_STRING_ASSIGNMENT_RE.finditer(source):
+        i = match.end() - 1  # position of the opening quote
+        if source[i] != '"':
+            continue
+        parsed = parse_swift_literal_parts(source, i)
+        if parsed is not None and parsed[0]:
+            skeleton = typed_skeleton(parsed[0], parsed[2])
+            yield skeleton, parsed[2], match.start()
+
+
+def catalog_has(catalog_keys: set, skeleton: str) -> bool:
+    """Exact runtime-key match only. %@ and %lld are distinct type
+    families and never normalized into each other."""
+    return skeleton in catalog_keys
+
+
+def string_unit_leaves(localization) -> list:
+    """Flatten a localization dict into every stringUnit leaf, including
+    variations nested in a variation (a plural inside a device variant)."""
+    leaves = [localization["stringUnit"]] if "stringUnit" in localization else []
+    for variation in localization.get("variations", {}).values():
+        for unit in variation.values():
+            leaves.extend(string_unit_leaves(unit))
+    return leaves
+
+
+def string_unit_paths(localization, path=()) -> list:
+    """The variation path of every stringUnit leaf: () for a top-level
+    unit, ("device", "mac") for one inside a device variant."""
+    paths = [path] if "stringUnit" in localization else []
+    for dimension, variation in localization.get("variations", {}).items():
+        for case, unit in variation.items():
+            paths.extend(string_unit_paths(unit, path + (dimension, case)))
+    return paths
+
+
+def argument_types(specs) -> list:
+    """Argument types in the order printf consumes them: by index when every
+    placeholder is positional, otherwise in order of appearance."""
+    if specs and all(position is not None for position, _ in specs):
+        return [kind for _, kind in sorted(specs)]
+    return [kind for _, kind in specs]
+
+
+def placeholders_compatible(key_specs, value_specs) -> bool:
+    """A translation's placeholders must substitute like the key's.
+
+    The argument types must match as a multiset. A non-positional
+    translation consumes the arguments in order, so its types must also
+    follow the key's argument order ("%lld and %@" for "%@ and %lld"
+    misformats). A fully positional translation (%2$lld ... %1$@) may
+    reorder, but each index must name an argument of the same type, and
+    every argument must appear ("%1$@ and %1$@" drops the second). A
+    translation that mixes positional and non-positional placeholders is
+    rejected: Foundation's argument numbering is ambiguous there.
+    """
+    key_types = sorted(kind for _, kind in key_specs)
+    value_types = sorted(kind for _, kind in value_specs)
+    if key_types != value_types:
+        return False
+    key_order = argument_types(key_specs)
+    positions = [position for position, _ in value_specs]
+    if all(position is None for position in positions):
+        return [kind for _, kind in value_specs] == key_order
+    if all(position is not None for position in positions):
+        return (set(positions) == set(range(1, len(key_order) + 1))
+                and all(key_order[position - 1] == kind
+                        for position, kind in value_specs))
+    return False
+
+
+def normalized_language(identifier: str) -> str:
+    """Comparison form of a localization identifier: the app matches
+    "zh_Hans", "zh-hans" and "zh-Hans" alike, so the checker does too."""
+    return identifier.replace("_", "-").lower()
+
+
+# CLDR cardinal plural categories by locale (normalized), generated from
+# unicode-org/cldr common/supplemental/plurals.xml (October 2026). When the
+# source varies a key by plural, every shipped language must provide each
+# category its rules use (Xcode's catalog editor shows the same set). An
+# older iOS whose CLDR lacks a category ignores that form, so requiring the
+# current set is safe. A language CLDR doesn't know only needs "other", and
+# the checker says so.
+PLURAL_CATEGORIES = {
+    language: categories
+    for categories, languages in (
+        (("other",),
+         "bm bo dz hnj id ig ii in ja jbo jv jw kde kea km ko lkt lo ms my "
+         "nqo osa sah ses sg su th to tpi wo yo yue zh"),
+        (("one", "other"),
+         "af ak am an as asa ast az bal bem bez bg bho bn brx ce ceb cgg chr "
+         "ckb csw da de doi dv ee el en eo et eu fa ff fi fil fo fur fy gsw "
+         "gu guw ha haw hi hu hy ia ie io is jgo ji jmc ka kab kaj kcg kk "
+         "kkj kl kn kok kok-latn ks ksb ku ky lb lg lij ln mas mg mgo mk ml "
+         "mn mr nah nb nd ne nl nn nnh no nr nso ny nyn om or os pa pap pcm "
+         "ps rm rof rwk saq sc sd sdh seh si sn so sq ss ssy st sv sw syr ta "
+         "te teo tg ti tig tk tl tn tr ts tzm ug ur uz ve vi vo vun wa wae "
+         "xh xog yi zu"),
+        (("zero", "one", "other"),
+         "blo cv ksh lag lv prg"),
+        (("one", "two", "other"),
+         "he iu iw naq sat se sma smi smj smn sms"),
+        (("one", "few", "other"),
+         "bs hr mo ro sh shi sr"),
+        (("one", "many", "other"),
+         "ca es fr gl it lld pt pt-pt scn vec"),
+        (("one", "two", "few", "other"),
+         "dsb gd hsb sl"),
+        (("one", "few", "many", "other"),
+         "be cs lt pl ru sk uk"),
+        (("one", "two", "few", "many", "other"),
+         "br ga gv mt sgs"),
+        (("zero", "one", "two", "few", "many", "other"),
+         "ar ars cy kw"),
+    )
+    for language in languages.split()
+}
+
+
+def plural_categories(language: str):
+    """The plural categories `language` uses, or None when not on file."""
+    key = normalized_language(language)
+    return PLURAL_CATEGORIES.get(key) or PLURAL_CATEGORIES.get(key.split("-")[0])
+
+
+def localization_for(localizations: dict, language: str) -> dict:
+    """`language`'s localization, matched in any identifier spelling."""
+    wanted = normalized_language(language)
+    for candidate, localization in localizations.items():
+        if normalized_language(candidate) == wanted:
+            return localization
+    return {}
+
+
+def plural_variations(localization, path=()) -> list:
+    """Every plural variation in a localization dict as (path, plural)
+    pairs, including one nested in another variation: a plural inside a
+    device variant has the path ("device", "iphone"); a top-level one, ()."""
+    found = []
+    for dimension, variation in localization.get("variations", {}).items():
+        if dimension == "plural":
+            found.append((path, variation))
+        for case, unit in variation.items():
+            found.extend(plural_variations(unit, path + (dimension, case)))
+    return found
+
+
+def variation_label(path) -> str:
+    """How a problem names where a nested plural sits: "" at the top
+    level, otherwise " in device/iphone"."""
+    return f" in {'/'.join(path)}" if path else ""
+
+
+def plural_gaps(entry: dict, language: str, source: str) -> list:
+    """(path, categories) for each plural in `language` that lacks a
+    category its rules use, for a key the source varies by plural at any
+    depth. A localization with no plural variation stands for the "other"
+    form only; a missing localization is reported elsewhere."""
+    localizations = entry.get("localizations", {})
+    if not plural_variations(localization_for(localizations, source)):
+        return []
+    localization = localization_for(localizations, language)
+    provided = [(path, set(plural)) for path, plural in plural_variations(localization)]
+    if not provided:
+        # Plain strings, perhaps per device: each stands for "other" only.
+        provided = [(path, {"other"}) for path in string_unit_paths(localization)]
+    required = plural_categories(language) or ("other",)
+    gaps = []
+    for path, forms in provided:
+        missing = [category for category in required if category not in forms]
+        if missing:
+            gaps.append((path, missing))
+    return gaps
+
+
+def value_problem(language: str, value: str, key_specs):
+    """What makes a non-empty value malformed, or None."""
+    if MALFORMED_ESCAPE_RE.search(value):
+        return (f"{language} value contains malformed literal Unicode escape "
+                f"sequences (double-escaped authoring bug)")
+    value_specs = placeholder_specs(value)
+    if not placeholders_compatible(key_specs, value_specs):
+        return (f"{language} placeholders {value_specs} "
+                f"do not match key placeholders {key_specs}")
+    return None
+
+
+# A number shown as a label rather than counted in a sentence: alone in
+# parentheses at the end ("Runs (%lld)") or ending the string after a
+# colon ("Jobs: %lld"). No word agrees with it, so it needs no plural forms.
+_NUMERAL_LABEL_RE = re.compile(
+    r"(?:\(%(?:\d+\$)?ll?[diu]\)|:\s+%(?:\d+\$)?ll?[diu])$")
+
+
+def count_problems(key: str, entry: dict, source: str) -> list:
+    """Problems with how a key counts. An integer placeholder is a count:
+    the source varies it by plural (one/other in English) so every
+    language can make the words around it agree ("1 task", "2 tasks";
+    Russian has four forms). One plural drives a whole string, so a key
+    holds at most one count; numbers that aren't counted (an HTTP
+    status, a process id, a position) go in as String(x), a %@."""
+    integers = [spec for spec in placeholder_specs(key) if spec[1] == "int"]
+    localizations = entry.get("localizations", {})
+    problems = []
+    if any("substitutions" in localization for localization in localizations.values()):
+        problems.append(
+            "uses plural substitutions, which this checker can't verify: "
+            "split the string so it holds one count, and vary that by plural")
+    if len(integers) > 1:
+        problems.append(
+            f"holds {len(integers)} integer placeholders, but one plural "
+            f"drives a whole string: keep the counted number as an Int and "
+            f"pass the others as String(x), or split the string")
+    elif (integers and not _NUMERAL_LABEL_RE.search(key)
+          and not plural_variations(localization_for(localizations, source))):
+        problems.append(
+            f"counts with {key!r} but {source} has no plural forms: vary it "
+            f"by plural (one/other) so other languages can agree with the "
+            f"number; a number that isn't a count goes in as String(x)")
+    elif integers and normalized_language(source).split("-")[0] == "en":
+        problems.extend(_english_one_form_problems(
+            localization_for(localizations, source)))
+    if (len(integers) <= 1 and len(placeholder_specs(key)) > 1
+            and plural_variations(localization_for(localizations, source))):
+        # A whole-string plural is defined for a single argument; with more,
+        # which one selects the form isn't something the catalog states.
+        problems.append(
+            "varies by plural but holds more than one placeholder: keep the "
+            "count alone in its string and put the other values in their own")
+    return problems
+
+
+def _english_one_form_problems(localization: dict) -> list:
+    """An English "one" form that repeats a plural noun after the count
+    ("Show all %lld lines" for 1) reads "1 lines"."""
+    problems = []
+    for path, plural in plural_variations(localization):
+        one = plural.get("one", {}).get("stringUnit", {}).get("value") or ""
+        other = plural.get("other", {}).get("stringUnit", {}).get("value") or ""
+        after = re.split(r"%(?:\d+\$)?ll?[diu]", one, maxsplit=1)
+        if one and one == other and len(after) == 2 and _COUNTED_NOUN_RE.match(after[1]):
+            problems.append(
+                f"en 'one' form{variation_label(path)} repeats the plural "
+                f"({one!r} reads \"1 …s\"): make it singular")
+    return problems
+
+
+def catalog_problems(catalog: dict, required_languages=(),
+                     draft_languages=()) -> dict:
+    """Return {key: [problems]} for every localization violation.
+
+    Every language in `required_languages` (the shipped non-source ones)
+    must localize every key, and where the source varies a key by plural,
+    every shipped language (source included) must provide each plural
+    category its rules use. Units of every non-draft language - the source
+    included, so a stale en value like "%lld" under a "%@" key cannot
+    survive (it misformats at runtime) - must be translated and non-empty.
+    Draft languages may be partial or unreviewed. Whatever value ANY
+    language carries must still be well-formed: no malformed escapes,
+    placeholders compatible with the key, and an "other" plural form.
+    """
+    drafts = {normalized_language(language) for language in draft_languages}
+    source = catalog.get("sourceLanguage", "en")
+    shipped = sorted(set(required_languages) | {source})
+    problems = {}
+    for key, entry in catalog.get("strings", {}).items():
+        if key in EXEMPT_KEYS:
+            continue
+        localizations = entry.get("localizations", {})
+        for language in sorted(required_languages):
+            if not string_unit_leaves(localization_for(localizations, language)):
+                problems.setdefault(key, []).append(
+                    f"missing {language} localization")
+        for language in shipped:
+            rules = plural_categories(language) or ("other",)
+            for path, missing in plural_gaps(entry, language, source):
+                problems.setdefault(key, []).append(
+                    f"{language} plural{variation_label(path)} lacks "
+                    f"{', '.join(missing)} (its plural rules use {', '.join(rules)})")
+        for problem in count_problems(key, entry, source):
+            problems.setdefault(key, []).append(problem)
+        key_specs = placeholder_specs(key)
+        for language, localization in localizations.items():
+            draft = normalized_language(language) in drafts
+            for path, plural in plural_variations(localization):
+                if "other" not in plural:
+                    problems.setdefault(key, []).append(
+                        f"{language} plural{variation_label(path)} has no 'other' form")
+            for unit in string_unit_leaves(localization):
+                value = unit.get("value") or ""
+                state = unit.get("state")
+                problem = None
+                if state != "translated" and not draft:
+                    problem = f"{language} state is {state!r}, not 'translated'"
+                elif not value.strip():
+                    if state == "translated":
+                        problem = f"{language} value is empty"
+                else:
+                    problem = value_problem(language, value, key_specs)
+                if problem:
+                    problems.setdefault(key, []).append(problem)
+    return problems
+
+
+def language_is_complete(catalog: dict, language: str) -> bool:
+    """Would `language` pass as a shipped language in this catalog?"""
+    source = catalog.get("sourceLanguage", "en")
+    for key, entry in catalog.get("strings", {}).items():
+        if key in EXEMPT_KEYS:
+            continue
+        localization = localization_for(entry.get("localizations", {}), language)
+        units = string_unit_leaves(localization)
+        if not units or plural_gaps(entry, language, source):
+            return False
+        if any("other" not in plural for _, plural in plural_variations(localization)):
+            return False
+        key_specs = placeholder_specs(key)
+        for unit in units:
+            value = unit.get("value") or ""
+            if (unit.get("state") != "translated" or not value.strip()
+                    or value_problem(language, value, key_specs)):
+                return False
+    return True
+
+
+def required_key_problems(catalog: dict, required_keys) -> dict:
+    """Problems for keys the extractor cannot see (REGRESSION_KEYS). Their
+    per-language problems are already in catalog_problems; this only
+    reports keys missing from the catalog altogether."""
+    problems = {}
+    strings = catalog.get("strings", {})
+    for key in required_keys:
+        if key not in strings:
+            problems.setdefault(key, []).append(
+                "regression key absent from the catalog")
+    return problems
+
+
+# Every Conduit-owned catalog, in check order. Key existence is validated
+# only against Localizable (call-site extraction); the others carry
+# OS-resolved Siri/InfoPlist content but must cover the same languages.
+SOURCE_CATALOG = "Localizable.xcstrings"
+SECONDARY_CATALOGS = ("AppShortcuts.xcstrings", "InfoPlist.xcstrings")
+INFO_PLIST = os.path.join("Conduit", "Info.plist")
+# The Apple Watch app's sources and its own Localizable catalog.
+WATCH_DIRECTORY = "ConduitWatch"
+# Each Info.plist with the InfoPlist catalog iOS reads its permission
+# prompts (NS…UsageDescription) from.
+INFO_PLIST_CATALOGS = (
+    (INFO_PLIST, os.path.join("Conduit", "InfoPlist.xcstrings")),
+    (os.path.join(WATCH_DIRECTORY, "Info.plist"),
+     os.path.join(WATCH_DIRECTORY, "InfoPlist.xcstrings")),
+)
+# The Watch target's other sources (project.yml), whose strings the Watch
+# catalog must carry too.
+WATCH_SHARED_SOURCES = (
+    "Shared/GeminiLive",
+    "Shared/GrokLive",
+    "Shared/WatchVoice",
+    "Conduit/Voice/GPTLive/GPTLiveProtocol.swift",
+)
+
+
+class _JSONObject(dict):
+    """A decoded JSON object that remembers which of its keys repeated."""
+    repeated = ()
+
+
+def _remember_repeats(pairs):
+    seen = set()
+    repeated = []
+    for key, _value in pairs:
+        if key in seen:
+            repeated.append(key)
+        seen.add(key)
+    decoded = _JSONObject(pairs)
+    decoded.repeated = repeated
+    return decoded
+
+
+def _repeated_keys(value, path=()):
+    """Yield (path, key) for every key a JSON object in `value` repeats."""
+    if isinstance(value, _JSONObject):
+        for key in value.repeated:
+            yield path, key
+        for key, child in value.items():
+            yield from _repeated_keys(child, path + (key,))
+    elif isinstance(value, list):
+        for child in value:
+            yield from _repeated_keys(child, path)
+
+
+def _shape_problem(catalog):
+    """Where a decoded catalog departs from the String Catalog shape the
+    checker walks, or None."""
+    if not isinstance(catalog, dict) or not isinstance(catalog.get("strings"), dict):
+        return 'no "strings" object'
+    if not isinstance(catalog.get("sourceLanguage", "en"), str):
+        return '"sourceLanguage" is not a string'
+    for key, entry in catalog["strings"].items():
+        if not isinstance(entry, dict) or not isinstance(entry.get("localizations", {}), dict):
+            return f"entry {key!r} is not a catalog entry"
+        for language, localization in entry.get("localizations", {}).items():
+            if not _is_localization(localization):
+                return f"entry {key!r} has a malformed {language} localization"
+    return None
+
+
+def _is_localization(localization) -> bool:
+    """A localization dict: an optional stringUnit with a text value, and
+    optional variations whose cases are localizations themselves."""
+    if not isinstance(localization, dict):
+        return False
+    unit = localization.get("stringUnit", {})
+    if not isinstance(unit, dict) or not isinstance(unit.get("value"), (str, type(None))):
+        return False
+    variations = localization.get("variations", {})
+    return isinstance(variations, dict) and all(
+        isinstance(cases, dict) and all(_is_localization(case) for case in cases.values())
+        for cases in variations.values())
+
+
+def load_catalog(path: str):
+    """Load a String Catalog. Returns (catalog, duplicates), where
+    duplicates maps a catalog key to its problems: plain JSON loading
+    silently keeps only the last copy of a repeated key, which hides a
+    second, conflicting translation."""
+    with open(path, encoding="utf-8") as handle:
+        catalog = json.load(handle, object_pairs_hook=_remember_repeats)
+    problem = _shape_problem(catalog)
+    if problem:
+        raise ValueError(f"not a String Catalog ({problem})")
+    duplicates = {}
+    for where, key in _repeated_keys(catalog):
+        if where == ("strings",):
+            duplicates.setdefault(key, []).append(
+                "appears more than once in the catalog JSON (only one copy "
+                "survives); keep a single entry")
+        elif len(where) >= 2 and where[0] == "strings":
+            inner = "/".join(where[2:] + (key,))
+            duplicates.setdefault(where[1], []).append(
+                f"repeats {inner!r} in its JSON (only one copy survives)")
+        else:
+            duplicates.setdefault("/".join(where + (key,)), []).append(
+                "appears more than once in the catalog JSON")
+    return catalog, duplicates
+
+
+def read_draft_languages(info_plist_path: str) -> list:
+    """The draft localization identifiers Info.plist lists (may be empty)."""
+    if not os.path.exists(info_plist_path):
+        return []
+    try:
+        with open(info_plist_path, "rb") as handle:
+            info = plistlib.load(handle)
+    except (OSError, plistlib.InvalidFileException,
+            xml.parsers.expat.ExpatError) as error:
+        raise ValueError(f"unreadable: {error}") from error
+    drafts = info.get(DRAFT_LANGUAGES_KEY, [])
+    if not isinstance(drafts, list) or not all(
+            isinstance(language, str) and language.strip() for language in drafts):
+        raise ValueError(f"{DRAFT_LANGUAGES_KEY} must be an array of "
+                         f"localization identifiers")
+    return drafts
+
+
+def catalog_languages(catalog: dict) -> set:
+    """Every language with at least one localization in the catalog."""
+    languages = set()
+    for entry in catalog.get("strings", {}).values():
+        languages.update(entry.get("localizations", {}))
+    return languages
+
+
+class LanguagePlan:
+    """Which catalog languages ship, which are drafts, and which is the
+    source. `problems` are configuration errors; `notes` are advice."""
+
+    def __init__(self, catalogs: dict, drafts: list):
+        self.problems = []
+        self.notes = []
+        sources = {catalog.get("sourceLanguage", "en")
+                   for catalog in catalogs.values()}
+        primary = catalogs.get(SOURCE_CATALOG) or next(iter(catalogs.values()), {})
+        self.source = primary.get("sourceLanguage", "en")
+        if len(sources) > 1:
+            self.problems.append(
+                f"catalogs disagree on sourceLanguage: {sorted(sources)}")
+        draft_keys = {normalized_language(language) for language in drafts}
+        if normalized_language(self.source) in draft_keys:
+            self.problems.append(
+                f"{DRAFT_LANGUAGES_KEY} lists the source language "
+                f"{self.source!r}; it always ships")
+        if "base" in draft_keys:
+            self.problems.append(
+                f"{DRAFT_LANGUAGES_KEY} lists Base; Base.lproj holds "
+                f"unlocalized resources, not a language")
+        # One spelling per language: Xcode builds a separate lproj for each
+        # spelling, so "zh_Hans" in one catalog and "zh-Hans" in another
+        # would split that language's strings across two folders.
+        spellings = {}
+        for catalog in catalogs.values():
+            for language in catalog_languages(catalog):
+                spellings.setdefault(normalized_language(language), set()).add(language)
+        for forms in spellings.values():
+            if len(forms) > 1:
+                self.problems.append(
+                    f"one language is spelled {sorted(forms)} across the "
+                    f"catalogs; use a single spelling")
+        present = {sorted(forms)[0] for forms in spellings.values()}
+        source_key = normalized_language(self.source)
+        self.shipped = sorted(
+            language for language in present
+            if normalized_language(language) != source_key
+            and normalized_language(language) not in draft_keys)
+        self.drafts = sorted(
+            language for language in present
+            if normalized_language(language) in draft_keys)
+        for language in self.shipped:
+            if plural_categories(language) is None:
+                self.notes.append(
+                    f"no plural rules on file for {language!r}, so only its "
+                    f"'other' form is required: check its plural forms in "
+                    f"Xcode, and add it to PLURAL_CATEGORIES")
+        present_keys = {normalized_language(language) for language in present}
+        for language in drafts:
+            if normalized_language(language) not in present_keys:
+                self.notes.append(
+                    f"draft {language!r} has no catalog entries yet")
+        for language in self.drafts:
+            if all(language_is_complete(catalog, language)
+                   for catalog in catalogs.values()):
+                self.notes.append(
+                    f"draft {language!r} is complete: remove it from "
+                    f"{DRAFT_LANGUAGES_KEY} in {INFO_PLIST} to ship it")
+
+
+class CatalogError(Exception):
+    """A String Catalog that can't be read or parsed (for example one left
+    with merge-conflict markers)."""
+
+
+def usage_description_problems(info: dict, catalog: dict) -> list:
+    """The permission prompts in `info` (an Info.plist) that `catalog`
+    (its InfoPlist catalog) lacks: iOS shows those in English whatever
+    the language."""
+    keys = set(catalog.get("strings", {}))
+    return sorted(key for key in info
+                  if key.startswith("NS") and key.endswith("UsageDescription")
+                  and key not in keys)
+
+
+def check(repo_root: str):
+    """Full check. Returns (checked_site_count, missing_sites,
+    key_problems, language_plan). Raises CatalogError for a catalog that
+    can't be read."""
+    conduit = os.path.join(repo_root, "Conduit")
+    catalogs = {}
+    duplicates = {}
+    for name in (SOURCE_CATALOG,) + SECONDARY_CATALOGS:
+        path = os.path.join(conduit, name)
+        if name != SOURCE_CATALOG and not os.path.exists(path):
+            continue
+        try:
+            catalogs[name], duplicates[name] = load_catalog(path)
+        except (OSError, ValueError) as error:
+            # json.JSONDecodeError and UnicodeDecodeError are ValueErrors.
+            raise CatalogError(f"Conduit/{name}: {error}") from error
+    catalog = catalogs[SOURCE_CATALOG]
+    catalog_keys = set(catalog["strings"])
+
+    key_problems = {}
+    try:
+        drafts = read_draft_languages(os.path.join(repo_root, INFO_PLIST))
+    except ValueError as error:
+        drafts = []
+        key_problems[f"{INFO_PLIST}: {DRAFT_LANGUAGES_KEY}"] = [str(error)]
+    plan = LanguagePlan(catalogs, drafts)
+    if plan.problems:
+        key_problems.setdefault("languages", []).extend(plan.problems)
+
+    missing = {}
+    checked = scan_sites(conduit, catalog_keys, repo_root, missing, key_problems)
+    # The iPhone app compiles Shared/ too (project.yml).
+    checked += scan_sites(os.path.join(repo_root, "Shared"), catalog_keys, repo_root, missing, key_problems)
+
+    # The Apple Watch app has its own catalog, in the same languages.
+    watch = os.path.join(repo_root, WATCH_DIRECTORY)
+    watch_catalog_path = os.path.join(watch, SOURCE_CATALOG)
+    if os.path.exists(watch_catalog_path):
+        try:
+            watch_catalog, watch_duplicates = load_catalog(watch_catalog_path)
+        except (OSError, ValueError) as error:
+            raise CatalogError(f"{WATCH_DIRECTORY}/{SOURCE_CATALOG}: {error}") from error
+        watch_keys = set(watch_catalog["strings"])
+        for root in (watch, *(os.path.join(repo_root, source) for source in WATCH_SHARED_SOURCES)):
+            # A renamed shared folder would otherwise scan nothing, silently.
+            if not os.path.exists(root):
+                key_problems.setdefault(os.path.relpath(root, repo_root), []).append(
+                    "the Watch compiles this path (WATCH_SHARED_SOURCES), but it doesn't exist")
+                continue
+            checked += scan_sites(root, watch_keys, repo_root, missing, key_problems)
+        prefix = f"{WATCH_DIRECTORY}/{SOURCE_CATALOG}: "
+        for key, problems in watch_duplicates.items():
+            key_problems.setdefault(f"{prefix}{key}", []).extend(problems)
+        for key, problems in catalog_problems(
+                watch_catalog, plan.shipped, plan.drafts).items():
+            key_problems.setdefault(f"{prefix}{key}", []).extend(problems)
+
+    for name, current in catalogs.items():
+        prefix = "" if name == SOURCE_CATALOG else f"{name}: "
+        for key, problems in duplicates[name].items():
+            key_problems.setdefault(f"{prefix}{key}", []).extend(problems)
+        for key, problems in catalog_problems(
+                current, plan.shipped, plan.drafts).items():
+            key_problems.setdefault(f"{prefix}{key}", []).extend(problems)
+    for key, problems in required_key_problems(catalog, REGRESSION_KEYS).items():
+        key_problems.setdefault(key, []).extend(problems)
+
+    # Permission prompts: each one in an Info.plist needs its InfoPlist
+    # catalog entry. The Watch's InfoPlist catalog is checked here too.
+    for plist_name, catalog_name in INFO_PLIST_CATALOGS:
+        plist_path = os.path.join(repo_root, plist_name)
+        catalog_path = os.path.join(repo_root, catalog_name)
+        if not os.path.exists(plist_path):
+            continue
+        try:
+            with open(plist_path, "rb") as handle:
+                info = plistlib.load(handle)
+        except (OSError, plistlib.InvalidFileException,
+                xml.parsers.expat.ExpatError) as error:
+            key_problems.setdefault(plist_name, []).append(f"unreadable: {error}")
+            continue
+        if catalog_name == os.path.join("Conduit", SECONDARY_CATALOGS[1]):
+            prompts_catalog = catalogs.get(SECONDARY_CATALOGS[1], {})
+        elif os.path.exists(catalog_path):
+            try:
+                prompts_catalog, prompt_duplicates = load_catalog(catalog_path)
+            except (OSError, ValueError) as error:
+                raise CatalogError(f"{catalog_name}: {error}") from error
+            prefix = f"{catalog_name}: "
+            for key, problems in prompt_duplicates.items():
+                key_problems.setdefault(f"{prefix}{key}", []).extend(problems)
+            for key, problems in catalog_problems(
+                    prompts_catalog, plan.shipped, plan.drafts).items():
+                key_problems.setdefault(f"{prefix}{key}", []).extend(problems)
+        else:
+            prompts_catalog = {}
+        for key in usage_description_problems(info, prompts_catalog):
+            key_problems.setdefault(f"{plist_name}: {key}", []).append(
+                f"permission prompt missing from {catalog_name}, so iOS "
+                f"shows it in English in every language")
+    return checked, missing, key_problems, plan
+
+
+def scan_sites(root: str, catalog_keys, repo_root: str, missing: dict, key_problems: dict) -> int:
+    """Checks every localizable call site in the Swift files under `root`
+    (or in `root`, a single file) against `catalog_keys`, adding what's missing to `missing`. Returns the
+    number of sites checked."""
+    checked = 0
+    if os.path.isfile(root):
+        walk = [(os.path.dirname(root), [], [os.path.basename(root)])]
+    else:
+        walk = os.walk(root)
+    for dirpath, _dirnames, filenames in walk:
+        for name in filenames:
+            if not name.endswith(".swift"):
+                continue
+            path = os.path.join(dirpath, name)
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    source = handle.read()
+            except (OSError, ValueError) as error:
+                key_problems.setdefault(os.path.relpath(path, repo_root), []).append(
+                    f"can't be read as UTF-8 Swift source: {error}")
+                continue
+            # Line numbers come from the comment-blanked text the sites
+            # are read from.
+            source = strip_comment_lines(source)
+            for expression, offset in string_wrapped_counts(source):
+                line = source.count("\n", 0, offset) + 1
+                key_problems.setdefault(f"{os.path.relpath(path, repo_root)}:{line}", []).append(
+                    f"interpolates {expression} as text, so no plural form "
+                    f"applies: interpolate the Int and give the key plural forms")
+            for skeleton, offset in raw_ternary_literals(source):
+                line = source.count("\n", 0, offset) + 1
+                key_problems.setdefault(f"{os.path.relpath(path, repo_root)}:{line}", []).append(
+                    f"passes \"{skeleton}\" as a ternary branch, which binds the "
+                    f"verbatim String overload and never localizes: wrap each "
+                    f"branch in AppLocalization.string")
+            rel = os.path.relpath(path, repo_root)
+            for callee, label, skeleton, offset in raw_display_literals(source):
+                line = source.count("\n", 0, offset) + 1
+                key_problems.setdefault(f"{rel}:{line}", []).append(
+                    f"passes \"{skeleton}\" to {callee}({label}:), which shows a "
+                    f"String as is and never localizes it: wrap it in "
+                    f"AppLocalization.string")
+            for prop, skeleton, offset in raw_display_property_literals(source):
+                line = source.count("\n", 0, offset) + 1
+                key_problems.setdefault(f"{rel}:{line}", []).append(
+                    f"{prop} returns \"{skeleton}\", a String shown as is that "
+                    f"never localizes: wrap it in AppLocalization.string")
+            for skeleton, offset in raw_interpolated_literals(source):
+                line = source.count("\n", 0, offset) + 1
+                key_problems.setdefault(f"{rel}:{line}", []).append(
+                    f"interpolates \"{skeleton}\" into a localized string, where "
+                    f"it is an argument and never localizes: wrap it in "
+                    f"AppLocalization.string")
+            for skeleton, offset in extract_sites(source):
+                checked += 1
+                if skeleton in EXEMPT_KEYS:
+                    continue
+                if catalog_has(catalog_keys, skeleton):
+                    continue
+                line = source.count("\n", 0, offset) + 1
+                rel = os.path.relpath(path, repo_root)
+                missing.setdefault(skeleton, []).append(f"{rel}:{line}")
+    return checked
+
+
+def describe(languages) -> str:
+    return ", ".join(languages) if languages else "none"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Verify every localizable call site resolves in "
+                    "Conduit/Localizable.xcstrings and every shipped "
+                    "language has a complete, well-formed translation.")
+    parser.add_argument("--repo-root", default=".",
+                        help="Repository root (default: current directory).")
+    args = parser.parse_args()
+
+    try:
+        checked, missing, key_problems, plan = check(args.repo_root)
+    except CatalogError as error:
+        print(f"FAIL: {error}")
+        return 1
+    print(f"Languages: source {plan.source}; shipped {describe(plan.shipped)}; "
+          f"drafts {describe(plan.drafts)}.")
+
+    failed = False
+    if missing:
+        failed = True
+        print(f"FAIL: {len(missing)} localizable key(s) missing from the "
+              f"String Catalog ({checked} call sites checked):")
+        for skeleton in sorted(missing):
+            for location in missing[skeleton]:
+                print(f"  {location}")
+            print(f"    key: {skeleton!r}")
+    else:
+        print(f"OK: {checked} localizable call sites all resolve in the catalog.")
+
+    if key_problems:
+        failed = True
+        print(f"FAIL: localization problems under {len(key_problems)} catalog "
+              f"key(s), file(s) or setting(s) (shipped: {describe(plan.shipped)}):")
+        for key in sorted(key_problems):
+            print(f"    {key!r}")
+            for problem in key_problems[key]:
+                print(f"        {problem}")
+    else:
+        print(f"OK: every catalog key is translated in every shipped language "
+              f"({describe(plan.shipped)}) with type-matched placeholders.")
+    for note in plan.notes:
+        print(f"NOTE: {note}")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

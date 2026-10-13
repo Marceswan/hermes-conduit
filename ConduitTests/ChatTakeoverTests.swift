@@ -1,0 +1,217 @@
+import XCTest
+@testable import Conduit
+
+/// Chat takeover (#304). An extension, not a new class: the hosted CI
+/// planner budgets batches per class.
+extension HermesClientTests {
+    func testRefusalDetailsNameTheStoredSessionAndOwner() {
+        let message = "This chat is open in another Hermes window/terminal. Use it there, or start a new chat here.\nDetails: session 20261002_abc opened by desktop 12m ago."
+        let details = ChatTakeoverState.details(fromRefusal: message)
+        XCTAssertEqual(details.sessionID, "20261002_abc")
+        XCTAssertEqual(details.surface, "desktop")
+    }
+
+    func testRefusalDetailsWithoutAnAge() {
+        let details = ChatTakeoverState.details(fromRefusal: "Details: session s1 opened by cli.")
+        XCTAssertEqual(details.sessionID, "s1")
+        XCTAssertEqual(details.surface, "cli")
+    }
+
+    func testRefusalWithoutDetails() {
+        let details = ChatTakeoverState.details(fromRefusal: "This chat is open in another Hermes window/terminal.")
+        XCTAssertNil(details.sessionID)
+        XCTAssertNil(details.surface)
+    }
+
+    func testOwnerMapping() {
+        XCTAssertEqual(ChatTakeoverState.owner("desktop"), .desktop)
+        XCTAssertEqual(ChatTakeoverState.owner("tui"), .terminal)
+        XCTAssertEqual(ChatTakeoverState.owner("CLI"), .terminal)
+        XCTAssertEqual(ChatTakeoverState.owner(nil), .otherWindow)
+    }
+
+    /// Each owner has its own whole sentences, read in the source language.
+    func testOwnerSentences() {
+        let defaults = UserDefaults.standard
+        let previous = defaults.string(forKey: AppLanguageStore.defaultsKey)
+        defaults.set(AppLanguage.source.rawValue, forKey: AppLanguageStore.defaultsKey)
+        defer {
+            if let previous {
+                defaults.set(previous, forKey: AppLanguageStore.defaultsKey)
+            } else {
+                defaults.removeObject(forKey: AppLanguageStore.defaultsKey)
+            }
+        }
+        func state(_ surface: String?) -> ChatTakeoverState {
+            ChatTakeoverState(sessionID: "s1", sessionIDs: ["s1"], surface: surface, phase: .offered)
+        }
+        XCTAssertEqual(state("desktop").stillReplyingMessage, "Hermes Desktop is still replying in this chat. Try again when it finishes.")
+        XCTAssertEqual(state("cli").stillReplyingMessage, "A Hermes terminal is still replying in this chat. Try again when it finishes.")
+        XCTAssertEqual(state(nil).stillReplyingMessage, "Another Hermes window is still replying in this chat. Try again when it finishes.")
+        XCTAssertEqual(state("desktop").openElsewhereMessage, "This chat is open in Hermes Desktop. Take it over to send from here.")
+        XCTAssertEqual(state("tui").takingOverMessage, "Taking this chat over from a Hermes terminal. If it's replying, Conduit waits for the reply to finish.")
+    }
+
+    func testRpcErrorDecodesTheRefusalReason() throws {
+        let json = #"{"code": 4090, "message": "This chat is open elsewhere", "data": {"reason": "SESSION_NOT_OWNED"}}"#
+        let error = try JSONDecoder().decode(RpcError.self, from: Data(json.utf8))
+        XCTAssertEqual(error.code, 4090)
+        XCTAssertEqual(error.reason, "SESSION_NOT_OWNED")
+        XCTAssertTrue(error.isSessionNotOwned)
+    }
+
+    func testRpcErrorWithoutDataHasNoReason() throws {
+        let json = #"{"code": 4009, "message": "session busy"}"#
+        let error = try JSONDecoder().decode(RpcError.self, from: Data(json.utf8))
+        XCTAssertNil(error.reason)
+        XCTAssertFalse(error.isSessionNotOwned)
+    }
+
+    func testRpcErrorIgnoresNonObjectData() throws {
+        let json = #"{"code": 4090, "message": "capacity", "data": "MAX_CONCURRENT_SESSIONS"}"#
+        let error = try JSONDecoder().decode(RpcError.self, from: Data(json.utf8))
+        XCTAssertNil(error.reason)
+    }
+
+    func testOutcomes() throws {
+        XCTAssertEqual(try ChatTakeoverClient.outcome(from: ["ok": true, "status": "taken_over", "surface": "desktop"]), .ready)
+        XCTAssertEqual(try ChatTakeoverClient.outcome(from: ["ok": true, "status": "free"]), .ready)
+        XCTAssertEqual(try ChatTakeoverClient.outcome(from: ["ok": true, "status": "busy"]), .busy)
+        XCTAssertEqual(try ChatTakeoverClient.outcome(from: ["ok": true, "status": "same_host"]), .sameHost)
+        XCTAssertThrowsError(try ChatTakeoverClient.outcome(from: ["ok": true, "status": "later"]))
+        XCTAssertThrowsError(try ChatTakeoverClient.outcome(from: ["status": "free"]))
+    }
+
+    func testHTTPErrorsMapToPluginState() {
+        XCTAssertEqual(ChatTakeoverClient.mapped(.http(status: 404, detail: "")), .pluginMissing)
+        XCTAssertEqual(ChatTakeoverClient.mapped(.http(status: 501, detail: "")), .unsupported)
+        XCTAssertNil(ChatTakeoverClient.mapped(.http(status: 503, detail: "")))
+        XCTAssertNil(ChatTakeoverClient.mapped(.notReady))
+    }
+
+    func testClientPostsAtMostFourIdsToTheProfilesRoute() async throws {
+        var seen: (path: String, method: String, body: [String: Any]?)?
+        let client = ChatTakeoverClient(request: { path, method, body in
+            seen = (path, method, body)
+            return ["ok": true, "status": "busy"]
+        })
+        let outcome = try await client.takeOver(sessionIDs: ["a", "b", "c", "d", "e"], profile: "work")
+        XCTAssertEqual(outcome, .busy)
+        XCTAssertEqual(seen?.path, "/api/plugins/conduit_push/sessions/takeover?profile=work")
+        XCTAssertEqual(seen?.method, "POST")
+        XCTAssertEqual(seen?.body?["session_ids"] as? [String], ["a", "b", "c", "d"])
+    }
+
+    func testClientMapsAMissingPlugin() async {
+        let client = ChatTakeoverClient(request: { _, _, _ in
+            throw DashboardTicketBridgeError.http(status: 404, detail: "Not Found")
+        })
+        do {
+            _ = try await client.takeOver(sessionIDs: ["a"], profile: "default")
+            XCTFail("expected pluginMissing")
+        } catch {
+            XCTAssertEqual(error as? ChatTakeoverError, .pluginMissing)
+        }
+    }
+
+    func testOnlyTransientTakeoverFailuresAreRetried() {
+        XCTAssertTrue(AppState.isTransientChatTakeoverFailure(DashboardTicketBridgeError.notReady))
+        XCTAssertTrue(AppState.isTransientChatTakeoverFailure(DashboardTicketBridgeError.http(status: 503, detail: "")))
+        XCTAssertTrue(AppState.isTransientChatTakeoverFailure(DashboardTicketBridgeError.http(status: 0, detail: "")))
+        XCTAssertTrue(AppState.isTransientChatTakeoverFailure(URLError(.timedOut)))
+        XCTAssertFalse(AppState.isTransientChatTakeoverFailure(DashboardTicketBridgeError.http(status: 501, detail: "")))
+        XCTAssertFalse(AppState.isTransientChatTakeoverFailure(DashboardTicketBridgeError.http(status: 400, detail: "")))
+        XCTAssertFalse(AppState.isTransientChatTakeoverFailure(ChatTakeoverError.pluginMissing))
+    }
+
+    private func takeoverState(_ text: String = "hello") -> ChatTakeoverState {
+        ChatTakeoverState(sessionID: "s1", sessionIDs: ["s1"], surface: "desktop", refusedText: text, phase: .waiting)
+    }
+
+    func testTakeoverPollsWhileTheOwnerIsReplying() async {
+        var replies: [[String: Any]] = [["ok": true, "status": "busy"], ["ok": true, "status": "busy"], ["ok": true, "status": "taken_over"]]
+        var calls = 0
+        let client = ChatTakeoverClient(request: { _, _, _ in
+            calls += 1
+            return replies.removeFirst()
+        })
+        let phase = await AppState.runChatTakeover(client: client, state: takeoverState(), profile: "default", pollInterval: .zero)
+        XCTAssertEqual(phase, .ready)
+        XCTAssertEqual(calls, 3)
+    }
+
+    func testTakeoverGivesUpAfterRepeatedTransientFailures() async {
+        var calls = 0
+        let client = ChatTakeoverClient(request: { _, _, _ in
+            calls += 1
+            throw DashboardTicketBridgeError.http(status: 503, detail: "")
+        })
+        let phase = await AppState.runChatTakeover(client: client, state: takeoverState(), profile: "default", pollInterval: .zero)
+        guard case .failed = phase else { return XCTFail("expected failed, got \(String(describing: phase))") }
+        XCTAssertEqual(calls, AppState.chatTakeoverTransientRetryLimit)
+    }
+
+    func testTakeoverWithoutThePluginIsUnavailableNotRetryable() async {
+        let client = ChatTakeoverClient(request: { _, _, _ in
+            throw DashboardTicketBridgeError.http(status: 404, detail: "Not Found")
+        })
+        let phase = await AppState.runChatTakeover(client: client, state: takeoverState(), profile: "default", pollInterval: .zero)
+        guard case .unavailable = phase else { return XCTFail("expected unavailable, got \(String(describing: phase))") }
+    }
+
+    func testTakeoverHeldByAnotherConduitIsHeldHere() async {
+        let client = ChatTakeoverClient(request: { _, _, _ in ["ok": true, "status": "same_host"] })
+        let phase = await AppState.runChatTakeover(client: client, state: takeoverState(), profile: "default", pollInterval: .zero)
+        XCTAssertEqual(phase, .heldHere)
+    }
+
+    func testOnlyTheRefusedMessageIsResent() {
+        let state = takeoverState("  hello\n")
+        XCTAssertTrue(state.isRefusedMessage("hello"))
+        XCTAssertFalse(state.isRefusedMessage("something else"))
+        XCTAssertFalse(takeoverState("").isRefusedMessage(""))
+        XCTAssertTrue(takeoverState("").isRefusedMessage(" ", hasAttachments: true))
+        XCTAssertFalse(takeoverState("").isRefusedMessage("new text", hasAttachments: true))
+    }
+
+    // MARK: Notifier plugin capabilities
+
+    func testPluginCapabilitiesParse() {
+        let state = NotifierPluginStatus.state(from: [
+            "ok": true, "version": "0.4.0", "capabilities": ["session-takeover", "voice-tags"],
+        ])
+        XCTAssertEqual(state, .reported(version: "0.4.0", capabilities: ["session-takeover", "voice-tags"]))
+        XCTAssertEqual(NotifierPluginStatus.state(from: ["ok": true]), .unknown)
+    }
+
+    func testAMissingCapabilitiesRouteMeansAnOlderPlugin() {
+        XCTAssertEqual(NotifierPluginStatus.state(from: DashboardTicketBridgeError.http(status: 404, detail: "")), .predatesCapabilities)
+        XCTAssertEqual(NotifierPluginStatus.state(from: DashboardTicketBridgeError.http(status: 503, detail: "")), .unknown)
+        XCTAssertEqual(NotifierPluginStatus.state(from: URLError(.timedOut)), .unknown)
+    }
+
+    func testPluginUpdateNudge() {
+        XCTAssertFalse(NotifierPluginStatus(state: .unknown).needsUpdate)
+        XCTAssertTrue(NotifierPluginStatus(state: .predatesCapabilities).needsUpdate)
+        let current = NotifierPluginStatus(state: .reported(version: "0.4.0", capabilities: Set(NotifierPluginStatus.usedCapabilities)))
+        XCTAssertFalse(current.needsUpdate)
+        XCTAssertEqual(current.version, "0.4.0")
+        var older = Set(NotifierPluginStatus.usedCapabilities)
+        older.remove("session-takeover")
+        let missingTakeover = NotifierPluginStatus(state: .reported(version: "0.4.0", capabilities: older))
+        XCTAssertTrue(missingTakeover.needsUpdate)
+        XCTAssertFalse(missingTakeover.mightSupport("session-takeover"))
+        XCTAssertTrue(missingTakeover.mightSupport("voice-tags"))
+        var beforeDesktopViews = Set(NotifierPluginStatus.usedCapabilities)
+        beforeDesktopViews.remove("desktop-views")
+        XCTAssertTrue(NotifierPluginStatus(state: .reported(version: "0.11.0", capabilities: beforeDesktopViews)).needsUpdate,
+                      "Desktop read sync needs plugin 0.12")
+        XCTAssertTrue(NotifierPluginStatus(state: .predatesCapabilities).mightSupport("session-takeover"),
+                      "A plugin older than capability reporting may still serve the route")
+        XCTAssertFalse(NotifierPluginStatus(state: .unknown).reports("watch-chats"), "not reported yet")
+        XCTAssertFalse(NotifierPluginStatus(state: .predatesCapabilities).reports("watch-chats"))
+        XCTAssertFalse(missingTakeover.reports("session-takeover"))
+        XCTAssertTrue(missingTakeover.reports("voice-tags"))
+    }
+}
+

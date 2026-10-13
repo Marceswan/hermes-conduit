@@ -1,0 +1,88 @@
+# macOS porting ledger
+
+Every upstream file the Mac target excludes, gates, or twins. Re-check this
+list after each `git merge upstream/main`.
+
+| File | Rule | Reason | Mac side |
+|---|---|---|---|
+| Conduit/CarPlay/CarPlayVoiceSceneDelegate.swift | R2 | imports CarPlay | none needed |
+| Conduit/CarPlay/CarPlayVoiceCoordinator.swift | R2 | imports CarPlay | ConduitMac/Stubs/CarPlayStubs.swift |
+| Conduit/CarPlay/CarPlayBrowseTemplates.swift | R2 | imports CarPlay | none needed |
+| Conduit/CarPlay/CarPlayVoiceTemplateFactory.swift | R2 | imports CarPlay | CarPlayVoiceControls copied to CarPlayStubs.swift |
+| Conduit/CarPlay/PhoneScenePresence.swift | R2 | UIScene foreground check | ConduitMac/Stubs/PhoneScenePresence.swift |
+| Conduit/Watch/WatchVoiceLink.swift | R2 | imports WatchConnectivity | ConduitMac/Stubs/WatchVoiceLinkStub.swift |
+| Conduit/Voice/HermesNativeCalls.swift | R3 | CallKit/PushKit class | ConduitMac/Stubs/HermesNativeCallsStub.swift |
+| Conduit/CarPlay/CarPlayVoiceArtwork.swift | R2 | UIGraphicsImageRenderer drawing, used only by the excluded CarPlay files | none needed |
+| Conduit/Services/DashboardTicketBridge.swift | R3 | `DashboardTicketBridgeView` is a UIViewRepresentable | ConduitMac/WebViews/WebViewTwins.swift |
+| Conduit/Services/NativeOAuth.swift | R3 | `SafariAuthenticationView` presents SFSafariViewController (UIViewControllerRepresentable); also gates `import SafariServices` | ConduitMac/Views/SafariAuthenticationView.swift (opens the default browser via UIApplication.open) |
+| Shared/NotificationE2E.swift | R4 | `kSecAttrAccessGroup` for the notification app group; no shared app group on Mac | line omitted on Mac |
+| Conduit/Theme.swift | R4 | four `#available(iOS 26.0, *)` glass branches (GlassEffectContainer, glassEffect, glassProminent) need `macOS 26.0` named, else Mac 14 fails to compile | `macOS 26.0` added to the availability list; the pre-26 fallback runs on Mac 14 to 25 |
+| Conduit/Intents/StartVoiceConversationIntent.swift | R4 | `supportedModes: IntentModes` is macOS 26 only | `macOS 26.0` added to `@available` |
+| Conduit/Intents/AskHermesAboutScreenIntent.swift | R4 | same as StartVoiceConversationIntent | `macOS 26.0` added to `@available` |
+| Conduit/Views/Components/SelectableTextView.swift | R2 | UITextView-backed UIViewRepresentable | ConduitMac/Chat/SelectableTextView.swift (real: NSTextView NSViewRepresentable; `selectionCoordinator`/`selectionSegment` accepted and ignored; link clicks go through `Coordinator.textView(_:clickedOnLink:at:)` -> `UIApplication.shared.open` allowlist, R11). `bridge(_:defaultFont:defaultColor:linkColor:)` copied from upstream; keep in sync. `UIFont.withTraits` adapted for NSFontDescriptor (non-optional `withSymbolicTraits`); keep in sync |
+| Conduit/Views/Components/ComposerPasteTextView.swift | R2 | UITextView paste override | ConduitMac/Chat/ComposerPasteTextView.swift (NSTextView composer: Return sends, Shift-Return newline, IME-safe, image paste and file drop produce `PastedImage`). Upstream also has `minimumHeight(for:)`/`maximumHeight(for:)` taking a UITraitCollection; no non-test caller, not twinned |
+| Conduit/Views/Components/MarkdownSelectionHandles.swift | R2 | iOS cross-block selection handles (UIView) | ConduitMac/Chat/MarkdownSelectionHandles.swift (no-op overlay, locator, chrome root) |
+| Conduit/Views/Components/ImagePicker.swift | R2 | UIImagePickerController | ConduitMac/Views/ImagePicker.swift (NSOpenPanel) |
+| Conduit/Views/Components/CameraCapture.swift | R2 | UIImagePickerController camera | ConduitMac/Views/CameraCapture.swift (`isAvailable == false`; camera not ported) |
+| Conduit/Views/ChatScrollSurfaceLocator.swift | R2 | finds the UIScrollView | ConduitMac/Chat/ChatScrollSurfaceLocator.swift (finds the chat NSScrollView and adapts it to `ChatScrollSurface` via `NSScrollViewChatSurface`; stays detached and falls back to ScrollViewProxy if none is found) |
+| Conduit/Views/SelectionFixtureView.swift | R2 | DEBUG-only iOS selection fixture (UIView.setAnimationsEnabled); only ConduitApp.swift uses it | none needed |
+| Conduit/Views/LiquidOrb/LiquidOrbView.swift | R3 | file also declares LiquidOrbPipeline, LiquidOrbState, LiquidOrbRenderer, DevicePowerState, so it stays compiled; only `struct LiquidOrbView` (UIViewRepresentable over MTKView) is gated | ConduitMac/Views/LiquidOrbViewTwin.swift (static placeholder, Plan 3 replaces it). Named `...Twin` because two files with one name in one target make Xcode drop one |
+| Conduit/Views/RootView.swift | R3 | `EdgePanGesture` (UIScreenEdgePanGestureRecognizer) | ConduitMac/Views/EdgePanGesture.swift (no-op) |
+| Conduit/Views/LoginView.swift | R3 | `AuthWebView` and its Coordinator (WKWebView UIViewRepresentable) | ConduitMac/WebViews/WebViewTwins.swift (real twin; `makeNSView`/`dismantleNSView` renames only, no WebKit API changes) |
+| Conduit/Views/Components/MarkdownText.swift | R3 | `MarkdownSelectionHighlightOverlay` + `MarkdownSelectionHighlightView` (UIView), `RemoteImageWebView` (WKWebView). `RemoteImageHTML` stays (private, unused on Mac) | ConduitMac/Views/MarkdownSelectionHighlightOverlay.swift, ConduitMac/WebViews/WebViewTwins.swift (real `RemoteImageWebView` twin; private `RemoteImageHTML` copied as `MacRemoteImageHTML`; was `private`, twin is internal) |
+| Conduit/Views/Components/MarkupBlock.swift | R3 | `MarkupWebView`, `SafeMarkupWebView` (WKWebView) | ConduitMac/WebViews/WebViewTwins.swift (real twins; `MarkupWebView` hit-testing off via `PassthroughWebView` since Mac has no `isUserInteractionEnabled`; file-private `MarkupMessageProxy` copied as `MacMarkupMessageProxy`). `SafeMarkupWebView` was `private`; the twin is internal |
+| Conduit/Views/Components/MarkdownSelectionCoordinator.swift | R4 (9 regions, `#else` stubs where platform-neutral code calls in) | members that hold or take UITextView/UIWindow/UIScrollView: `SegmentRecord.textView`, register/unregister, `text(for:)`, `copiedAttributedText`, `textLength`, `isSegmentRegistered`, scroll position + `caretRect`, `endSelection` first-responder block, `highlightRects`, and the hit-testing/range block (`endpoint(at:)` ... `selectionRects`) | none: selection is native on Mac. Mac `SegmentRecord.init` takes `Never?` so `replaceSegments` is unchanged. A Mac twin that wants the coordinator must add its own registration |
+| Conduit/Views/Components/MediaPreviewPresenter.swift | R4 (3 regions) | QLPreviewController session, `show`/`share`/`topViewController` (UIViewController, UIActivityViewController, connectedScenes), `PreviewItem` | ConduitMac/Views/MediaPreviewPresenterMac.swift (placeholder: quarantines the staged file via FileQuarantine, then reveals it in Finder; placeholder; QLPreviewPanel preview is backlog) |
+| Conduit/Views/SidebarView.swift | R4 | `EditMode` is unavailable on macOS (`@State editMode` and `.environment(\.editMode, ...)`) | List reorders by drag without it |
+| Conduit/Views/Components/ComposerBar.swift | R4-widen | two `#available(iOS 26.0, *)` (GlassEffectContainer, glassEffectID) need `macOS 26.0` named | `macOS 26.0` added to the availability list (R8) |
+| Conduit/ConduitApp.swift | R2 (excluded) | iOS `@main`, UIApplicationDelegate, PushKit/CarPlay/Watch wiring | ConduitMac/App/ConduitMacApp.swift. Ported `rootContent` block carries `// Ported from ConduitApp.swift; keep in sync`. Ported: locale, language `onChange` (minus two skips below), colour scheme, tint, `openURL` (via `MacOpenURLPolicy`, R11: system open only when `UIApplication.allowsExternalOpen`, else discarded), `handlesExternalEvents`, `onOpenURL` + external-link task, Siri profile shortcuts refresh, voice-intent route/deadline tasks, parked screen-question task |
+| ConduitApp.swift modifier: `.task { PushNotificationService.shared.refresh() }` | skipped | remote push registration | none (Plan 2) |
+| ConduitApp.swift modifier: `.task(id: notificationRouteKey)` and `@ObservedObject notifications` | skipped | reads `PushNotificationService.pendingTarget`, Hermes native calls | none (Plan 2) |
+| ConduitApp.swift modifier: `appState.publishWidgetLanguage()` in language `onChange` | skipped | widgets | none |
+| ConduitApp.swift modifier: `HermesCallNotifications.registerCategory()` in language `onChange` | skipped | UNNotification call category, tied to push/calls | none |
+| ConduitApp.swift modifier: `.modifier(WidgetLaunchUITestFixture.modifier(...))` (DEBUG) | skipped | widgets | none |
+| ConduitApp.swift: DEBUG `SelectionFixtureView` launch branch | skipped | iOS-only fixture, excluded file | none |
+| ConduitApp.swift: `ConduitAppDelegate` | R2 | UIApplicationDelegate, UNUserNotificationCenter, WatchVoiceLink, PushKit | ConduitMac/App/ConduitMacAppDelegate.swift (attachment sweep only; no-quit on last window close; Dock reopen) |
+| Conduit/Views/AuxiliaryViews.swift `SettingsView` Cmd-, Settings scene | deferred | SettingsView needs RootView-owned closures (`RootView.swift:189`); reachable from sidebar | none |
+| Menu: Switch Dashboard (Cmd-Shift-D) | deferred | no single AppState entry point; saved-dashboards UI is RootView state, reachable from sidebar | none |
+| Menu: Find in Chat (Cmd-F) | deferred | each message is its own NSTextView; transcript-wide find needs a design. `SelectableTextView` `usesFindBar = true` gives per-message find | none |
+| Menu: Push-to-Talk (Option-Space) | deferred | Plan 3 | none |
+| Conduit/Resources/Assets.xcassets AppIcon | n/a | upstream catalog is iOS-platform single-size; Mac needs `idiom: mac` slots (Xcode does not generate macOS sizes from a single `macos` 1024 entry: "unassigned child" warning) | ConduitMac/Resources/Assets.xcassets/AppIcon.appiconset (ten sips-resized PNGs from upstream icon.png). `ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon` in project.yml. Built Conduit.app has AppIcon.icns. Upstream catalog is still compiled into the Mac target (pre-existing "unassigned child" warning from it) |
+| ConduitMac/Views/SafariAuthenticationView.swift | R3 twin | verified against brief Step 4 (equivalent; opens via `UIApplication.shared.open`, R7). Added: open refused/failed calls `onError` with `BrowserLaunchError.couldNotOpen` | tested in AppShellTests |
+| a11y labels: 4 sites in 3 files (ChatView x2 "Send answer", KanbanViews x1 "Clear search", ComposerBar x1 "Add attachment") | cross-platform `.accessibilityLabel`, tagged `// MAC: a11y` | audit test `AccessibilityLabelAuditTests` (scope-aware): 6 flagged, 4 labelled in 3 files, 2 content-keyed allowlist entries (`docs/macos/a11y-audit-allowlist.txt`). New keys have no `Localizable.xcstrings` entries (not hand-edited); other locales fall back to English | `ConduitMacTests/AccessibilityLabelAuditTests.swift` |
+| a11y audit maintenance | n/a | After each upstream merge, re-run `AccessibilityLabelAuditTests`. Allowlist entries are content-keyed (`path \| source line text`), so they survive line shifts; stale entries fail the test. Also: 4th label added, "Add attachment" on the ComposerBar attachment Menu | `docs/macos/a11y-audit-allowlist.txt` |
+| Conduit/Views/Components/ConduitSheetHeader.swift | R4-style one-line add (R21) | `.keyboardShortcut(.cancelAction)` on the close Button makes Esc close sheets natively on Mac; cross-platform, no `#if`, no-op on iOS without a hardware keyboard. Primary path; `SheetEscape` monitor is the fallback | tested in SheetEscapeTests (hosted header, close runs once) |
+| Conduit/Views/LoginView.swift | R4 | `proxy.scrollTo(field, anchor: .center)` in the `.onChange(of: focusedField)` handler wrapped in `#if os(iOS)`; no soft keyboard on Mac, and scrolling to focus clipped the header under the title bar (auto-focused username field) | verified by build and test suite; launch screenshot UNVERIFIED (see SMOKE_CHECKLIST) |
+| Conduit/Resources AppIcon (Mac) | n/a | Mac icon regenerated by `scripts/make-mac-icon.swift`: 824pt rounded rect (radius 185) on 1024 transparent canvas, soft shadow | `ConduitMac/Resources/Assets.xcassets/AppIcon.appiconset` |
+| ConduitMac/Accessibility/SheetEscape.swift | n/a (R22) | enhanced-UI selector helpers removed; uses shared `AccessibilityTreeBoost.withTree` so selector strings live in one place; shared `isOn` no longer uses KVC (raises on SwiftUI.AppKitApplication) | SheetEscapeTests |
+
+## Sync routine
+
+1. **Fetch and preview.** Run `git fetch upstream`. Before merging:
+   - Save `git diff --name-status HEAD...upstream/main` (three dots: upstream's changes since the merge-base).
+   - Review it for D (deleted) and R (renamed) entries on any file named in this ledger or in the ConduitMac excludes in `project.yml`. A rename leaves a dead exclude and a stale twin, so update `project.yml` and the twin.
+2. **Diff the twin sources.** For every ledger row that names an upstream file, whatever its rule, run `git diff HEAD...upstream/main -- <path>` and port relevant changes to the Mac side. Do not use `ORIG_HEAD`; it is unreliable after no-op merges, resets and rebases.
+   - Skipped and deferred rows: diff the named upstream file (e.g. `Conduit/ConduitApp.swift`, `Conduit/Views/AuxiliaryViews.swift`) and re-evaluate whether the skip/deferral still holds or a new modifier/API needs porting.
+   Also:
+   - Run `grep -rn "keep in sync" ConduitMac`. For each marker, diff the named upstream source. These cover `SelectableTextView` `bridge`/`withTraits`, the `ConduitMacApp` rootContent port, and `WebViewTwins`.
+   - `WebViewTwins.swift` holds renamed copies of upstream private types. `MacMarkupMessageProxy` copies `MarkupBlock.swift` `MarkupMessageProxy`, and `MacRemoteImageHTML` copies `MarkdownText.swift` `RemoteImageHTML`. Diff those whole files.
+3. **Check compile-clean drift.**
+   - In the upstream diff, grep for APIs shadowed by `ConduitMac/Compat/App/SwiftUIiOSModifiers.swift` (see `docs/macos/DECISIONS.md` D4): `fullScreenCover` becomes `sheet`, `keyboardType` becomes a no-op, and `.toolbar(.hidden, for: .navigationBar)` hides the window toolbar. Check that new uses behave acceptably on Mac.
+   - Check upstream additions inside `#if os(iOS)` or `// MAC:` gated regions. Mac silently drops them, so review each one.
+4. **Merge.** Run `git merge upstream/main`. Conflicts should only be at `// MAC:` lines, in ledger files, or in `project.yml`. Commit the merge.
+5. **Build and test.**
+   - Run `xcodegen generate`, then `xcodebuild test -scheme ConduitMac -destination 'platform=macOS'`. It must show `** TEST SUCCEEDED **`.
+   - Run `xcodebuild build -scheme Conduit -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO`. It must show `** BUILD SUCCEEDED **`.
+   - On a new Mac compile error, apply the porting rules in order:
+     - R1: add the missing member to a shim. Shims expose only members upstream uses.
+     - R2: exclude the file and twin it under ConduitMac.
+     - R3: gate one type with `#if os(iOS)` and add a Mac twin.
+     - R4: gate one statement.
+     - Tag every upstream edit `// MAC:` and add a ledger row.
+   - See `docs/macos/DECISIONS.md` D1-D4. A D3 failure looks like `no such module '_<Framework>_UIKit'` after upstream imports a framework with a cross-import overlay. Fix it by adding an empty overlay framework target such as `AppIntentsUIKitOverlay`, and keep `SWIFT_ENABLE_EXPLICIT_MODULES: NO`.
+   - If `AccessibilityLabelAuditTests` fails:
+     - For a new unlabeled icon-only button, add a cross-platform `.accessibilityLabel(...)` tagged `// MAC: a11y` (preferred), and update the a11y labels ledger row.
+     - Add an allowlist entry in `docs/macos/a11y-audit-allowlist.txt` ONLY if the image is decorative or the label is set elsewhere.
+     - Delete stale allowlist entries; the test fails on them.
+6. **Smoke and push.** Run `docs/macos/SMOKE_CHECKLIST.md`, then run `git push origin macos`.
+7. **Release (only when cutting one).** Run `CONDUIT_NOTARY_PROFILE=conduit-notary scripts/mac-release.sh`. It needs the notarytool keychain profile.

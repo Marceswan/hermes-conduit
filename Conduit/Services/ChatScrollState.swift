@@ -1,0 +1,644 @@
+import Foundation
+
+struct ChatScrollAnchorMetadata: Codable, Equatable {
+    let fingerprint: String
+    let duplicateCount: Int
+}
+
+struct ChatMessageScrollTarget: Identifiable, Equatable {
+    let message: ChatMessage
+    let semanticID: String
+    let restorationMetadata: ChatScrollAnchorMetadata
+    /// Transcript-order position, maintained by the cache so views can
+    /// iterate the targets collection directly (no Array(enumerated()) copy
+    /// per body evaluation) and still report stable row order to the
+    /// viewport geometry.
+    let order: Int
+
+    /// SwiftUI keeps the existing source-row identity for rendering and
+    /// controls. Only scroll targeting uses the source-independent ID.
+    var id: String { message.id }
+}
+
+enum ChatMessageScrollTargetCacheUpdate: Equatable {
+    case unchanged
+    case renderingChanged
+    case semanticsChanged
+}
+
+/// Canonical persistence-key resolution for viewport snapshots.
+enum ChatViewportPersistenceSupport {
+    static func persistenceSessionKey(
+        currentKey: ChatScrollSessionKey?,
+        identity: ChatScrollSessionIdentity
+    ) -> ChatScrollSessionKey? {
+        guard let currentKey else { return nil }
+        if identity.areEquivalent(currentKey, identity.canonicalSessionKey) {
+            return identity.canonicalSessionKey
+        }
+        return currentKey
+    }
+}
+
+struct ChatMessageScrollTargetCache: Equatable {
+    private(set) var targets: [ChatMessageScrollTarget] = []
+    private(set) var renderingRevision: UInt64 = 0
+    private var fingerprints: [String] = []
+
+    @discardableResult
+    mutating func update(for messages: [ChatMessage]) -> ChatMessageScrollTargetCacheUpdate {
+        // Longest common prefix of equal messages: plain value compares,
+        // no hashing, no intermediate allocations.
+        var commonPrefix = 0
+        while commonPrefix < targets.count,
+              commonPrefix < messages.count,
+              targets[commonPrefix].message == messages[commonPrefix] {
+            commonPrefix += 1
+        }
+        TranscriptPerf.scrollTargetCommonPrefixComparisons += commonPrefix
+
+        // Identical transcripts: no work at all.
+        if commonPrefix == targets.count, commonPrefix == messages.count {
+            TranscriptPerf.lastFingerprintedMessageCount = 0
+            TranscriptPerf.lastFingerprintedByteCount = 0
+            return .unchanged
+        }
+
+        // Hash only the changed suffix.
+        let suffixStart = commonPrefix
+        let suffixMessages = Array(messages[suffixStart...])
+        let suffixFingerprints = ChatMessageScrollTargets.fingerprints(for: suffixMessages)
+        TranscriptPerf.lastFingerprintedMessageCount = suffixMessages.count
+        TranscriptPerf.lastFingerprintedByteCount = Self.fingerprintedBytes(of: suffixMessages)
+
+        // Same length and identical suffix fingerprints: a rendering-only
+        // replacement (equal semantics, different message objects). Swap the
+        // message values in place; semantic IDs, restoration metadata, and
+        // transcript order are untouched, so duplicate semantics cannot
+        // shift.
+        if targets.count == messages.count,
+           suffixFingerprints.elementsEqual(fingerprints[suffixStart...]) {
+            let replacement = zip(suffixMessages, targets[suffixStart...]).map { message, target in
+                ChatMessageScrollTarget(
+                    message: message,
+                    semanticID: target.semanticID,
+                    restorationMetadata: target.restorationMetadata,
+                    order: target.order
+                )
+            }
+            targets.replaceSubrange(suffixStart..., with: replacement)
+            renderingRevision &+= 1
+            return .renderingChanged
+        }
+
+        // Incremental semantic rebuild of the suffix is safe only when
+        // duplicate-count semantics are provably local to the suffix: no
+        // fingerprint may cross the prefix/suffix boundary in either
+        // direction (old or new), and the suffix itself must be
+        // duplicate-free. Otherwise fall back to a full rebuild — correctness
+        // over exotic incremental cases.
+        TranscriptPerf.note(.scrollTargetPrefixSetBuild)
+        let prefixFingerprints = Set(fingerprints[..<suffixStart])
+        let oldSuffixFingerprints = fingerprints[suffixStart...]
+        let canRebuildSuffixIncrementally =
+            suffixFingerprints.allSatisfy { !prefixFingerprints.contains($0) }
+            && oldSuffixFingerprints.allSatisfy { !prefixFingerprints.contains($0) }
+            && Set(suffixFingerprints).count == suffixFingerprints.count
+
+        if canRebuildSuffixIncrementally {
+            let suffixTargets = ChatMessageScrollTargets.make(
+                for: suffixMessages,
+                fingerprints: suffixFingerprints,
+                baseOrder: suffixStart
+            )
+            fingerprints.replaceSubrange(suffixStart..., with: suffixFingerprints)
+            targets.replaceSubrange(suffixStart..., with: suffixTargets)
+            renderingRevision &+= 1
+            return .semanticsChanged
+        }
+
+        // Full rebuild fallback: mutation could affect duplicate-count
+        // semantics anywhere in the transcript.
+        let updatedFingerprints = commonPrefix == 0
+            ? suffixFingerprints
+            : ChatMessageScrollTargets.fingerprints(for: messages)
+        TranscriptPerf.lastFingerprintedMessageCount = messages.count
+        TranscriptPerf.lastFingerprintedByteCount = Self.fingerprintedBytes(of: messages)
+        fingerprints = updatedFingerprints
+        targets = ChatMessageScrollTargets.make(
+            for: messages,
+            fingerprints: updatedFingerprints
+        )
+        renderingRevision &+= 1
+        return .semanticsChanged
+    }
+
+    private static func fingerprintedBytes(of messages: [ChatMessage]) -> Int {
+        messages.reduce(0) { $0 + $1.content.utf8.count + ($1.code?.utf8.count ?? 0) }
+    }
+}
+
+struct ChatRenderedScrollScope: Hashable {
+    let sessionKey: ChatScrollSessionKey
+    let cacheRevision: UInt64
+    let restorationGeneration: UInt64?
+    let transcriptRevision: UInt64
+    let viewportTransitionGeneration: UInt64
+}
+
+struct ChatRenderedScrollContent: Equatable {
+    let scope: ChatRenderedScrollScope
+}
+
+enum ChatMessageScrollTargets {
+    static func make(for messages: [ChatMessage]) -> [ChatMessageScrollTarget] {
+        make(for: messages, fingerprints: fingerprints(for: messages))
+    }
+
+    fileprivate static func fingerprints(for messages: [ChatMessage]) -> [String] {
+        messages.map(fingerprint)
+    }
+
+    static func make(
+        for messages: [ChatMessage],
+        fingerprints: [String],
+        baseOrder: Int = 0
+    ) -> [ChatMessageScrollTarget] {
+        let duplicateCounts = fingerprints.reduce(into: [String: Int]()) { counts, fingerprint in
+            counts[fingerprint, default: 0] += 1
+        }
+        var occurrences: [String: Int] = [:]
+        return zip(messages, fingerprints).enumerated().map { offset, pair in
+            let (message, fingerprint) = pair
+            let occurrence = occurrences[fingerprint, default: 0]
+            occurrences[fingerprint] = occurrence + 1
+            return ChatMessageScrollTarget(
+                message: message,
+                semanticID: "chat-message-\(fingerprint)-\(occurrence)",
+                restorationMetadata: ChatScrollAnchorMetadata(
+                    fingerprint: fingerprint,
+                    duplicateCount: duplicateCounts[fingerprint, default: 0]
+                ),
+                order: baseOrder + offset
+            )
+        }
+    }
+
+    private static func fingerprint(for message: ChatMessage) -> String {
+        var fingerprint = DeterministicChatFingerprint()
+        fingerprint.append("chat-message-v1")
+        fingerprint.append(message.role.rawValue)
+        fingerprint.append(message.content)
+        fingerprint.append(message.code)
+
+        fingerprint.append(message.tool?.name)
+
+        // Row identity only: statuses and answers mutate while the user works
+        // through a batch and must not re-anchor the scroll position.
+        fingerprint.append(message.clarify?.requestId)
+        fingerprint.append(message.clarify?.questions.count)
+        message.clarify?.questions.forEach { question in
+            fingerprint.append(question.id)
+            fingerprint.append(question.question)
+            fingerprint.append(question.choices.count)
+            question.choices.forEach { choice in
+                fingerprint.append(choice.label)
+                fingerprint.append(choice.value)
+            }
+        }
+
+        fingerprint.append(message.approval?.command)
+        fingerprint.append(message.approval?.description)
+        fingerprint.append(message.approval?.choices?.count)
+        message.approval?.choices?.forEach { fingerprint.append($0) }
+        fingerprint.append(message.approval?.allowPermanent)
+        fingerprint.append(message.approval?.smartDenied)
+
+        fingerprint.append(message.review?.summary)
+        fingerprint.append(message.review?.details?.count)
+        message.review?.details?.forEach { fingerprint.append($0) }
+
+        fingerprint.append(message.attachments?.count)
+        message.attachments?.forEach { attachment in
+            // Picker/cache IDs and local/gateway URIs change across transcript
+            // projections. These presentation fields remain source-stable.
+            fingerprint.append(attachment.kind.rawValue)
+            fingerprint.append(attachment.name)
+            fingerprint.append(attachment.mimeType)
+        }
+
+        return fingerprint.value
+    }
+}
+
+/// Canonical identity normalization shared by every session-keyed store:
+/// profiles trim and case-fold, session ids trim. Internal so the resume
+/// store, identity index, and AppState speak the same normalized language.
+enum ChatScrollIdentityNormalization {
+    static func profile(_ profile: String?) -> String? {
+        guard let value = profile?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return value.lowercased()
+    }
+
+    static func sessionID(_ sessionID: String?) -> String? {
+        guard let value = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return value
+    }
+}
+
+struct ChatScrollSessionKey: Codable, Hashable {
+    let profile: String
+    let sessionID: String
+
+    init(profile: String, sessionID: String) {
+        self.profile = ChatScrollIdentityNormalization.profile(profile) ?? ""
+        self.sessionID = ChatScrollIdentityNormalization.sessionID(sessionID) ?? ""
+    }
+
+    var isValid: Bool {
+        !profile.isEmpty && !sessionID.isEmpty
+    }
+}
+
+enum ChatSessionPersistenceIdentity {
+    static func canonicalID(
+        for sessionID: String?,
+        identity: ChatScrollSessionIdentity,
+        catalog: [SessionSummary],
+        activeProfile: String? = nil
+    ) -> String? {
+        guard let sessionID,
+              !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+
+        // Scope the catalog lookup to the active profile when available,
+        // matching ChatResumeSessionResolver.target's profile filter.
+        let scoped = activeProfile.map { profile in
+            catalog.filter { entry in
+                guard let entryProfile = entry.profile else { return true }
+                return entryProfile.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .caseInsensitiveCompare(profile.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
+            }
+        } ?? catalog
+
+        if let catalogSession = scoped.first(where: {
+            $0.id == sessionID || $0.alternateIds.contains(sessionID)
+        }) {
+            return catalogSession.id
+        }
+
+        if identity.contains(sessionID) {
+            return identity.canonicalSessionID ?? sessionID
+        }
+        return sessionID
+    }
+}
+
+struct ChatScrollSessionCatalogIdentity: Equatable {
+    let profile: String
+    let canonicalSessionID: String
+    let alternateSessionIDs: Set<String>
+
+    init(
+        profile: String,
+        canonicalSessionID: String,
+        alternateSessionIDs: Set<String>
+    ) {
+        self.profile = ChatScrollIdentityNormalization.profile(profile) ?? ""
+        self.canonicalSessionID = ChatScrollIdentityNormalization.sessionID(canonicalSessionID) ?? ""
+        self.alternateSessionIDs = Set(
+            alternateSessionIDs.compactMap(ChatScrollIdentityNormalization.sessionID)
+        )
+    }
+
+    fileprivate var identifiers: Set<String> {
+        guard !canonicalSessionID.isEmpty else { return [] }
+        var result = alternateSessionIDs
+        result.insert(canonicalSessionID)
+        return result
+    }
+
+    fileprivate var isValid: Bool {
+        !canonicalSessionID.isEmpty
+    }
+}
+
+struct ChatScrollSessionIdentity: Equatable {
+    let profile: String?
+    let canonicalSessionID: String?
+    let equivalentSessionIDs: Set<String>
+    let isReconciling: Bool
+    let settledRevision: UInt64
+
+    static let none = ChatScrollSessionIdentity(
+        profile: nil,
+        canonicalSessionID: nil,
+        equivalentSessionIDs: [],
+        isReconciling: false,
+        settledRevision: 0
+    )
+
+    init(
+        profile: String?,
+        canonicalSessionID: String?,
+        equivalentSessionIDs: Set<String>,
+        isReconciling: Bool,
+        settledRevision: UInt64
+    ) {
+        let normalizedProfile = ChatScrollIdentityNormalization.profile(profile)
+        let canonical = ChatScrollIdentityNormalization.sessionID(canonicalSessionID)
+        var equivalents = Set(
+            equivalentSessionIDs.compactMap(ChatScrollIdentityNormalization.sessionID)
+        )
+        if let canonical { equivalents.insert(canonical) }
+        self.profile = normalizedProfile
+        self.canonicalSessionID = canonical
+        self.equivalentSessionIDs = equivalents
+        self.isReconciling = isReconciling
+        self.settledRevision = settledRevision
+    }
+
+    var canonicalSessionKey: ChatScrollSessionKey? {
+        key(for: canonicalSessionID)
+    }
+
+    func key(for sessionID: String?) -> ChatScrollSessionKey? {
+        guard let profile,
+              let sessionID = ChatScrollIdentityNormalization.sessionID(sessionID) else {
+            return nil
+        }
+        let key = ChatScrollSessionKey(profile: profile, sessionID: sessionID)
+        return key.isValid ? key : nil
+    }
+
+    func contains(_ sessionID: String?) -> Bool {
+        guard let sessionID = ChatScrollIdentityNormalization.sessionID(sessionID) else {
+            return false
+        }
+        return equivalentSessionIDs.contains(sessionID)
+    }
+
+    func contains(_ key: ChatScrollSessionKey?) -> Bool {
+        guard let key, key.isValid, key.profile == profile else { return false }
+        return equivalentSessionIDs.contains(key.sessionID)
+    }
+
+    func areEquivalent(_ lhs: String?, _ rhs: String?) -> Bool {
+        guard let lhs = ChatScrollIdentityNormalization.sessionID(lhs),
+              let rhs = ChatScrollIdentityNormalization.sessionID(rhs) else {
+            return false
+        }
+        if lhs == rhs { return true }
+        return equivalentSessionIDs.contains(lhs) && equivalentSessionIDs.contains(rhs)
+    }
+
+    func areEquivalent(_ lhs: ChatScrollSessionKey?, _ rhs: ChatScrollSessionKey?) -> Bool {
+        guard let lhs, let rhs,
+              lhs.isValid, rhs.isValid,
+              lhs.profile == profile,
+              rhs.profile == profile else {
+            return false
+        }
+        if lhs == rhs { return true }
+        return equivalentSessionIDs.contains(lhs.sessionID)
+            && equivalentSessionIDs.contains(rhs.sessionID)
+    }
+}
+
+enum ChatScrollSessionIdentityResolver {
+    static func resolve(
+        profile: String,
+        activeSessionID: String?,
+        catalog: [ChatScrollSessionCatalogIdentity],
+        requestedSessionID: String? = nil,
+        resolvedSessionID: String? = nil,
+        resolvedDurableSessionID: String? = nil,
+        previousIdentity current: ChatScrollSessionIdentity,
+        isReconciling: Bool,
+        advanceSettledRevision: Bool = false
+    ) -> ChatScrollSessionIdentity {
+        let normalizedProfile = ChatScrollIdentityNormalization.profile(profile)
+        let previous = current.profile == normalizedProfile
+            ? current
+            : ChatScrollSessionIdentity(
+                profile: normalizedProfile,
+                canonicalSessionID: nil,
+                equivalentSessionIDs: [],
+                isReconciling: current.isReconciling,
+                settledRevision: current.settledRevision
+            )
+        let profileCatalog = catalog.filter {
+            $0.isValid && ($0.profile.isEmpty || $0.profile == normalizedProfile)
+        }
+        func matchingSession(for ids: Set<String>) -> ChatScrollSessionCatalogIdentity? {
+            guard !ids.isEmpty else { return nil }
+            return profileCatalog.first { !$0.identifiers.isDisjoint(with: ids) }
+        }
+
+        let activeID = ChatScrollIdentityNormalization.sessionID(activeSessionID)
+        let reconciliationIDs = Set(
+            [requestedSessionID, resolvedSessionID]
+                .compactMap(ChatScrollIdentityNormalization.sessionID)
+        )
+        let reconciliationSession = matchingSession(for: reconciliationIDs)
+        let reconciliationCatalogIDs = reconciliationSession?.identifiers ?? []
+        let reconciliationContinuesPrevious = reconciliationIDs.isEmpty
+            || reconciliationIDs.contains(where: previous.contains)
+            || !reconciliationCatalogIDs.isDisjoint(with: previous.equivalentSessionIDs)
+            || activeID.map(reconciliationCatalogIDs.contains) == true
+
+        // An explicit open moves the active id to the NEW conversation while
+        // the reconciliation boundary still names the one being left (the
+        // boundary is taken before the new id lands). That active id belongs
+        // to neither the previous identity nor the reconciliation's
+        // conversation: it is navigation, so the identity starts over from it,
+        // exactly as it does with no reconciliation in flight. Carrying it as
+        // a continuation merged the two conversations' ids and, for a chat
+        // with no catalog row (a Bot Chat), kept the LEFT conversation's id as
+        // canonical — a later preserve-current sync then resumed that other
+        // chat under the open one's header (#442).
+        // Reachable only before the new conversation's resume lands: the
+        // reconcile publishes `resolvedSessionId` (part of `reconciliationIDs`)
+        // before it moves the active id, so a rotated runtime never takes this
+        // branch, and any durable id resolved here belongs to the chat being
+        // left, which is why it is not carried over.
+        if let activeID, !reconciliationIDs.isEmpty,
+           !reconciliationIDs.contains(activeID),
+           !reconciliationCatalogIDs.contains(activeID),
+           !previous.contains(activeID) {
+            let activeSession = matchingSession(for: [activeID])
+            let activeSessionIDs = activeSession?.identifiers ?? []
+            if activeSessionIDs.isDisjoint(with: previous.equivalentSessionIDs) {
+                return ChatScrollSessionIdentity(
+                    profile: normalizedProfile,
+                    canonicalSessionID: activeSession?.canonicalSessionID ?? activeID,
+                    equivalentSessionIDs: activeSessionIDs.union([activeID]),
+                    isReconciling: isReconciling,
+                    settledRevision: advanceSettledRevision
+                        ? current.settledRevision &+ 1
+                        : current.settledRevision
+                )
+            }
+        }
+
+        var candidates = reconciliationIDs
+        if reconciliationIDs.isEmpty || reconciliationContinuesPrevious,
+           let activeID {
+            candidates.insert(activeID)
+        }
+        let matchedSession = reconciliationSession ?? matchingSession(for: candidates)
+        let continuesPreviousIdentity = candidates.contains(where: previous.contains)
+
+        let canonicalSessionID: String?
+        if let matchedSession {
+            canonicalSessionID = matchedSession.canonicalSessionID
+        } else if let resolvedDurable = ChatScrollIdentityNormalization.sessionID(resolvedDurableSessionID) {
+            // An admitted resume explicitly established the conversation's
+            // durable identity (a runtime-only conversation whose stored key
+            // was revealed). The catalog had no row to resolve through, so
+            // the positive claim wins over the raw runtime ids.
+            canonicalSessionID = resolvedDurable
+        } else if continuesPreviousIdentity {
+            canonicalSessionID = previous.canonicalSessionID
+        } else if !reconciliationIDs.isEmpty {
+            canonicalSessionID = ChatScrollIdentityNormalization.sessionID(requestedSessionID)
+                ?? ChatScrollIdentityNormalization.sessionID(resolvedSessionID)
+                ?? activeID
+        } else {
+            canonicalSessionID = activeID
+        }
+
+        var equivalentSessionIDs = candidates
+        if let matchedSession {
+            equivalentSessionIDs.formUnion(matchedSession.identifiers)
+        }
+        if let resolvedDurable = ChatScrollIdentityNormalization.sessionID(resolvedDurableSessionID) {
+            equivalentSessionIDs.insert(resolvedDurable)
+        }
+        if continuesPreviousIdentity {
+            equivalentSessionIDs.formUnion(previous.equivalentSessionIDs)
+        }
+
+        return ChatScrollSessionIdentity(
+            profile: normalizedProfile,
+            canonicalSessionID: canonicalSessionID,
+            equivalentSessionIDs: equivalentSessionIDs,
+            isReconciling: isReconciling,
+            settledRevision: advanceSettledRevision
+                ? current.settledRevision &+ 1
+                : current.settledRevision
+        )
+    }
+}
+
+struct ChatScrollTargetAvailability: Equatable {
+    private let messageIDs: Set<String>
+    private let metadataByMessageID: [String: ChatScrollAnchorMetadata]
+    private let semanticIDBySourceMessageID: [String: String]
+
+    init(targets: [ChatMessageScrollTarget]) {
+        messageIDs = Set(targets.map(\.semanticID))
+        metadataByMessageID = Dictionary(
+            targets.map { ($0.semanticID, $0.restorationMetadata) },
+            uniquingKeysWith: { existing, _ in existing }
+        )
+        semanticIDBySourceMessageID = Dictionary(
+            targets.map { ($0.id, $0.semanticID) },
+            uniquingKeysWith: { existing, _ in existing }
+        )
+    }
+
+    func contains(_ messageID: String) -> Bool {
+        messageIDs.contains(messageID)
+    }
+
+    func metadata(for messageID: String) -> ChatScrollAnchorMetadata? {
+        metadataByMessageID[messageID]
+    }
+
+    func semanticID(forSourceMessageID sourceMessageID: String) -> String? {
+        semanticIDBySourceMessageID[sourceMessageID]
+    }
+}
+
+struct ChatScrollSnapshot: Codable, Equatable {
+    let anchorMessageID: String?
+    let followsLatest: Bool
+    let anchorMetadata: ChatScrollAnchorMetadata?
+    let anchorSourceMessageID: String?
+
+    init(
+        anchorMessageID: String?,
+        followsLatest: Bool,
+        anchorMetadata: ChatScrollAnchorMetadata? = nil,
+        anchorSourceMessageID: String? = nil
+    ) {
+        self.anchorMessageID = anchorMessageID
+        self.followsLatest = followsLatest
+        self.anchorMetadata = anchorMetadata
+        self.anchorSourceMessageID = anchorSourceMessageID
+    }
+
+    static let latest = ChatScrollSnapshot(anchorMessageID: nil, followsLatest: true)
+}
+
+struct ChatRenderedViewportSnapshot: Equatable {
+    let sessionKey: ChatScrollSessionKey
+    let snapshot: ChatScrollSnapshot
+
+    init?(sessionKey: ChatScrollSessionKey, snapshot: ChatScrollSnapshot) {
+        guard sessionKey.isValid else { return nil }
+        self.sessionKey = sessionKey
+        self.snapshot = snapshot
+    }
+}
+
+private struct DeterministicChatFingerprint {
+    private var first: UInt64 = 14_695_981_039_346_656_037
+    private var second: UInt64 = 7_809_847_782_465_536_322
+
+    var value: String {
+        paddedHex(first) + paddedHex(second)
+    }
+
+    mutating func append(_ value: String?) {
+        guard let value else {
+            append(byte: 0)
+            return
+        }
+        append(byte: 1)
+        append(length: value.utf8.count)
+        value.utf8.forEach { append(byte: $0) }
+    }
+
+    mutating func append(_ value: Int?) {
+        append(value.map(String.init))
+    }
+
+    mutating func append(_ value: Bool?) {
+        append(value.map { $0 ? "true" : "false" })
+    }
+
+    private mutating func append(length: Int) {
+        var length = UInt64(length)
+        for _ in 0..<MemoryLayout<UInt64>.size {
+            append(byte: UInt8(truncatingIfNeeded: length))
+            length >>= 8
+        }
+    }
+
+    private mutating func append(byte: UInt8) {
+        first ^= UInt64(byte)
+        first &*= 1_099_511_628_211
+        second ^= UInt64(byte)
+        second &*= 14_029_467_366_897_019_727
+    }
+
+    private func paddedHex(_ value: UInt64) -> String {
+        let hex = String(value, radix: 16)
+        return String(repeating: "0", count: 16 - hex.count) + hex
+    }
+}

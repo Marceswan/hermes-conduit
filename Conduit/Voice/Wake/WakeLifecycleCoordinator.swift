@@ -3,6 +3,7 @@
 //  Conduit
 //
 
+import AVFAudio
 import Foundation
 
 struct WakeLifecycleSnapshot: Equatable {
@@ -10,10 +11,64 @@ struct WakeLifecycleSnapshot: Equatable {
     var isAuthenticated: Bool
     var isGatewayConnected: Bool
     var microphonePermitted: Bool
-    var voiceState: VoiceConversationState
+    /// No voice surface of any engine (classic sheet, Gemini / GPT / Grok
+    /// Live, CarPlay), no voice launch in flight, and no other audio owner
+    /// (Read Aloud, a provider test). The listener never shares the
+    /// microphone with a conversation.
+    var isVoiceIdle: Bool
+    /// At least one usable wake phrase is bound on the current gateway.
+    var hasWakePhrases: Bool
+    /// The audio route allows listening. CarPlay does only when the user
+    /// keeps wake on there: recording through the car switches its audio to
+    /// a voice stream (other apps' music then plays from one side), so on
+    /// CarPlay the listener records from the iPhone's own microphone.
+    var isRouteSuitable: Bool = true
+    /// No other app is playing audio, or the user keeps wake listening over
+    /// it. Recording, even mixed, moves other apps' music or podcast onto a
+    /// record route: iOS can play it in mono and drop it while the route
+    /// settles, so by default wake waits until it stops.
+    var otherAudioAllowsListening: Bool = true
 
     var canArm: Bool {
-        isForegroundActive && isAuthenticated && isGatewayConnected && microphonePermitted && voiceState == .idle
+        canArmIgnoringOtherAudio && otherAudioAllowsListening
+    }
+
+    /// Everything but other apps' audio allows listening: wake is armed, or
+    /// only waiting for that audio to stop.
+    var canArmIgnoringOtherAudio: Bool {
+        isForegroundActive && isAuthenticated && isGatewayConnected && microphonePermitted && isVoiceIdle
+            && hasWakePhrases && isRouteSuitable
+    }
+
+    /// Wake would listen now if another app were not playing audio.
+    var isPausedForOtherAudio: Bool {
+        canArmIgnoringOtherAudio && !otherAudioAllowsListening
+    }
+}
+
+/// Which audio routes foreground wake listening may record on.
+enum WakeRoutePolicy {
+    /// Fails open on an empty route on purpose: with no session active the
+    /// route can read empty, and refusing there would keep wake from ever
+    /// arming. CarPlay always reports its `.carAudio` output.
+    static func isCarPlay(outputs: [VoiceAudioRoutePort]) -> Bool {
+        outputs.contains { $0.type == .carAudio }
+    }
+
+    @MainActor
+    static func currentRouteIsCarPlay() -> Bool {
+        isCarPlay(outputs: AVAudioSession.sharedInstance().currentRoute.outputs.map {
+            VoiceAudioRoutePort(type: $0.portType, name: $0.portName)
+        })
+    }
+
+    /// Whether another app is playing audio right now (music, a podcast).
+    /// Readable with Conduit's own session inactive. Short sounds count too
+    /// (a navigation prompt), so wake can pause for a moment around them.
+    /// Not main-actor isolated, so AppState's plain `() -> Bool` probe (a
+    /// test seam) can call it; AVAudioSession reads are thread-safe.
+    static func isOtherAudioPlaying() -> Bool {
+        AVAudioSession.sharedInstance().isOtherAudioPlaying
     }
 }
 
@@ -38,7 +93,7 @@ final class WakeLifecycleCoordinator {
             lastFailureReason = nil
         } catch {
             service.disarm()
-            lastFailureReason = error.localizedDescription
+            lastFailureReason = UserFacingError.message(for: error)
         }
     }
 

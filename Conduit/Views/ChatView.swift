@@ -7,177 +7,231 @@
 
 import SwiftUI
 import UIKit
+import ImageIO
+
+private struct OptionalAccessibilityHint: ViewModifier {
+    let hint: String?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let hint {
+            content.accessibilityHint(Text(verbatim: hint))
+        } else {
+            content
+        }
+    }
+}
 
 struct ChatView: View {
     @EnvironmentObject var appState: AppState
-    @State private var bottomMarkerMaxY: CGFloat?
-    @State private var scrollViewportMaxY: CGFloat?
-    @State private var followsLatest = true
-    @State private var notificationHandoffPending = false
-    @State private var notificationHandoffSessionID: String?
-    @State private var notificationHandoffHasMeasuredLayout = false
+    @State private var viewportSnapshotProviderID = UUID()
+    /// Owns the viewport: follows the latest message, holds the reader's
+    /// place while browsing, restores saved positions. It reads and sets the
+    /// transcript's UIScrollView directly (ChatScrollSurfaceLocator), so
+    /// scroll ticks never reach SwiftUI state; it publishes only when a value
+    /// the body renders from (`renderInputs`) changes.
+    @StateObject private var scrollEngine = ChatScrollEngine()
+    /// Not observable on purpose: one stable instance rows read when built
+    /// and write when tapped (see ChatRowDisclosure).
+    @State private var rowDisclosure = ChatRowDisclosure()
+    /// Carries the engine's requests to AppState and ScrollViewProxy. Holds
+    /// both weakly, so the engine never retains this view.
+    @State private var scrollEventRouter = ChatScrollEventRouter()
+    @Environment(\.scenePhase) private var scenePhase
+    /// Lifecycle-aware backfill task: cancelled when the view disappears so
+    /// a late response cannot mutate viewport state after teardown. (The
+    /// session/profile staleness of the response itself is AppState's
+    /// concern — this is view-lifetime only.)
+    @State private var backfillViewportTask: Task<Void, Never>?
+    @State private var latestAnimationTask: Task<Void, Never>?
 
-    private var bottomAnchor: String { "chat-latest-\(appState.activeSessionId ?? "new")" }
+    private var viewportInputs: ChatScrollRenderInputs { scrollEngine.renderInputs }
 
-    private var isNearBottom: Bool {
-        guard let bottomMarkerMaxY, let scrollViewportMaxY else { return true }
-        return bottomMarkerMaxY <= scrollViewportMaxY + 40
+    private var renderedScrollSessionKey: ChatScrollSessionKey? { viewportInputs.renderedSessionKey }
+
+    /// Single source of follow-latest truth: the engine's mode.
+    private var followsLatest: Bool { viewportInputs.isFollowingLatest }
+
+    private var activeScrollSessionKey: ChatScrollSessionKey? {
+        Self.activeScrollSessionKey(in: appState)
+    }
+
+    private var activeOrFallbackScrollSessionKey: ChatScrollSessionKey {
+        Self.activeOrFallbackScrollSessionKey(in: appState)
+    }
+
+    @MainActor
+    static func activeScrollSessionKey(in appState: AppState) -> ChatScrollSessionKey? {
+        if let canonical = appState.activeChatScrollSessionIdentity.canonicalSessionKey {
+            return canonical
+        }
+        guard let sessionID = appState.activeSessionId else { return nil }
+        let fallback = ChatScrollSessionKey(
+            profile: appState.activeProfile,
+            sessionID: sessionID
+        )
+        return fallback.isValid ? fallback : nil
+    }
+
+    @MainActor
+    static func activeOrFallbackScrollSessionKey(in appState: AppState) -> ChatScrollSessionKey {
+        activeScrollSessionKey(in: appState) ?? ChatScrollSessionKey(
+            profile: appState.activeProfile,
+            sessionID: "new"
+        )
+    }
+
+    static func bottomAnchorID(for key: ChatScrollSessionKey) -> String {
+        "chat-latest-\(key.profile)-\(key.sessionID)"
+    }
+
+    private var topAnchor: String {
+        ChatTitleScrollAnchor.id(for: activeOrFallbackScrollSessionKey)
+    }
+
+    /// Read from the engine; `viewportInputs.targetsRevision` is the cache's
+    /// rendering revision, so any target change re-runs the body (with or
+    /// without a rendered session).
+    private var chatMessageScrollTargets: [ChatMessageScrollTarget] {
+        _ = viewportInputs.targetsRevision
+        return scrollEngine.targets
+    }
+
+    private var bottomAnchor: String {
+        Self.bottomAnchorID(for: activeOrFallbackScrollSessionKey)
+    }
+
+    /// Whether "Load earlier messages" is offered right now. AppState owns
+    /// the complete truth — window state, transcript content, and
+    /// active-conversation ownership — the exact predicate
+    /// `loadEarlierMessages` enforces, so the control can never render for
+    /// a window the action would silently reject.
+    private var transcriptBackfillAvailable: Bool {
+        appState.canLoadEarlierMessagesForActiveConversation
+    }
+
+    private var transcriptBackfillIsLoading: Bool {
+        appState.persistedTranscriptWindow?.isLoadingEarlier == true
+    }
+
+    /// Transcript-top affordance for bounded history: fetches the next older
+    /// page and prepends it. The currently visible row is captured as the
+    /// viewport anchor before the fetch so the prepend lands without moving
+    /// the user's position. Label-exposed for accessibility — never
+    /// icon-only — and the loading state is announced by the combined
+    /// progress row.
+    private var transcriptTopBackfillControl: some View {
+        Group {
+            if transcriptBackfillIsLoading {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Loading earlier messages")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+            } else {
+                Button {
+                    // A second tap while the first backfill is in flight
+                    // must not overwrite the armed anchor (the single-flight
+                    // guard in AppState would then discard nothing and the
+                    // discharge below would kill the first request's anchor).
+                    guard !transcriptBackfillIsLoading else { return }
+                    ChatViewportTrace.shared.log("event loadEarlier")
+                    let armedKey = renderedScrollSessionKey ?? activeScrollSessionKey
+                    scrollEngine.olderPageBackfillRequested(sessionKey: armedKey)
+                    backfillViewportTask?.cancel()
+                    backfillViewportTask = Task { @MainActor in
+                        let didPrepend = await appState.loadEarlierMessages()
+                        guard !Task.isCancelled else { return }
+                        if !didPrepend {
+                            // Nothing landed (short page, transient failure,
+                            // all-duplicate page): discharge the anchor so it
+                            // can never re-pin on a later unrelated change.
+                            // Scoped to the session this tap armed — a stale
+                            // task must not clobber a newer conversation's
+                            // anchor.
+                            scrollEngine.prependAnchorDischarged(matching: armedKey)
+                        }
+                    }
+                } label: {
+                    Label("Load earlier messages", systemImage: "clock.arrow.circlepath")
+                        .font(.footnote.weight(.semibold))
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.plain)
+                .conduitGlassControl(cornerRadius: 16, tint: .conduitAccent.opacity(0.12))
+                .accessibilityLabel("Load earlier messages")
+                .accessibilityHint("Fetches the next older page of this conversation")
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+            }
+        }
+    }
+
+    private var renderedScrollScope: ChatRenderedScrollScope? {
+        viewportInputs.renderedScrollScope
+    }
+
+    /// Test-only seam for the dormancy fixtures (PR #201 review): ChatView
+    /// re-writes `\.chatTextSize` at its own root from the shared
+    /// @AppStorage preference — an environment write no OUTER harness pin
+    /// can dominate (the nearer write wins). When non-nil, that inner write
+    /// resolves to this value instead, so shared preference state cannot
+    /// leak into (or churn) a measured fixture. Production never sets it
+    /// (nil) and the preference decides exactly as before.
+    var chatTextSizeOverride: ChatTextSize? = nil
+
+    /// The chat-only text-size preference (issue #85). Local, device-only
+    /// @AppStorage like ComposerReturnKey — never synced to Hermes or the
+    /// profile. Injected once here so every transcript Markdown path
+    /// (settled, streaming, large-document, tables, code) resolves the same
+    /// typography, while non-chat subtrees keep the `.default` environment
+    /// value and today's appearance.
+    @AppStorage(ChatTypography.preferenceKey) private var chatTextSizeRaw = ChatTypography.defaultSize.rawValue
+
+    private var chatTextSize: ChatTextSize {
+        chatTextSizeOverride ?? ChatTypography.resolve(rawValue: chatTextSizeRaw)
     }
 
     var body: some View {
+        let _ = TranscriptPerf.note(.chatViewBody)
         VStack(spacing: 0) {
             // Message list
             ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 18) {
-                        if appState.messages.isEmpty {
-                            EmptyChatState().padding(.top, 60)
-                        }
-
-                        ForEach(appState.messages) { message in
-                            MessageBubble(message: message).id(message.id)
-                        }
-
-                        if !appState.streamingText.isEmpty {
-                            StreamingBubble(
-                                text: appState.streamingText,
-                                active: appState.isBusy
-                            )
-                            .id("streaming")
-                        }
-
-                        if appState.isBusy && appState.streamingText.isEmpty {
-                            TypingIndicator().id("typing")
-                        }
-
-                        // Keep the scroll target in the lazy layout itself.
-                        // A notification can replace the entire transcript at
-                        // once; a sibling target can otherwise be measured
-                        // against stale content while LazyVStack catches up.
-                        Color.clear
-                            .frame(height: 1)
-                            .padding(.bottom, 126)
-                            .id(bottomAnchor)
-                    }
-                    .padding(.horizontal, 18)
-                    .padding(.top, 18)
-                    .background {
-                        // Measure the lazy stack itself, not its final child.
-                        // SwiftUI can unload that child after the user scrolls
-                        // away, leaving the old "at bottom" value stuck and
-                        // suppressing the scroll-to-latest button.
-                        GeometryReader { geometry in
-                            Color.clear.preference(
-                                key: ChatBottomMarkerPreferenceKey.self,
-                                value: geometry.frame(in: .global).maxY
-                            )
-                        }
-                    }
-                }
-                .scrollDismissesKeyboard(.interactively)
-                .onTapGesture {
-                    UIApplication.shared.sendAction(
-                        #selector(UIResponder.resignFirstResponder),
-                        to: nil,
-                        from: nil,
-                        for: nil
-                    )
-                }
-                .background {
-                    GeometryReader { geometry in
-                        Color.clear.preference(
-                            key: ChatViewportBottomPreferenceKey.self,
-                            value: geometry.frame(in: .global).maxY
+                sessionObservers(
+                    proxy: proxy,
+                    content: transcriptObservers(
+                        proxy: proxy,
+                        content: lifecycleObservers(
+                            proxy: proxy,
+                            content: chatScrollView(proxy: proxy)
                         )
-                    }
-                }
-                .onPreferenceChange(ChatBottomMarkerPreferenceKey.self) { value in
-                    updateBottomMarker(value)
-                    recordNotificationHandoffLayout()
-                    finishNotificationHandoffIfReady(using: proxy)
-                }
-                .onPreferenceChange(ChatViewportBottomPreferenceKey.self) { value in
-                    updateViewportBottom(value)
-                    recordNotificationHandoffLayout()
-                    finishNotificationHandoffIfReady(using: proxy)
-                }
-                .onChange(of: appState.messages.count) { _, _ in
-                    guard !appState.isOpeningNotificationSession else {
-                        notificationHandoffPending = true
-                        return
-                    }
-                    if followsLatest {
-                        scrollToLatest(using: proxy)
-                    }
-                }
-                .onChange(of: appState.chatScrollRequest) { _, _ in
-                    followsLatest = true
-                    scrollToLatest(using: proxy)
-                }
-                .onChange(of: appState.activeSessionId) { _, _ in
-                    guard !appState.isOpeningNotificationSession else {
-                        notificationHandoffPending = true
-                        notificationHandoffSessionID = appState.activeSessionId
-                        notificationHandoffHasMeasuredLayout = false
-                        return
-                    }
-                    followsLatest = true
-                    scrollToLatest(using: proxy)
-                }
-                .onChange(of: appState.isOpeningNotificationSession) { _, isOpening in
-                    if isOpening {
-                        notificationHandoffPending = true
-                        notificationHandoffSessionID = nil
-                        notificationHandoffHasMeasuredLayout = false
-                        followsLatest = false
-                    } else {
-                        if notificationHandoffPending, notificationHandoffSessionID == nil {
-                            notificationHandoffSessionID = appState.activeSessionId
-                            notificationHandoffHasMeasuredLayout = bottomMarkerMaxY != nil && scrollViewportMaxY != nil
-                        }
-                        finishNotificationHandoffIfReady(using: proxy)
-                    }
-                }
-                .onChange(of: appState.streamingText) { _, _ in
-                    if followsLatest {
-                        proxy.scrollTo(bottomAnchor, anchor: .bottom)
-                    }
-                }
-                .onChange(of: appState.isBusy) { _, isBusy in
-                    if !isBusy, followsLatest {
-                        scrollToLatest(using: proxy)
-                    }
-                }
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 3)
-                        .onChanged { _ in
-                            // Only a deliberate user drag opts out of the
-                            // stream-following behavior. Content growth alone
-                            // must not make a live conversation appear stale.
-                            followsLatest = false
-                        }
+                    )
                 )
-                .overlay(alignment: .bottomTrailing) {
-                    if !followsLatest && !isNearBottom {
-                        Button {
-                            followsLatest = true
-                            scrollToLatest(using: proxy)
-                        } label: {
-                            Image(systemName: "arrow.down")
-                                .font(.system(size: 15, weight: .bold))
-                                .frame(width: 44, height: 44)
-                        }
-                        .conduitGlassControl(cornerRadius: 22, tint: .conduitAccent.opacity(0.14))
-                        .accessibilityLabel("Scroll to latest message")
-                        .padding(.trailing, 18)
-                        .padding(.bottom, 14)
-                    }
+            }
+            // VoiceOver reads only the saved copy while it is up.
+            .accessibilityHidden(appState.messages.isEmpty && appState.offlineChatPresentation != nil)
+            // The read-only saved copy (#99) sits OVER the live scroll view
+            // instead of feeding it: the live view stays mounted with the
+            // same empty transcript a cold launch always had, so its viewport
+            // ownership, restoration, and follow logic are untouched. The
+            // first real transcript clears the copy in the same update.
+            .overlay {
+                if appState.messages.isEmpty, let offline = appState.offlineChatPresentation {
+                    OfflineChatTranscriptView(presentation: offline)
                 }
             }
 
+            // A live call swiped down keeps running; its bar sits here.
+            MinimisedLiveVoiceBar()
             // Composer + control bar
             ComposerBar()
         }
+        .environment(\.chatTextSize, chatTextSize)
         .background(Color.clear)
         .overlay(alignment: .top) {
             if appState.isOpeningNotificationSession {
@@ -192,96 +246,551 @@ struct ChatView: View {
             }
         }
         .animation(.easeInOut(duration: 0.18), value: appState.isOpeningNotificationSession)
+        .animation(.easeInOut(duration: 0.2), value: appState.minimisedLiveVoice)
+        .overlay {
+            // Cross-block selection chrome (endpoint handles + copy pill),
+            // mounted at screen level so its frame always covers the whole
+            // transcript; see MarkdownSelectionHandles.swift.
+            MarkdownSelectionChromeRoot()
+        }
+        // Selected transcript text can be quoted into the composer (#385),
+        // from the native selection menu and the cross-block pill alike,
+        // while the composer takes input.
+        .environment(
+            \.chatQuoteAction,
+            ChatQuoteAction(
+                owner: appState,
+                isAvailable: appState.canQuoteIntoComposer,
+                handler: appState.quoteIntoComposer
+            )
+        )
     }
 
-    private func scrollToLatest(using proxy: ScrollViewProxy) {
-        withAnimation(ConduitMotion.response) {
-            proxy.scrollTo(bottomAnchor, anchor: .bottom)
-        }
-        DispatchQueue.main.async {
-            withAnimation(ConduitMotion.response) {
-                proxy.scrollTo(bottomAnchor, anchor: .bottom)
+    // MARK: - Scroll construction (layered so the type-checker can cope)
+
+    private func chatScrollView(proxy: ScrollViewProxy) -> some View {
+        ScrollView {
+            LazyVStack(spacing: 18) {
+                Color.clear
+                    .frame(height: 1)
+                    .id(topAnchor)
+
+                if transcriptBackfillAvailable {
+                    transcriptTopBackfillControl
+                }
+
+                if appState.messages.isEmpty && appState.offlineChatPresentation == nil {
+                    EmptyChatState().padding(.top, 60)
+                }
+
+                // Iterate the targets collection directly: wrapping it in
+                // Array(enumerated()) copied the entire transcript into a
+                // fresh tuple array on EVERY body evaluation — O(message
+                // count) allocation churn at streaming/reasoning cadence in
+                // deep sessions. Row identity (target.id) and the transcript
+                // order needed by row geometry (target.order, maintained by
+                // the scroll-target cache) are unchanged.
+                ForEach(chatMessageScrollTargets) { target in
+                    MessageBubble(message: target.message, gatewayResolver: appState.gatewayMediaResolver)
+                        .id(target.id)
+                        .background {
+                            // Measured in the stack's own coordinate space,
+                            // so the value changes only when layout does,
+                            // never on a scroll tick.
+                            GeometryReader { geometry in
+                                let frame = geometry.frame(
+                                    in: CoordinateSpace.named(ChatScrollEngine.coordinateSpaceName)
+                                )
+                                Color.clear.preference(
+                                    key: ChatScrollRowFramesPreferenceKey.self,
+                                    value: [
+                                        target.id: ChatScrollRowFrame(
+                                            minY: frame.minY,
+                                            maxY: frame.maxY,
+                                            order: target.order
+                                        ),
+                                    ]
+                                )
+                            }
+                        }
+                }
+
+                // The running turn's live tail observes only the live
+                // projection, so a streaming tick re-renders these rows and
+                // never this body, the composer, or an open sheet.
+                ChatLiveTurnRows(
+                    projection: appState.liveTurn,
+                    isBusy: appState.isBusy,
+                    author: appState.activeProfile
+                )
+
+                // Fallback target for ScrollViewProxy before the engine has
+                // found the scroll view.
+                Color.clear
+                    .frame(height: 1)
+                    .padding(.bottom, 126)
+                    .id(bottomAnchor)
+            }
+            .coordinateSpace(.named(ChatScrollEngine.coordinateSpaceName))
+            .environment(\.chatRowDisclosure, rowDisclosure)
+            .background {
+                ChatScrollSurfaceLocator(engine: scrollEngine)
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 18)
+            .background {
+                GeometryReader { _ in
+                    Color.clear.preference(
+                        key: ChatRenderedScrollContentPreferenceKey.self,
+                        value: renderedScrollScope.map(ChatRenderedScrollContent.init(scope:))
+                    )
+                }
             }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-            withAnimation(ConduitMotion.response) {
-                proxy.scrollTo(bottomAnchor, anchor: .bottom)
+        .scrollDismissesKeyboard(.interactively)
+        .onTapGesture {
+            UIApplication.shared.sendAction(
+                #selector(UIResponder.resignFirstResponder),
+                to: nil,
+                from: nil,
+                for: nil
+            )
+        }
+        .overlay(alignment: .bottomTrailing) {
+            let pendingClarifyMessageID = appState.pendingClarifyMessageID
+            let hasPendingClarify = pendingClarifyMessageID != nil
+                && viewportInputs.visibilityTrackedMessageID == pendingClarifyMessageID
+                && viewportInputs.isVisibilityTrackedMessageOffscreen
+            // Both actions share this overlay slot; the offscreen pending
+            // question takes priority, and latest reappears when it is visible.
+            if viewportInputs.showsJumpToLatest || hasPendingClarify {
+                Button {
+                    ChatViewportTrace.shared.log(
+                        hasPendingClarify
+                            ? "event explicitPendingClarify (button)"
+                            : "event explicitLatest (button)"
+                    )
+                    if hasPendingClarify, let pendingClarifyMessageID {
+                        scrollEngine.explicitMessageRequested(id: pendingClarifyMessageID)
+                    } else {
+                        requestLatest(animated: true)
+                    }
+                } label: {
+                    if hasPendingClarify {
+                        HStack(spacing: 7) {
+                            Image(systemName: "questionmark.bubble")
+                            Text(AppLocalization.string("Go to your question"))
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .frame(minHeight: 44)
+                    } else {
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 15, weight: .bold))
+                            .frame(width: 44, height: 44)
+                    }
+                }
+                .conduitGlassControl(
+                    cornerRadius: 22,
+                    tint: (hasPendingClarify ? Color.orange : Color.conduitAccent).opacity(0.14)
+                )
+                .accessibilityLabel(
+                    hasPendingClarify
+                        ? AppLocalization.string("Go to the question that needs your answer")
+                        : AppLocalization.string("Scroll to latest message")
+                )
+                .modifier(OptionalAccessibilityHint(
+                    hint: hasPendingClarify
+                        ? AppLocalization.string("Scrolls to the pending question in the conversation")
+                        : nil
+                ))
+                .padding(.trailing, 18)
+                .padding(.bottom, 14)
             }
         }
     }
 
-    /// A notification handoff completes only after the destination transcript
-    /// has emitted its own geometry. This is a layout fact rather than a timer,
-    /// so a long lazy transcript cannot inherit the old conversation's offset.
-    private func recordNotificationHandoffLayout() {
-        guard notificationHandoffPending,
-              notificationHandoffSessionID == appState.activeSessionId,
-              bottomMarkerMaxY != nil,
-              scrollViewportMaxY != nil else { return }
-        notificationHandoffHasMeasuredLayout = true
+    private func lifecycleObservers(proxy: ScrollViewProxy, content: some View) -> some View {
+        content
+            .onAppear {
+                installScrollEngineCallbacks(proxy: proxy)
+                scrollEngine.setPaused(scenePhase == .background)
+                scrollEngine.renderedSessionChanged(
+                    to: activeScrollSessionKey,
+                    identity: appState.activeChatScrollSessionIdentity,
+                    viaNotification: false,
+                    viewportTransitionGeneration: appState.chatViewportTransitionGeneration
+                )
+                scrollEngine.transcriptChanged(
+                    messages: appState.messages,
+                    transcriptRevision: appState.chatTranscriptRevision,
+                    viewportTransitionGeneration: appState.chatViewportTransitionGeneration,
+                    isInitialSync: true
+                )
+                scrollEngine.trackMessageVisibility(of: appState.pendingClarifyMessageID)
+                appState.installChatViewportSnapshotProvider(
+                    id: viewportSnapshotProviderID,
+                    capture: { [weak engine = scrollEngine] in
+                        engine?.renderedViewportSnapshot()
+                    }
+                )
+            }
+            .onDisappear {
+                scrollEngine.viewDisappeared()
+                // Reinstalled on appear; late events go nowhere meanwhile.
+                scrollEngine.onEvent = nil
+                scrollEventRouter.proxy = nil
+                backfillViewportTask?.cancel()
+                latestAnimationTask?.cancel()
+                appState.removeChatViewportSnapshotProvider(id: viewportSnapshotProviderID)
+            }
+            .task(id: appState.chatResumeRestorationRequest?.generation) {
+                guard let request = appState.chatResumeRestorationRequest else { return }
+                await runViewportRestoration(request)
+            }
+            .onPreferenceChange(ChatRenderedScrollContentPreferenceKey.self) { value in
+                guard let value else { return }
+                appState.chatViewportLayoutDidSettle(
+                    sessionKey: value.scope.sessionKey,
+                    transitionGeneration: value.scope.viewportTransitionGeneration,
+                    transcriptRevision: value.scope.transcriptRevision,
+                    renderRevision: value.scope.cacheRevision,
+                    receivedScopedPreference: true
+                )
+            }
+            .onPreferenceChange(ChatScrollRowFramesPreferenceKey.self) { frames in
+                scrollEngine.rowFramesChanged(frames)
+            }
+            .onChange(of: scenePhase) { _, phase in
+                // In the background iOS still lays this view out for
+                // app-switcher snapshots, and a backgrounded app gets little
+                // CPU; the engine leaves the offset alone until it is back.
+                scrollEngine.setPaused(phase == .background)
+            }
     }
 
-    private func finishNotificationHandoffIfReady(using proxy: ScrollViewProxy) {
-        guard notificationHandoffPending,
-              !appState.isOpeningNotificationSession,
-              notificationHandoffSessionID == appState.activeSessionId,
-              notificationHandoffHasMeasuredLayout else { return }
-        notificationHandoffPending = false
-        notificationHandoffSessionID = nil
-        followsLatest = true
+    private func transcriptObservers(proxy: ScrollViewProxy, content: some View) -> some View {
+        content
+            .onChange(of: appState.messages) { _, _ in
+                scrollEngine.transcriptChanged(
+                    messages: appState.messages,
+                    transcriptRevision: appState.chatTranscriptRevision,
+                    viewportTransitionGeneration: appState.chatViewportTransitionGeneration,
+                    activeSessionKey: activeScrollSessionKey
+                )
+            }
+            .onChange(of: appState.pendingClarifyMessageID) { _, id in
+                scrollEngine.trackMessageVisibility(of: id)
+            }
+            .onChange(of: appState.chatResumeRestorationRequest) { oldRequest, newRequest in
+                guard oldRequest != nil, newRequest == nil else { return }
+                // The published request disappeared on the AppState side
+                // (completed/abandoned/cancelled elsewhere).
+                scrollEngine.restorationSystemCancelled()
+            }
+            .onChange(of: followsLatest) { _, _ in
+                scrollEventRouter.saveChatScrollPosition(for: renderedScrollSessionKey)
+            }
+    }
+
+    private func sessionObservers(proxy: ScrollViewProxy, content: some View) -> some View {
+        content
+            .onChange(of: appState.chatScrollRequest) { _, _ in
+                ChatViewportTrace.shared.log("event explicitLatest (send pulse)")
+                requestLatest(animated: false)
+            }
+            .onChange(of: appState.chatScrollToTopRequest) { _, request in
+                ChatViewportTrace.shared.log("event explicitTop request=\(request)")
+                scrollEngine.explicitTopRequested()
+            }
+            .onChange(of: appState.activeSessionId) { _, _ in
+                ChatViewportTrace.shared.log(
+                    "event sessionChanged viaNotification=\(appState.isOpeningNotificationSession)"
+                )
+                scrollEngine.renderedSessionChanged(
+                    to: activeScrollSessionKey,
+                    identity: appState.activeChatScrollSessionIdentity,
+                    viaNotification: appState.isOpeningNotificationSession,
+                    viewportTransitionGeneration: appState.chatViewportTransitionGeneration
+                )
+            }
+            .onChange(of: appState.activeProfile) { _, _ in
+                ChatViewportTrace.shared.log(
+                    "event profileChanged viaNotification=\(appState.isOpeningNotificationSession)"
+                )
+                scrollEngine.transcriptChanged(
+                    messages: appState.messages,
+                    transcriptRevision: appState.chatTranscriptRevision,
+                    viewportTransitionGeneration: appState.chatViewportTransitionGeneration,
+                    isInitialSync: true,
+                    activeSessionKey: activeScrollSessionKey
+                )
+                scrollEngine.renderedSessionChanged(
+                    to: activeScrollSessionKey,
+                    identity: appState.activeChatScrollSessionIdentity,
+                    viaNotification: appState.isOpeningNotificationSession,
+                    viewportTransitionGeneration: appState.chatViewportTransitionGeneration
+                )
+            }
+            .onChange(of: appState.activeChatScrollSessionIdentity) { _, _ in
+                scrollEngine.activeIdentityRefreshed(
+                    identity: appState.activeChatScrollSessionIdentity,
+                    key: activeScrollSessionKey
+                )
+            }
+            .onChange(of: appState.isOpeningNotificationSession) { _, isOpening in
+                if isOpening {
+                    ChatViewportTrace.shared.log("event notificationHandoffBegan")
+                    scrollEngine.notificationHandoffBegan()
+                } else {
+                    scrollEngine.notificationHandoffFinished()
+                }
+            }
+    }
+
+    /// Send and the jump-to-latest button. An animated jump gets one final
+    /// pin once the animation has had time to land.
+    private func requestLatest(animated: Bool) {
+        scrollEngine.explicitLatestRequested(animated: animated)
+        latestAnimationTask?.cancel()
+        guard animated else { return }
+        latestAnimationTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(ChatScrollEngine.latestAnimationDuration))
+            guard !Task.isCancelled else { return }
+            scrollEngine.latestAnimationFinished()
+        }
+    }
+
+    /// Engine-driven restoration: the .task restarts whenever the published
+    /// request generation changes and ticks every 25 ms until the engine has
+    /// placed the saved row, given up, or been cancelled (a drag, a session
+    /// switch, or the request going away). All retries are bounded inside
+    /// the engine.
+    @MainActor
+    private func runViewportRestoration(_ request: ChatResumeRestorationRequest) async {
+        scrollEngine.restorationRequested(request)
+        while !Task.isCancelled,
+              scrollEngine.restorationTick(transcriptRevision: appState.chatTranscriptRevision) {
+            do {
+                try await Task.sleep(for: .milliseconds(25))
+            } catch {
+                return
+            }
+        }
+    }
+
+    // MARK: - Scroll engine wiring
+
+    private func installScrollEngineCallbacks(proxy: ScrollViewProxy) {
+        let router = scrollEventRouter
+        router.appState = appState
+        router.engine = scrollEngine
+        rowDisclosure.engine = scrollEngine
+        rowDisclosure.currentConversation = { [weak appState = appState] in
+            appState?.activeChatScrollSessionIdentity ?? .none
+        }
+        router.proxy = proxy
+        scrollEngine.onEvent = { [weak engine = scrollEngine, weak router] event in
+            // Requests made while handling a UIKit callback can land in the
+            // middle of a SwiftUI update; they run on the next turn.
+            if engine?.isHandlingSurfaceCallback == true {
+                DispatchQueue.main.async { router?.handle(event) }
+            } else {
+                router?.handle(event)
+            }
+        }
+    }
+}
+
+/// Carries ChatScrollEngine's requests to AppState (persistence,
+/// restoration outcomes) and to ScrollViewProxy (reveals before the engine
+/// has a scroll view). Everything is held weakly, so the engine's callback
+/// cannot keep the chat view or AppState alive.
+@MainActor
+private final class ChatScrollEventRouter {
+    weak var appState: AppState?
+    weak var engine: ChatScrollEngine?
+    var proxy: ScrollViewProxy?
+
+    func handle(_ event: ChatScrollEngineEvent) {
+        guard let appState else { return }
+        switch event {
+        case .persistSnapshot(let key):
+            saveChatScrollPosition(for: key)
+        case .flushPersistence:
+            appState.flushChatResumeViewport()
+        case .cancelAutomaticRestoration:
+            appState.cancelChatResumeRestoration()
+        case .completeRestoration(let generation):
+            appState.completeChatResumeRestoration(generation: generation)
+        case .abandonRestoration(let generation):
+            appState.abandonChatResumeRestoration(generation: generation)
+        case .revealRow(let id):
+            scrollWithoutAnimation { $0.scrollTo(id, anchor: .top) }
+        case .revealLatest:
+            let anchor = ChatView.bottomAnchorID(
+                for: ChatView.activeOrFallbackScrollSessionKey(in: appState)
+            )
+            scrollWithoutAnimation { $0.scrollTo(anchor, anchor: .bottom) }
+        case .revealTop:
+            let anchor = ChatTitleScrollAnchor.id(
+                for: ChatView.activeOrFallbackScrollSessionKey(in: appState)
+            )
+            scrollWithoutAnimation { $0.scrollTo(anchor, anchor: .top) }
+        }
+    }
+
+    func saveChatScrollPosition(for preferredKey: ChatScrollSessionKey? = nil) {
+        guard let appState, let engine else { return }
+        let currentKey = preferredKey
+            ?? engine.renderedSessionKey
+            ?? ChatView.activeScrollSessionKey(in: appState)
+        guard let sessionKey = ChatViewportPersistenceSupport.persistenceSessionKey(
+            currentKey: currentKey,
+            identity: appState.activeChatScrollSessionIdentity
+        ) else { return }
+        guard let snapshot = engine.renderedViewportSnapshot()?.snapshot else { return }
+        appState.recordChatViewport(snapshot, for: sessionKey)
+    }
+
+    private func scrollWithoutAnimation(_ body: (ScrollViewProxy) -> Void) {
+        guard let proxy else { return }
         var transaction = Transaction()
-        transaction.animation = nil
-        withTransaction(transaction) {
-            proxy.scrollTo(bottomAnchor, anchor: .bottom)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { body(proxy) }
+    }
+}
+
+enum ChatTitleScrollAnchor {
+    static func id(for sessionKey: ChatScrollSessionKey) -> String {
+        "chat-top-\(sessionKey.profile)-\(sessionKey.sessionID)"
+    }
+}
+
+enum ChatTitleScrollViewportSnapshot {
+    static func make(
+        followsLatest: Bool,
+        topVisibleID: String?,
+        topAnchorID: String,
+        targets: [ChatMessageScrollTarget]
+    ) -> ChatScrollSnapshot? {
+        if followsLatest {
+            return ChatScrollSnapshot(
+                anchorMessageID: nil,
+                followsLatest: true
+            )
         }
+        guard let target = visibleTarget(
+            topVisibleID: topVisibleID,
+            topAnchorID: topAnchorID,
+            targets: targets
+        ) else {
+            return nil
+        }
+        return ChatScrollSnapshot(
+            anchorMessageID: target.semanticID,
+            followsLatest: false,
+            anchorMetadata: target.restorationMetadata,
+            anchorSourceMessageID: target.id
+        )
     }
 
-    private func updateBottomMarker(_ value: CGFloat?) {
-        bottomMarkerMaxY = value
-        if isNearBottom { followsLatest = true }
-    }
-
-    private func updateViewportBottom(_ value: CGFloat?) {
-        scrollViewportMaxY = value
-        if isNearBottom { followsLatest = true }
+    private static func visibleTarget(
+        topVisibleID: String?,
+        topAnchorID: String,
+        targets: [ChatMessageScrollTarget]
+    ) -> ChatMessageScrollTarget? {
+        if topVisibleID == topAnchorID {
+            return targets.first
+        }
+        return targets.first { $0.id == topVisibleID }
     }
 }
 
-private struct ChatBottomMarkerPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat? = nil
-    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+private struct ChatRenderedScrollContentPreferenceKey: PreferenceKey {
+    static var defaultValue: ChatRenderedScrollContent? = nil
+    static func reduce(
+        value: inout ChatRenderedScrollContent?,
+        nextValue: () -> ChatRenderedScrollContent?
+    ) {
         value = nextValue() ?? value
     }
 }
 
-private struct ChatViewportBottomPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat? = nil
-    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
-        value = nextValue() ?? value
+/// Frames of the message rows SwiftUI has laid out, keyed by message id.
+private struct ChatScrollRowFramesPreferenceKey: PreferenceKey {
+    static var defaultValue: [String: ChatScrollRowFrame] = [:]
+
+    static func reduce(
+        value: inout [String: ChatScrollRowFrame],
+        nextValue: () -> [String: ChatScrollRowFrame]
+    ) {
+        value.merge(nextValue()) { _, new in new }
     }
 }
 // MARK: - Message Bubble
 
+/// Routes a transcript row to its presentation. The expensive settled
+/// content of each row type lives behind an Equatable gate (see
+/// SettledAssistantMessageContent and friends) so a streaming publish —
+/// which re-creates every mounted row through this switch — cannot force
+/// settled Markdown presentation to re-evaluate.
 struct MessageBubble: View {
     let message: ChatMessage
+    let gatewayResolver: GatewayMediaDataURLResolver?
     @EnvironmentObject var appState: AppState
 
     var body: some View {
+        let _ = TranscriptPerf.note(.settledBubbleBody)
         switch message.role {
         case .user:
-            UserBubble(message: message)
+            if message.isSteer {
+                SteerBubble(message: message)
+            } else {
+                UserBubble(
+                    message: message,
+                    gatewayResolver: gatewayResolver,
+                    agentName: message.reactions.isEmpty ? "" : appState.profileDisplayName(appState.activeProfile)
+                )
+            }
         case .assistant:
-            AssistantBubble(message: message)
+            AssistantBubble(
+                message: message,
+                readAloudController: appState.messageReadAloudController,
+                gatewayResolver: gatewayResolver
+            )
         case .reasoning:
             ThinkingCard(message: message)
         case .tool:
-            ToolCard(message: message)
+            // A finished clarify from history reads as its answered card,
+            // not the raw tool call (#394). Like the live card it shows
+            // whatever the tool-progress setting: it is part of the
+            // conversation, not tool progress.
+            if let tool = message.tool,
+               let clarify = ClarifyActivity.historyRecord(for: tool, rowID: message.id) {
+                ClarifyCard(message: message.presenting(clarify))
+            } else {
+                ToolCard(message: message)
+            }
         case .clarify:
             ClarifyCard(message: message)
         case .approval:
             ApprovalCard(message: message)
+        case .inputPrompt:
+            InputPromptCard(message: message)
         case .system:
-            if let review = message.review ?? MessageNormalizer.reviewActivity(fromText: message.content) {
+            if message.displayKind == VoiceCallChatLink.displayKind, let link = appState.voiceCallLink(markerID: message.id) {
+                VoiceCallMarkerCard(link: link, origin: false) {
+                    appState.openVoiceCallTranscript(markerID: link.markerID)
+                }
+            } else if message.displayKind == VoiceCallChatLink.originDisplayKind, let link = appState.voiceCallLink(markerID: message.id) {
+                VoiceCallMarkerCard(link: link, origin: true) {
+                    appState.openVoiceCallChat(markerID: link.originMarkerID)
+                }
+            } else if let review = message.review ?? MessageNormalizer.reviewActivity(fromText: message.content) {
                 ReviewSummaryCard(activity: review, timestamp: message.timestamp)
             } else if let modelChange = MessageNormalizer.modelChangeActivity(
                 fromText: message.rawContent ?? message.content
@@ -295,19 +804,43 @@ struct MessageBubble: View {
                 SystemBubble(message: message)
             }
         case .partial:
-            AssistantBubble(message: message)
+            AssistantBubble(
+                message: message,
+                readAloudController: appState.messageReadAloudController,
+                gatewayResolver: gatewayResolver
+            )
         }
     }
 }
 
 struct UserBubble: View {
     let message: ChatMessage
+    let gatewayResolver: GatewayMediaDataURLResolver?
+    /// Names the agent for the reaction chips' VoiceOver labels. Passed in
+    /// so the bubble doesn't observe AppState.
+    var agentName = ""
+    @Environment(\.sizeCategory) private var sizeCategory
+    @Environment(\.chatTextSize) private var chatTextSize
 
     var body: some View {
         HStack {
             Spacer(minLength: 40)
             VStack(alignment: .trailing, spacing: 4) {
-                UserMessageContent(message: message)
+                UserMessageContent(
+                    message: message,
+                    gatewayResolver: gatewayResolver,
+                    sizeCategory: sizeCategory,
+                    chatTextSize: chatTextSize
+                )
+                    .equatable()
+
+                // The agent can react to the user's messages.
+                if !message.reactions.isEmpty {
+                    MessageReactionChips(
+                        reactions: message.reactions,
+                        agentName: agentName
+                    )
+                }
 
                 MessageTimestampLabel(timestamp: message.timestamp)
                     .frame(maxWidth: .infinity, alignment: .trailing)
@@ -316,21 +849,129 @@ struct UserBubble: View {
     }
 }
 
-private struct UserMessageContent: View {
+/// A message steered into a running turn (issue #337). Right-aligned like
+/// the user's own bubble, but a lighter outlined surface with the steering
+/// glyph, so it reads as guidance delivered mid-turn rather than a new prompt.
+struct SteerBubble: View {
     let message: ChatMessage
+    @Environment(\.sizeCategory) private var sizeCategory
+    @Environment(\.chatTextSize) private var chatTextSize
 
     var body: some View {
+        HStack {
+            Spacer(minLength: 40)
+            VStack(alignment: .trailing, spacing: 4) {
+                SteerMessageContent(
+                    message: message,
+                    sizeCategory: sizeCategory,
+                    chatTextSize: chatTextSize
+                )
+                .equatable()
+
+                MessageTimestampLabel(timestamp: message.timestamp)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+    }
+}
+
+/// Settled steer-row content, behind the same Equatable gate as
+/// UserMessageContent so streaming publishes cannot re-evaluate it.
+struct SteerMessageContent: View, Equatable {
+    let message: ChatMessage
+    /// Explicit Dynamic Type input — see SettledAssistantMessageContent.
+    let sizeCategory: ContentSizeCategory
+    /// Explicit chat text-size input — see UserMessageContent.
+    let chatTextSize: ChatTextSize
+
+    var body: some View {
+        let reply = ReplyQuoteEnvelope.parse(message.content)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: BusyInputMode.steer.symbol)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.conduitAura)
+                .accessibilityHidden(true)
+            if let reply {
+                VStack(alignment: .leading, spacing: 8) {
+                    ReplyReferenceQuoteCard(quote: reply.quote, onAccentSurface: false)
+                    MarkdownText(source: reply.message)
+                }
+            } else {
+                MarkdownText(source: message.content)
+            }
+        }
+        .padding(.horizontal, 15)
+        .padding(.vertical, 10)
+        .background(
+            Color.conduitAura.opacity(0.10),
+            in: RoundedRectangle(cornerRadius: 21, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 21, style: .continuous)
+                .strokeBorder(Color.conduitAura.opacity(0.32), lineWidth: 1)
+        }
+        .textSelection(.enabled)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(AppLocalization.string("Steered: \(reply?.message ?? message.content)"))
+    }
+}
+
+/// Settled user-row content: Markdown plus attachment previews. Equatable
+/// over the message and the stable gateway resolver so streaming publishes
+/// cannot re-evaluate it (same contract as
+/// SettledAssistantMessageContent). Internal (not private) so the gate
+/// contract is directly testable.
+struct UserMessageContent: View, Equatable {
+    let message: ChatMessage
+    let gatewayResolver: GatewayMediaDataURLResolver?
+    /// Explicit Dynamic Type input — see SettledAssistantMessageContent.
+    let sizeCategory: ContentSizeCategory
+    /// Explicit chat text-size input (issue #85): a preference change must
+    /// re-open the gate and re-render, while ordinary streaming publishes —
+    /// which leave both explicit inputs equal — keep the isolation.
+    let chatTextSize: ChatTextSize
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        // One comparison expression for every configuration — see
+        // SettledAssistantMessageContent.== for why the DEBUG recording below
+        // must never be a second copy of the field list.
+        let equal = lhs.message == rhs.message
+            && lhs.gatewayResolver === rhs.gatewayResolver
+            && lhs.sizeCategory == rhs.sizeCategory
+            && lhs.chatTextSize == rhs.chatTextSize
+        #if DEBUG
+        if !equal {
+            var fields: [String] = []
+            if lhs.message != rhs.message { fields.append("message") }
+            if lhs.gatewayResolver !== rhs.gatewayResolver { fields.append("gatewayResolver") }
+            if lhs.sizeCategory != rhs.sizeCategory { fields.append("sizeCategory") }
+            if lhs.chatTextSize != rhs.chatTextSize { fields.append("chatTextSize") }
+            TranscriptPerf.noteGateReopen(component: "UserMessageContent", fields: fields)
+        }
+        #endif
+        return equal
+    }
+
+    var body: some View {
+        // A message that quoted a whole reply (#385) shows a compact
+        // "Replying to" card instead of the full quote.
+        let reply = ReplyQuoteEnvelope.parse(message.content)
+        let text = reply?.message ?? message.content
         VStack(alignment: .leading, spacing: 9) {
-            if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                MarkdownText(source: message.content, foregroundStyle: .white, usesAccentSurface: true)
+            if let reply {
+                ReplyReferenceQuoteCard(quote: reply.quote)
+            }
+
+            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                MarkdownText(source: text, foregroundStyle: .white, usesAccentSurface: true)
             }
 
             if let attachments = message.attachments {
                 ForEach(attachments) { attachment in
                     if attachment.kind == .image {
-                        UserImageAttachmentPreview(attachment: attachment)
+                        UserImageAttachmentPreview(attachment: attachment, gatewayResolver: gatewayResolver)
                     } else {
-                        UserDocumentAttachmentChip(attachment: attachment)
+                        UserDocumentAttachmentChip(attachment: attachment, gatewayResolver: gatewayResolver)
                     }
                 }
             }
@@ -355,14 +996,81 @@ private struct UserMessageContent: View {
 }
 
 private struct UserImageAttachmentPreview: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
     let attachment: Attachment
-    @EnvironmentObject private var appState: AppState
+    let gatewayResolver: GatewayMediaDataURLResolver?
     @State private var gatewayImage: UIImage?
+    @State private var opening = false
+    @State private var openTask: Task<Void, Never>?
     @State private var gatewayLoadFailed = false
+    @State private var localPreview: UIImage?
+    @State private var localPreviewPath: String?
+    @State private var localPreviewFailedPath: String?
 
-    private var localImage: UIImage? {
+    /// Body re-evaluates at streaming frame rate, and re-reading + fully
+    /// decoding the file each time hitches scrolling. Previews are downsampled
+    /// to the display size and shared across rows; NSCache evicts them under
+    /// memory pressure. Cost-bounded so a handful of large photos can't
+    /// exhaust it before then.
+    private static let localImageCache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 64
+        cache.totalCostLimit = 64 * 1024 * 1024
+        return cache
+    }()
+
+    /// Cache-only lookup (no decode) so a hit renders on the first frame.
+    /// Misses are filled asynchronously — see the `.task` in `body`.
+    private var cachedLocalImage: UIImage? {
         guard let url = localFileURL else { return nil }
-        return UIImage(contentsOfFile: url.path)
+        return Self.localImageCache.object(forKey: url.path as NSString)
+    }
+
+    /// The decoded preview, gated on the path it was decoded for so a stale
+    /// value can't leak in if SwiftUI ever reuses this view identity for a
+    /// different `attachment.uri`. Today that can't happen — `Attachment` is
+    /// `Identifiable` so each id gets fresh `@State`, and uris are immutable —
+    /// but this makes the invariant non-load-bearing rather than relying on it.
+    private var currentLocalPreview: UIImage? {
+        guard localPreviewPath == localFileURL?.path else { return nil }
+        return localPreview
+    }
+
+    /// True only for a decode failure of the *current* path.
+    private var localPreviewFailed: Bool {
+        localPreviewFailedPath == localFileURL?.path
+    }
+
+    /// Estimated decoded byte cost for NSCache. `bytesPerRow * height` accounts
+    /// for the row-alignment padding that a naive `width * height * 4` misses.
+    private static func bitmapCost(of image: UIImage) -> Int {
+        if let cg = image.cgImage {
+            return cg.bytesPerRow * cg.height
+        }
+        return Int(image.size.width * image.scale * image.size.height * image.scale) * 4
+    }
+
+    /// Decodes `url` as a thumbnail sized for the 224pt attachment preview
+    /// (~3× retina on the long edge). `nonisolated` makes explicit that this is
+    /// pure CoreGraphics and safe to call off the MainActor — which is how the
+    /// `.task` below invokes it, so a large photo can't hitch scrolling on a
+    /// cache miss. `ShouldCache` is false because the resulting `UIImage` is
+    /// already retained by our cache; the default `true` would double-buffer
+    /// the decoded bitmap inside ImageIO. Note: the detached caller returns a
+    /// non-Sendable `UIImage` across the task boundary — fine under the
+    /// project's Swift 5 mode, but it would need a Sendable box if strict
+    /// concurrency is ever enabled.
+    private nonisolated static func downsampledPreview(url: URL) -> UIImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCache: false,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: CGFloat(800)
+        ]
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return nil }
+        return UIImage(cgImage: thumbnail)
     }
 
     private var localFileURL: URL? {
@@ -373,23 +1081,17 @@ private struct UserImageAttachmentPreview: View {
 
     var body: some View {
         Group {
-            if let image = localImage ?? gatewayImage {
+            if let image = cachedLocalImage ?? currentLocalPreview ?? gatewayImage {
                 imagePreview(image)
-            } else if isGatewayImage && !gatewayLoadFailed {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .tint(.white)
-                    Text("Loading image...")
-                }
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(Color.white.opacity(0.13), in: Capsule())
+            } else if isGatewayImage && localFileURL == nil && !gatewayLoadFailed {
+                loadingPlaceholder
+            } else if localFileURL != nil && !localPreviewFailed {
+                // Local file decoding off-main on a cache miss.
+                loadingPlaceholder
             } else {
                 Label(
-                    gatewayLoadFailed ? "Image unavailable" : "Image attached",
-                    systemImage: gatewayLoadFailed ? "photo.badge.exclamationmark" : "photo"
+                    (gatewayLoadFailed || localPreviewFailed) ? AppLocalization.string("Image unavailable") : AppLocalization.string("Image attached"),
+                    systemImage: (gatewayLoadFailed || localPreviewFailed) ? "photo.badge.exclamationmark" : "photo"
                 )
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.white)
@@ -398,22 +1100,54 @@ private struct UserImageAttachmentPreview: View {
                 .background(Color.white.opacity(0.13), in: Capsule())
             }
         }
-        .task(id: "\(attachment.uri)|\(appState.activeProfile)") {
-            guard localImage == nil, isGatewayImage else { return }
-            gatewayImage = nil
-            gatewayLoadFailed = false
-            guard let dataURL = await appState.gatewayMediaDataURL(
-                for: attachment.uri,
-                profile: appState.activeProfile
-            ),
-            !Task.isCancelled,
-            let image = image(fromDataURL: dataURL) else {
+        .task(id: "\(attachment.uri)|\(gatewayResolver?.profile ?? "")") {
+            // Local file: cache hits are already shown by `body` on the first
+            // frame via `cachedLocalImage`, so only misses reach here. Decode
+            // off the MainActor so a large photo can't hitch scrolling.
+            if let url = localFileURL {
+                guard currentLocalPreview == nil, cachedLocalImage == nil else { return }
+                let image = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+                    Self.downsampledPreview(url: url)
+                }.value
                 guard !Task.isCancelled else { return }
-                gatewayLoadFailed = true
-                return
+                guard let image else {
+                    localPreviewFailedPath = url.path
+                    return
+                }
+                Self.localImageCache.setObject(image, forKey: url.path as NSString, cost: Self.bitmapCost(of: image))
+                localPreview = image
+                localPreviewPath = url.path
+                // Gateway image, fetched through Hermes. The local-file branch
+                // returns above, so a local URI never reaches here — which also
+                // removes the old `localImage == nil` check that decoded local
+                // files on the MainActor before short-circuiting.
+            } else if isGatewayImage, let gatewayResolver {
+                gatewayImage = nil
+                gatewayLoadFailed = false
+                guard let dataURL = await gatewayResolver.dataURL(for: attachment.uri),
+                !Task.isCancelled,
+                let data = DataURLLimits.decodeBase64DataURL(dataURL, prefix: "data:image/"),
+                let image = UIImage(data: data) else {
+                    guard !Task.isCancelled else { return }
+                    gatewayLoadFailed = true
+                    return
+                }
+                gatewayImage = image
             }
-            gatewayImage = image
         }
+    }
+
+    private var loadingPlaceholder: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .tint(.white)
+            Text("Loading image…")
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(.white)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color.white.opacity(0.13), in: Capsule())
     }
 
     private var isGatewayImage: Bool {
@@ -430,7 +1164,35 @@ private struct UserImageAttachmentPreview: View {
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .strokeBorder(Color.white.opacity(0.22), lineWidth: 1)
                 }
+                .overlay { if opening { ProgressView().tint(.white) } }
+                .opensMediaPreview(openPreview)
+                .onDisappear {
+                    openTask?.cancel()
+                    openTask = nil
+                    opening = false
+                }
                 .accessibilityLabel("Attached image: \(attachment.name)")
+    }
+
+    /// Opens the full-resolution original: the local file when the photo
+    /// is still on this device, otherwise the bytes re-fetched from Hermes.
+    /// The row keeps only the downsampled/decoded image, never the original
+    /// bytes, so an image-heavy transcript doesn't pin them all in memory.
+    private func openPreview() {
+        if let localFileURL, MediaPreviewPresenter.shared.present(fileURL: localFileURL, title: attachment.name) {
+            return
+        }
+        guard !opening, isGatewayImage, let gatewayResolver else { return }
+        let uri = attachment.uri
+        let filename = AttachmentPreviewFilename.make(name: attachment.name, uri: uri)
+        opening = true
+        openTask = Task {
+            if let dataURL = await gatewayResolver.dataURL(for: uri), !Task.isCancelled {
+                await MediaPreviewPresenter.shared.present(dataURL: dataURL, filename: filename)
+            }
+            guard !Task.isCancelled else { return }
+            opening = false
+        }
     }
 
     private func previewHeight(for image: UIImage) -> CGFloat {
@@ -438,30 +1200,185 @@ private struct UserImageAttachmentPreview: View {
         return min(260, max(120, 224 * image.size.height / image.size.width))
     }
 
-    private func image(fromDataURL value: String) -> UIImage? {
-        guard let data = DataURLLimits.decodeBase64DataURL(value, prefix: "data:image/") else { return nil }
-        return UIImage(data: data)
+}
+
+/// The name a previewed attachment is saved/shared under: the display name,
+/// borrowing the stored path's extension when the name has none so the
+/// share sheet and Quick Look still recognize the type.
+enum AttachmentPreviewFilename {
+    static func make(name: String, uri: String) -> String {
+        let uriName = MediaPreviewPresenter.sanitizedFilename(uri)
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return uriName }
+        let cleanName = MediaPreviewPresenter.sanitizedFilename(trimmed)
+        let uriExtension = (uriName as NSString).pathExtension
+        guard !uriExtension.isEmpty else { return cleanName }
+        // The stored path's extension describes the bytes; a display name
+        // that disagrees (or has none) would make Quick Look pick the wrong
+        // renderer.
+        let nameExtension = (cleanName as NSString).pathExtension
+        if nameExtension.caseInsensitiveCompare(uriExtension) == .orderedSame { return cleanName }
+        let stem = nameExtension.isEmpty ? cleanName : (cleanName as NSString).deletingPathExtension
+        return MediaPreviewPresenter.truncatedFilename("\(stem).\(uriExtension)")
     }
 }
 
 private struct UserDocumentAttachmentChip: View {
     let attachment: Attachment
+    let gatewayResolver: GatewayMediaDataURLResolver?
+    @State private var loading = false
+    @State private var failed = false
+    @State private var openTask: Task<Void, Never>?
+
+    private var localFileURL: URL? {
+        if let url = URL(string: attachment.uri), url.isFileURL {
+            return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        }
+        let url = URL(fileURLWithPath: attachment.uri)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// Audio the user attached plays in place, like the agent's (#439).
+    private var isAudio: Bool {
+        GatewayMediaKind(path: attachment.name) == .audio || GatewayMediaKind(path: attachment.uri) == .audio
+    }
 
     var body: some View {
-        Label(attachment.name, systemImage: "doc")
-            .font(.caption.weight(.medium))
-            .foregroundStyle(.white)
-            .lineLimit(1)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(Color.white.opacity(0.13), in: Capsule())
+        Group {
+            if isAudio {
+                InlineAudioClipView(
+                    id: "attachment:\(attachment.uri)",
+                    name: attachment.name,
+                    filename: AttachmentPreviewFilename.make(name: attachment.name, uri: attachment.uri),
+                    style: .bubble,
+                    opening: loading,
+                    openFailed: failed,
+                    load: loadAudio,
+                    openFull: open
+                )
+            } else {
+                chip
+            }
+        }
+        .onDisappear {
+            openTask?.cancel()
+            openTask = nil
+            loading = false
+        }
+    }
+
+    private var chip: some View {
+        HStack(spacing: 6) {
+            Label(attachment.name, systemImage: AttachmentTypePolicy.symbolName(for: attachment))
+                .lineLimit(1)
+            if loading {
+                ProgressView()
+                    .controlSize(.mini)
+                    .tint(.white)
+            }
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(.white)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color.white.opacity(0.13), in: Capsule())
+        .opensMediaPreview(open)
+    }
+
+    /// The clip's bytes: the local file while it is still on this device,
+    /// otherwise fetched from Hermes. Read and decoded off the main actor.
+    private func loadAudio() async -> Data? {
+        if let localFileURL {
+            return await Task.detached(priority: .userInitiated) {
+                try? Data(contentsOf: localFileURL, options: .mappedIfSafe)
+            }.value
+        }
+        guard attachment.uri.hasPrefix("/"), let gatewayResolver,
+              let dataURL = await gatewayResolver.dataURL(for: attachment.uri) else { return nil }
+        return await Task.detached(priority: .userInitiated) {
+            DataURLLimits.decodeBase64DataURL(dataURL)
+        }.value
+    }
+
+    private func open() {
+        if let localFileURL {
+            failed = !MediaPreviewPresenter.shared.present(fileURL: localFileURL, title: attachment.name)
+            return
+        }
+        guard !loading, attachment.uri.hasPrefix("/"), let gatewayResolver else { return }
+        loading = true
+        failed = false
+        // Cancelled on disappear, so a slow fetch can't pop a preview over
+        // whatever screen the user moved on to.
+        openTask = Task {
+            var presented = false
+            if let dataURL = await gatewayResolver.dataURL(for: attachment.uri), !Task.isCancelled {
+                presented = await MediaPreviewPresenter.shared.present(
+                    dataURL: dataURL,
+                    filename: AttachmentPreviewFilename.make(name: attachment.name, uri: attachment.uri)
+                )
+            }
+            guard !Task.isCancelled else { return }
+            loading = false
+            failed = !presented
+        }
     }
 }
 
-struct AssistantBubble: View {
+/// The settled half of an assistant row: identity header, Markdown body,
+/// and code block. Equatable over immutable message presentation inputs so
+/// a streaming publish re-creating this view is a no-op (`.equatable()`
+/// skips body evaluation when inputs compare equal). Dynamic Type changes
+/// still invalidate through the `\.sizeCategory` environment read.
+struct SettledAssistantMessageContent: View, Equatable {
     let message: ChatMessage
-    @EnvironmentObject var appState: AppState
-    @State private var copied = false
+    let displayName: String
+    let avatarURL: URL?
+    let gatewayResolver: GatewayMediaDataURLResolver?
+    /// Explicit Dynamic Type input (read by the shell): equality describes
+    /// every visual input, so a category change re-opens the gate and
+    /// re-renders with fresh fonts (the Markdown render cache keys on the
+    /// content size category). Other presentation traits the subtree
+    /// consumes are render-time adaptive — color scheme resolves through
+    /// UIKit trait collections, layout direction through TextKit — and do
+    /// not require body re-evaluation.
+    let sizeCategory: ContentSizeCategory
+    /// Explicit chat text-size input (issue #85): equality describes every
+    /// typography input, so a preference change re-opens the gate and
+    /// re-renders (the render cache keys on the chat-size identity), while
+    /// unrelated streaming publishes — equal inputs — stay gated.
+    let chatTextSize: ChatTextSize
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        // ONE comparison expression for every configuration: the field list a
+        // gate actually compares must never diverge between DEBUG (what the
+        // tests exercise) and Release (what ships). The DEBUG-only recording
+        // below observes the outcome and cannot change it.
+        let equal = lhs.message == rhs.message
+            && lhs.displayName == rhs.displayName
+            && lhs.avatarURL == rhs.avatarURL
+            && lhs.gatewayResolver === rhs.gatewayResolver
+            && lhs.sizeCategory == rhs.sizeCategory
+            && lhs.chatTextSize == rhs.chatTextSize
+        #if DEBUG
+        // Consultation counter: a fixture asserting "the gate reported no
+        // input change" is vacuous unless the gate was reached at all, and a
+        // hosting shape that re-creates the subtree without consulting the
+        // comparison leaves the report list empty too.
+        TranscriptPerf.note(.settledContentGateComparison)
+        if !equal {
+            var fields: [String] = []
+            if lhs.message != rhs.message { fields.append("message") }
+            if lhs.displayName != rhs.displayName { fields.append("displayName") }
+            if lhs.avatarURL != rhs.avatarURL { fields.append("avatarURL") }
+            if lhs.gatewayResolver !== rhs.gatewayResolver { fields.append("gatewayResolver") }
+            if lhs.sizeCategory != rhs.sizeCategory { fields.append("sizeCategory") }
+            if lhs.chatTextSize != rhs.chatTextSize { fields.append("chatTextSize") }
+            TranscriptPerf.noteGateReopen(component: "SettledAssistantMessageContent", fields: fields)
+        }
+        #endif
+        return equal
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -469,11 +1386,11 @@ struct AssistantBubble: View {
             // the full reading column instead of inheriting the avatar indent.
             HStack(spacing: 8) {
                 ConduitAgentMark(
-                    avatarURL: appState.profileAvatarURL(for: appState.activeProfile),
-                    displayName: appState.profileDisplayName(appState.activeProfile)
+                    avatarURL: avatarURL,
+                    displayName: displayName
                 )
 
-                Text(appState.profileDisplayName(appState.activeProfile))
+                Text(displayName)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
 
@@ -484,11 +1401,10 @@ struct AssistantBubble: View {
             if !message.content.isEmpty {
                 MarkdownText(
                     source: message.content,
-                    gatewayMediaDataURL: { path in
-                        await appState.gatewayMediaDataURL(for: path, profile: appState.activeProfile)
+                    gatewayMediaDataURL: gatewayResolver.map { resolver in
+                        { path in await resolver.dataURL(for: path) }
                     }
                 )
-                    .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
@@ -496,38 +1412,59 @@ struct AssistantBubble: View {
                 ChatCodeBlock(source: code)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            HStack(spacing: 4) {
-                Spacer(minLength: 0)
-
-                Button {
-                    copyResponse()
-                } label: {
-                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(width: 34, height: 34)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(copied ? Color.conduitAccent : Color.secondary)
-                .accessibilityLabel(copied ? "Response copied" : "Copy response")
-
-                Button {
-                    Haptics.medium()
-                    Task { await appState.branchFromAssistantMessage(message.id) }
-                } label: {
-                    Image(systemName: "arrow.triangle.branch")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(width: 34, height: 34)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .disabled(appState.isBusy || appState.isBranchingChat)
-                .opacity(appState.isBusy || appState.isBranchingChat ? 0.45 : 1)
-                .accessibilityLabel("Branch from this response")
-            }
-            .padding(.top, 2)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// The dynamic half of an assistant row: copy/quote/branch controls that depend
+/// on busy state, kept small so their per-publish re-evaluation is cheap.
+struct AssistantMessageActions: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
+    let message: ChatMessage
+    @EnvironmentObject private var appState: AppState
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            copyResponse()
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.subheadline.weight(.semibold))
+                .frame(width: 34, height: 34)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(copied ? Color.conduitAccent : Color.secondary)
+        .accessibilityLabel(copied ? AppLocalization.string("Response copied") : AppLocalization.string("Copy response"))
+
+        // Attaches this whole reply to the next message (#385); the
+        // composer plays the haptic when the chip lands.
+        Button {
+            appState.replyInComposer(to: message)
+        } label: {
+            Image(systemName: "quote.bubble")
+                .font(.subheadline.weight(.semibold))
+                .frame(width: 34, height: 34)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .disabled(!appState.canQuoteIntoComposer() || !message.content.contains(where: { !$0.isWhitespace }))
+        .opacity(appState.canQuoteIntoComposer() ? 1 : 0.45)
+        .accessibilityLabel(AppLocalization.string("Quote this response"))
+
+        Button {
+            Haptics.medium()
+            Task { await appState.branchFromAssistantMessage(message.id) }
+        } label: {
+            Image(systemName: "arrow.triangle.branch")
+                .font(.subheadline.weight(.semibold))
+                .frame(width: 34, height: 34)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .disabled(appState.isBusy || appState.isBranchingChat || appState.offlineChatPresentation != nil)
+        .opacity(appState.isBusy || appState.isBranchingChat || appState.offlineChatPresentation != nil ? 0.45 : 1)
+        .accessibilityLabel("Branch from this response")
     }
 
     private func copyResponse() {
@@ -542,13 +1479,136 @@ struct AssistantBubble: View {
     }
 }
 
+/// The read-aloud control surface. This is deliberately the ONLY part of
+/// an assistant row that observes the shared read-aloud controller, so a
+/// playback state transition re-renders a 34pt button instead of every
+/// response's Markdown in the transcript.
+struct ReadAloudButton: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
+    let message: ChatMessage
+    @ObservedObject var controller: MessageReadAloudController
+    @EnvironmentObject private var appState: AppState
+
+    private var isActive: Bool {
+        controller.isActiveMessage(message.id)
+    }
+
+    /// Paused from the lock screen or headphones (#373): the button resumes.
+    private var isPaused: Bool {
+        isActive && controller.isPaused
+    }
+
+    private var unavailable: Bool {
+        appState.readAloudUnavailableReason != nil || appState.offlineChatPresentation != nil
+    }
+
+    var body: some View {
+        Button {
+            if isPaused {
+                Haptics.light()
+                controller.resume()
+                return
+            }
+            if isActive {
+                Haptics.medium()
+            } else {
+                Haptics.light()
+            }
+            appState.toggleReadAloud(message: message)
+        } label: {
+            Group {
+                if case .preparing(let id) = controller.state, id == message.id {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: isPaused ? "play.fill" : isActive ? "stop.fill" : "speaker.wave.2")
+                }
+            }
+            .font(.subheadline.weight(.semibold))
+            .frame(width: 34, height: 34)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isActive ? Color.conduitAccent : Color.secondary)
+        .disabled(unavailable && !isActive)
+        .opacity(unavailable && !isActive ? 0.45 : 1)
+        .accessibilityLabel(
+            isPaused ? AppLocalization.string("Resume reading response")
+                : isActive ? AppLocalization.string("Stop reading response")
+                : AppLocalization.string("Read response aloud")
+        )
+    }
+}
+
+struct AssistantBubble: View {
+    let message: ChatMessage
+    /// Held as a plain reference (not @ObservedObject): forwarding a
+    /// controller instance must not subscribe this whole bubble to every
+    /// read-aloud state transition. Only ReadAloudButton observes it.
+    let readAloudController: MessageReadAloudController
+    let gatewayResolver: GatewayMediaDataURLResolver?
+    @EnvironmentObject var appState: AppState
+    @Environment(\.sizeCategory) private var sizeCategory
+    @Environment(\.chatTextSize) private var chatTextSize
+    @State private var showsTapback = false
+
+    var body: some View {
+        // Mirrors MessageBubble's settled-bubble counter so the dormancy
+        // fixtures can prove a re-created row's body chain actually ran
+        // (and therefore that the Equatable gate below was consulted)
+        // instead of the update being pruned above the gate. Release
+        // builds compile the note out.
+        let _ = TranscriptPerf.note(.settledBubbleBody)
+        VStack(alignment: .leading, spacing: 6) {
+            SettledAssistantMessageContent(
+                message: message,
+                displayName: appState.profileDisplayName(appState.activeProfile),
+                avatarURL: appState.profileAvatarURL(for: appState.activeProfile),
+                gatewayResolver: gatewayResolver,
+                sizeCategory: sizeCategory,
+                chatTextSize: chatTextSize
+            )
+            .equatable()
+
+            if !message.reactions.isEmpty {
+                MessageReactionChips(
+                    reactions: message.reactions,
+                    agentName: appState.profileDisplayName(appState.activeProfile),
+                    onTap: appState.canReact(to: message) ? { showsTapback = true } : nil
+                )
+            }
+
+            HStack(spacing: 4) {
+                Spacer(minLength: 0)
+                if message.role == .assistant {
+                    MessageReactButton(message: message, isPresented: $showsTapback)
+                }
+
+                AssistantMessageActions(message: message)
+
+                if message.role == .assistant {
+                    ReadAloudButton(message: message, controller: readAloudController)
+                }
+            }
+            .padding(.top, 2)
+            // Fixed 34 pt buttons: larger glyphs would overlap each other.
+            .conduitFixedGlyph()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 // MARK: - System Message (slash command output)
 
 struct SystemBubble: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
     let message: ChatMessage
 
     private var isRuntimeNotice: Bool {
-        MessageNormalizer.systemNoticeText(fromText: message.rawContent ?? message.content) != nil
+        // Rows Hermes projected onto the timeline via `display_kind` are
+        // runtime notices by construction, even though their projected text
+        // (e.g. "Resumed interrupted turn") matches no legacy marker.
+        message.displayKind != nil
+            || MessageNormalizer.systemNoticeText(fromText: message.rawContent ?? message.content) != nil
     }
 
     var body: some View {
@@ -560,7 +1620,7 @@ struct SystemBubble: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
-                    Text(isRuntimeNotice ? "System" : "Command")
+                    Text(isRuntimeNotice ? AppLocalization.string("System") : AppLocalization.string("Command"))
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.conduitAccent)
                         .textCase(.uppercase)
@@ -588,10 +1648,17 @@ struct SystemBubble: View {
     }
 }
 
+/// Review activity summary. Intentionally OUTSIDE the chat text-size
+/// preference (issue #85): these status/activity cards — like tool cards —
+/// are not ordinary transcript Markdown and keep their fixed typography.
+/// (Of the system-message surfaces, only `SystemBubble`'s Markdown body
+/// follows `ChatTypography`.)
 private struct ReviewSummaryCard: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
     let activity: ReviewActivity
     let timestamp: String
     @EnvironmentObject private var appState: AppState
+    @Environment(\.chatRowDisclosure) private var disclosure
     @State private var expanded = false
 
     private var details: [String] { activity.details?.filter { !$0.isEmpty } ?? [] }
@@ -600,6 +1667,7 @@ private struct ReviewSummaryCard: View {
         VStack(alignment: .leading, spacing: 10) {
             Button {
                 guard !details.isEmpty else { return }
+                disclosure?.willToggle(nil, to: !expanded)
                 withAnimation(ConduitMotion.response) { expanded.toggle() }
             } label: {
                 HStack(alignment: .center, spacing: 10) {
@@ -612,29 +1680,37 @@ private struct ReviewSummaryCard: View {
                             .font(.caption2.weight(.bold))
                             .tracking(0.6)
                             .foregroundStyle(.secondary)
-                        Text(activity.summary)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
+                        SelectableTextView(
+                            text: activity.summary,
+                            font: .preferredFont(forTextStyle: .subheadline).withTraits(.traitBold),
+                            textColor: .label
+                        )
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     Spacer(minLength: 8)
                     MessageTimestampLabel(timestamp: timestamp, tone: .supporting)
                     if !details.isEmpty {
                         Image(systemName: expanded ? "chevron.up" : "chevron.down")
                             .font(.caption.weight(.semibold))
+                            .conduitFixedGlyph()
                             .foregroundStyle(.secondary)
+                            .frame(width: 28, height: 28)
                     }
                 }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(details.isEmpty)
+            .accessibilityLabel(details.isEmpty ? activity.summary : (expanded ? AppLocalization.string("Collapse review details") : AppLocalization.string("Expand review details")))
 
             if expanded, !details.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
                     ForEach(Array(details.enumerated()), id: \.offset) { _, detail in
-                        Text(detail)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
+                        SelectableTextView(
+                            text: detail,
+                            font: .preferredFont(forTextStyle: .callout),
+                            textColor: .secondaryLabel
+                        )
                     }
                 }
                 .padding(.top, 2)
@@ -642,12 +1718,12 @@ private struct ReviewSummaryCard: View {
 
             if let fullSessionId = activity.fullSessionId, !fullSessionId.isEmpty {
                 Button {
-                    Task { await appState.openSession(fullSessionId) }
+                    appState.requestOpenSession(fullSessionId)
                 } label: {
                     Label("Open full review", systemImage: "arrow.up.forward.square")
                         .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity)
-                        .frame(height: 42)
+                        .padding(.vertical, 6).frame(minHeight: 42)
                 }
                 .conduitGlassControl(cornerRadius: 14, tint: .conduitAccent.opacity(0.14))
             }
@@ -661,6 +1737,9 @@ private struct ReviewSummaryCard: View {
     }
 }
 
+/// Model-change summary. Intentionally OUTSIDE the chat text-size
+/// preference (issue #85) — a status/activity card with fixed typography;
+/// see ReviewSummaryCard.
 private struct ModelChangeSummaryCard: View {
     let model: String
     let provider: String
@@ -679,9 +1758,12 @@ private struct ModelChangeSummaryCard: View {
                     .font(.caption2.weight(.bold))
                     .tracking(0.6)
                     .foregroundStyle(.secondary)
-                Text("Model has been changed to \(provider)/\(model)")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
+                SelectableTextView(
+                    text: AppLocalization.string("Model has been changed to \(provider)/\(model)"),
+                    font: .preferredFont(forTextStyle: .subheadline).withTraits(.traitBold),
+                    textColor: .label
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             Spacer(minLength: 8)
@@ -697,40 +1779,180 @@ private struct ModelChangeSummaryCard: View {
     }
 }
 
+/// A voice call started from this chat: its spoken turns are saved as
+/// their own session, which the marker opens. In that session (`origin`),
+/// the same card leads back to the chat.
+private struct VoiceCallMarkerCard: View {
+    let link: VoiceCallChatLink
+    let origin: Bool
+    let open: () -> Void
+
+    private static let durationFormatter: DateComponentsFormatter = {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.hour, .minute, .second]
+        formatter.unitsStyle = .abbreviated
+        formatter.maximumUnitCount = 2
+        return formatter
+    }()
+    private static let timestampFormatter = ISO8601DateFormatter()
+
+    private var duration: String? {
+        Self.durationFormatter.string(from: max(0, link.endedAt.timeIntervalSince(link.startedAt)))
+    }
+
+    private var title: String {
+        if origin { return AppLocalization.string("Started from \(link.chatTitle)") }
+        return link.resumed ? AppLocalization.string("Voice call resumed") : AppLocalization.string("Voice call")
+    }
+
+    private var detail: String {
+        if origin { return AppLocalization.string("Open chat") }
+        return duration.map { AppLocalization.string("\($0) · Open transcript") } ?? AppLocalization.string("Open transcript")
+    }
+
+    private var started: String? {
+        MessageTimestampFormatter.displayString(for: Self.timestampFormatter.string(from: link.startedAt))
+    }
+
+    /// Title, length (not on the origin card) and start time; the action
+    /// stays in the hint.
+    private var spokenLabel: String {
+        [title, origin ? nil : duration, started.map { AppLocalization.string("Started \($0)") }]
+            .compactMap { $0 }
+            .joined(separator: ", ")
+    }
+
+    var body: some View {
+        Button(action: open) {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: origin ? "bubble.left.and.bubble.right.fill" : "phone.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.conduitAccent)
+                    .frame(width: 28, height: 28)
+                    .background(Color.conduitAccent.opacity(0.14), in: Circle())
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                if let started {
+                    Text(started)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(Color.conduitAccent.opacity(0.78))
+                        .monospacedDigit()
+                }
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
+            .padding(14)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .conduitGlassSurface(cornerRadius: 18, tint: .conduitAccent.opacity(0.07))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(Color.conduitAccent.opacity(0.16), lineWidth: 1)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(spokenLabel))
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint(Text(origin ? AppLocalization.string("Opens the chat this call was started from") : AppLocalization.string("Opens the call's transcript")))
+    }
+}
+
+/// Settled reasoning-row content, gated the same way as assistant/user
+/// content: identical presentation inputs skip body evaluation during
+/// unrelated AppState publishes. Internal (not private) so the gate
+/// contract is directly testable.
+struct SettledThinkingCardContent: View, Equatable {
+    let message: ChatMessage
+    let displayName: String
+    let avatarURL: URL?
+    /// Explicit Dynamic Type input — see SettledAssistantMessageContent.
+    let sizeCategory: ContentSizeCategory
+    /// Explicit chat text-size input — see SettledAssistantMessageContent.
+    let chatTextSize: ChatTextSize
+    @Environment(\.chatRowDisclosure) private var disclosure
+    /// Nil until tapped here: a rebuilt row (the live card settling, a lazy
+    /// row coming back) takes what the reader chose from `disclosure`.
+    @State private var expanded: Bool?
+
+    private var isExpanded: Bool {
+        expanded ?? disclosure?.isExpanded(message.id, default: false) ?? false
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.message == rhs.message
+            && lhs.displayName == rhs.displayName
+            && lhs.avatarURL == rhs.avatarURL
+            && lhs.sizeCategory == rhs.sizeCategory
+            && lhs.chatTextSize == rhs.chatTextSize
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            ConduitAgentMark(
+                avatarURL: avatarURL,
+                displayName: displayName
+            )
+
+            DisclosureGroup(isExpanded: Binding(
+                get: { isExpanded },
+                set: { newValue in
+                    guard newValue != isExpanded else { return }
+                    disclosure?.willToggle(message.id, to: newValue)
+                    expanded = newValue
+                }
+            )) {
+                SelectableTextView(
+                    text: message.content,
+                    font: ChatTypography.font(for: .thinking, chatSize: chatTextSize),
+                    textColor: .secondaryLabel
+                )
+                    .padding(.top, 4)
+            } label: {
+                HStack(spacing: 6) {
+                    Label("Thinking", systemImage: "brain.head.profile")
+                    MessageTimestampLabel(timestamp: message.timestamp)
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            }
+            .tint(.conduitAccent)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .conduitGlassSurface(cornerRadius: 16, tint: .conduitAccent.opacity(0.06))
+
+            Spacer(minLength: 28)
+        }
+    }
+}
+
 struct ThinkingCard: View {
     let message: ChatMessage
     @EnvironmentObject var appState: AppState
-    @State private var expanded = false
+    @Environment(\.sizeCategory) private var sizeCategory
+    @Environment(\.chatTextSize) private var chatTextSize
 
     var body: some View {
         if appState.displayPreferences.showReasoning, !message.content.isEmpty {
-            HStack(alignment: .top, spacing: 10) {
-                ConduitAgentMark(
-                    avatarURL: appState.profileAvatarURL(for: appState.activeProfile),
-                    displayName: appState.profileDisplayName(appState.activeProfile)
-                )
-
-                DisclosureGroup(isExpanded: $expanded) {
-                    Text(message.content)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .padding(.top, 4)
-                } label: {
-                    HStack(spacing: 6) {
-                        Label("Thinking", systemImage: "brain.head.profile")
-                        MessageTimestampLabel(timestamp: message.timestamp)
-                    }
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                }
-                .tint(.conduitAccent)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .conduitGlassSurface(cornerRadius: 16, tint: .conduitAccent.opacity(0.06))
-
-                Spacer(minLength: 28)
-            }
+            SettledThinkingCardContent(
+                message: message,
+                displayName: appState.profileDisplayName(appState.activeProfile),
+                avatarURL: appState.profileAvatarURL(for: appState.activeProfile),
+                sizeCategory: sizeCategory,
+                chatTextSize: chatTextSize
+            )
+            .equatable()
         }
     }
 }
@@ -770,7 +1992,7 @@ enum MessageTimestampFormatter {
         return date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
     }
 
-    private static func date(from rawTimestamp: String) -> Date? {
+    static func date(from rawTimestamp: String) -> Date? {
         let value = rawTimestamp.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return nil }
 
@@ -779,27 +2001,55 @@ enum MessageTimestampFormatter {
             return Date(timeIntervalSince1970: seconds)
         }
 
-        if let date = ISO8601DateFormatter().date(from: value) { return date }
+        if let date = internetDateFormatter.date(from: value) { return date }
+        return fractionalInternetDateFormatter.date(from: value)
+    }
+
+    // Shared parsers: building an ISO8601DateFormatter is expensive, and
+    // this runs for every mounted row on each streaming publish.
+    private static let internetDateFormatter = ISO8601DateFormatter()
+    private static let fractionalInternetDateFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: value)
-    }
+        return formatter
+    }()
 }
 
 // MARK: - Tool Card
 
-struct ToolCard: View {
+/// Settled tool-row content, gated on the message and expansion default so
+/// streaming publishes skip its SelectableTextView measurement work.
+private struct SettledToolCardContent: View, Equatable {
     let message: ChatMessage
-    @State private var expanded = false
-    @EnvironmentObject var appState: AppState
+    let expandToolsByDefault: Bool
+    /// Explicit Dynamic Type input — see SettledAssistantMessageContent.
+    let sizeCategory: ContentSizeCategory
+    @Environment(\.chatRowDisclosure) private var disclosure
+    /// Nil until tapped here; see SettledThinkingCardContent.
+    @State private var tapped: Bool?
+
+    /// Open from the start when tools expand by default, rather than opening
+    /// on appear: a row that grows after its first layout moves everything
+    /// below it.
+    private var expanded: Bool {
+        tapped ?? disclosure?.isExpanded(message.id, default: expandToolsByDefault) ?? expandToolsByDefault
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.message == rhs.message
+            && lhs.expandToolsByDefault == rhs.expandToolsByDefault
+            && lhs.sizeCategory == rhs.sizeCategory
+    }
 
     var body: some View {
-        if appState.displayPreferences.showToolProgress, let tool = message.tool {
+        if let tool = message.tool {
             VStack(alignment: .leading, spacing: 0) {
                 Button {
+                    let opens = !expanded
+                    disclosure?.willToggle(message.id, to: opens)
                     withAnimation(ConduitMotion.response) {
                         Haptics.light()
-                        expanded.toggle()
+                        tapped = opens
                     }
                 } label: {
                     VStack(alignment: .leading, spacing: 3) {
@@ -828,16 +2078,21 @@ struct ToolCard: View {
                                     .foregroundStyle(.tertiary)
                             }
                         }
-                        if !expanded, let preview = collapsedPreview(for: tool) {
-                            Text(preview)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(Color.primary.opacity(0.74))
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                        }
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
+                }
+
+                if !expanded, let preview = collapsedPreview(for: tool) {
+                    SelectableTextView(
+                        text: preview,
+                        font: .monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .caption2).pointSize, weight: .regular),
+                        textColor: UIColor(Color.primary.opacity(0.74)),
+                        maximumNumberOfLines: 1
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
                 }
 
                 if expanded {
@@ -847,9 +2102,12 @@ struct ToolCard: View {
                                 Text("Input")
                                     .font(.caption2.bold())
                                     .foregroundStyle(.tertiary)
-                                Text(input)
-                                    .font(.system(.caption, design: .monospaced))
-                                    .foregroundStyle(.secondary)
+                                SelectableTextView(
+                                    text: ToolCard.truncateForDisplay(input, maxLines: 500),
+                                    font: .monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .regular),
+                                    textColor: .secondaryLabel,
+                                    maximumNumberOfLines: 0
+                                )
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
@@ -858,10 +2116,12 @@ struct ToolCard: View {
                                 Text("Output")
                                     .font(.caption2.bold())
                                     .foregroundStyle(.tertiary)
-                                Text(output)
-                                    .font(.system(.caption, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(expanded ? nil : 3)
+                                SelectableTextView(
+                                    text: ToolCard.truncateForDisplay(output, maxLines: 500),
+                                    font: .monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .regular),
+                                    textColor: .secondaryLabel,
+                                    maximumNumberOfLines: 0
+                                )
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
@@ -872,11 +2132,6 @@ struct ToolCard: View {
                 }
             }
             .conduitGlassSurface(cornerRadius: 18, tint: tool.status == .running ? .conduitAccent.opacity(0.10) : .clear)
-            .onAppear {
-                if appState.displayPreferences.expandToolsByDefault {
-                    expanded = true
-                }
-            }
         }
     }
 
@@ -889,94 +2144,124 @@ struct ToolCard: View {
     }
 }
 
-// MARK: - Clarify Card
-
-struct ClarifyCard: View {
+struct ToolCard: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
     let message: ChatMessage
     @EnvironmentObject var appState: AppState
-    @State private var customAnswer = ""
+    @Environment(\.sizeCategory) private var sizeCategory
+
+    var body: some View {
+        if appState.displayPreferences.showToolProgress, message.tool != nil {
+            SettledToolCardContent(
+                message: message,
+                expandToolsByDefault: appState.displayPreferences.expandToolsByDefault,
+                sizeCategory: sizeCategory
+            )
+            .equatable()
+        }
+    }
+
+    /// Limits tool output rendered in the non-scrolling SelectableTextView to
+    /// avoid a single massive layout pass when expanding large command logs or
+    /// file reads. Returns the original string if under the cap; otherwise
+    /// truncates to the first `maxLines` lines with an ellipsis indicator.
+    static func truncateForDisplay(_ text: String, maxLines: Int) -> String {
+        let lines = text.components(separatedBy: "\n")
+        guard lines.count > maxLines else { return text }
+        return lines.prefix(maxLines).joined(separator: "\n") + AppLocalization.string("\n… (\(lines.count - maxLines) more lines)")
+    }
+}
+
+// MARK: - Clarify Card
+
+/// Where the visible question text lives on one clarification card. The
+/// header always renders the returned text exactly once; rows render their
+/// own titles only in a batch, so a single question is never title-less and
+/// a batch summary is never duplicated.
+enum ClarifyCardLayout {
+    /// One question: the header carries the question itself and the row
+    /// renders controls only — the exact legacy clarify card layout.
+    case singleQuestion
+    /// Several questions: the header summarizes once and every row carries
+    /// its own question title.
+    case batch
+
+    init(questionCount: Int) {
+        self = questionCount > 1 ? .batch : .singleQuestion
+    }
+
+    /// Text rendered in the card header beneath the status title.
+    func headerText(for activity: ClarifyActivity) -> String {
+        switch self {
+        case .singleQuestion:
+            return activity.questions.first?.question ?? ""
+        case .batch:
+            return AppLocalization.string("Hermes asked \(activity.questions.count) questions before it can continue")
+        }
+    }
+
+    /// Whether a question row draws its own title line.
+    var rowsShowTitles: Bool {
+        switch self {
+        case .singleQuestion: return false
+        case .batch: return true
+        }
+    }
+}
+
+struct ClarifyCard: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
+    let message: ChatMessage
+    @EnvironmentObject var appState: AppState
+    // Per-question draft state, keyed by the gateway qid: typed custom text
+    // and in-progress multi-select selections. Multi-select intentionally
+    // buffers locally — an RPC fires only on that question's confirm.
+    @State private var customAnswers: [String: String] = [:]
+    @State private var multiSelections: [String: Set<String>] = [:]
 
     var body: some View {
         if let clarify = message.clarify {
+            let layout = ClarifyCardLayout(questionCount: clarify.questions.count)
+            let displayStatus = clarify.presentationStatus
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
                     Image(systemName: "questionmark.bubble")
                         .foregroundStyle(.orange)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(statusTitle(for: clarify.status))
+                        Text(statusTitle(for: displayStatus))
                             .font(.caption2.weight(.bold))
                             .tracking(0.5)
-                            .foregroundStyle(statusColor(for: clarify.status))
-                        Text(clarify.question)
-                            .font(.subheadline.bold())
+                            .foregroundStyle(statusColor(for: displayStatus))
+                        SelectableTextView(
+                            text: layout.headerText(for: clarify),
+                            font: .preferredFont(forTextStyle: .subheadline).withTraits(.traitBold),
+                            textColor: .label
+                        )
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     Spacer(minLength: 8)
-                    if clarify.status == .submitting {
+                    if displayStatus == .submitting {
                         ProgressView().controlSize(.small)
-                    } else if clarify.status == .answered {
+                    } else if displayStatus == .answered,
+                              clarify.questions.contains(where: { $0.answer != nil }) {
+                        // Only an answer this device holds earns the check;
+                        // an answered-elsewhere settle renders no checkmark so
+                        // the header agrees with the body copy.
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(.green)
                     }
                     MessageTimestampLabel(timestamp: message.timestamp, tone: .supporting)
                 }
 
-                if clarify.status == .answered, let answer = clarify.answer {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("YOUR ANSWER")
-                            .font(.caption2.weight(.bold))
-                            .tracking(0.5)
-                            .foregroundStyle(.green)
-                        Text(answer)
-                            .font(.subheadline)
-                    }
-                    .padding(12)
-                    .background(Color.green.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                } else {
-                    ForEach(clarify.choices) { choice in
-                        Button {
-                            send(choice.value, for: clarify)
-                        } label: {
-                            HStack {
-                                Text(choice.label)
-                                    .font(.body)
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(.caption)
-                            }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
-                            .conduitGlassControl(cornerRadius: 14, tint: .conduitAccent.opacity(0.12))
-                            .foregroundStyle(.primary)
-                        }
-                        .disabled(!canRespond(clarify.status))
-                    }
-
-                    HStack(spacing: 8) {
-                        TextField(
-                            clarify.choices.isEmpty ? "Type your answer…" : "Something else…",
-                            text: $customAnswer,
-                            axis: .vertical
-                        )
-                        .lineLimit(1...4)
-                        .submitLabel(.send)
-                        .onSubmit { send(customAnswer, for: clarify) }
-                        .disabled(!canRespond(clarify.status))
-
-                        Button {
-                            send(customAnswer, for: clarify)
-                        } label: {
-                            Image(systemName: "arrow.up")
-                                .font(.subheadline.weight(.bold))
-                                .frame(width: 36, height: 36)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.white)
-                        .background(Color.orange, in: Circle())
-                        .disabled(customAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !canRespond(clarify.status))
-                        .opacity(customAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !canRespond(clarify.status) ? 0.45 : 1)
-                    }
-                    .padding(8)
-                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                ForEach(clarify.questions) { question in
+                    ClarifyQuestionRow(
+                        question: question,
+                        showsTitle: layout.rowsShowTitles,
+                        customAnswer: bindingForCustomAnswer(question),
+                        selection: bindingForSelection(question),
+                        onSend: { answer in send(answer, for: question, in: clarify) },
+                        onConfirmMultiSelect: { confirmMultiSelect(for: question, in: clarify) }
+                    )
                 }
 
                 if let error = clarify.error, !error.isEmpty {
@@ -990,23 +2275,42 @@ struct ClarifyCard: View {
         }
     }
 
-    private func canRespond(_ status: ClarifyActivity.Status) -> Bool {
-        status == .pending || status == .error
+    private func bindingForCustomAnswer(_ question: ClarifyQuestion) -> Binding<String> {
+        Binding(
+            get: { customAnswers[question.id] ?? "" },
+            set: { customAnswers[question.id] = $0 }
+        )
     }
 
-    private func send(_ answer: String, for clarify: ClarifyActivity) {
+    private func bindingForSelection(_ question: ClarifyQuestion) -> Binding<Set<String>> {
+        Binding(
+            get: { multiSelections[question.id] ?? [] },
+            set: { multiSelections[question.id] = $0 }
+        )
+    }
+
+    private func send(_ answer: String, for question: ClarifyQuestion, in clarify: ClarifyActivity) {
         let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, canRespond(clarify.status) else { return }
-        customAnswer = ""
-        Task { await appState.respondToClarify(requestId: clarify.requestId, answer: trimmed) }
+        guard !trimmed.isEmpty, question.isAnswerable else { return }
+        customAnswers[question.id] = ""
+        Task { await appState.respondToClarify(requestId: clarify.requestId, questionId: question.id, answer: trimmed) }
+    }
+
+    private func confirmMultiSelect(for question: ClarifyQuestion, in clarify: ClarifyActivity) {
+        // Preserve the gateway's choice order rather than selection order.
+        let values = question.choices.filter { multiSelections[question.id]?.contains($0.value) == true }
+            .map(\.value)
+        guard !values.isEmpty else { return }
+        send(ClarifyQuestion.multiSelectAnswer(values), for: question, in: clarify)
     }
 
     private func statusTitle(for status: ClarifyActivity.Status) -> String {
         switch status {
-        case .pending: return "NEEDS YOUR INPUT"
-        case .submitting: return "SENDING ANSWER"
-        case .answered: return "ANSWERED"
-        case .error: return "TRY AGAIN"
+        case .pending: return AppLocalization.string("NEEDS YOUR INPUT")
+        case .submitting: return AppLocalization.string("SENDING ANSWER")
+        case .answered: return AppLocalization.string("ANSWERED")
+        case .error: return AppLocalization.string("TRY AGAIN")
+        case .expired: return AppLocalization.string("EXPIRED")
         }
     }
 
@@ -1015,13 +2319,290 @@ struct ClarifyCard: View {
         case .pending, .submitting: return .orange
         case .answered: return .green
         case .error: return .red
+        case .expired: return .secondary
         }
+    }
+}
+
+/// One question inside a clarification card: single-choice buttons, genuine
+/// multi-select toggles with a confirm step, or a free-text field. Each row
+/// owns its answer/lock lifecycle — one question submitting or failing never
+/// disables its siblings, and an accepted answer renders locked. In a batch
+/// each row draws its own grouped box and title; a single-question card keeps
+/// the legacy flat layout (the card header already carries the title).
+struct ClarifyQuestionRow: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
+    let question: ClarifyQuestion
+    var showsTitle: Bool = true
+    @Binding var customAnswer: String
+    @Binding var selection: Set<String>
+    let onSend: (String) -> Void
+    let onConfirmMultiSelect: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if showsTitle {
+                HStack(alignment: .top, spacing: 6) {
+                    SelectableTextView(
+                        text: question.question,
+                        font: .preferredFont(forTextStyle: .subheadline).withTraits(.traitBold),
+                        textColor: .label
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    statusIcon
+                }
+            }
+            // Without a title (single-question card) the card header already
+            // carries the question text and the status title/icon.
+
+            switch question.status {
+            case .answered:
+                answeredBlock
+            case .expired:
+                Text("No longer active")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .submitting:
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Locking your answer…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            case .pending, .error:
+                controls
+                if let error = question.error, !error.isEmpty {
+                    Label(error, systemImage: "exclamationmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+        }
+        .padding(showsTitle ? 12 : 0)
+        .background {
+            if showsTitle {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.primary.opacity(0.04))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var statusIcon: some View {
+        switch question.status {
+        case .answered:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.green)
+        case .error:
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.red)
+        case .expired:
+            Image(systemName: "clock.badge.xmark")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .pending, .submitting:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var answeredBlock: some View {
+        if let answer = question.resolvedAnswer, !answer.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("YOUR ANSWER")
+                    .font(.caption2.weight(.bold))
+                    .tracking(0.5)
+                    .foregroundStyle(.green)
+                SelectableTextView(
+                    text: answer,
+                    font: .preferredFont(forTextStyle: .subheadline),
+                    textColor: .label
+                )
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.green.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        } else {
+            // Answered elsewhere (relay 409): settled, but this device's
+            // rejected text must not display as what Hermes received.
+            Text("Answered on another device")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var controls: some View {
+        if question.multiSelect {
+            multiSelectControls
+        } else {
+            singleChoiceControls
+        }
+    }
+
+    @ViewBuilder
+    private var singleChoiceControls: some View {
+        ForEach(question.choices) { choice in
+            Button {
+                onSend(choice.value)
+            } label: {
+                HStack {
+                    Text(choice.label)
+                        .font(.body)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .conduitGlassControl(cornerRadius: 14, tint: .conduitAccent.opacity(0.12))
+                .foregroundStyle(.primary)
+            }
+            .disabled(!isAnswerable)
+        }
+
+        HStack(spacing: 8) {
+            TextField(
+                question.choices.isEmpty ? AppLocalization.string("Type your answer…") : AppLocalization.string("Something else…"),
+                text: $customAnswer,
+                axis: .vertical
+            )
+            .lineLimit(1...4)
+            .submitLabel(.send)
+            .onSubmit { submitCustomAnswer() }
+            .disabled(!isAnswerable)
+
+            Button {
+                submitCustomAnswer()
+            } label: {
+                Image(systemName: "arrow.up")
+                    .font(.subheadline.weight(.bold))
+                    .conduitFixedGlyph()
+                    .frame(width: 36, height: 36)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Send answer") // MAC: a11y
+            .foregroundStyle(.white)
+            .background(Color.orange, in: Circle())
+            .disabled(!canSubmitCustomAnswer)
+            .opacity(canSubmitCustomAnswer ? 1 : 0.45)
+        }
+        .padding(8)
+        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var multiSelectControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(question.choices) { choice in
+                Button {
+                    toggle(choice.value)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: selection.contains(choice.value) ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(selection.contains(choice.value) ? Color.orange : Color.secondary)
+                            .accessibilityHidden(true)
+                        Text(choice.label)
+                            .font(.body)
+                            .foregroundStyle(.primary)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .conduitGlassControl(cornerRadius: 14, tint: selection.contains(choice.value) ? .conduitAccent.opacity(0.2) : .conduitAccent.opacity(0.12))
+                }
+                .buttonStyle(.plain)
+                .disabled(!isAnswerable)
+                // VoiceOver announces "«choice», selected/not selected" from
+                // one label + trait pair; the decorative checkmark image is
+                // hidden so the state is never announced twice.
+                .accessibilityLabel(choice.label)
+                .accessibilityAddTraits(selection.contains(choice.value) ? .isSelected : [])
+            }
+
+            Button {
+                onConfirmMultiSelect()
+            } label: {
+                HStack {
+                    Text(confirmTitle)
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Image(systemName: "arrow.up")
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .conduitGlassControl(cornerRadius: 14, tint: .conduitAccent.opacity(0.14))
+                .foregroundStyle(.primary)
+            }
+            .disabled(selection.isEmpty || !isAnswerable)
+            .opacity(selection.isEmpty || !isAnswerable ? 0.45 : 1)
+
+            HStack(spacing: 8) {
+                TextField(
+                    "Or type a custom answer…",
+                    text: $customAnswer,
+                    axis: .vertical
+                )
+                .lineLimit(1...4)
+                .submitLabel(.send)
+                .onSubmit { submitCustomAnswer() }
+                .disabled(!isAnswerable)
+
+                Button {
+                    submitCustomAnswer()
+                } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.subheadline.weight(.bold))
+                        .conduitFixedGlyph()
+                        .frame(width: 36, height: 36)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Send answer") // MAC: a11y
+                .foregroundStyle(.white)
+                .background(Color.orange, in: Circle())
+                .disabled(!canSubmitCustomAnswer)
+                .opacity(canSubmitCustomAnswer ? 1 : 0.45)
+            }
+            .padding(8)
+            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+    }
+
+    private var confirmTitle: String {
+        selection.isEmpty ? AppLocalization.string("Select to confirm") : AppLocalization.string("Confirm \(selection.count) selected")
+    }
+
+    private var isAnswerable: Bool {
+        question.isAnswerable
+    }
+
+    private var canSubmitCustomAnswer: Bool {
+        isAnswerable && !customAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func toggle(_ value: String) {
+        guard isAnswerable else { return }
+        // Explicit copy-mutate-assign through the binding (a Binding<Set>'s
+        // wrappedValue also supports in-place mutation, but the explicit form
+        // makes the write-back unmistakable).
+        var updated = selection
+        if !updated.insert(value).inserted {
+            updated.remove(value)
+        }
+        selection = updated
+    }
+
+    private func submitCustomAnswer() {
+        guard canSubmitCustomAnswer else { return }
+        onSend(customAnswer)
     }
 }
 
 // MARK: - Approval Card
 
 struct ApprovalCard: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
     let message: ChatMessage
     @EnvironmentObject var appState: AppState
     @State private var confirmAlways = false
@@ -1037,8 +2618,12 @@ struct ApprovalCard: View {
                             .font(.caption2.weight(.bold))
                             .tracking(0.5)
                             .foregroundStyle(statusColor(for: approval.status))
-                        Text(approval.description)
-                            .font(.subheadline.bold())
+                        SelectableTextView(
+                            text: approval.description,
+                            font: .preferredFont(forTextStyle: .subheadline).withTraits(.traitBold),
+                            textColor: .label
+                        )
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     Spacer(minLength: 8)
                     if approval.status == .submitting {
@@ -1046,63 +2631,73 @@ struct ApprovalCard: View {
                     } else if approval.status == .approved || approval.status == .rejected {
                         Image(systemName: approval.status == .approved ? "checkmark.circle.fill" : "xmark.circle.fill")
                             .foregroundStyle(statusColor(for: approval.status))
+                    } else if approval.status == .expired {
+                        Image(systemName: "clock.badge.xmark")
+                            .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
                     }
                     MessageTimestampLabel(timestamp: message.timestamp, tone: .supporting)
                 }
 
                 if !approval.command.isEmpty {
-                    Text(approval.command)
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
-                        .lineLimit(5)
+                    SelectableTextView(
+                        text: approval.command,
+                        font: .monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .regular),
+                        textColor: .label,
+                        maximumNumberOfLines: 5
+                    )
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(12)
                         .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
 
-                if let choice = approval.choice,
-                   approval.status == .approved || approval.status == .rejected {
-                    Label(decisionTitle(choice), systemImage: approval.status == .approved ? "checkmark" : "xmark")
+                if approval.status == .approved || approval.status == .rejected {
+                    let text = approval.choice.map { decisionTitle($0) } ?? statusTitle(for: approval.status)
+                    Label(text, systemImage: approval.status == .approved ? "checkmark" : "xmark")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(statusColor(for: approval.status))
+                } else if approval.status == .expired {
+                    let explanation = approval.error?.isEmpty == false
+                        ? approval.error!
+                        : AppLocalization.string("This approval is no longer active — Hermes timed it out and continued.")
+                    Text(explanation)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 } else {
-                    HStack(spacing: 8) {
-                        Button {
-                            send("once", for: approval)
-                        } label: {
-                            Label("Run", systemImage: "play.fill")
+                    // Longer translations (German, Russian, French) don't fit
+                    // four buttons on one phone-width row, so the buttons fall
+                    // back to two rows instead of truncating their titles.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 8) {
+                            runButton(approval)
+                            allowButtons(approval)
+                            Spacer(minLength: 0)
+                            rejectButton(approval)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!allows("once", for: approval) || !canRespond(approval.status))
-
-                        if allows("session", for: approval) {
-                            Button("Allow session") {
-                                send("session", for: approval)
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 8) {
+                                runButton(approval)
+                                Spacer(minLength: 0)
+                                rejectButton(approval)
                             }
-                            .buttonStyle(.bordered)
-                            .disabled(!canRespond(approval.status))
-                        }
-
-                        if allows("always", for: approval) {
-                            Button("Always allow") {
-                                confirmAlways = true
+                            if allows("session", for: approval) || allows("always", for: approval) {
+                                HStack(spacing: 8) {
+                                    allowButtons(approval)
+                                }
                             }
-                            .buttonStyle(.bordered)
-                            .disabled(!canRespond(approval.status))
                         }
-
-                        Spacer(minLength: 0)
-
-                        Button("Reject", role: .destructive) {
-                            send("deny", for: approval)
+                        // When even two per row don't fit (large text,
+                        // narrow screens): one button per row.
+                        VStack(alignment: .leading, spacing: 8) {
+                            runButton(approval)
+                            allowButtons(approval)
+                            rejectButton(approval)
                         }
-                        .buttonStyle(.bordered)
-                        .disabled(!allows("deny", for: approval) || !canRespond(approval.status))
                     }
                     .font(.subheadline.weight(.medium))
                 }
 
-                if let error = approval.error, !error.isEmpty {
+                if approval.status != .expired, let error = approval.error, !error.isEmpty {
                     Label(error, systemImage: "exclamationmark.circle")
                         .font(.caption)
                         .foregroundStyle(.red)
@@ -1124,6 +2719,43 @@ struct ApprovalCard: View {
         }
     }
 
+    private func runButton(_ approval: ApprovalActivity) -> some View {
+        Button {
+            send("once", for: approval)
+        } label: {
+            Label("Run", systemImage: "play.fill")
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(!allows("once", for: approval) || !canRespond(approval.status))
+    }
+
+    @ViewBuilder
+    private func allowButtons(_ approval: ApprovalActivity) -> some View {
+        if allows("session", for: approval) {
+            Button("Allow session") {
+                send("session", for: approval)
+            }
+            .buttonStyle(.bordered)
+            .disabled(!canRespond(approval.status))
+        }
+
+        if allows("always", for: approval) {
+            Button("Always allow") {
+                confirmAlways = true
+            }
+            .buttonStyle(.bordered)
+            .disabled(!canRespond(approval.status))
+        }
+    }
+
+    private func rejectButton(_ approval: ApprovalActivity) -> some View {
+        Button("Reject", role: .destructive) {
+            send("deny", for: approval)
+        }
+        .buttonStyle(.bordered)
+        .disabled(!allows("deny", for: approval) || !canRespond(approval.status))
+    }
+
     private func allows(_ choice: String, for approval: ApprovalActivity) -> Bool {
         let choices = approval.choices ?? (approval.smartDenied ? ["once", "deny"] : ["once", "session", "always", "deny"])
         if choice == "always" && !approval.allowPermanent { return false }
@@ -1141,21 +2773,22 @@ struct ApprovalCard: View {
 
     private func decisionTitle(_ choice: String) -> String {
         switch choice {
-        case "once": return "Approved once"
-        case "session": return "Approved for this session"
-        case "always": return "Always allowed"
-        case "deny": return "Rejected"
+        case "once": return AppLocalization.string("Approved once")
+        case "session": return AppLocalization.string("Approved for this session")
+        case "always": return AppLocalization.string("Always allowed")
+        case "deny": return AppLocalization.string("Rejected")
         default: return choice
         }
     }
 
     private func statusTitle(for status: ApprovalActivity.Status) -> String {
         switch status {
-        case .pending: return "APPROVAL NEEDED"
-        case .submitting: return "SENDING DECISION"
-        case .approved: return "APPROVED"
-        case .rejected: return "REJECTED"
-        case .error: return "TRY AGAIN"
+        case .pending: return AppLocalization.string("APPROVAL NEEDED")
+        case .submitting: return AppLocalization.string("SENDING DECISION")
+        case .approved: return AppLocalization.string("APPROVED")
+        case .rejected: return AppLocalization.string("REJECTED")
+        case .expired: return AppLocalization.string("EXPIRED")
+        case .error: return AppLocalization.string("TRY AGAIN")
         }
     }
 
@@ -1163,7 +2796,239 @@ struct ApprovalCard: View {
         switch status {
         case .pending, .submitting: return .orange
         case .approved: return .green
-        case .rejected, .error: return .red
+        case .rejected, .expired, .error: return .red
+        }
+    }
+}
+
+/// Masked single-value prompt (sudo password, secret, password-manager
+/// unlock). The typed value lives only in this view's state: it is handed to
+/// AppState once on submit and cleared, never stored on the message.
+struct InputPromptCard: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
+    let message: ChatMessage
+    @EnvironmentObject var appState: AppState
+    /// The typed secret. Deliberately view state only — never AppState, the
+    /// message model or any cache — even though a lazy transcript can drop
+    /// it if the row scrolls far away: retyping is the accepted cost of the
+    /// value never outliving this card.
+    @State private var value = ""
+    @FocusState private var fieldFocused: Bool
+
+    var body: some View {
+        if let prompt = message.inputPrompt {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    Image(systemName: iconName(for: prompt.kind))
+                        .foregroundStyle(statusColor(for: prompt.status))
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(statusTitle(for: prompt.status))
+                            .font(.caption2.weight(.bold))
+                            .tracking(0.5)
+                            .foregroundStyle(statusColor(for: prompt.status))
+                        Text(prompt.title)
+                            .font(.subheadline.weight(.bold))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    Spacer(minLength: 8)
+                    if prompt.status == .submitting {
+                        ProgressView().controlSize(.small)
+                    } else if prompt.status == .expired {
+                        Image(systemName: "clock.badge.xmark")
+                            .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
+                    }
+                    MessageTimestampLabel(timestamp: message.timestamp, tone: .supporting)
+                }
+
+                if let detail = detail(for: prompt), !detail.isEmpty {
+                    SelectableTextView(
+                        text: detail,
+                        font: .monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .regular),
+                        textColor: .label,
+                        maximumNumberOfLines: 5
+                    )
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+
+                switch prompt.status {
+                case .submitted:
+                    Label(AppLocalization.string("Sent"), systemImage: "checkmark")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.green)
+                case .skipped:
+                    Label(AppLocalization.string("Skipped"), systemImage: "forward")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                case .expired:
+                    Text(prompt.error.flatMap { $0.isEmpty ? nil : $0 }
+                         ?? AppLocalization.string("This request is no longer active."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .pending, .submitting, .error:
+                    // No .textContentType(.password): it would offer to save
+                    // a sudo or password-manager master password to the
+                    // system keychain.
+                    SecureField(placeholder(for: prompt.kind), text: $value)
+                        .accessibilityHint(AppLocalization.string("Send gives Hermes this value. Skip lets it continue without one."))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .focused($fieldFocused)
+                        .submitLabel(.send)
+                        .onSubmit { submit(prompt) }
+                        .padding(10)
+                        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .disabled(!prompt.isAnswerable)
+
+                    HStack(spacing: 8) {
+                        Button {
+                            submit(prompt)
+                        } label: {
+                            Label(AppLocalization.string("Send"), systemImage: "paperplane.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!prompt.isAnswerable || !hasValue)
+
+                        Spacer(minLength: 0)
+
+                        Button(AppLocalization.string("Skip")) {
+                            skip(prompt)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(!prompt.isAnswerable)
+                    }
+                    .font(.subheadline.weight(.medium))
+                }
+
+                if prompt.status == .error, let error = prompt.error, !error.isEmpty {
+                    Label(error, systemImage: "exclamationmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+            .padding(16)
+            .conduitGlassSurface(cornerRadius: 22, tint: statusColor(for: prompt.status).opacity(0.08))
+            .onChange(of: prompt.status) { _, status in
+                // Drop the typed value once the request is settled either
+                // way. A failed send (.error) keeps it so the user can retry
+                // without retyping; it never leaves this view's state.
+                if status == .submitted || status == .skipped || status == .expired { value = "" }
+            }
+        }
+    }
+
+    private func submit(_ prompt: InputPromptActivity) {
+        guard prompt.isAnswerable, hasValue else { return }
+        // Sent untrimmed: a password may legitimately contain spaces.
+        let answer = value
+        fieldFocused = false
+        Task { await appState.respondToInputPrompt(messageId: message.id, value: answer) }
+    }
+
+    /// Whitespace alone is not an answer (Hermes would store it as the
+    /// secret); only a real value enables Send. Deliberate trade-off: an
+    /// all-space password cannot be entered here, while one merely
+    /// containing spaces is sent untrimmed.
+    private var hasValue: Bool {
+        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func skip(_ prompt: InputPromptActivity) {
+        guard prompt.isAnswerable else { return }
+        value = ""
+        fieldFocused = false
+        Task { await appState.respondToInputPrompt(messageId: message.id, value: nil) }
+    }
+
+    private func detail(for prompt: InputPromptActivity) -> String? {
+        switch prompt.kind {
+        case .sudo: return prompt.command
+        case .secret: return prompt.envVar
+        case .vaultUnlock: return nil
+        }
+    }
+
+    private func iconName(for kind: InputPromptActivity.Kind) -> String {
+        switch kind {
+        case .sudo: return "lock.shield"
+        case .secret: return "key"
+        case .vaultUnlock: return "lock.rectangle.stack"
+        }
+    }
+
+    private func placeholder(for kind: InputPromptActivity.Kind) -> String {
+        switch kind {
+        case .sudo: return AppLocalization.string("sudo password")
+        case .secret: return AppLocalization.string("Secret value")
+        case .vaultUnlock: return AppLocalization.string("Master password")
+        }
+    }
+
+    private func statusTitle(for status: InputPromptActivity.Status) -> String {
+        switch status {
+        case .pending: return AppLocalization.string("INPUT NEEDED")
+        case .submitting: return AppLocalization.string("SENDING")
+        case .submitted: return AppLocalization.string("SENT")
+        case .skipped: return AppLocalization.string("SKIPPED")
+        case .expired: return AppLocalization.string("EXPIRED")
+        case .error: return AppLocalization.string("TRY AGAIN")
+        }
+    }
+
+    private func statusColor(for status: InputPromptActivity.Status) -> Color {
+        switch status {
+        case .pending, .submitting: return .orange
+        case .submitted: return .green
+        case .skipped: return .secondary
+        case .expired, .error: return .red
+        }
+    }
+}
+
+// MARK: - Live Turn Rows
+
+/// The running turn's live tail at the end of the transcript: the open
+/// thinking card, the streaming reply, or the working indicator. It observes
+/// `LiveTurnProjection` directly, which publishes at streaming cadence, so
+/// those ticks stop here instead of re-running ChatView's body. The rows sit
+/// in the transcript's LazyVStack as its own children, as they did inline.
+struct ChatLiveTurnRows: View {
+    @ObservedObject var projection: LiveTurnProjection
+    let isBusy: Bool
+    let author: String
+
+    var body: some View {
+        // Live reasoning renders from the projection, not the settled
+        // transcript: per-publish reasoning changes re-render only this
+        // card, never the ForEach data or the scroll-target cache.
+        // Chronology matches the pre-projection transcript — thinking
+        // streams at the tail, before the assistant answer.
+        if let segment = projection.reasoningSegment {
+            ThinkingCard(
+                message: ChatMessage(
+                    id: segment.id,
+                    role: .reasoning,
+                    content: segment.content,
+                    timestamp: segment.timestamp,
+                    author: author
+                )
+            )
+            .id(segment.id)
+        }
+
+        if !projection.streamingText.isEmpty {
+            StreamingBubble(
+                text: projection.streamingText,
+                active: isBusy
+            )
+            .id("streaming")
+        }
+
+        if isBusy && projection.streamingText.isEmpty {
+            TypingIndicator().id("typing")
         }
     }
 }
@@ -1191,7 +3056,7 @@ struct StreamingBubble: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
 
-                Text(active ? "Responding" : "Finishing")
+                Text(active ? AppLocalization.string("Responding") : AppLocalization.string("Finishing"))
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
 
@@ -1209,7 +3074,6 @@ struct StreamingBubble: View {
                     await appState.gatewayMediaDataURL(for: path, profile: appState.activeProfile)
                 }
             )
-            .textSelection(.disabled)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1241,9 +3105,10 @@ struct TypingIndicator: View {
 }
 
 private struct WorkingStatusLabel: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private let text = "Working…"
+    private let text = AppLocalization.string("Working…")
     private let cycleDuration = 1.9
     private let sweepFraction = 0.72
 
@@ -1319,25 +3184,74 @@ struct ConduitAgentMark: View {
     var isActive = false
     var avatarURL: URL?
     var displayName = "Hermes"
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isBreathing = false
+
+    /// One breath in and out: 1.1 s each way, eased at both ends.
+    static let breathDuration: TimeInterval = 2.2
+    /// The mark breathes for the whole turn, redrawing its glow each frame.
+    /// A forever animation runs at the display's rate; 30 fps looks the same
+    /// on a 30 pt avatar at half the frames or less.
+    static let breathingFramesPerSecond: Double = 30
+
+    /// 0 at rest, 1 at the full breath.
+    static func breath(at elapsed: TimeInterval) -> CGFloat {
+        CGFloat((1 - cos(2 * .pi * elapsed / breathDuration)) / 2)
+    }
 
     var body: some View {
+        if isActive {
+            ConduitBreathing { breath in
+                mark(breath: breath)
+            }
+        } else {
+            mark(breath: 0)
+        }
+    }
+
+    private func mark(breath: CGFloat) -> some View {
         ProfileAvatarView(profile: "", displayName: displayName, url: avatarURL)
             .overlay {
                 Circle()
                     .strokeBorder(Color.conduitAccent.opacity(isActive ? 0.52 : 0.22), lineWidth: 1)
             }
-            .shadow(color: Color.conduitAccent.opacity(isActive ? 0.42 : 0), radius: isBreathing ? 9 : 3)
-            .scaleEffect(isBreathing ? 1.06 : 1)
-            .task(id: isActive) {
-                guard isActive, !reduceMotion else {
-                    isBreathing = false
-                    return
-                }
-                withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
-                    isBreathing = true
-                }
-            }
+            .shadow(color: Color.conduitAccent.opacity(isActive ? 0.42 : 0), radius: 3 + 6 * breath)
+            .scaleEffect(1 + 0.06 * breath)
+    }
+}
+
+/// Breathes under the backdrop's rules: only while the app is active, and
+/// not with Reduce Motion, in Low Power Mode or while the phone runs hot.
+/// Each start (a new turn, or coming back to the app) begins at rest.
+private struct ConduitBreathing<Content: View>: View {
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var devicePower = DevicePowerState.shared
+    @ViewBuilder let content: (CGFloat) -> Content
+
+    var body: some View {
+        if ConduitBackdropMotionPolicy.shouldAnimate(
+            drifts: true,
+            sceneIsActive: scenePhase == .active,
+            reduceMotion: reduceMotion,
+            lowPowerMode: devicePower.isLowPowerModeEnabled,
+            thermalState: devicePower.thermalState
+        ) {
+            ConduitBreathingTimeline(content: content)
+        } else {
+            content(0)
+        }
+    }
+}
+
+/// Drives a breath from the moment it appears, so each turn's breathing
+/// starts at rest. Timed by system uptime like the backdrop, so a clock
+/// change mid-turn can't jump the phase.
+private struct ConduitBreathingTimeline<Content: View>: View {
+    @State private var startedAt = ProcessInfo.processInfo.systemUptime
+    @ViewBuilder let content: (CGFloat) -> Content
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1 / ConduitAgentMark.breathingFramesPerSecond)) { _ in
+            content(ConduitAgentMark.breath(at: ProcessInfo.processInfo.systemUptime - startedAt))
+        }
     }
 }

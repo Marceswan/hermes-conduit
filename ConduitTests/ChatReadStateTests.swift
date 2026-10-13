@@ -1,0 +1,340 @@
+import XCTest
+@testable import Conduit
+
+final class ChatReadStateTests: XCTestCase {
+    private let profile = "default"
+    private let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func row(
+        _ id: String,
+        count: Int?,
+        unread: Bool? = nil,
+        lastActivityAt: TimeInterval? = nil,
+        watermark: Double? = nil,
+        lineageRoot: String? = nil
+    ) -> SessionSummary {
+        SessionSummary(
+            id: id,
+            alternateIds: [],
+            title: id,
+            model: "Hermes",
+            updatedLabel: "",
+            lastActivityAt: lastActivityAt,
+            profile: profile,
+            source: .chat,
+            isActive: false,
+            isArchived: false,
+            messageCount: count,
+            isUnread: unread,
+            readWatermark: watermark,
+            lineageRootId: lineageRoot
+        )
+    }
+
+    func testFirstSightSeedsAsRead() {
+        var state = ChatReadState()
+        let session = row("a", count: 7)
+        state.observe([session], profile: profile, now: t0)
+        XCTAssertFalse(state.isUnread(session, profile: profile, now: t0))
+    }
+
+    func testNewMessagesAfterSeedAreUnreadUntilSeen() {
+        var state = ChatReadState()
+        state.observe([row("a", count: 7)], profile: profile, now: t0)
+        let grown = row("a", count: 9)
+        state.observe([grown], profile: profile, now: t0)
+        XCTAssertTrue(state.isUnread(grown, profile: profile, now: t0))
+
+        state.markSeen(grown, profile: profile, at: t0)
+        XCTAssertFalse(state.isUnread(grown, profile: profile, now: t0))
+    }
+
+    func testHermesFlagAloneMakesARowUnread() {
+        var state = ChatReadState()
+        let flagged = row("a", count: 3, unread: true)
+        state.observe([flagged], profile: profile, now: t0)
+        XCTAssertTrue(state.isUnread(flagged, profile: profile, now: t0))
+        XCTAssertTrue(state.serverUnread(flagged, profile: profile, now: t0))
+    }
+
+    func testOwnWriteOutranksAStaleListingUntilConfirmedOrLapsed() {
+        var state = ChatReadState()
+        let flagged = row("a", count: 3, unread: true)
+        state.observe([flagged], profile: profile, now: t0)
+        state.markSeen(flagged, profile: profile, at: t0)
+        state.recordServerWrite(flagged, profile: profile, unread: false, at: t0)
+
+        // A listing fetched before the PATCH landed still says unread.
+        state.observe([flagged], profile: profile, now: t0.addingTimeInterval(1))
+        XCTAssertFalse(state.isUnread(flagged, profile: profile, now: t0.addingTimeInterval(1)))
+
+        // A confirming listing retires the pending value.
+        let confirmed = row("a", count: 3, unread: false)
+        state.observe([confirmed], profile: profile, now: t0.addingTimeInterval(2))
+        XCTAssertTrue(state.pendingServerValues.isEmpty)
+        XCTAssertFalse(state.isUnread(confirmed, profile: profile, now: t0.addingTimeInterval(2)))
+    }
+
+    func testLapsedWriteYieldsToTheListing() {
+        var state = ChatReadState()
+        let flagged = row("a", count: 3, unread: true)
+        state.recordServerWrite(flagged, profile: profile, unread: false, at: t0)
+        let later = t0.addingTimeInterval(ChatReadState.pendingServerValueLifetime + 1)
+        XCTAssertTrue(state.isUnread(flagged, profile: profile, now: later))
+    }
+
+    func testMarkUnreadSticksUntilSeen() {
+        var state = ChatReadState()
+        let session = row("a", count: 4)
+        state.observe([session], profile: profile, now: t0)
+        state.markUnread(session, profile: profile)
+        XCTAssertTrue(state.isUnread(session, profile: profile, now: t0))
+        XCTAssertTrue(state.isMarkedUnread(session, profile: profile))
+
+        state.markSeen(session, profile: profile, at: t0)
+        XCTAssertFalse(state.isUnread(session, profile: profile, now: t0))
+        XCTAssertNil(state.ledger.markedUnread[profile])
+    }
+
+    func testLeavingAChatAdoptsItsLaggingCountButNotLaterActivity() {
+        var state = ChatReadState()
+        state.observe([row("a", count: 4)], profile: profile, now: t0)
+        // The user watched their own turn finish, then switched away.
+        state.markSeen(row("a", count: 4), profile: profile, at: t0)
+        let ownTurn = row("a", count: 6, lastActivityAt: t0.timeIntervalSince1970 - 2)
+        state.observe([ownTurn], profile: profile, now: t0.addingTimeInterval(10))
+        XCTAssertFalse(state.isUnread(ownTurn, profile: profile, now: t0))
+
+        // A reply that lands after they left stays unread.
+        state.markSeen(ownTurn, profile: profile, at: t0)
+        let laterReply = row("a", count: 8, lastActivityAt: t0.timeIntervalSince1970 + 60)
+        state.observe([laterReply], profile: profile, now: t0.addingTimeInterval(70))
+        XCTAssertTrue(state.isUnread(laterReply, profile: profile, now: t0.addingTimeInterval(70)))
+    }
+
+    func testOnlyAZeroWatermarkIsAnExplicitHermesMark() {
+        let state = ChatReadState()
+        let marked = row("a", count: 3, unread: true, watermark: 0)
+        let organic = row("b", count: 3, unread: true, watermark: 1_799_999_000)
+        XCTAssertTrue(state.isExplicitlyUnread(marked, profile: profile, now: t0))
+        XCTAssertFalse(state.isExplicitlyUnread(organic, profile: profile, now: t0))
+        XCTAssertTrue(state.isUnread(organic, profile: profile, now: t0))
+    }
+
+    func testLocalMarkSurvivesUntilAListingConfirmsHermesHoldsIt() {
+        var state = ChatReadState()
+        let session = row("a", count: 3)
+        state.observe([session], profile: profile, now: t0)
+        state.markUnread(session, profile: profile)
+        state.recordServerWrite(session, profile: profile, unread: true, at: t0)
+
+        // A gateway that accepts the write but never reports the flag.
+        let later = t0.addingTimeInterval(ChatReadState.pendingServerValueLifetime + 5)
+        state.observe([row("a", count: 3, unread: false)], profile: profile, now: later)
+        XCTAssertTrue(state.isUnread(session, profile: profile, now: later))
+
+        // A listing that confirms it retires the local stand-in.
+        state.recordServerWrite(session, profile: profile, unread: true, at: later)
+        let confirmed = row("a", count: 3, unread: true, watermark: 0)
+        state.observe([confirmed], profile: profile, now: later.addingTimeInterval(1))
+        XCTAssertFalse(state.isMarkedUnread(session, profile: profile))
+        XCTAssertTrue(state.isUnread(confirmed, profile: profile, now: later.addingTimeInterval(1)))
+    }
+
+    func testAFailedOlderWriteDoesNotDiscardANewerOne() {
+        var state = ChatReadState()
+        let session = row("a", count: 3, unread: true)
+        let first = state.recordServerWrite(session, profile: profile, unread: true, at: t0)
+        state.recordServerWrite(session, profile: profile, unread: false, at: t0)
+        state.discardServerWrite(session, profile: profile, generation: first)
+        XCTAssertFalse(state.serverUnread(session, profile: profile, now: t0))
+    }
+
+    func testPassiveCatchUpWaitsBeforeRewritingAnUnconfirmedFlag() {
+        var state = ChatReadState()
+        let session = row("a", count: 3, unread: true, watermark: 1_799_999_000)
+        XCTAssertTrue(state.mayRewritePassively(session, profile: profile, now: t0))
+        state.recordServerWrite(session, profile: profile, unread: false, at: t0)
+        XCTAssertFalse(state.mayRewritePassively(session, profile: profile, now: t0.addingTimeInterval(60)))
+        XCTAssertTrue(state.mayRewritePassively(
+            session,
+            profile: profile,
+            now: t0.addingTimeInterval(ChatReadState.passiveRewriteInterval)
+        ))
+    }
+
+    func testAConfirmedWriteAllowsTheNextPassiveRewrite() {
+        var state = ChatReadState()
+        let session = row("a", count: 3, unread: true, watermark: 1_799_999_000)
+        state.recordServerWrite(session, profile: profile, unread: false, at: t0)
+        state.observe([row("a", count: 3, unread: false, watermark: 1_800_000_000)], profile: profile, now: t0.addingTimeInterval(2))
+        XCTAssertTrue(state.mayRewritePassively(session, profile: profile, now: t0.addingTimeInterval(60)))
+    }
+
+    func testALocalReadHidesAStaleFlagWithoutAWrite() {
+        var state = ChatReadState()
+        let session = row("a", count: 3, unread: true, watermark: 1_799_999_000)
+        state.recordLocalRead(session, profile: profile, at: t0)
+        XCTAssertFalse(state.isUnread(session, profile: profile, now: t0.addingTimeInterval(1)))
+        XCTAssertTrue(state.mayRewritePassively(session, profile: profile, now: t0))
+    }
+
+    func testALeftChatWithoutATimestampKeepsNewMessagesUnread() {
+        var state = ChatReadState()
+        state.observe([row("a", count: 4)], profile: profile, now: t0)
+        state.markSeen(row("a", count: 4), profile: profile, at: t0)
+        let grown = row("a", count: 6)
+        state.observe([grown], profile: profile, now: t0.addingTimeInterval(10))
+        XCTAssertTrue(state.isUnread(grown, profile: profile, now: t0.addingTimeInterval(10)))
+    }
+
+    func testStalePendingEntriesArePruned() {
+        var state = ChatReadState()
+        let gone = row("gone", count: 3)
+        state.markSeen(gone, profile: profile, at: t0)
+        state.recordServerWrite(gone, profile: profile, unread: true, at: t0)
+        state.observe([], profile: profile, now: t0.addingTimeInterval(ChatReadState.seenPendingRefreshLifetime + 1))
+        XCTAssertTrue(state.pendingServerValues.isEmpty)
+        XCTAssertTrue(state.seenPendingRefresh.isEmpty)
+    }
+
+    func testCompressionKeepsReadStateThroughTheLineageRoot() {
+        var state = ChatReadState()
+        state.observe([row("root", count: 10)], profile: profile, now: t0)
+        let tip = row("tip", count: 10, lineageRoot: "root")
+        state.observe([tip], profile: profile, now: t0)
+        XCTAssertFalse(state.isUnread(tip, profile: profile, now: t0))
+        XCTAssertEqual(ChatReadState.durableID(for: tip), "root")
+    }
+
+    func testProfilesDoNotShareState() {
+        var state = ChatReadState()
+        let session = row("a", count: 2)
+        state.observe([session], profile: "work", now: t0)
+        state.markUnread(session, profile: "work")
+        XCTAssertTrue(state.isUnread(session, profile: "work", now: t0))
+        XCTAssertFalse(state.isUnread(session, profile: profile, now: t0))
+    }
+
+    func testForgetDropsEverything() {
+        var state = ChatReadState()
+        let session = row("a", count: 2)
+        state.observe([session], profile: profile, now: t0)
+        state.markUnread(session, profile: profile)
+        state.recordServerWrite(session, profile: profile, unread: true, at: t0)
+        state.recordDesktopViews(["a": 100, "other": 100], profile: profile)
+        state.forget(session, profile: profile)
+        XCTAssertNil(state.ledger.seenCounts[profile]?["a"])
+        XCTAssertFalse(state.isMarkedUnread(session, profile: profile))
+        XCTAssertTrue(state.pendingServerValues.isEmpty)
+        XCTAssertTrue(state.lastWriteAttempts.isEmpty)
+        XCTAssertEqual(state.desktopSeenThrough[profile], ["other": 100])
+    }
+
+    func testLedgerRoundTripsThroughJSON() throws {
+        var state = ChatReadState()
+        let session = row("a", count: 2)
+        state.observe([session], profile: profile, now: t0)
+        state.markUnread(session, profile: profile)
+        let data = try JSONEncoder().encode(state.ledger)
+        XCTAssertEqual(try JSONDecoder().decode(ChatReadLedger.self, from: data), state.ledger)
+    }
+
+    func testActivityWhileDesktopHadTheChatIsSeen() {
+        var state = ChatReadState()
+        state.observe([row("a", count: 4, lastActivityAt: 100)], profile: profile, now: t0)
+        state.recordDesktopViews(["a": 200], profile: profile)
+
+        let replyWhileOpen = row("a", count: 6, lastActivityAt: 150)
+        state.observe([replyWhileOpen], profile: profile, now: t0)
+        XCTAssertFalse(state.isUnread(replyWhileOpen, profile: profile, now: t0))
+
+        // A reply after Desktop moved on stays unread.
+        let replyAfter = row("a", count: 8, lastActivityAt: 250)
+        state.observe([replyAfter], profile: profile, now: t0)
+        XCTAssertTrue(state.isUnread(replyAfter, profile: profile, now: t0))
+    }
+
+    func testDesktopViewCoversHermesActivityFlagButNotItsMark() {
+        var state = ChatReadState()
+        // Conduit stamped both chats read at 100; replies landed at 150.
+        let flagged = row("a", count: 4, unread: true, lastActivityAt: 150, watermark: 100)
+        let marked = row("b", count: 4, unread: true, lastActivityAt: 150, watermark: 0)
+        state.observe([flagged, marked], profile: profile, now: t0)
+        XCTAssertTrue(state.isUnread(flagged, profile: profile, now: t0))
+
+        state.recordDesktopViews(["a": 200, "b": 200], profile: profile)
+        XCTAssertFalse(state.isUnread(flagged, profile: profile, now: t0), "Desktop had it when the reply landed")
+        XCTAssertTrue(state.serverUnread(flagged, profile: profile, now: t0), "Opening it here still clears Hermes' flag")
+        XCTAssertTrue(state.isUnread(marked, profile: profile, now: t0), "Mark as unread outranks Desktop")
+
+        let later = row("a", count: 4, unread: true, lastActivityAt: 250, watermark: 100)
+        XCTAssertTrue(state.isUnread(later, profile: profile, now: t0))
+    }
+
+    func testDesktopViewsMatchAStoredIdAliasAndKeepTheLatestTime() {
+        var state = ChatReadState()
+        state.observe([row("rt-1", count: 2, lastActivityAt: 100)], profile: profile, now: t0)
+        state.recordDesktopViews(["stored-1": 300], profile: profile)
+        state.recordDesktopViews(["stored-1": 200], profile: profile)
+        var grown = row("rt-1", count: 5, lastActivityAt: 290)
+        grown.storedSessionId = "stored-1"
+        state.observe([grown], profile: profile, now: t0)
+        XCTAssertFalse(state.isUnread(grown, profile: profile, now: t0))
+        XCTAssertEqual(state.desktopSeenTime(for: grown, profile: profile), 300)
+    }
+
+    func testADesktopViewNeedsAnActivityTimeAndLeavesMarksAlone() {
+        var state = ChatReadState()
+        state.observe([row("a", count: 2), row("b", count: 2, lastActivityAt: 100)], profile: profile, now: t0)
+        state.recordDesktopViews(["a": 500, "b": 500], profile: profile)
+        let undated = row("a", count: 4)
+        let marked = row("b", count: 2, lastActivityAt: 100)
+        state.markUnread(marked, profile: profile)
+        state.observe([undated, marked], profile: profile, now: t0)
+        XCTAssertTrue(state.isUnread(undated, profile: profile, now: t0))
+        XCTAssertTrue(state.isUnread(marked, profile: profile, now: t0))
+    }
+
+    func testForgettingDesktopViewsDropsThemForEveryProfile() {
+        var state = ChatReadState()
+        state.recordDesktopViews(["a": 100], profile: profile)
+        state.recordDesktopViews(["b": 100], profile: "work")
+        state.forgetDesktopViews()
+        XCTAssertTrue(state.desktopSeenThrough.isEmpty)
+    }
+
+    func testDesktopViewsReplyParsesSeenTimesAndAdvancesTheCursorOnSettledChatsOnly() {
+        let response: [String: Any] = [
+            "ok": true,
+            "observing": true,
+            "views": [
+                "settled": ["seen_through": 300, "opened_at": 200, "open": false] as [String: Any],
+                "selected": ["seen_through": 900, "opened_at": 800, "open": true] as [String: Any],
+                "infinite": ["seen_through": Double.infinity, "open": false] as [String: Any],
+                "garbled": "not an entry",
+            ] as [String: Any],
+        ]
+        let update = AppState.desktopViewsUpdate(from: response, cursor: 100)
+        XCTAssertEqual(update?.seen, ["settled": 300, "selected": 900])
+        XCTAssertEqual(update?.cursor, 300, "A chat still selected doesn't move the cursor")
+
+        XCTAssertEqual(AppState.desktopViewsUpdate(from: response, cursor: 400)?.cursor, 400)
+        XCTAssertEqual(AppState.desktopViewsUpdate(from: ["ok": true, "views": [:] as [String: Any]], cursor: nil)?.cursor, 0)
+        XCTAssertNil(AppState.desktopViewsUpdate(from: ["ok": false, "reason": "not observing"], cursor: 100))
+        XCTAssertNil(AppState.desktopViewsUpdate(from: ["ok": true], cursor: 100))
+    }
+
+    func testDashboardRowsCarryHermesUnreadFlag() {
+        let rows: [[String: Any]] = [
+            ["id": "a", "title": "A", "message_count": 3, "unread": true, "profile": "default"],
+            ["id": "b", "title": "B", "message_count": 3, "profile": "default"],
+        ]
+        let sessions = MessageNormalizer.normalizeSessions(
+            AnyCodable.from(["sessions": rows] as [String: Any]),
+            profile: nil
+        )
+        XCTAssertEqual(sessions.first { $0.id == "a" }?.isUnread, true)
+        XCTAssertNil(sessions.first { $0.id == "b" }?.isUnread)
+    }
+}

@@ -7,6 +7,26 @@ import Foundation
 
 @MainActor
 final class HermesVoiceGateway: VoiceGatewayService {
+    /// Mirrors Hermes Desktop's transcription request policy
+    /// (apps/desktop/src/api/system.ts): remote providers and long recordings
+    /// regularly exceed short request ceilings, so every request gets a
+    /// generous floor that scales with the payload and clamps at a cap.
+    static let transcriptionMinimumRequestTimeoutMilliseconds = 180_000
+    static let transcriptionMaximumRequestTimeoutMilliseconds = 600_000
+    /// The payload is the base64 audio data URL itself, so its length tracks
+    /// clip size. Conduit records 16kHz mono 16-bit WAV (~42.7k base64
+    /// characters per second of audio), so 0.1ms per character budgets ~4.3s
+    /// of timeout per 1s of audio before the cap clamps it.
+    static let transcriptionTimeoutMillisecondsPerDataURLCharacter = 0.1
+
+    static func transcriptionRequestTimeoutMilliseconds(dataURLCharacterCount: Int) -> Int {
+        let estimated = max(
+            transcriptionMinimumRequestTimeoutMilliseconds,
+            Int(ceil(Double(dataURLCharacterCount) * transcriptionTimeoutMillisecondsPerDataURLCharacter))
+        )
+        return min(transcriptionMaximumRequestTimeoutMilliseconds, estimated)
+    }
+
     let profile: String
     private let bridge: DashboardTicketBridge
     private let baseURL: String
@@ -19,15 +39,20 @@ final class HermesVoiceGateway: VoiceGatewayService {
     }
 
     func transcribe(_ audio: VoiceCapturedAudio) async throws -> String {
+        // Base64 encoding is expensive for long recordings — build the data
+        // URL once and reuse it for both the payload and the timeout budget.
+        let dataURL = audio.dataURL
         let response = try await bridge.requestJSON(
             path: "/api/audio/transcribe" + profileQuery,
             method: "POST",
-            body: ["data_url": audio.dataURL, "mime_type": "audio/wav"],
-            timeoutMilliseconds: 90_000
+            body: ["data_url": dataURL, "mime_type": "audio/wav"],
+            timeoutMilliseconds: Self.transcriptionRequestTimeoutMilliseconds(
+                dataURLCharacterCount: dataURL.utf8.count
+            )
         )
         if let error = response["error"] as? String, !error.isEmpty { throw DashboardTicketBridgeError.requestFailed(error) }
         guard let rawTranscript = response["transcript"] as? String ?? response["text"] as? String else {
-            throw DashboardTicketBridgeError.requestFailed("Hermes did not return a transcription.")
+            throw DashboardTicketBridgeError.requestFailed(AppLocalization.string("Hermes didn't send back what you said. Try again."))
         }
         // Hermes deliberately returns an empty transcript for quiet audio or
         // filtered hallucinations. The controller treats that as re-listen,
@@ -45,17 +70,18 @@ final class HermesVoiceGateway: VoiceGatewayService {
         onEncodedAudio: @escaping @MainActor (Data) throws -> Void
     ) async throws -> VoiceSpeechStream {
         let ticket = try await bridge.mintTicket()
-        let url: URL
+        let request: URLRequest
         do {
-            url = try ConnectionURLPolicy.webSocketURL(
+            request = try Self.speechStreamRequest(
                 baseURL: baseURL,
-                path: "/api/audio/speak-stream",
-                queryItems: [URLQueryItem(name: "ticket", value: ticket), URLQueryItem(name: "profile", value: profile)]
+                ticket: ticket,
+                profile: profile,
+                cloudflareAccess: bridge.cloudflareAccess
             )
         } catch {
-            throw VoiceAudioError.unavailable("Could not open the speech stream.")
+            throw VoiceAudioError.unavailable(AppLocalization.string("Could not open the speech stream."))
         }
-        let task = URLSession.shared.webSocketTask(with: url)
+        let task = URLSession.shared.webSocketTask(with: request)
         task.resume()
         return HermesSpeechStream(
             task: task,
@@ -66,6 +92,25 @@ final class HermesVoiceGateway: VoiceGatewayService {
             onPCM16: onPCM16,
             onEncodedAudio: onEncodedAudio
         )
+    }
+
+    /// The speak-stream upgrade request. Behind Cloudflare Access the
+    /// upgrade must carry the service-token headers like the dashboard's
+    /// REST requests; without them Access refuses the handshake and only a
+    /// still-valid CF_Authorization cookie lets the stream through.
+    static func speechStreamRequest(
+        baseURL: String,
+        ticket: String,
+        profile: String,
+        cloudflareAccess: CloudflareAccessCredentials?
+    ) throws -> URLRequest {
+        let url = try ConnectionURLPolicy.webSocketURL(
+            baseURL: baseURL,
+            path: "/api/audio/speak-stream",
+            queryItems: [URLQueryItem(name: "ticket", value: ticket), URLQueryItem(name: "profile", value: profile)]
+        )
+        let request = URLRequest(url: url)
+        return request.applyingProxyHeaders(cloudflare: cloudflareAccess)
     }
 
     private static func loadFallbackAudio(bridge: DashboardTicketBridge, profile: String, text: String) async throws -> Data {
@@ -79,15 +124,67 @@ final class HermesVoiceGateway: VoiceGatewayService {
         if let error = response["error"] as? String, !error.isEmpty { throw DashboardTicketBridgeError.requestFailed(error) }
         guard let dataURL = response["data_url"] as? String ?? response["dataUrl"] as? String,
               let data = DataURLLimits.decodeBase64DataURL(dataURL) else {
-            throw DashboardTicketBridgeError.requestFailed("Hermes returned invalid fallback audio.")
+            throw DashboardTicketBridgeError.requestFailed(AppLocalization.string("Hermes returned invalid fallback audio."))
         }
         return data
     }
 }
 
+extension HermesVoiceGateway: VoiceLiveTranscriptionGateway {
+    func openLiveTranscription(
+        sampleRate: Double,
+        onPartial: @escaping @MainActor (String) -> Void,
+        onUnavailable: @escaping @MainActor () -> Void
+    ) async -> VoiceLiveTranscription? {
+        // A ticket or URL failure is not a verdict on the profile: this
+        // utterance just uses the upload, and the next one tries again.
+        guard let ticket = try? await bridge.mintTicket(),
+              let request = try? Self.liveTranscriptionRequest(
+                baseURL: baseURL,
+                ticket: ticket,
+                profile: profile,
+                cloudflareAccess: bridge.cloudflareAccess
+              ) else { return nil }
+        let task = URLSession.shared.webSocketTask(with: request)
+        task.resume()
+        return HermesLiveTranscription(
+            socket: task,
+            sampleRate: sampleRate,
+            onPartial: onPartial,
+            onUnavailable: onUnavailable
+        )
+    }
+
+    /// The transcribe-stream upgrade request, authenticated like the
+    /// speak-stream one (ticket query, Cloudflare Access headers).
+    static func liveTranscriptionRequest(
+        baseURL: String,
+        ticket: String,
+        profile: String,
+        cloudflareAccess: CloudflareAccessCredentials?
+    ) throws -> URLRequest {
+        let url = try ConnectionURLPolicy.webSocketURL(
+            baseURL: baseURL,
+            path: "/api/audio/transcribe-stream",
+            queryItems: [URLQueryItem(name: "ticket", value: ticket), URLQueryItem(name: "profile", value: profile)]
+        )
+        return URLRequest(url: url).applyingProxyHeaders(cloudflare: cloudflareAccess)
+    }
+}
+
+/// The slice of `URLSessionWebSocketTask` the speech stream uses, so tests
+/// can inject a socket whose handshake is refused.
+protocol HermesSpeechSocket: AnyObject {
+    func send(_ message: URLSessionWebSocketTask.Message) async throws
+    func receive() async throws -> URLSessionWebSocketTask.Message
+    func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?)
+}
+
+extension URLSessionWebSocketTask: HermesSpeechSocket {}
+
 @MainActor
-private final class HermesSpeechStream: VoiceSpeechStream {
-    private let task: URLSessionWebSocketTask
+final class HermesSpeechStream: VoiceSpeechStream {
+    private let task: any HermesSpeechSocket
     private let fallback: @MainActor (String) async throws -> Data
     private let onStart: @MainActor (Double) throws -> Void
     private let onPCM16: @MainActor (Data, Double) throws -> Void
@@ -105,16 +202,28 @@ private final class HermesSpeechStream: VoiceSpeechStream {
     private var finishRequested = false
     private var cancelledByClient = false
     private var finishTimeoutTask: Task<Void, Never>?
+    /// When the server last sent a frame (or finish began). The idle timer
+    /// measures silence from here, so a frame extends the window without
+    /// replacing the timer.
+    private var lastActivity = ContinuousClock.now
     private var finishSendTask: Task<Void, Never>?
+    /// How long the stream may stay silent after `finish()` before it is
+    /// judged dead. An idle window, not a total deadline: a long reply is
+    /// still being synthesized well past any fixed budget (Read Aloud sends
+    /// the whole message at once, so its synthesis runs entirely after
+    /// finish), and a total deadline cut it off mid-sentence (#303).
+    private let finishIdleTimeout: Duration
 
     init(
-        task: URLSessionWebSocketTask,
+        task: any HermesSpeechSocket,
+        finishIdleTimeout: Duration = .seconds(20),
         fallback: @escaping @MainActor (String) async throws -> Data,
         onStart: @escaping @MainActor (Double) throws -> Void,
         onPCM16: @escaping @MainActor (Data, Double) throws -> Void,
         onEncodedAudio: @escaping @MainActor (Data) throws -> Void
     ) {
         self.task = task
+        self.finishIdleTimeout = finishIdleTimeout
         self.fallback = fallback
         self.onStart = onStart
         self.onPCM16 = onPCM16
@@ -134,7 +243,20 @@ private final class HermesSpeechStream: VoiceSpeechStream {
         guard !text.isEmpty else { return }
         allText += text
         if fallbackMode { return }
-        try await sendJSON(["text": text])
+        do {
+            try await sendJSON(["text": text])
+        } catch {
+            if cancelledByClient { throw CancellationError() }
+            if terminal { throw terminalError ?? error }
+            if receivedPCM { throw error }
+            // The socket never carried speech (a refused handshake or an
+            // early drop). The text is already in allText, so finish() plays
+            // the one-shot /api/audio/speak fallback instead of failing the
+            // turn. The receive loop races this same failure, so whichever
+            // side sees it first, the result is fallback mode.
+            fallbackMode = true
+            task.cancel(with: .goingAway, reason: nil)
+        }
     }
 
     func finish() async throws -> Bool {
@@ -145,24 +267,7 @@ private final class HermesSpeechStream: VoiceSpeechStream {
         finishRequested = true
         return try await withCheckedThrowingContinuation { continuation in
             completed = continuation
-            finishTimeoutTask?.cancel()
-            finishTimeoutTask = Task { [weak self] in
-                do { try await Task.sleep(for: .seconds(20)) }
-                catch { return }
-                guard let self, !self.terminal, !self.cancelledByClient else { return }
-                if self.receivedPCM {
-                    self.complete(.failure(VoiceAudioError.unavailable("Hermes speech streaming timed out.")))
-                } else {
-                    self.fallbackMode = true
-                    // A send of {done:true} can remain suspended even after
-                    // the stream timeout. Retire it before scheduling the
-                    // fallback task, otherwise its occupied slot prevents
-                    // fallback audio from ever starting.
-                    self.finishSendTask?.cancel()
-                    self.finishSendTask = nil
-                    self.startFallbackIfNeeded()
-                }
-            }
+            armFinishIdleTimeout()
             finishSendTask = Task { [weak self] in
                 guard let self else { return }
                 do {
@@ -187,6 +292,40 @@ private final class HermesSpeechStream: VoiceSpeechStream {
         }
     }
 
+    /// Starts the post-finish idle timer: it fires only once the server has
+    /// sent nothing for the whole window, measured from the latest frame.
+    private func armFinishIdleTimeout() {
+        finishTimeoutTask?.cancel()
+        lastActivity = .now
+        let timeout = finishIdleTimeout
+        finishTimeoutTask = Task { [weak self] in
+            while true {
+                guard let deadline = self.map({ $0.lastActivity + timeout }) else { return }
+                do { try await Task.sleep(until: deadline, clock: .continuous) }
+                catch { return }
+                guard let self, !self.terminal, !self.cancelledByClient else { return }
+                if ContinuousClock.now - self.lastActivity >= timeout { break }
+            }
+            guard let self, !self.terminal, !self.cancelledByClient else { return }
+            // A fallback already in flight owns the outcome (its request has
+            // its own timeout); cancelling it here would leave finish()
+            // waiting forever.
+            if self.fallbackAttempted { return }
+            if self.receivedPCM {
+                self.complete(.failure(VoiceAudioError.unavailable(AppLocalization.string("Hermes speech streaming timed out."))))
+            } else {
+                self.fallbackMode = true
+                // A send of {done:true} can remain suspended even after
+                // the stream timeout. Retire it before scheduling the
+                // fallback task, otherwise its occupied slot prevents
+                // fallback audio from ever starting.
+                self.finishSendTask?.cancel()
+                self.finishSendTask = nil
+                self.startFallbackIfNeeded()
+            }
+        }
+    }
+
     func cancel() {
         guard !cancelledByClient else { return }
         cancelledByClient = true
@@ -202,7 +341,7 @@ private final class HermesSpeechStream: VoiceSpeechStream {
 
     private func sendJSON(_ object: [String: Any]) async throws {
         let data = try JSONSerialization.data(withJSONObject: object)
-        guard let string = String(data: data, encoding: .utf8) else { throw VoiceAudioError.unavailable("Could not encode speech request.") }
+        guard let string = String(data: data, encoding: .utf8) else { throw VoiceAudioError.unavailable(AppLocalization.string("Could not encode speech request.")) }
         // Hermes uses receive_json(), so these must be WebSocket text frames.
         try await task.send(.string(string))
     }
@@ -211,6 +350,7 @@ private final class HermesSpeechStream: VoiceSpeechStream {
         do {
             while !Task.isCancelled {
                 let message = try await task.receive()
+                lastActivity = .now
                 switch message {
                 case .data(let data):
                     if let control = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -249,7 +389,7 @@ private final class HermesSpeechStream: VoiceSpeechStream {
             task.cancel(with: .goingAway, reason: nil)
             startFallbackIfNeeded()
         case "error":
-            complete(.failure(DashboardTicketBridgeError.requestFailed(object["message"] as? String ?? "Hermes speech stream failed.")))
+            complete(.failure(DashboardTicketBridgeError.requestFailed(object["message"] as? String ?? AppLocalization.string("Hermes speech stream failed."))))
         default:
             break
         }

@@ -1,0 +1,138 @@
+name: opencode-review
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to review'
+        required: true
+        type: string
+concurrency:
+  group: opencode-review-${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: review (${{ matrix.reviewer }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - reviewer: DeepSeek V4.1 Flash
+            model: commandcode/deepseek/deepseek-v4.1-flash
+          - reviewer: GLM-5.3-Flash
+            model: zai-custom/glm-5.3-flash
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install opencode
+        timeout-minutes: 8
+        run: |
+          opencode_version=1.18.34
+          opencode_bin="$HOME/.opencode/bin/opencode"
+          opencode_bin_dir="$HOME/.opencode/bin"
+
+          opencode_version_matches=false
+          if [ -x "$opencode_bin" ] \
+            && installed_version=$("$opencode_bin" --version 2>/dev/null) \
+            && [ "$installed_version" = "$opencode_version" ]; then
+            opencode_version_matches=true
+          elif command -v opencode >/dev/null 2>&1; then
+            existing_opencode=$(command -v opencode)
+            if [ -x "$existing_opencode" ] \
+              && [ "$existing_opencode" != "$opencode_bin" ] \
+              && installed_version=$("$existing_opencode" --version 2>/dev/null) \
+              && [ "$installed_version" = "$opencode_version" ]; then
+              opencode_bin="$existing_opencode"
+              opencode_bin_dir="${existing_opencode%/*}"
+              opencode_version_matches=true
+            fi
+          fi
+
+          if [ "$opencode_version_matches" != true ]; then
+            installer="$RUNNER_TEMP/opencode-install.sh"
+            curl -fsSL \
+              --retry 3 \
+              --retry-all-errors \
+              --retry-delay 2 \
+              --connect-timeout 15 \
+              --max-time 120 \
+              "https://raw.githubusercontent.com/anomalyco/opencode/v${opencode_version}/install" \
+              -o "$installer"
+
+            installed=false
+            for attempt in 1 2 3; do
+              if GITHUB_ACTIONS=false bash "$installer" --version "$opencode_version" --no-modify-path \
+                && [ -x "$opencode_bin" ] \
+                && installed_version=$("$opencode_bin" --version 2>/dev/null) \
+                && [ "$installed_version" = "$opencode_version" ]; then
+                installed=true
+                break
+              fi
+
+              echo "opencode $opencode_version install attempt $attempt/3 failed" >&2
+              if [ "$attempt" -lt 3 ]; then
+                sleep "$((attempt * 5))"
+              fi
+            done
+
+            if [ "$installed" != true ]; then
+              echo "Failed to install opencode $opencode_version after 3 attempts" >&2
+              exit 1
+            fi
+          fi
+
+          if [ ! -x "$opencode_bin" ] \
+            || ! installed_version=$("$opencode_bin" --version 2>/dev/null) \
+            || [ "$installed_version" != "$opencode_version" ]; then
+            echo "opencode $opencode_version is not available at $opencode_bin" >&2
+            exit 1
+          fi
+
+          echo "$opencode_bin_dir" >> "$GITHUB_PATH"
+      - name: Run opencode review
+        run: GITHUB_EVENT_NAME=pull_request GITHUB_ACTOR=${{ github.repository_owner }} opencode github run
+        env:
+          COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.OPENCODE_GH_PAT }}
+          MODEL: ${{ matrix.model }}
+          USE_GITHUB_TOKEN: "true"
+          PROMPT: |
+            You are a code reviewer. DO NOT modify any files. DO NOT make commits.
+            DO NOT run builds or tests.
+            Start the review with the label: Review by ${{ matrix.reviewer }}.
+
+            Output a structured code review as your final message. Use this format:
+
+            ## Summary
+            (1-2 sentences on what this PR does)
+
+            ## Findings
+            For each issue found, write:
+            ### [severity: critical/major/minor/nit] Title
+            **File:** path:line
+            **Issue:** What's wrong
+            **Suggestion:** How to fix it
+
+            ## Verdict
+            APPROVE / REQUEST_CHANGES / COMMENT
+
+            Focus areas for Swift/iOS:
+            - Retain cycles (weak self in closures, especially Combine subscriptions)
+            - Force unwraps (!) and implicitly unwrapped optionals
+            - Concurrency issues (data races, MainActor violations, Swift 6 strict concurrency)
+            - SwiftUI lifecycle bugs (onAppear side effects, state management, body re-renders)
+            - Accessibility (missing labels, traits, dynamic type support)
+            - Memory leaks and resource cleanup
+
+            If you find no issues, say so explicitly. Do NOT summarize what you did
+            or describe your process. Output only the review.
