@@ -51,12 +51,16 @@ final class HoverTooltipPolicyTests: XCTestCase {
         XCTAssertTrue(tip?.hasSuffix("...") ?? false)
     }
 
-    func testSwiftUITextButtonWithEmptyImageIdentifierHasNoTooltip() {
-        var text = el(.button, label: "Connect")
-        text.imageIdentifier = ""
-        XCTAssertNil(HoverTooltipPolicy.decide(text, highlightEnabled: true).tooltip)
-        var icon = el(.button, label: "Send")
-        icon.imageIdentifier = "paperplane"
-        XCTAssertEqual(HoverTooltipPolicy.decide(icon, highlightEnabled: true).tooltip, "Send")
+    func testSwiftUIAmbiguousNodeIsJudgedByLabelWidth() {
+        func node(_ label: String, width: CGFloat, id: String) -> HoverElementSnapshot {
+            HoverElementSnapshot(role: .button, label: label, imageIdentifier: id, isEnabled: true,
+                                 frame: CGRect(x: 0, y: 0, width: width, height: 24))
+        }
+        // Wide enough to show its label: text button, no tooltip.
+        XCTAssertNil(HoverTooltipPolicy.tooltipText(node("Connect", width: 80, id: "")))
+        // Narrow with a longer accessibility label: icon or short title, tooltip.
+        XCTAssertEqual(HoverTooltipPolicy.tooltipText(node("Send message", width: 30, id: "")), "Send message")
+        // Symbol-backed is always an icon, whatever the width.
+        XCTAssertEqual(HoverTooltipPolicy.tooltipText(node("Send", width: 200, id: "paperplane")), "Send")
     }
 }

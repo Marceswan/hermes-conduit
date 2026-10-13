@@ -76,12 +76,27 @@ final class HighlightWindow: NSWindow {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
-    func show(around elementFrame: CGRect, over parent: NSWindow) {
-        setFrame(elementFrame.insetBy(dx: -2, dy: -2), display: true)
-        if self.parent !== parent { parent.addChildWindow(self, ordered: .above) }
+    private var closeObserver: NSObjectProtocol?
+
+    func show(around elementFrame: CGRect, over newParent: NSWindow) {
+        let frame = elementFrame.insetBy(dx: -2, dy: -2)
+        if parent !== newParent {
+            parent?.removeChildWindow(self)
+            newParent.addChildWindow(self, ordered: .above)
+            closeObserver.map(NotificationCenter.default.removeObserver)
+            closeObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification, object: newParent, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.hide() }
+            }
+        }
+        if self.frame != frame { setFrame(frame, display: true) }
     }
 
     func hide() {
+        guard parent != nil || isVisible else { return }
+        closeObserver.map(NotificationCenter.default.removeObserver)
+        closeObserver = nil
         parent?.removeChildWindow(self)
         orderOut(nil)
     }
