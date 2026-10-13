@@ -197,7 +197,8 @@ final class HoverAccessibilityEngine {
         apply(cursorState.update(showsHand: decision.showsPointingHand))
         if decision.highlights, let snapshot, snapshot.frame.width <= Self.maxHighlightSize.width,
            snapshot.frame.height <= Self.maxHighlightSize.height {
-            highlight.show(shape: HoverOutlineShape.make(frame: snapshot.frame, axPath: snapshot.shapePath), over: window)
+            highlight.show(shape: HoverOutlineShape.make(frame: snapshot.frame, axPath: snapshot.shapePath,
+                                                           platter: snapshot.platter), over: window)
         } else {
             highlight.hide()
         }
@@ -308,7 +309,13 @@ final class HoverAccessibilityEngine {
         var current = window.accessibilityHitTest(screenPoint) as? NSObject
         for _ in 0..<4 {
             guard let element = current else { return nil }
-            if let snapshot = snapshot(of: element) { return snapshot }
+            if var snapshot = snapshot(of: element) {
+                // A window-toolbar item reports its 52 pt slot or just its
+                // text; the outline follows the glass platter instead (D7).
+                snapshot.platter = ToolbarPlatterGeometry.platter(
+                    for: snapshot.frame, among: ToolbarPlatterGeometry.platters(in: window, near: snapshot.frame))
+                return snapshot
+            }
             current = element.axValue("accessibilityParent")
         }
         return nil

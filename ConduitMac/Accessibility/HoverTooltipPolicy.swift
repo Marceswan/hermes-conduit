@@ -22,10 +22,14 @@ struct HoverElementSnapshot: Equatable {
     /// The control's own shape in screen coordinates, when the accessibility
     /// layer reports one (SwiftUI nodes do; see `HoverOutlineShape`).
     var shapePath: NSBezierPath?
+    /// The system glass platter behind a window-toolbar item. When set, the
+    /// hover outline follows it instead of `frame` (D7). `frame` stays the
+    /// accessibility frame, which is what hit testing and tooltips judge.
+    var platter: ToolbarPlatter?
 
     init(role: NSAccessibility.Role?, label: String? = nil, title: String? = nil, value: String? = nil,
          help: String? = nil, imageIdentifier: String? = nil, childTexts: [String] = [],
-         isEnabled: Bool, frame: CGRect, shapePath: NSBezierPath? = nil) {
+         isEnabled: Bool, frame: CGRect, shapePath: NSBezierPath? = nil, platter: ToolbarPlatter? = nil) {
         self.role = role
         self.label = label
         self.title = title
@@ -36,6 +40,7 @@ struct HoverElementSnapshot: Equatable {
         self.isEnabled = isEnabled
         self.frame = frame
         self.shapePath = shapePath
+        self.platter = platter
     }
 }
 
