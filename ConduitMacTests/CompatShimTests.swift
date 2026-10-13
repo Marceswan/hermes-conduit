@@ -101,6 +101,30 @@ final class CompatShimTests: XCTestCase {
         XCTAssertEqual(try resolved(.aqua).blueComponent, 1, accuracy: 0.01)
     }
 
+    func testImageRendererProducesRequestedPixelsAndKeepsOrientation() throws {
+        let source = UIImage(size: NSSize(width: 4, height: 4), flipped: false) { rect in
+            NSColor.red.setFill()
+            NSRect(x: 0, y: 2, width: 4, height: 2).fill()   // top half red (AppKit origin is bottom-left)
+            NSColor.blue.setFill()
+            NSRect(x: 0, y: 0, width: 4, height: 2).fill()
+            return true
+        }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let rendered = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8), format: format).image { _ in
+            source.draw(in: CGRect(x: 0, y: 0, width: 8, height: 8))
+        }
+        let rep = try XCTUnwrap(rendered.representations.first as? NSBitmapImageRep)
+        XCTAssertEqual(rep.pixelsWide, 8)
+        XCTAssertEqual(rep.pixelsHigh, 8)
+        XCTAssertEqual(rendered.scale, 1, accuracy: 0.001)
+        // Bitmap rows run top to bottom: the red half must still be on top.
+        let top = try XCTUnwrap(rep.colorAt(x: 4, y: 1)?.usingColorSpace(.sRGB))
+        let bottom = try XCTUnwrap(rep.colorAt(x: 4, y: 6)?.usingColorSpace(.sRGB))
+        XCTAssertGreaterThan(top.redComponent, 0.9)
+        XCTAssertGreaterThan(bottom.blueComponent, 0.9)
+    }
+
     func testFontLineHeightPositive() {
         XCTAssertGreaterThan(UIFont.preferredFont(forTextStyle: .body).lineHeight, 0)
     }

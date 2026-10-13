@@ -249,7 +249,6 @@ targets:
           - "Views/ChatSupportSheets.swift"
           - "Views/Components/CameraCapture.swift"
           - "Views/Components/ChatTypography.swift"
-          - "Views/Components/ComposerBar.swift"
           - "Views/Components/ComposerFullEditor.swift"
           - "Views/Components/ComposerPasteTextView.swift"
           - "Views/Components/ComposerReturnKey.swift"
