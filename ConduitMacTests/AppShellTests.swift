@@ -14,21 +14,56 @@ final class AppShellTests: XCTestCase {
         XCTAssertFalse(ConduitMacAppDelegate().applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared))
     }
 
+    private final class CancelProbe {
+        var sawCancellation = false
+        var succeeded = false
+        var failed = false
+    }
+
     func testCancelStopsOperation() async {
         let task = NativeOAuthPresentationTask()
-        var finished = false
+        let probe = CancelProbe()
+        let started = expectation(description: "operation started")
+        let observedCancel = expectation(description: "operation observed cancellation")
         task.start(
             operation: {
-                try await Task.sleep(for: .seconds(30))
-                finished = true
+                started.fulfill()
+                do {
+                    try await Task.sleep(for: .seconds(30))
+                } catch is CancellationError {
+                    probe.sawCancellation = true
+                    observedCancel.fulfill()
+                    throw CancellationError()
+                }
                 throw CancellationError()
             },
-            onSuccess: { _ in XCTFail("no success after cancel") },
-            onError: { _ in XCTFail("no error after cancel") }
+            onSuccess: { _ in probe.succeeded = true },
+            onError: { _ in probe.failed = true }
         )
+        await fulfillment(of: [started], timeout: 5)
         task.cancel()
-        try? await Task.sleep(for: .milliseconds(100))
-        XCTAssertFalse(finished)
+        await fulfillment(of: [observedCancel], timeout: 5)
+        // Let the task's catch/cleanup run before checking the callbacks.
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(probe.sawCancellation)
+        XCTAssertFalse(probe.succeeded, "no success after cancel")
+        XCTAssertFalse(probe.failed, "no error after cancel")
+    }
+
+    /// Control: proves the harness can observe callbacks.
+    func testUncancelledOperationCallsOnSuccess() async {
+        let task = NativeOAuthPresentationTask()
+        let called = expectation(description: "onSuccess called")
+        let tokens = NativeOAuthTokenSet(accessToken: "a", refreshToken: "r", expiresAt: 0, provider: "p", userID: "u")
+        task.start(
+            operation: { NativeOAuthLoginResult(tokens: tokens, ticket: "t") },
+            onSuccess: { result in
+                XCTAssertEqual(result.ticket, "t")
+                called.fulfill()
+            },
+            onError: { _ in XCTFail("unexpected error") }
+        )
+        await fulfillment(of: [called], timeout: 5)
     }
 
     // MARK: openURL policy (R11)
