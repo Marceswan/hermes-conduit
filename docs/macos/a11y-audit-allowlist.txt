@@ -1,11 +1,4 @@
-# path:line entries (or path:symbol-name) the a11y audit should ignore, with a reason
-# Line numbers shift when upstream edits the file; prefer symbol names when possible.
-Conduit/Views/AuxiliaryViews.swift:1828  # Menu label HStack with Text(displayedValue) on the same line; chevron is decorative
-Conduit/Views/Components/ComposerAttachments.swift:404  # .accessibilityLabel("Remove ...") on the Button, more than 8 lines below the image
-Conduit/Views/Components/ComposerBar.swift:1238  # .accessibilityLabel("Start voice conversation") follows the glass modifier, beyond the window
-Conduit/Views/Components/ComposerBar.swift:1276  # .accessibilityLabel Stop/Cancel/Dictate follows the glass modifier, beyond the window
-Conduit/Views/GroupChatView.swift:703  # .accessibilityLabel Copy/Response copied is 10 lines below the image
-Conduit/Views/LiveVoiceCallSheet.swift:172  # .accessibilityLabel Minimise call/Close follows the glass modifier, beyond the window
-Conduit/Views/ProfilePickerSheet.swift:211  # reorderArrow helper; both call sites (lines 138, 140) add "Move ... earlier/later" labels
-Conduit/Views/RootView.swift:365  # .accessibilityLabel("Refresh conversation") follows the glass and disabled modifiers, beyond the window
-Conduit/Views/SidebarView.swift:260  # .accessibilityLabel("New voice call") is 9 lines below the image
+# Format: path | trimmed source line text   # reason
+# Content-keyed, so upstream line shifts do not matter. Entries matching no flagged site fail the test.
+Conduit/Views/ProfilePickerSheet.swift | Image(systemName: "camera.fill").font(.caption2.weight(.bold)).foregroundStyle(Color.conduitBackgroundColor)  # decorative badge inside avatar Button; upstream mis-indents the ZStack below the label line; Button has "Choose photo for ..." label
+Conduit/Views/ProfilePickerSheet.swift | Image(systemName: systemImage)  # reorderArrow helper; both call sites add "Move ... earlier/later" labels
