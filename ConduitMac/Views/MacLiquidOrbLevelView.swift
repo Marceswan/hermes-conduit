@@ -7,6 +7,11 @@ import SwiftUI
 /// Until the call's audio source has reported anything (or when it never
 /// does), the orb keeps the phase's own swell, so a provider that cannot
 /// measure looks as it did before.
+///
+/// The meter (its 30 Hz timer, the republishing, and a provider's polling)
+/// runs only while the orb animates AND its window shows. Visibility comes
+/// from the same signal that pauses the MTKView (window occlusion, minimise,
+/// no window); it starts false and the view reports true once it is on screen.
 struct MacLiquidOrbLevelView: View {
     let pipeline: LiquidOrbPipeline
     let look: LiveVoiceOrb.LiquidLook
@@ -14,6 +19,7 @@ struct MacLiquidOrbLevelView: View {
     let animates: Bool
     let lowPowerMode: Bool
     @ObservedObject var meter: LiveVoiceLevelMeter
+    @State private var isWindowVisible = false
 
     var body: some View {
         LiquidOrbView(
@@ -24,17 +30,26 @@ struct MacLiquidOrbLevelView: View {
             framesPerSecond: meter.drivesOrb
                 ? LiveVoiceLevelMeter.framesPerSecond(loud: meter.isLoud, lowPowerMode: lowPowerMode)
                 : LiveVoiceOrbPower.framesPerSecond(speaking: look.state == .speaking, lowPowerMode: lowPowerMode),
-            speechIsMeasured: meter.drivesOrb
+            speechIsMeasured: meter.drivesOrb,
+            onVisibilityChange: { visible in
+                // From an AppKit notification, possibly inside a view update.
+                DispatchQueue.main.async { isWindowVisible = visible }
+            }
         )
         .onAppear { sync() }
         .onChange(of: phase) { _, _ in sync() }
         .onChange(of: animates) { _, _ in sync() }
+        .onChange(of: isWindowVisible) { _, _ in sync() }
         .onDisappear { meter.stop() }
     }
 
-    /// A still orb has no use for a level: the meter and any polling stop.
+    /// A still or hidden orb has no use for a level: the meter and any polling stop.
     private func sync() {
         meter.route(phase: phase)
-        if animates { meter.start() } else { meter.stop() }
+        if Self.shouldMeter(animates: animates, windowVisible: isWindowVisible) { meter.start() } else { meter.stop() }
+    }
+
+    static func shouldMeter(animates: Bool, windowVisible: Bool) -> Bool {
+        animates && windowVisible
     }
 }

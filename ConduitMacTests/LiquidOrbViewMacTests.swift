@@ -68,6 +68,49 @@ final class LiquidOrbViewMacTests: XCTestCase {
         XCTAssertTrue(view.enableSetNeedsDisplay)
     }
 
+    func testVisibilityCallbackFiresOnChangeOnly() throws {
+        let pipeline = try requirePipeline()
+        let view = LiquidOrbMTKView(frame: CGRect(x: 0, y: 0, width: 100, height: 100), device: pipeline.device)
+        var seen: [Bool] = []
+        view.onVisibilityChange = { seen.append($0) }
+        view.setWindowVisible(true)
+        view.setWindowVisible(true)
+        view.setWindowVisible(false)
+        view.setWindowVisible(false)
+        view.setWindowVisible(true)
+        XCTAssertEqual(seen, [true, false, true])
+    }
+
+    func testMeterRunsOnlyWhileAnimatingAndShowing() {
+        XCTAssertTrue(MacLiquidOrbLevelView.shouldMeter(animates: true, windowVisible: true))
+        XCTAssertFalse(MacLiquidOrbLevelView.shouldMeter(animates: true, windowVisible: false))
+        XCTAssertFalse(MacLiquidOrbLevelView.shouldMeter(animates: false, windowVisible: true))
+    }
+
+    func testHiddenWindowStopsTheMeterAndShowingResumesIt() throws {
+        let pipeline = try requirePipeline()
+        let feed = LiveVoiceLevelFeed()
+        let meter = LiveVoiceLevelMeter(feed: feed)
+        let look = LiveVoiceOrb.LiquidLook(state: .listening, speech: 0)
+        let window = HostedTestSupport.host(
+            MacLiquidOrbLevelView(pipeline: pipeline, look: look, phase: .listening, animates: true, lowPowerMode: false, meter: meter)
+                .frame(width: 160, height: 160),
+            size: NSSize(width: 160, height: 160))
+        defer { HostedTestSupport.tearDown(window) }
+        func orbView() -> LiquidOrbMTKView? { Self.find(LiquidOrbMTKView.self, in: window.contentView) }
+        XCTAssertTrue(HostedTestSupport.waitUntil { orbView() != nil })
+        let view = try XCTUnwrap(orbView())
+        // Occluded or minimised: no timer, no watcher (so no provider polling).
+        view.setWindowVisible(false)
+        XCTAssertTrue(HostedTestSupport.waitUntil { !meter.isRunning && !feed.wantsSamples })
+        view.setWindowVisible(true)
+        XCTAssertTrue(HostedTestSupport.waitUntil { meter.isRunning && feed.wantsSamples })
+        XCTAssertEqual(meter.source, .microphone)
+        view.setWindowVisible(false)
+        XCTAssertTrue(HostedTestSupport.waitUntil { !meter.isRunning && !feed.wantsSamples })
+        XCTAssertEqual(meter.level, 0)
+    }
+
     func testRepresentableConfiguresViewAndFrameRate() throws {
         let pipeline = try requirePipeline()
         let model = OrbHostModel()

@@ -28,7 +28,8 @@ final class LiveVoiceMeteredAudioInput: GeminiLiveAudioInput {
             }
             let feed = feed
             base.onChunk = { chunk in
-                feed.pushInput(pcm16: chunk)
+                // Nothing watching: the chunk goes straight on, unmeasured.
+                if feed.wantsSamples { feed.pushInput(pcm16: chunk) }
                 newValue(chunk)
             }
         }
@@ -59,7 +60,7 @@ final class LiveVoiceMeteredAudioOutput: GeminiLiveAudioOutput {
 
     func play(_ pcm: Data, sampleRate: Double) throws {
         try base.play(pcm, sampleRate: sampleRate)
-        feed.pushOutput(pcm16: pcm, sampleRate: sampleRate)
+        if feed.wantsSamples { feed.pushOutput(pcm16: pcm, sampleRate: sampleRate) }
     }
 
     func interrupt() {

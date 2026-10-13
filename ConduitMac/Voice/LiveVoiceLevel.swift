@@ -105,6 +105,7 @@ final class LiveVoiceLevelFeed: @unchecked Sendable {
         var hasOutput = false
         var segments: [Segment] = []
         var watchers = 0
+        var watchObservers: [UUID: @Sendable (Bool) -> Void] = [:]
     }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
@@ -115,15 +116,44 @@ final class LiveVoiceLevelFeed: @unchecked Sendable {
 
     /// A meter started or stopped looking; counted, because a call can show
     /// more than one orb.
-    func beginWatching() { state.withLock { $0.watchers += 1 } }
-    func endWatching() { state.withLock { $0.watchers = max(0, $0.watchers - 1) } }
+    func beginWatching() {
+        let (became, observers) = state.withLock { current -> (Bool, [@Sendable (Bool) -> Void]) in
+            current.watchers += 1
+            return (current.watchers == 1, Array(current.watchObservers.values))
+        }
+        if became { observers.forEach { $0(true) } }
+    }
 
-    /// A new call (or the end of one): forgets every level, keeps the watchers.
+    func endWatching() {
+        let (became, observers) = state.withLock { current -> (Bool, [@Sendable (Bool) -> Void]) in
+            guard current.watchers > 0 else { return (false, []) }
+            current.watchers -= 1
+            return (current.watchers == 0, Array(current.watchObservers.values))
+        }
+        if became { observers.forEach { $0(false) } }
+    }
+
+    /// Told, on the thread that changed it, when `wantsSamples` flips. A
+    /// poller sleeps on this instead of waking to check.
+    func observeWatching(_ handler: @escaping @Sendable (Bool) -> Void) -> UUID {
+        let id = UUID()
+        state.withLock { $0.watchObservers[id] = handler }
+        return id
+    }
+
+    func removeWatchObserver(_ id: UUID) {
+        state.withLock { _ = $0.watchObservers.removeValue(forKey: id) }
+    }
+
+    /// A new call (or the end of one): forgets every level, keeps the
+    /// watchers and whoever is told about them.
     func reset() {
         state.withLock { current in
             let watchers = current.watchers
+            let observers = current.watchObservers
             current = State()
             current.watchers = watchers
+            current.watchObservers = observers
         }
     }
 
@@ -176,11 +206,12 @@ final class LiveVoiceLevelFeed: @unchecked Sendable {
             offset += windowFrames
         }
         let hop = Double(windowFrames) / sampleRate
+        let windows = values
         state.withLock { current in
             // Whatever finished playing a second ago is no longer needed.
             current.segments.removeAll { $0.end < time - 1 }
             let start = max(time, current.segments.last?.end ?? time)
-            current.segments.append(Segment(start: start, hop: hop, values: values))
+            current.segments.append(Segment(start: start, hop: hop, values: windows))
             current.hasOutput = true
         }
     }
@@ -266,7 +297,24 @@ final class LiveVoiceLevelMeter: ObservableObject {
     var drivesOrb: Bool { isMeasuring || level > 0 }
 
     func route(phase: LiveVoiceCallPhase, isMicrophoneMuted: Bool = false) {
-        source = LiveVoiceLevelRouting.source(phase: phase, isMicrophoneMuted: isMicrophoneMuted)
+        let next = LiveVoiceLevelRouting.source(phase: phase, isMicrophoneMuted: isMicrophoneMuted)
+        // The microphone hands over to the assistant (a mute, or its turn): none
+        // of the mic's smoothing tail may show. Ending the call still decays.
+        if source == .microphone, next == .assistant { clearLevel() }
+        source = next
+    }
+
+    private func clearLevel() {
+        smoothed = 0
+        if level != 0 { level = 0 }
+        if isLoud { isLoud = false }
+    }
+
+    deinit {
+        // A window closed without the orb disappearing must not leave the
+        // shared feed counting a watcher that no longer exists.
+        if timer != nil { feed.endWatching() }
+        timer?.invalidate()
     }
 
     func start() {
@@ -284,11 +332,15 @@ final class LiveVoiceLevelMeter: ObservableObject {
         self.timer = timer
     }
 
+    /// Stops the timer and the watching. The level goes to 0: nobody is looking,
+    /// and starting again must not show a level from before the pause.
     func stop() {
         guard let timer else { return }
         timer.invalidate()
         self.timer = nil
         feed.endWatching()
+        clearLevel()
+        lastTick = nil
     }
 
     /// One step. Internal for tests, which drive it with a synthetic clock.

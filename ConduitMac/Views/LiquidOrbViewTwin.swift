@@ -18,6 +18,9 @@ struct LiquidOrbView: NSViewRepresentable {
     /// `speech` is a measured audio level (LiveVoiceLevelMeter) rather than the
     /// call phase's 0 or 1: the renderer follows it closely instead of easing it.
     var speechIsMeasured = false
+    /// Told when the orb's window starts or stops showing (occlusion, minimise,
+    /// no window): the caller stops whatever feeds the orb while it is hidden.
+    var onVisibilityChange: ((Bool) -> Void)?
 
     func makeCoordinator() -> LiquidOrbRenderer {
         LiquidOrbRenderer(pipeline: pipeline, state: state, animates: animates)
@@ -37,8 +40,9 @@ struct LiquidOrbView: NSViewRepresentable {
     private func configure(_ view: LiquidOrbMTKView, renderer: LiquidOrbRenderer) {
         renderer.speechIsMeasured = speechIsMeasured
         renderer.update(state: state, speech: speech, animates: animates)
-        view.preferredFramesPerSecond = framesPerSecond
+        if view.preferredFramesPerSecond != framesPerSecond { view.preferredFramesPerSecond = framesPerSecond }
         view.wantsAnimation = animates
+        view.onVisibilityChange = onVisibilityChange
     }
 }
 
@@ -54,8 +58,10 @@ final class LiquidOrbMTKView: MTKView {
 
     /// Off under Reduce Motion and the like: frames are drawn on demand and hold still.
     var wantsAnimation = true {
-        didSet { applyPause() }
+        didSet { if wantsAnimation != oldValue { applyPause() } }
     }
+    /// Called (on the main thread) whenever `isWindowVisible` changes.
+    var onVisibilityChange: ((Bool) -> Void)?
     private(set) var isWindowVisible = false
     private var observers: [NSObjectProtocol] = []
 
@@ -125,10 +131,9 @@ final class LiquidOrbMTKView: MTKView {
     }
 
     private func displayChanged() {
+        // MTKView moves its display link to the new display by itself; only
+        // the pixel scale (a Retina display and a 1x one) is ours to follow.
         syncDrawableSize()
-        // Re-applying the rate makes the display link pick up the new display.
-        let rate = preferredFramesPerSecond
-        preferredFramesPerSecond = rate
     }
 
     private func syncDrawableSize() {
@@ -144,8 +149,10 @@ final class LiquidOrbMTKView: MTKView {
     }
 
     func setWindowVisible(_ visible: Bool) {
+        let changed = visible != isWindowVisible
         isWindowVisible = visible
         applyPause()
+        if changed { onVisibilityChange?(visible) }
     }
 
     /// Animating draws on the display link while the window shows; otherwise

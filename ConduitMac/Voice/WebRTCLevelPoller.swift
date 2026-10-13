@@ -1,8 +1,5 @@
 import Foundation
-import OSLog
 import WebRTC
-
-private let levelPollerLogger = Logger(subsystem: "com.milim.relay", category: "GPTLive")
 
 /// One entry of an `RTCStatisticsReport`, reduced to what the sampler reads.
 struct LiveVoiceRTCStat {
@@ -19,8 +16,10 @@ struct LiveVoiceRTCStat {
 /// energy accumulated since the last report over the time it covers
 /// (`totalAudioEnergy` / `totalSamplesDuration` deltas); when a report lacks
 /// them the instantaneous `audioLevel` stands in, trimmed 6 dB because
-/// libwebrtc's value tracks the peak, not the RMS.
-final class WebRTCLevelSampler {
+/// libwebrtc's value tracks the peak, not the RMS. The poller calls it from
+/// WebRTC's thread, one request at a time; the lock makes `reset` (main
+/// thread, on resuming after a pause) safe against that.
+final class WebRTCLevelSampler: @unchecked Sendable {
     struct Levels: Equatable {
         var microphone: Float?
         var assistant: Float?
@@ -35,9 +34,19 @@ final class WebRTCLevelSampler {
         var duration: Double
     }
 
+    private let lock = NSLock()
     private var previous: [String: Previous] = [:]
 
+    /// Forgets the last reports: after a pause the energy delta would span the whole gap.
+    func reset() {
+        lock.lock()
+        previous = [:]
+        lock.unlock()
+    }
+
     func levels(from stats: [LiveVoiceRTCStat]) -> Levels {
+        lock.lock()
+        defer { lock.unlock() }
         var result = Levels()
         for stat in stats {
             guard Self.isAudio(stat) else { continue }
@@ -78,11 +87,40 @@ final class WebRTCLevelSampler {
     }
 }
 
+/// At most one statistics request outstanding. A request whose handler never
+/// answers frees itself after `timeout`, so one lost callback cannot stall the
+/// level for the rest of the call.
+final class WebRTCStatsInFlight: @unchecked Sendable {
+    private let lock = NSLock()
+    private var startedAt: TimeInterval?
+    private let timeout: TimeInterval
+
+    init(timeout: TimeInterval = 1) {
+        self.timeout = timeout
+    }
+
+    func begin(at now: TimeInterval = LiveVoiceLevelFeed.now) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if let startedAt, now - startedAt < timeout { return false }
+        startedAt = now
+        return true
+    }
+
+    func end() {
+        lock.lock()
+        startedAt = nil
+        lock.unlock()
+    }
+}
+
 /// Polls an `RTCPeerConnection`'s statistics every ~50 ms for the call's
 /// audio levels and pushes them into the feed. RTCPeerConnection has no audio
 /// sink to tap (no RTCAudioRenderer in this build), and WebRTC owns both audio
-/// units, so the statistics are the way. It polls only while the orb is
-/// watching (`LiveVoiceLevelFeed.wantsSamples`).
+/// units, so the statistics are the way. It polls only while an orb is
+/// watching (`LiveVoiceLevelFeed.wantsSamples`): the loop is started and
+/// cancelled by the feed's watch signal, so an unwatched call (window
+/// occluded, sheet closed) costs no wakeups at all.
 @MainActor
 final class WebRTCLevelPoller {
     static let interval: Duration = .milliseconds(50)
@@ -90,8 +128,10 @@ final class WebRTCLevelPoller {
     private weak var connection: RTCPeerConnection?
     private let feed: LiveVoiceLevelFeed
     private let sampler = WebRTCLevelSampler()
-    private var task: Task<Void, Never>?
-    private let inFlight = InFlight()
+    private let inFlight = WebRTCStatsInFlight()
+    private var loop: Task<Void, Never>?
+    private var observer: UUID?
+    private var isStarted = false
 
     init(connection: RTCPeerConnection, feed: LiveVoiceLevelFeed = .shared) {
         self.connection = connection
@@ -99,9 +139,35 @@ final class WebRTCLevelPoller {
     }
 
     func start() {
-        guard task == nil else { return }
+        guard !isStarted else { return }
+        isStarted = true
         feed.reset()
-        task = Task { [weak self] in
+        observer = feed.observeWatching { [weak self] _ in
+            // Told on whichever thread flipped it; decided on the main actor.
+            Task { @MainActor [weak self] in self?.watchingChanged() }
+        }
+        watchingChanged()
+    }
+
+    func stop() {
+        isStarted = false
+        if let observer { feed.removeWatchObserver(observer) }
+        observer = nil
+        loop?.cancel()
+        loop = nil
+        feed.reset()
+    }
+
+    private func watchingChanged() {
+        guard isStarted, feed.wantsSamples else {
+            loop?.cancel()
+            loop = nil
+            return
+        }
+        guard loop == nil else { return }
+        // Resuming: an energy delta must not span the pause.
+        sampler.reset()
+        loop = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: Self.interval)
                 guard !Task.isCancelled, let self else { return }
@@ -110,19 +176,12 @@ final class WebRTCLevelPoller {
         }
     }
 
-    func stop() {
-        task?.cancel()
-        task = nil
-        feed.reset()
-    }
-
     private func poll() {
-        guard feed.wantsSamples, let connection, inFlight.begin() else { return }
+        guard let connection, inFlight.begin() else { return }
         let feed = feed
         let inFlight = inFlight
         let sampler = sampler
-        // WebRTC answers on its own thread: the sampler is only touched here,
-        // one request at a time, and the feed is thread safe.
+        // WebRTC answers on its own thread: the sampler locks, the feed is thread safe.
         connection.statistics { report in
             defer { inFlight.end() }
             let stats = report.statistics.values.map {
@@ -132,26 +191,6 @@ final class WebRTCLevelPoller {
             let now = LiveVoiceLevelFeed.now
             if let microphone = levels.microphone { feed.pushInput(rms: microphone, at: now) }
             if let assistant = levels.assistant { feed.pushOutput(rms: assistant, at: now) }
-        }
-    }
-
-    /// At most one statistics request outstanding.
-    private final class InFlight: @unchecked Sendable {
-        private let flag = NSLock()
-        private var busy = false
-
-        func begin() -> Bool {
-            flag.lock()
-            defer { flag.unlock() }
-            if busy { return false }
-            busy = true
-            return true
-        }
-
-        func end() {
-            flag.lock()
-            busy = false
-            flag.unlock()
         }
     }
 }

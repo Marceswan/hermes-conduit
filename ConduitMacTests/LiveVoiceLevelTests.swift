@@ -1,4 +1,5 @@
 import XCTest
+import os
 @testable import ConduitMac
 
 // Synthetic PCM16 helpers: a sine of the given peak amplitude (full scale = 1).
@@ -130,6 +131,25 @@ final class LiveVoiceLevelFeedTests: XCTestCase {
         feed.pushOutput(rms: 0.1, at: 50)
         XCTAssertEqual(try XCTUnwrap(feed.outputRMS(at: 50.1)), 0.1)
         XCTAssertEqual(try XCTUnwrap(feed.outputRMS(at: 50.6)), 0)
+    }
+
+    func testWatchObserversHearTransitionsOnly() {
+        let feed = LiveVoiceLevelFeed()
+        let log = OSAllocatedUnfairLock(initialState: [Bool]())
+        let id = feed.observeWatching { watching in log.withLock { $0.append(watching) } }
+        feed.beginWatching()
+        feed.beginWatching() // a second orb: no change
+        feed.endWatching()
+        XCTAssertEqual(log.withLock { $0 }, [true])
+        feed.endWatching()
+        feed.endWatching() // unbalanced: ignored
+        XCTAssertEqual(log.withLock { $0 }, [true, false])
+        feed.removeWatchObserver(id)
+        feed.beginWatching()
+        XCTAssertEqual(log.withLock { $0 }, [true, false])
+        // reset keeps the watchers
+        feed.reset()
+        XCTAssertTrue(feed.wantsSamples)
     }
 
     func testResetKeepsWhetherAnyoneIsWatching() {
@@ -269,6 +289,50 @@ final class LiveVoiceLevelMeterTests: XCTestCase {
         XCTAssertFalse(meter.isLoud)
     }
 
+    func testStopClearsTheLevelAndResumeShowsNoStaleSpike() {
+        let meter = meter()
+        meter.route(phase: .listening)
+        meter.start()
+        let t = run(meter, from: 0, seconds: 0.4, input: loud)
+        XCTAssertGreaterThan(meter.level, 0.9)
+        XCTAssertTrue(meter.isLoud)
+        // The window is occluded: the meter stops, and what was shown is gone.
+        meter.stop()
+        XCTAssertEqual(meter.level, 0)
+        XCTAssertFalse(meter.isLoud)
+        XCTAssertFalse(meter.feed.wantsSamples)
+        // Much later the window returns. The last mic sample is long stale: no spike.
+        meter.start()
+        meter.tick(now: t + 60)
+        XCTAssertEqual(meter.level, 0)
+        // And a fresh sample rises from 0 with the ordinary attack, one tick at a time.
+        meter.feed.pushInput(rms: loud, at: t + 60 + dt)
+        meter.tick(now: t + 60 + dt)
+        XCTAssertEqual(meter.level, Float(1 - exp(-dt / LiveVoiceLevelMeter.attack)), accuracy: 0.01)
+        meter.stop()
+    }
+
+    func testLeavingTheMicrophoneDropsItsTailAtOnce() {
+        let meter = meter()
+        meter.route(phase: .listening)
+        run(meter, from: 0, seconds: 0.5, input: loud)
+        XCTAssertGreaterThan(meter.level, 0.9)
+        // Mute: the very next route, before any tick, shows nothing of the mic.
+        meter.route(phase: .muted)
+        XCTAssertEqual(meter.level, 0)
+        run(meter, from: 0.5, seconds: 0.1, input: loud)
+        XCTAssertEqual(meter.level, 0)
+    }
+
+    func testDeallocatingARunningMeterReleasesItsWatch() {
+        let feed = LiveVoiceLevelFeed()
+        var meter: LiveVoiceLevelMeter? = LiveVoiceLevelMeter(feed: feed)
+        meter?.start()
+        XCTAssertTrue(feed.wantsSamples)
+        meter = nil
+        XCTAssertFalse(feed.wantsSamples)
+    }
+
     func testStartAndStopToggleWatching() {
         let feed = LiveVoiceLevelFeed()
         let meter = LiveVoiceLevelMeter(feed: feed)
@@ -314,6 +378,7 @@ final class LiveVoiceMeteredAudioTests: XCTestCase {
 
     func testInputChunksReachTheControllerAndTheFeed() throws {
         let feed = LiveVoiceLevelFeed()
+        feed.beginWatching()
         let base = FakeInput()
         let input = LiveVoiceMeteredAudioInput(base, feed: feed)
         var received: [Data] = []
@@ -331,8 +396,25 @@ final class LiveVoiceMeteredAudioTests: XCTestCase {
         XCTAssertNil(input.onChunk)
     }
 
+    func testNothingIsMeasuredWhileNobodyWatches() throws {
+        let feed = LiveVoiceLevelFeed()
+        let baseIn = FakeInput()
+        let input = LiveVoiceMeteredAudioInput(baseIn, feed: feed)
+        var received = 0
+        input.onChunk = { _ in received += 1 }
+        baseIn.onChunk?(sinePCM16(amplitude: 0.5, frames: 320, sampleRate: 16_000))
+        XCTAssertEqual(received, 1, "audio still flows")
+        XCTAssertNil(feed.inputRMS())
+        let baseOut = FakeOutput()
+        let output = LiveVoiceMeteredAudioOutput(baseOut, feed: feed)
+        try output.play(sinePCM16(amplitude: 0.5, frames: 4_800), sampleRate: 24_000)
+        XCTAssertEqual(baseOut.played, 1)
+        XCTAssertNil(feed.outputRMS())
+    }
+
     func testOutputPlaysMetersAndClears() throws {
         let feed = LiveVoiceLevelFeed()
+        feed.beginWatching()
         let base = FakeOutput()
         let output = LiveVoiceMeteredAudioOutput(base, feed: feed)
         try output.play(sinePCM16(amplitude: 0.5, frames: 4_800), sampleRate: 24_000)
@@ -416,6 +498,15 @@ final class WebRTCLevelSamplerTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(reset.assistant), 0.1, accuracy: 1e-6)
     }
 
+    func testResetDropsTheLastReportSoAGapIsNotAveraged() throws {
+        let sampler = WebRTCLevelSampler()
+        _ = sampler.levels(from: [stat("in", "inbound-rtp", level: 0.2, energy: 1, duration: 10)])
+        sampler.reset()
+        // Without a previous report the instantaneous level is used, not a delta over the pause.
+        let after = sampler.levels(from: [stat("in", "inbound-rtp", level: 0.2, energy: 50, duration: 700)])
+        XCTAssertEqual(try XCTUnwrap(after.assistant), 0.1, accuracy: 1e-6)
+    }
+
     func testMissingEverythingReportsNothing() {
         let sampler = WebRTCLevelSampler()
         let levels = sampler.levels(from: [stat("in", "inbound-rtp")])
@@ -435,5 +526,22 @@ final class LiquidOrbAudioMeasuredTests: XCTestCase {
         }
         XCTAssertEqual(LiquidOrbAudio.measured(level: 5), LiquidOrbAudio.measured(level: 1))
         XCTAssertEqual(LiquidOrbAudio.measured(level: .nan), LiquidOrbAudio())
+    }
+}
+
+final class WebRTCStatsInFlightTests: XCTestCase {
+    func testOneRequestAtATime() {
+        let flight = WebRTCStatsInFlight(timeout: 1)
+        XCTAssertTrue(flight.begin(at: 0))
+        XCTAssertFalse(flight.begin(at: 0.5))
+        flight.end()
+        XCTAssertTrue(flight.begin(at: 0.6))
+    }
+
+    func testALostHandlerFreesItselfAfterTheTimeout() {
+        let flight = WebRTCStatsInFlight(timeout: 1)
+        XCTAssertTrue(flight.begin(at: 0))
+        XCTAssertFalse(flight.begin(at: 0.9))
+        XCTAssertTrue(flight.begin(at: 1.1), "the handler never answered: polling resumes")
     }
 }
