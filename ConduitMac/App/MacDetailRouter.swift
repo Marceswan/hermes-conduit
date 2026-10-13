@@ -14,10 +14,23 @@ enum MacDetailDestination: Equatable {
 /// animation: upstream chat code reads the route through `MacChatRoute`.
 struct MacDetailRouter<Chat: View>: View {
     @EnvironmentObject private var appState: AppState
-    @AppStorage(MacSidebarState.tabDefaultsKey) private var selectedTabRaw = SidebarTab.sessions.rawValue
+    @AppStorage private var selectedTabRaw: String
+    private let notificationCenter: NotificationCenter
     private let chat: Chat
 
-    init(@ViewBuilder chat: () -> Chat) {
+    /// `defaults` and `notificationCenter` are injectable so tests can host a
+    /// router without sharing the tab key or the signal with the live app.
+    init(
+        defaults: UserDefaults = .standard,
+        notificationCenter: NotificationCenter = .default,
+        @ViewBuilder chat: () -> Chat
+    ) {
+        _selectedTabRaw = AppStorage(
+            wrappedValue: SidebarTab.sessions.rawValue,
+            MacSidebarState.tabDefaultsKey,
+            store: defaults
+        )
+        self.notificationCenter = notificationCenter
         self.chat = chat()
     }
 
@@ -62,7 +75,7 @@ struct MacDetailRouter<Chat: View>: View {
         }
         // Explicit opens (row click, Kanban card, deep link), including
         // re-opening the active session, which changes no published state.
-        .onReceive(NotificationCenter.default.publisher(for: .macSessionOpenRequested)) { _ in
+        .onReceive(notificationCenter.publisher(for: .macSessionOpenRequested)) { _ in
             returnToChat(openedID: "requested")
         }
         .onChange(of: appState.activeSessionId) { _, id in
