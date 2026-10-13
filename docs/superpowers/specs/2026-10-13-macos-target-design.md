@@ -86,12 +86,28 @@ Preferred edit shapes, in order:
 Add the target `ConduitMac`:
 - `type: application`, `platform: macOS`, `deploymentTarget: "14.0"`.
 - Sources: `Conduit/`, `Shared/`, `ConduitMac/`.
-- Excludes: `Conduit/CarPlay/**`, `Conduit/Watch/**`, `Conduit/Intents/**`,
-  `Shared/WatchVoice/**`, `Shared/Widgets/**`, `Conduit/ConduitApp.swift`,
-  `Conduit/Info.plist`, `Conduit/Conduit.entitlements`,
-  `Conduit/Resources/AlternateIcons/**`, and every iOS view file listed under
-  "Chat rewrites" plus `CameraCapture.swift` and `ImagePicker.swift`.
-  The implementation plan must keep this list exact.
+- Whole folders are NOT excluded. Shared code references CarPlay, Watch,
+  WatchVoice, Widgets, and Intents types from 100+ files, so those folders
+  compile for Mac. (AppIntents is available on macOS 13+, and most of these
+  files are plain Swift.) Excluded are only the files that import a framework
+  macOS lacks, plus the files replaced by Mac twins:
+  - `Conduit/ConduitApp.swift`, `Conduit/Info.plist`, `Conduit/Conduit.entitlements`,
+    `Conduit/Resources/AlternateIcons/**`
+  - `Conduit/CarPlay/CarPlayVoiceSceneDelegate.swift`, `CarPlayVoiceCoordinator.swift`,
+    `CarPlayBrowseTemplates.swift`, `CarPlayVoiceTemplateFactory.swift` (import `CarPlay`)
+  - `Conduit/Watch/WatchVoiceLink.swift` (imports `WatchConnectivity`)
+  - The twin-replaced view files listed under "Chat rewrites"
+- Mac stubs with the same type names live in `ConduitMac/Stubs/` and expose
+  only the members shared code calls: `CarPlayVoiceCoordinator`
+  (`shared`, `voiceModeChanged(in:)`, `conversationStartingOnPhone(in:)`,
+  `awaitConnection(of:timeout:)`), `CarPlayVoiceControls`, `WatchVoiceLink`
+  (`shared`, `activate()`, `direct`, `log`, `share(_:)`, `startAnsweredCall(_:reply:)`),
+  and `HermesNativeCalls`.
+- `Conduit/Voice/HermesNativeCalls.swift` imports `CallKit` and `PushKit`. Its
+  pure enums (`HermesNativeCallStorefront`, `HermesNativeCallPlan`) stay shared.
+  The `HermesNativeCalls` class and the two imports are wrapped in
+  `#if os(iOS)` with `// MAC:`, and the Mac stub supplies the class.
+- The implementation plan keeps the exact exclusion list.
 - Package dependency `WebRTC` (`stasel/WebRTC` 153.0.0; its package declares
   `.macOS(.v10_11)`).
 - `PRODUCT_BUNDLE_IDENTIFIER: com.meswan.hermes.mac`.
@@ -127,6 +143,13 @@ Typealiases cannot fix an import. Approach:
 The plan's first task must prove one of these with a minimal build before any
 other porting work.
 
+Name collisions: AVFAudio declares `AVAudioSession` as unavailable on macOS,
+and SwiftUI does the same for some iOS-only modifiers. A shim with the same
+name in a different imported module may be an ambiguous reference. Shims for
+such names live in the app target itself, because the importing module's
+declarations shadow imported ones. The first task's spike verifies this for
+`AVAudioSession`.
+
 ### Shims
 
 Each shim exposes only the members upstream actually uses (inventoried on
@@ -139,7 +162,7 @@ Each shim exposes only the members upstream actually uses (inventoried on
 | `UIApplication` (~30) | Class with `shared` and these mappings: `open(_:)` to `NSWorkspace.shared.open`; `beginBackgroundTask`/`endBackgroundTask` as no-ops returning a token; `applicationState` from `NSApp.isActive`; `isIdleTimerDisabled` via an `IOPMAssertion`; `connectedScenes` empty; `supportsAlternateIcons` false; `preferredContentSizeCategory` `.large`; `registerForRemoteNotifications` no-op; `didBecomeActiveNotification` to `NSApplication.didBecomeActiveNotification`; `openSettingsURLString` to the System Settings privacy URL. |
 | `AVAudioSession` (~87) | Stub class: `sharedInstance()`; `setCategory`/`setMode`/`setActive`/`setPreferredInput` succeed as no-ops; `recordPermission`/`requestRecordPermission` map to `AVCaptureDevice` audio authorization; `currentRoute`/`availableInputs` map to Core Audio devices; nested types (`Category`, `Mode`, `CategoryOptions`, `SetActiveOptions`, `InterruptionType`, `RouteChangeReason`, `Port`, `SilenceSecondaryAudioHintType`) and notification names exist but never fire. |
 | Haptics, `UIImpactFeedbackGenerator`, `UINotificationFeedbackGenerator` | No-op classes. |
-| `UIDevice` | `current.userInterfaceIdiom` returns `.mac`; `name` maps to `Host.current().localizedName`. |
+| `UIDevice` | `current.userInterfaceIdiom` returns `.pad`, so upstream's iPad paths, including the persistent sidebar (`SidebarLayoutPolicy` requires `.pad`), apply on Mac. `name` maps to `Host.current().localizedName`. |
 | `UIViewRepresentable` | Not shimmed. Each user is excluded and rewritten (next section). |
 
 Expected behavior gap: upstream code paths triggered only by iOS events (audio
@@ -155,12 +178,17 @@ and all chat state in `AppState`.
 | Excluded iOS file | Mac replacement (same public type name and init signature as upstream call sites need) |
 |---|---|
 | `Views/Components/SelectableTextView.swift` | `NSTextView` wrapper (`NSViewRepresentable`): native selection, copy, find, link clicks, height measuring for the layout the chat list expects. |
-| `Views/Components/MarkdownSelectionHandles.swift`, `MarkdownSelectionCoordinator.swift`, the selection overlay in `MarkdownText.swift` | Dropped; native Mac selection covers it. Removing the overlay requires a `// MAC:` gate in `MarkdownText.swift` or moving the overlay to its own file. Prefer the gate. |
+| `Views/Components/MarkdownSelectionHandles.swift` | Excluded. Native Mac selection replaces the drag handles. No-op twins of `MarkdownSelectionHandleOverlay`, `MarkdownSelectionChromeLocator`, and `MarkdownSelectionChromeRoot` keep the 4 referencing files compiling. `MarkdownSelectionCoordinator.swift` stays shared (only light UIKit use, covered by shims). |
 | `Views/Components/ComposerPasteTextView.swift` | `NSTextView` composer: Return sends, Shift-Return adds a newline, image paste and file drag-drop produce the existing `PastedImage` model, IME composition is respected. |
 | `Views/Components/MarkupBlock.swift` (`MarkupWebView`) | `NSViewRepresentable` around `WKWebView` with the same configuration, including the Cloudflare Access document-start user script. |
 | `Views/ChatScrollSurfaceLocator.swift` | Locates the `NSScrollView` and adapts it to `ChatScrollSurface`. |
 | `Views/Components/ImagePicker.swift` | `NSOpenPanel`-based picker plus drop target. |
-| `Views/Components/CameraCapture.swift` | Not ported (non-goal). Call sites hidden with `// MAC:` gates. |
+| `Views/Components/CameraCapture.swift` | Mac twin with `isAvailable == false`, so `ComposerBar` hides the camera action without an upstream edit. |
+| `LoginView.swift` `AuthWebView`, `DashboardTicketBridge.swift` `DashboardTicketBridgeView`, `MarkdownText.swift` `RemoteImageWebView`, `MarkupBlock.swift` `SafeMarkupWebView` | `WKWebView` `NSViewRepresentable` twins in `ConduitMac/WebViews/`. Each upstream struct is wrapped in `#if os(iOS)` (`// MAC:`) because it shares a file with code that stays shared. |
+| `RootView.swift` `EdgePanGesture` | No-op twin (an iPhone edge swipe has no Mac meaning); upstream struct gated. |
+| `MarkdownText.swift` `MarkdownSelectionHighlightOverlay` | No-op twin; upstream struct gated. |
+| `LiquidOrb/LiquidOrbView.swift` | Plan 1: static placeholder twin. Plan 3 (voice): `MTKView` twin. |
+| `NativeOAuth.swift` `SafariAuthenticationView` (`SFSafariViewController`) | Twin that opens the authorize URL in the default browser with `NSWorkspace` and shows a "Continue in your browser" panel with Cancel. Upstream's loopback listener (RFC 8252) receives the callback unchanged. |
 
 If an excluded file also defines types used elsewhere (for example
 `PastedImage` in `ComposerPasteTextView.swift`), the Mac file redefines them
@@ -182,11 +210,17 @@ implementation plan must check each excluded file for such types.
   - Find in Chat: Cmd-F
   - Toggle Sidebar: Cmd-Ctrl-S
   - Push-to-Talk: Option-Space while the app is active
+- Revision (plan research, 2026-10-13): the `Settings` scene, Switch Dashboard,
+  and transcript-wide Find are deferred. Upstream `SettingsView` needs about 12
+  closures owned by `RootView`, and no single `AppState` entry point opens the
+  dashboard switcher. Both stay reachable from the sidebar. Find works per
+  message via the `NSTextView` find bar. Cmd-. maps to `AppState.cancelCurrent()`.
 - App delegate: `applicationShouldTerminateAfterLastWindowClosed` returns
   false; reopening from the Dock shows the main window again.
-- Login: upstream `LoginView` and `NativeOAuth` (`ASWebAuthenticationSession`
-  is available on macOS). `LoginView` contains a `UIViewRepresentable`; the plan
-  must rewrite or gate that piece.
+- Login: upstream `LoginView` and `NativeOAuth`, with the web view and Safari
+  presenter twins listed under "Chat rewrites".
+- First launch registers `conduit.ipadPersistentSidebar = true` in
+  `UserDefaults`, so the persistent sidebar column is on by default.
 - Face ID lock maps to `LocalAuthentication` (Touch ID or password on Mac).
 
 Shared SwiftUI views (admin tabs, Kanban, Bot Mode, model and profile pickers,
