@@ -84,6 +84,9 @@ final class WebRTCGPTLivePeer: NSObject, GPTLivePeer {
     private var microphone: RTCAudioTrack?
     private var isSpeakerEnabled = true
     private var isClosed = false
+#if os(macOS) // MAC: audio levels for the orb come from the peer's statistics (ConduitMac/Voice/WebRTCLevelPoller.swift)
+    private var levelPoller: WebRTCLevelPoller?
+#endif
 
     /// Optional rather than defaulted: default arguments are evaluated
     /// outside the main actor.
@@ -105,6 +108,10 @@ final class WebRTCGPTLivePeer: NSObject, GPTLivePeer {
             throw GPTLivePeerError.offerFailed
         }
         self.connection = connection
+#if os(macOS) // MAC: see levelPoller
+        levelPoller = WebRTCLevelPoller(connection: connection)
+        levelPoller?.start()
+#endif
 
         let audioConstraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: [
             "googEchoCancellation": "true",
@@ -189,6 +196,10 @@ final class WebRTCGPTLivePeer: NSObject, GPTLivePeer {
     func close() {
         guard !isClosed else { return }
         isClosed = true
+#if os(macOS) // MAC: see levelPoller
+        levelPoller?.stop()
+        levelPoller = nil
+#endif
         channel?.delegate = nil
         channel?.close()
         channel = nil

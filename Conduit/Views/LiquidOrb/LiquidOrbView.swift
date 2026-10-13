@@ -211,6 +211,11 @@ final class LiquidOrbRenderer: NSObject, MTKViewDelegate {
     private var speechLevel: Float = 0
     /// Off under Reduce Motion: frames are drawn on demand and hold still.
     private(set) var animates: Bool
+#if os(macOS) // MAC: measured audio level, see ConduitMac/Views/LiquidOrbViewTwin.swift
+    /// `speech` is a measured 0...1 level: followed within ~50 ms instead of
+    /// eased over ~250 ms, with its bands taken from the level.
+    var speechIsMeasured = false
+#endif
 
     init(pipeline: LiquidOrbPipeline, state: LiquidOrbState, animates: Bool) {
         self.pipeline = pipeline
@@ -276,9 +281,16 @@ final class LiquidOrbRenderer: NSObject, MTKViewDelegate {
         lastFrameAt = now
         var uniforms = sampleTransition(at: now)
         if animates {
+#if os(macOS) // MAC: a measured level is followed closely and drives the bands directly
+            speechLevel += (speechTarget - speechLevel) * Float(min(1, frameDelta * (speechIsMeasured ? 20 : 4)))
+            let speech = speechIsMeasured
+                ? LiquidOrbAudio.measured(level: speechLevel)
+                : LiquidOrbAudio.speech(intensity: speechLevel, at: now)
+#else
             // Eases speech in and out over roughly a quarter second.
             speechLevel += (speechTarget - speechLevel) * Float(min(1, frameDelta * 4))
             let speech = LiquidOrbAudio.speech(intensity: speechLevel, at: now)
+#endif
             speech.apply(to: &uniforms)
             speech.applyPulse(to: &uniforms)
             motionPhase += frameDelta * CFTimeInterval(max(uniforms[3], 0))

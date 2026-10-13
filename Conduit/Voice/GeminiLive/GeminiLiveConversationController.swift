@@ -399,8 +399,13 @@ final class GeminiLiveConversationController: ObservableObject {
         self.availability = availability
         self.openingPrompt = openingPrompt
         self.tools = tools
+#if os(macOS) // MAC: both audio seams are metered for the orb (ConduitMac/Voice/LiveVoiceLevelTaps.swift)
+        self.input = LiveVoiceMeteredAudioInput(input)
+        self.output = LiveVoiceMeteredAudioOutput(output)
+#else
         self.input = input
         self.output = output
+#endif
         self.now = now
         self.routePolicy = routePolicy
         self.endConversationPhrases = endConversationPhrases

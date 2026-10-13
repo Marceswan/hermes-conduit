@@ -605,6 +605,9 @@ struct LiveVoiceOrb: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(LiveVoiceOrbPower.preferenceKey) private var motionEnabled = true
     @ObservedObject private var power = DevicePowerState.shared
+#if os(macOS) // MAC: the swell follows the live audio level (ConduitMac/Views/MacLiquidOrbLevelView.swift)
+    @StateObject private var levelMeter = LiveVoiceLevelMeter()
+#endif
 
     /// Whether this orb moves: also off when the user turned the motion
     /// off or the phone runs hot (see LiveVoiceOrbPower).
@@ -675,6 +678,18 @@ struct LiveVoiceOrb: View {
             // The sphere fills 72% of its canvas and the glow the rest: draw
             // it larger than the frame so the sphere itself keeps the old
             // orb's size, without the glow taking layout space.
+#if os(macOS) // MAC: audio-reactive twin of the LiquidOrbView below
+            MacLiquidOrbLevelView(
+                pipeline: pipeline,
+                look: look,
+                phase: phase,
+                animates: isMoving,
+                lowPowerMode: power.isLowPowerModeEnabled,
+                meter: levelMeter
+            )
+                .frame(width: size * 1.3, height: size * 1.3)
+                .frame(width: proxy.size.width, height: proxy.size.height)
+#else
             LiquidOrbView(
                 pipeline: pipeline,
                 state: look.state,
@@ -684,6 +699,7 @@ struct LiveVoiceOrb: View {
             )
                 .frame(width: size * 1.3, height: size * 1.3)
                 .frame(width: proxy.size.width, height: proxy.size.height)
+#endif
         }
         .opacity(Self.motion(for: phase).opacity)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: phase)
