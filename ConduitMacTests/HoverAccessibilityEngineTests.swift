@@ -121,10 +121,11 @@ final class HoverAccessibilityEngineTests: XCTestCase {
     // MARK: Boost lifetime
 
     private func engine(idle: TimeInterval = 2, trailing: TimeInterval = 0.035, now: @escaping () -> TimeInterval = { 0 },
-                        hit: @escaping (NSPoint, NSWindow) -> HoverElementSnapshot? = { _, _ in nil }) -> HoverAccessibilityEngine {
+                        hit: @escaping (NSPoint, NSWindow) -> HoverElementSnapshot? = { _, _ in nil },
+                        voiceOver: @escaping () -> Bool = { false }) -> HoverAccessibilityEngine {
         HoverAccessibilityEngine(idleInterval: idle, trailingInterval: trailing, environment: .init(
             isAppActive: { true }, isKeyWindow: { _ in true }, pointerLocation: { .zero },
-            now: now, hitTest: hit, highlightEnabled: { true }))
+            now: now, hitTest: hit, highlightEnabled: { true }, isVoiceOverEnabled: voiceOver))
     }
 
     func testBoostTurnsOnWhileMovingAndOffAfterClick() throws {
@@ -185,6 +186,22 @@ final class HoverAccessibilityEngineTests: XCTestCase {
         XCTAssertTrue(AccessibilityTreeBoost.isOn)
         engine.process(.deactivated)
         XCTAssertFalse(AccessibilityTreeBoost.isOn)
+    }
+
+    func testBoostIsNeverClearedWhileVoiceOverIsOnAndOwnershipIsGivenUp() throws {
+        try XCTSkipUnless(AccessibilityTreeBoost.isAvailable)
+        AccessibilityTreeBoost.set(false)
+        var voiceOverOn = false
+        let window = show(NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 100)))
+        let engine = engine(voiceOver: { voiceOverOn })
+        engine.process(.moved(window, NSPoint(x: 5, y: 5)))
+        XCTAssertTrue(AccessibilityTreeBoost.isOn)
+        voiceOverOn = true  // VoiceOver attaches mid-hover
+        engine.process(.interaction)
+        XCTAssertTrue(AccessibilityTreeBoost.isOn, "must not clear the flag while VoiceOver is on")
+        voiceOverOn = false  // VoiceOver quits: the engine no longer owns the flag
+        engine.process(.deactivated)
+        XCTAssertTrue(AccessibilityTreeBoost.isOn, "ownership was given up, so the flag is left alone")
     }
 
     func testBoostRoundTripsBothDirections() throws {

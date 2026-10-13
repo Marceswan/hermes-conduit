@@ -59,6 +59,7 @@ final class HoverAccessibilityEngine {
         var now: @MainActor () -> TimeInterval
         var hitTest: @MainActor (NSPoint, NSWindow) -> HoverElementSnapshot?
         var highlightEnabled: @MainActor () -> Bool
+        var isVoiceOverEnabled: @MainActor () -> Bool = { NSWorkspace.shared.isVoiceOverEnabled }
 
         static let live = Environment(
             isAppActive: { NSApp.isActive },
@@ -267,6 +268,9 @@ final class HoverAccessibilityEngine {
             idleTimer.cancel()
             guard ownsBoost else { return }
             ownsBoost = false
+            // VoiceOver may have attached while this engine held the flag.
+            // Switching it off would break VoiceOver, so give up ownership.
+            guard !environment.isVoiceOverEnabled() else { return }
             AccessibilityTreeBoost.set(false)
             if AccessibilityTreeBoost.isOn {
                 boostFailed = true
