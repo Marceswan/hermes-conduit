@@ -6,9 +6,15 @@ enum MacDefaults {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     }
 
-    /// The persistent sidebar column is the natural Mac layout.
+    /// The persistent sidebar column is the natural Mac layout. Return sends
+    /// (Shift- or Option-Return for a new line): every Mac has a hardware
+    /// keyboard, so upstream's opt-in default is wrong here. Registered, not
+    /// stored, so the Keyboard setting still overrides it.
     static func register() {
-        UserDefaults.standard.register(defaults: ["conduit.ipadPersistentSidebar": true])
+        UserDefaults.standard.register(defaults: [
+            "conduit.ipadPersistentSidebar": true,
+            ComposerReturnKey.preferenceKey: true,
+        ])
     }
 }
 

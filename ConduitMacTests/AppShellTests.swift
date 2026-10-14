@@ -10,6 +10,14 @@ final class AppShellTests: XCTestCase {
         XCTAssertTrue(UserDefaults.standard.bool(forKey: "conduit.ipadPersistentSidebar"))
     }
 
+    /// Every Mac has a hardware keyboard, so Return sends unless the user turns it off.
+    /// Checks the registration domain so a stored user choice is left alone.
+    func testReturnKeySendsDefaultsOn() {
+        MacDefaults.register()
+        let registered = UserDefaults.standard.volatileDomain(forName: UserDefaults.registrationDomain)
+        XCTAssertEqual(registered[ComposerReturnKey.preferenceKey] as? Bool, true)
+    }
+
     func testClosingLastWindowDoesNotQuit() {
         XCTAssertFalse(ConduitMacAppDelegate().applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared))
     }

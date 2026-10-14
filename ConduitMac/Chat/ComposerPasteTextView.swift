@@ -246,9 +246,14 @@ final class ComposerTextView: NSTextView {
         return onSubmitFromReturn?() ?? false
     }
 
+    /// Shift-Return and Option-Return (the Mac chat convention) insert a new line.
+    static func isNewlineModifier(_ flags: NSEvent.ModifierFlags) -> Bool {
+        !flags.intersection([.shift, .option]).isEmpty
+    }
+
     override func keyDown(with event: NSEvent) {
         let isReturn = event.keyCode == 36 || event.keyCode == 76
-        if isReturn, handleReturn(shift: event.modifierFlags.contains(.shift)) { return }
+        if isReturn, handleReturn(shift: Self.isNewlineModifier(event.modifierFlags)) { return }
         super.keyDown(with: event)
     }
 
