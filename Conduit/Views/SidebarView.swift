@@ -266,9 +266,15 @@ struct SessionList: View {
                     .background(Color.conduitAccent, in: RoundedRectangle(cornerRadius: 14))
                 }
                 .buttonStyle(.plain)
+                #if os(macOS) // MAC: upstream bug, candidate for upstream PR (ledger)
+                // The saved copy only lacks a live gateway while nothing is connected.
+                .disabled(appState.macNewChatDisabled)
+                .opacity(appState.macNewChatDisabled ? 0.6 : 1)
+                #else // MAC:
                 // The saved copy has no live gateway to create a chat on.
                 .disabled(appState.turnState == .synchronizing || appState.offlineChatPresentation != nil)
                 .opacity(appState.turnState == .synchronizing || appState.offlineChatPresentation != nil ? 0.6 : 1)
+                #endif // MAC:
 
                 // A call of its own, not tied to the open chat: its work
                 // runs as jobs on the Voice Jobs model.
