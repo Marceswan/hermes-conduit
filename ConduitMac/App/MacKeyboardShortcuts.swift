@@ -5,7 +5,7 @@ import SwiftUI
 // here so the menu (ConduitCommands), the sidebar list modifier and the
 // composer twin share one definition and tests can reach it headlessly.
 
-/// Cmd-1 ... Cmd-4: one shortcut per sidebar tab, in tab-strip order.
+/// Ctrl-Cmd-1 ... Ctrl-Cmd-4: one shortcut per sidebar tab, in tab-strip order.
 enum MacSidebarShortcut: CaseIterable, Identifiable {
     case sessions, bots, cron, kanban
 
@@ -20,7 +20,7 @@ enum MacSidebarShortcut: CaseIterable, Identifiable {
         }
     }
 
-    /// The digit typed with Command.
+    /// The digit typed with `modifiers`.
     var key: KeyEquivalent {
         switch self {
         case .sessions: return "1"
@@ -29,6 +29,9 @@ enum MacSidebarShortcut: CaseIterable, Identifiable {
         case .kanban: return "4"
         }
     }
+
+    /// Ctrl-Cmd: plain Cmd-digits select session tabs (D11).
+    var modifiers: EventModifiers { [.control, .command] }
 
     /// Menu title ("Sessions"): the tab's own localized name.
     var title: String { tab.displayName }
@@ -254,5 +257,40 @@ enum MacKeyboardActions {
         guard !commandsBlocked(by: window),
               let order, let id = MacSessionNavigation.neighbor(of: activeID, in: order, direction: direction) else { return }
         open(id)
+    }
+}
+
+/// What the tab menu items do (D11). The store is injectable for tests; the
+/// parameter is optional because a `.shared` default trips Swift 6 isolation.
+@MainActor
+enum MacSessionTabsActions {
+    /// The chat window: SwiftUI names WindowGroup("Conduit", id: "conduit-primary")
+    /// windows with that id as the prefix.
+    static func isMainChatWindow(_ window: NSWindow?) -> Bool {
+        window?.identifier?.rawValue.hasPrefix("conduit-primary") ?? false
+    }
+
+    /// Cmd-W: a tab in the chat window, else a real non-chat window's ordinary
+    /// close. Under a sheet, or in the sheet itself, nothing happens.
+    static func closeTab(store: MacSessionTabsStore? = nil, window: NSWindow?) {
+        // A sheet (Settings, pickers) is not a window to close: Esc closes it.
+        guard let window, !MacKeyboardActions.commandsBlocked(by: window) else { return }
+        guard isMainChatWindow(window) else { window.performClose(nil); return }
+        (store ?? .shared).close(nil)
+    }
+
+    static func reopen(store: MacSessionTabsStore? = nil, window: NSWindow?) {
+        guard isMainChatWindow(window), !MacKeyboardActions.commandsBlocked(by: window) else { return }
+        (store ?? .shared).reopen()
+    }
+
+    static func selectShortcut(_ n: Int, store: MacSessionTabsStore? = nil, window: NSWindow?) {
+        guard isMainChatWindow(window), !MacKeyboardActions.commandsBlocked(by: window) else { return }
+        (store ?? .shared).selectShortcut(n)
+    }
+
+    static func selectNeighbor(_ direction: MacSessionTabsModel.Direction, store: MacSessionTabsStore? = nil, window: NSWindow?) {
+        guard isMainChatWindow(window), !MacKeyboardActions.commandsBlocked(by: window) else { return }
+        (store ?? .shared).selectNeighbor(direction)
     }
 }

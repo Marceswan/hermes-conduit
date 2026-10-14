@@ -11,6 +11,9 @@ enum MacDefaults {
     /// keyboard, so upstream's opt-in default is wrong here. Registered, not
     /// stored, so the Keyboard setting still overrides it.
     static func register() {
+        // In-app session tabs replace window tabs (D11). AppKit's own tab items
+        // in the Window menu would compete for Ctrl-Tab and Ctrl-Shift-Tab.
+        NSWindow.allowsAutomaticWindowTabbing = false
         UserDefaults.standard.register(defaults: [
             "conduit.ipadPersistentSidebar": true,
             ComposerReturnKey.preferenceKey: true,

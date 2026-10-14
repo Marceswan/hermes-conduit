@@ -55,13 +55,14 @@ struct ConduitMacApp: App {
                 .frame(minWidth: MacSidebarState.windowMinWidth, minHeight: 560)
         }
         .defaultSize(width: 1180, height: 780)
-        .commands { ConduitCommands(appState: appState) }
+        .commands { ConduitCommands(appState: appState, tabs: .shared) }
     }
 
     // Ported from ConduitApp.swift; keep in sync. Skipped: see docs/macos/PORTING_LEDGER.md.
     private var rootContent: some View {
         RootView()
             .environmentObject(appState)
+            .task { MacSessionTabsStore.shared.bind(to: appState) }
             .environment(\.locale, appLanguage.resolvedLocale)
             .onChange(of: appLanguage.selection) { _, _ in
                 appState.appLanguageDidChange()

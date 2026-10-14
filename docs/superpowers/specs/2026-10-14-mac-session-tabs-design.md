@@ -30,7 +30,7 @@ Mac-only tab model tied to the active session (chosen). Rejected:
 - **Deleted sessions.** A tab is removed only when the user deletes that session (`AppState.deleteSession` succeeds). Deletion is detected without AppState edits: `sessionMutationID` ends and the session, listed when the mutation began, is no longer in the catalog (a rename keeps it listed). A tab whose open fails (`requestOpenSession` onFailure) is marked unavailable (dimmed, tooltip "Couldn't open this conversation") rather than removed, because AppState does not expose why an open failed; the user closes it, and a later successful open clears the mark. A session absent from the loaded catalog is NOT pruned: the catalog loads in pages of 200, so older sessions can be absent without being deleted. A tab whose session is not in the loaded catalog shows its last known title.
 - **Identity.** Tabs match sessions by `SessionSummary.id` and `alternateIds` (session identity rules, spec 2026-09-06), so a session whose id is re-keyed keeps its tab.
 - **Persistence.** Tabs (order, ids, last known titles) and the active tab survive relaunch, stored per dashboard and profile (`activeDashboardID` + `activeProfile`). A profile or dashboard switch swaps to that scope's tabs. The closed stack is not persisted.
-- **Not tabs in v1.** Group-chat rooms (`activeRoomSurface`). While a room is open the strip stays visible, with no tab selected.
+- **Not tabs in v1.** Group-chat rooms (`activeRoomSurface`). While a room is open the strip is hidden: the existing RootView room gate (`activeRoomSurface == nil`) gives the room the toolbar. Tab shortcuts still work then: selecting the active tab calls `openSession`, which returns the chat and closes the room, and Cmd-W does nothing (D11).
 
 ## Shortcuts
 
@@ -51,7 +51,7 @@ Cmd-W closes the tab only in the main chat window; in any other window (Settings
 
 - One toolbar item in the principal slot, flexible width, on the system toolbar glass platter (D7: no second glass layer).
 - Tabs are flat pills, 28 pt tall, 120 to 220 pt wide, title truncated at the end.
-- Active tab: accent fill (`conduitAccent`, as the user message bubble), dark text. Inactive: secondary text, subtle fill on hover. Close x 16 pt.
+- Active tab: accent fill (`conduitAccent`, as the user message bubble), text that adapts to the appearance for 4.5:1 contrast: white in light mode, black at 85% in dark mode (D11). Inactive: secondary text, subtle fill on hover. Close x 16 pt.
 - Overflowing edges fade (same treatment as the sidebar filter-chip fade).
 - Busy dot: a small pulsing dot when the session is `working` or `needsInput` in the gateway's `session.active_list` (the data behind the sidebar Status filter), and for the active session when its turn is running. Unread uses the sidebar's existing unread indicator style.
 - Hover outline and tooltips (D5, D7) keep working: each tab declares its shape with `.contentShape(.accessibility, Capsule())` and carries the full title as its accessibility label.

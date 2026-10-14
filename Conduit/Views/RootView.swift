@@ -349,10 +349,17 @@ struct MainView: View {
         // conversation behind it.
         if appState.activeRoomSurface == nil {
             ToolbarItem(placement: .principal) {
+                #if os(macOS) // MAC: session tabs replace the title pill (D11)
+                MacSessionTabStrip(
+                    onRename: { chatTitlePendingRename = $0 },
+                    onDelete: { chatTitlePendingDeletion = $0 }
+                )
+                #else // MAC:
                 ChatTitleControl(
                     onRename: { chatTitlePendingRename = $0 },
                     onDelete: { chatTitlePendingDeletion = $0 }
                 )
+                #endif // MAC:
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
