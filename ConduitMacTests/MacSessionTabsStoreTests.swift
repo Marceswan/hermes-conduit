@@ -106,6 +106,14 @@ final class MacSessionTabsStoreTests: XCTestCase {
         XCTAssertNil(store.model.activeID, "an active id outside the tabs is stale")
     }
 
+    func testNilTitleKeepsAnExistingTabsTitle() {
+        store.activeSessionChanged("old", title: "Old")
+        store.activeSessionChanged("b", title: "B")
+        store.activeSessionChanged("old", title: nil)
+        XCTAssertEqual(store.model.tabs.map(\.title), ["Old", "B"])
+        XCTAssertEqual(store.model.activeID, "old")
+    }
+
     func testStorageKey() {
         let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         XCTAssertEqual(MacSessionTabsStore.storageKey(dashboardID: id, profile: "default"),
@@ -135,21 +143,35 @@ final class MacSessionDeletionDetectorTests: XCTestCase {
     func testDeletionIsAMutationWhoseSessionLeftTheCatalog() {
         var detector = MacSessionDeletionDetector()
         let a = SessionSummary.macTestSummary(id: "a", alternateIds: [], title: "A")
-        XCTAssertNil(detector.mutationChanged(to: "a", catalog: [a]))
-        XCTAssertEqual(detector.mutationChanged(to: nil, catalog: []), "a")
+        XCTAssertNil(detector.mutationChanged(to: "a", catalog: [a], archived: []))
+        XCTAssertEqual(detector.mutationChanged(to: nil, catalog: [], archived: []), "a")
     }
 
     func testRenameIsNotADeletion() {
         var detector = MacSessionDeletionDetector()
         let a = SessionSummary.macTestSummary(id: "a", alternateIds: [], title: "A")
-        _ = detector.mutationChanged(to: "a", catalog: [a])
-        XCTAssertNil(detector.mutationChanged(to: nil, catalog: [a]))
+        _ = detector.mutationChanged(to: "a", catalog: [a], archived: [])
+        XCTAssertNil(detector.mutationChanged(to: nil, catalog: [a], archived: []))
+    }
+
+    func testArchiveIsNotADeletion() {
+        var detector = MacSessionDeletionDetector()
+        let a = SessionSummary.macTestSummary(id: "a", alternateIds: [], title: "A")
+        _ = detector.mutationChanged(to: "a", catalog: [a], archived: [])
+        XCTAssertNil(detector.mutationChanged(to: nil, catalog: [], archived: [a]))
+    }
+
+    func testUnarchiveIsNotADeletion() {
+        var detector = MacSessionDeletionDetector()
+        let a = SessionSummary.macTestSummary(id: "a", alternateIds: [], title: "A")
+        _ = detector.mutationChanged(to: "a", catalog: [], archived: [a])
+        XCTAssertNil(detector.mutationChanged(to: nil, catalog: [a], archived: []))
     }
 
     func testUnlistedMutationIsNotADeletion() {
         var detector = MacSessionDeletionDetector()
-        _ = detector.mutationChanged(to: "x", catalog: [])
-        XCTAssertNil(detector.mutationChanged(to: nil, catalog: []))
+        _ = detector.mutationChanged(to: "x", catalog: [], archived: [])
+        XCTAssertNil(detector.mutationChanged(to: nil, catalog: [], archived: []))
     }
 }
 

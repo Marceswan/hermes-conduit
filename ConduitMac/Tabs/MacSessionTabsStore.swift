@@ -6,18 +6,22 @@ extension SessionSummary {
     func macMatches(_ id: String) -> Bool { self.id == id || alternateIds.contains(id) }
 }
 
-/// Spots a deletion without AppState edits: a session mutation (rename or
-/// delete) ended and its session, listed when the mutation began, is gone.
+/// Spots a deletion without AppState edits: a session mutation (rename,
+/// archive or delete) ended and its session, listed when the mutation began,
+/// is in neither the live nor the archived list. Archiving moves the row to
+/// the archived list; only a delete clears it from both.
 struct MacSessionDeletionDetector {
     private var pending: (id: String, wasListed: Bool)?
 
-    mutating func mutationChanged(to id: String?, catalog: [SessionSummary]) -> String? {
+    mutating func mutationChanged(to id: String?, catalog: [SessionSummary], archived: [SessionSummary]) -> String? {
         if let id {
             pending = (id, catalog.contains { $0.macMatches(id) })
             return nil
         }
         defer { pending = nil }
-        guard let pending, pending.wasListed, !catalog.contains(where: { $0.macMatches(pending.id) }) else { return nil }
+        guard let pending, pending.wasListed,
+              !catalog.contains(where: { $0.macMatches(pending.id) }),
+              !archived.contains(where: { $0.macMatches(pending.id) }) else { return nil }
         return pending.id
     }
 }
@@ -135,20 +139,31 @@ final class MacSessionTabsStore: ObservableObject {
         activeChatIsEmpty = { [weak appState] in appState?.messages.isEmpty ?? false }
         scrollActiveToTop = { [weak appState] in appState?.requestChatScrollToTop() }
 
+        // willSet sinks: use the emitted value for the property that changed.
         appState.$activeProfile
             .sink { [weak self, weak appState] profile in
                 self?.setScope(dashboardID: appState?.activeDashboardID, profile: profile)
             }
             .store(in: &bindings)
+        // Two dashboards can share a profile name, so a dashboard switch alone fires no profile event.
+        appState.$savedDashboardRegistry
+            .sink { [weak self, weak appState] registry in
+                self?.setScope(dashboardID: registry.activeDashboardID, profile: appState?.activeProfile ?? "default")
+            }
+            .store(in: &bindings)
         appState.$activeSessionId
             .removeDuplicates()
-            .sink { [weak self, weak appState] id in
-                // didSet has run; read the summary on the next turn so its title is current.
+            .sink { [weak self, weak appState] _ in
+                // didSet has run; read the id and summary on the next turn so both are current.
                 DispatchQueue.main.async {
                     guard let self, let appState else { return }
                     self.setScope(dashboardID: appState.activeDashboardID, profile: appState.activeProfile)
+                    let id = appState.activeSessionId
                     let summary = appState.activeChatSessionSummary
-                    self.activeSessionChanged(summary?.id ?? id, title: summary?.title ?? (id == nil ? nil : appState.displayedChatTitle))
+                    // Outside the loaded catalog displayedChatTitle is the previous chat's: keep a known tab's title.
+                    let knownTab = id.map { self.model.index(of: $0) != nil } ?? false
+                    let title = summary?.title ?? (id == nil || knownTab ? nil : appState.displayedChatTitle)
+                    self.activeSessionChanged(summary?.id ?? id, title: title)
                 }
             }
             .store(in: &bindings)
@@ -159,7 +174,7 @@ final class MacSessionTabsStore: ObservableObject {
             .sink { [weak self, weak appState] id in
                 DispatchQueue.main.async {
                     guard let self, let appState else { return }
-                    if let deleted = self.deletionDetector.mutationChanged(to: id, catalog: appState.sessions) {
+                    if let deleted = self.deletionDetector.mutationChanged(to: id, catalog: appState.sessions, archived: appState.archivedSessions) {
                         self.sessionDeleted(deleted)
                     }
                 }
