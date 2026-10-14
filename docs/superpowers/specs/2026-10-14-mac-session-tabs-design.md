@@ -23,11 +23,11 @@ Mac-only tab model tied to the active session (chosen). Rejected:
 
 - **Open adds a tab.** Every path that makes a session active adds it as a tab at the end of the strip: sidebar click, Cmd-[ / Cmd-], session-list keyboard, search, New Chat, bot chat, missing-session recovery's fresh chat. If the session already has a tab, that tab becomes selected and nothing is added.
 - **Select.** Clicking a tab opens its session through `AppState.requestOpenSession` (the same path as a sidebar row click), which also returns the main pane to chat.
-- **Close.** The x button (shown on hover and always on the active tab) or Cmd-W closes a tab. Closing the active tab activates the right neighbour, else the left neighbour. Closing the last tab leaves the empty new-chat state (no session open). Closing an inactive tab does not change the active session.
+- **Close.** The x button (shown on hover and always on the active tab) or Cmd-W closes a tab. Closing the active tab activates the right neighbour, else the left neighbour. Closing the last tab starts a new chat (as Cmd-N), which becomes the only tab; when the last tab is already an empty chat (no messages), closing it does nothing. (AppState has no public "no session" state; a new chat is the nearest equivalent.) Closing an inactive tab does not change the active session.
 - **Reopen.** Cmd-Shift-T reopens the most recently closed tab, at its old index (clamped), and opens it. The closed stack keeps the last 10, most recent first.
 - **Overflow.** The strip scrolls horizontally. The active tab is always scrolled into view. No cap on the number of tabs.
 - **Rename / Delete.** The title pill's menu (Rename, Delete) moves to each tab's context menu. The scroll-to-top primary action stays on a click of the already-active tab.
-- **Deleted sessions.** A tab is removed only when (a) the user deletes that session (`AppState.deleteSession` succeeds), or (b) opening it fails because the gateway reports the session not found. A session absent from the loaded catalog is NOT pruned: the catalog loads in pages of 200, so older sessions can be absent without being deleted. A tab whose session is not in the loaded catalog shows its last known title.
+- **Deleted sessions.** A tab is removed only when the user deletes that session (`AppState.deleteSession` succeeds). Deletion is detected without AppState edits: `sessionMutationID` ends and the session, listed when the mutation began, is no longer in the catalog (a rename keeps it listed). A tab whose open fails (`requestOpenSession` onFailure) is marked unavailable (dimmed, tooltip "Couldn't open this conversation") rather than removed, because AppState does not expose why an open failed; the user closes it, and a later successful open clears the mark. A session absent from the loaded catalog is NOT pruned: the catalog loads in pages of 200, so older sessions can be absent without being deleted. A tab whose session is not in the loaded catalog shows its last known title.
 - **Identity.** Tabs match sessions by `SessionSummary.id` and `alternateIds` (session identity rules, spec 2026-09-06), so a session whose id is re-keyed keeps its tab.
 - **Persistence.** Tabs (order, ids, last known titles) and the active tab survive relaunch, stored per dashboard and profile (`activeDashboardID` + `activeProfile`). A profile or dashboard switch swaps to that scope's tabs. The closed stack is not persisted.
 - **Not tabs in v1.** Group-chat rooms (`activeRoomSurface`). While a room is open the strip stays visible, with no tab selected.
@@ -45,7 +45,7 @@ Mac-only tab model tied to the active session (chosen). Rejected:
 | Ctrl-Cmd-1 .. Ctrl-Cmd-4 | Sessions, Bots, Cron, Kanban (moved from Cmd-1..4, D10) |
 | Cmd-[ / Cmd-] | previous / next session in sidebar order (unchanged) |
 
-Cmd-W with no tabs does nothing (the window must not close from Cmd-W while the strip is empty; the window's close button still closes it). The same sheet guard as D10 applies: tab commands do nothing while a sheet is attached. Ctrl-Tab must not be swallowed by the composer or the session list (the D10 Tab loop handles plain Tab and Shift-Tab only).
+Cmd-W closes the tab only in the main chat window; in any other window (Settings, a detached window) it closes that window as usual. With no tabs it does nothing. The same sheet guard as D10 applies: tab commands do nothing while a sheet is attached. Ctrl-Tab must not be swallowed by the composer or the session list (the D10 Tab loop handles plain Tab and Shift-Tab only).
 
 ## Look
 
