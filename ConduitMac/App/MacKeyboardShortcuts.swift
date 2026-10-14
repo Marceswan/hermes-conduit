@@ -101,30 +101,60 @@ extension Notification.Name {
 }
 
 /// Cmd-F bridge to the sidebar's search field. The request is held until the
-/// session list consumes it, so a sidebar that was hidden (and so not
-/// mounted) when the command ran still focuses its field once it appears.
+/// session list consumes it, so a sidebar that was not mounted when the
+/// command ran still focuses its field once it appears, but only briefly: a
+/// list that mounts much later (after login) must not take the keyboard.
 @MainActor
 final class MacFocusRequests: ObservableObject {
     static let shared = MacFocusRequests()
-    /// Time the sidebar needs to finish opening before its field can focus.
-    static let sidebarRevealDelay: TimeInterval = 0.4
+    /// How long an unconsumed request stays valid.
+    static let pendingLifetime: TimeInterval = 1.0
 
     @Published private(set) var searchToken = 0
     private(set) var searchPending = false
-    /// The last request had to show a hidden sidebar, so the field is still
-    /// sliding into place when the request arrives.
-    private(set) var searchRevealedSidebar = false
+    private var requestedAt = Date.distantPast
 
-    func requestSearch(revealedSidebar: Bool = false) {
+    func requestSearch(now: Date = Date()) {
         searchPending = true
-        searchRevealedSidebar = revealedSidebar
+        requestedAt = now
         searchToken += 1
     }
 
-    /// True once per request.
-    func consumeSearch() -> Bool {
+    /// A later focus action (Cmd-L, a click elsewhere) supersedes the request:
+    /// nothing pending, and any retry in flight stops.
+    func cancelSearch() {
+        searchPending = false
+        searchToken += 1
+    }
+
+    /// True once per request, and only while it is fresh.
+    func consumeSearch(now: Date = Date()) -> Bool {
         defer { searchPending = false }
-        return searchPending
+        return searchPending && now.timeIntervalSince(requestedAt) <= Self.pendingLifetime
+    }
+
+    /// Runs `attempt` again every `interval` while the search field has not
+    /// taken the keyboard, for at most `maxAttempts`. It stops early when the
+    /// keyboard went somewhere else since the request (the user clicked or
+    /// pressed Cmd-L) or another request superseded this one, so a late retry
+    /// never pulls focus back. This covers a sidebar that is still opening.
+    func retrySearchFocus(
+        in window: NSWindow?,
+        interval: TimeInterval = 0.1,
+        maxAttempts: Int = 8,
+        attempt: @escaping () -> Void
+    ) {
+        let token = searchToken
+        let original = window?.firstResponder
+        attempt()
+        Task { @MainActor [weak self, weak window] in
+            for _ in 0..<maxAttempts {
+                try? await Task.sleep(for: .seconds(interval))
+                guard let self, let window, token == self.searchToken,
+                      window.firstResponder === original, !MacToolbarSearch.isFocused(in: window) else { return }
+                attempt()
+            }
+        }
     }
 }
 
@@ -132,31 +162,78 @@ final class MacFocusRequests: ObservableObject {
 /// injectable so tests never touch the live app's state.
 @MainActor
 enum MacKeyboardActions {
+    /// A sheet is attached to the window (or the window is the sheet): the
+    /// commands would act on the window behind it.
+    static func commandsBlocked(by window: NSWindow?) -> Bool {
+        window?.attachedSheet != nil || window?.sheetParent != nil
+    }
+
     static func selectTab(
         _ tab: SidebarTab,
+        window: NSWindow? = nil,
         defaults: UserDefaults = .standard
     ) {
+        guard !commandsBlocked(by: window) else { return }
         defaults.set(tab.rawValue, forKey: MacSidebarState.tabDefaultsKey)
     }
 
-    /// Cmd-F. The sidebar always lists sessions on Mac (D6), so only a
-    /// hidden sidebar needs changing; the main pane is left where it is.
+    enum FindOutcome: Equatable {
+        case messageFind, searchSessions
+    }
+
+    /// The text view whose own find bar Cmd-F should open: the first responder
+    /// when it is a find-capable text view that validates the Find action
+    /// (message text, `SelectableTextView`; not the composer).
+    static func findTarget(in responder: NSResponder?) -> NSTextView? {
+        guard let textView = responder as? NSTextView, textView.usesFindBar || textView.usesFindPanel else { return nil }
+        return textView.validateUserInterfaceItem(findItem()) ? textView : nil
+    }
+
+    private static func findItem() -> NSMenuItem {
+        let item = NSMenuItem()
+        item.tag = NSTextFinder.Action.showFindInterface.rawValue
+        return item
+    }
+
+    /// Cmd-F. A focused message view keeps its find bar; everywhere else the
+    /// key focuses Search Sessions. Returns what it did (nil: blocked).
+    @discardableResult
+    static func findOrSearchSessions(
+        window: NSWindow?,
+        defaults: UserDefaults = .standard,
+        requests: MacFocusRequests? = nil
+    ) -> FindOutcome? {
+        guard !commandsBlocked(by: window) else { return nil }
+        if let target = findTarget(in: window?.firstResponder) {
+            target.performFindPanelAction(findItem())
+            return .messageFind
+        }
+        focusSessionSearch(defaults: defaults, requests: requests)
+        return .searchSessions
+    }
+
+    /// The sidebar always lists sessions on Mac (D6), so only a hidden sidebar
+    /// needs changing; the main pane is left where it is.
     static func focusSessionSearch(
         defaults: UserDefaults = .standard,
         requests: MacFocusRequests? = nil
     ) {
-        let wasHidden = defaults.object(forKey: MacSidebarState.defaultsKey) as? Bool == false
         defaults.set(true, forKey: MacSidebarState.defaultsKey)
-        (requests ?? .shared).requestSearch(revealedSidebar: wasHidden)
+        (requests ?? .shared).requestSearch()
     }
 
     /// Cmd-L. Chat comes back first (it stays mounted under other panes), so
-    /// the composer's route logic sees a shown chat and keeps the focus.
+    /// the composer's route logic sees a shown chat and keeps the focus. With
+    /// no window to name it does nothing: an unaddressed request would reach
+    /// every composer.
     static func focusComposer(
         window: NSWindow?,
         defaults: UserDefaults = .standard,
-        center: NotificationCenter = .default
+        center: NotificationCenter = .default,
+        requests: MacFocusRequests? = nil
     ) {
+        guard let window, !commandsBlocked(by: window) else { return }
+        (requests ?? .shared).cancelSearch()
         selectTab(.sessions, defaults: defaults)
         center.post(name: .macFocusComposerRequested, object: window)
     }
@@ -166,9 +243,11 @@ enum MacKeyboardActions {
         _ direction: MacSessionNavigation.Direction,
         order: [String]?,
         activeID: String?,
+        window: NSWindow? = nil,
         open: (String) -> Void
     ) {
-        guard let order, let id = MacSessionNavigation.neighbor(of: activeID, in: order, direction: direction) else { return }
+        guard !commandsBlocked(by: window),
+              let order, let id = MacSessionNavigation.neighbor(of: activeID, in: order, direction: direction) else { return }
         open(id)
     }
 }

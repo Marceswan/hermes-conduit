@@ -64,7 +64,9 @@ Rule R18: agents never send clicks or key events to the running app. Launch smok
 - Keyboard checks (D10), user (hosted tests send synthetic events only; none of these has run against real hardware keys):
   - [ ] Cmd-1 to Cmd-4 switch Sessions / Bots / Cron / Kanban from the composer and from the sidebar search field.
   - [ ] Cmd-[ and Cmd-] (and Opt-Cmd-Up / Down) open the previous / next session in the order shown, including with a search filter; greyed at the ends; Cmd-[ in the composer does not type or indent.
-  - [ ] Cmd-F focuses "Search sessions" (also with the sidebar hidden, from the composer, and while a message is selected); Edit > Find > Find... shows no Cmd-F.
+  - [ ] Cmd-F focuses "Search sessions" (also with the sidebar hidden and from the composer); with text selected in a message it opens that message's find bar instead; Edit > Find > Find... shows no Cmd-F.
+  - [ ] Cmd-F then Cmd-L (or a click in the composer) quickly: the keyboard ends in the composer, not pulled back to the search field. Cmd-1..4, Cmd-]/[ and Cmd-F do nothing while a sheet (model picker, Settings) is open.
+  - [ ] Composer: the macOS inline-prediction Tab accept (if enabled) versus Tab leaving the composer.
   - [ ] Cmd-L from Kanban returns to chat and focuses the composer.
   - [ ] Tab from the composer goes to the sidebar list, then the search field, then back to the composer (Shift-Tab reverses); the list shows an accent ring in light and dark; Up / Down / Home / End move it, Return opens it.
   - [ ] System Settings > Keyboard > Keyboard navigation off and on: Tab still reaches list, search field and composer; buttons join the loop only when it is on.

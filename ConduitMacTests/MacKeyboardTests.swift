@@ -146,19 +146,6 @@ final class MacKeyboardActionsTests: XCTestCase {
                        "the sidebar lists sessions whatever the main pane shows (D6)")
         XCTAssertTrue(requests.searchPending)
         XCTAssertEqual(requests.searchToken, 1)
-        XCTAssertTrue(requests.searchRevealedSidebar, "the field is still sliding in: the list asks again once it settles")
-    }
-
-    func testSearchWithTheSidebarAlreadyShownDoesNotWait() {
-        let suite = HostedTestSupport.makeSuite()
-        defer { HostedTestSupport.dropSuite(suite) }
-        let requests = MacFocusRequests()
-        MacKeyboardActions.focusSessionSearch(defaults: suite.defaults, requests: requests)   // key absent: shown by default
-        XCTAssertFalse(requests.searchRevealedSidebar)
-        suite.defaults.set(true, forKey: MacSidebarState.defaultsKey)
-        MacKeyboardActions.focusSessionSearch(defaults: suite.defaults, requests: requests)
-        XCTAssertFalse(requests.searchRevealedSidebar)
-        XCTAssertEqual(requests.searchToken, 2)
     }
 
     func testSearchRequestIsConsumedOnce() {
@@ -167,6 +154,199 @@ final class MacKeyboardActionsTests: XCTestCase {
         requests.requestSearch()
         XCTAssertTrue(requests.consumeSearch())
         XCTAssertFalse(requests.consumeSearch())
+    }
+
+    func testSearchRequestExpiresIfNoListMountsSoon() {
+        let requests = MacFocusRequests()
+        let start = Date()
+        requests.requestSearch(now: start)
+        XCTAssertFalse(requests.consumeSearch(now: start.addingTimeInterval(MacFocusRequests.pendingLifetime + 0.5)),
+                       "a list that mounts after login must not take the keyboard")
+        requests.requestSearch(now: start)
+        XCTAssertTrue(requests.consumeSearch(now: start.addingTimeInterval(MacFocusRequests.pendingLifetime - 0.1)))
+    }
+
+    func testAnotherFocusActionCancelsAPendingSearch() {
+        let requests = MacFocusRequests()
+        requests.requestSearch()
+        let token = requests.searchToken
+        let suite = HostedTestSupport.makeSuite()
+        defer { HostedTestSupport.dropSuite(suite) }
+        let window = NSWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        MacKeyboardActions.focusComposer(window: window, defaults: suite.defaults, center: NotificationCenter(), requests: requests)
+        XCTAssertFalse(requests.consumeSearch(), "Cmd-L after Cmd-F wins")
+        XCTAssertNotEqual(requests.searchToken, token, "and any retry in flight stops")
+    }
+
+    // MARK: Retry
+
+    private func retryWindow() -> (window: NSWindow, field: NSView) {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 100))
+        // A text field (the window's initial responder, sharing the field
+        // editor) and a composer standing in for "somewhere else".
+        let first = NSTextField(frame: NSRect(x: 10, y: 50, width: 100, height: 24))
+        let field = ComposerTextView()
+        field.frame = NSRect(x: 10, y: 10, width: 100, height: 24)
+        content.addSubview(first)
+        content.addSubview(field)
+        window.contentView = content
+        window.orderFront(nil)
+        return (window, field)
+    }
+
+    func testRetryKeepsTryingUntilTheAttemptLands() {
+        let requests = MacFocusRequests()
+        let (window, _) = retryWindow()
+        defer { window.close() }
+        var attempts = 0
+        requests.retrySearchFocus(in: window, interval: 0.01, maxAttempts: 20) { attempts += 1 }
+        XCTAssertEqual(attempts, 1, "the first attempt is immediate")
+        XCTAssertTrue(HostedTestSupport.waitUntil { attempts >= 4 }, "retried while nothing took the keyboard")
+    }
+
+    func testRetryStopsOnceTheKeyboardMovedElsewhere() {
+        let requests = MacFocusRequests()
+        let (window, field) = retryWindow()
+        defer { window.close() }
+        var attempts = 0
+        requests.retrySearchFocus(in: window, interval: 0.01, maxAttempts: 50) { attempts += 1 }
+        XCTAssertTrue(HostedTestSupport.waitUntil { attempts >= 2 })
+        XCTAssertTrue(window.makeFirstResponder(field))   // a click, or Cmd-L, took the keyboard
+        HostedTestSupport.settle(0.05)
+        let frozen = attempts
+        HostedTestSupport.settle(0.15)
+        XCTAssertEqual(attempts, frozen, "a late retry never pulls focus back")
+    }
+
+    func testRetryStopsWhenSupersededByAnotherRequest() {
+        let requests = MacFocusRequests()
+        let (window, _) = retryWindow()
+        defer { window.close() }
+        var attempts = 0
+        requests.retrySearchFocus(in: window, interval: 0.01, maxAttempts: 50) { attempts += 1 }
+        XCTAssertTrue(HostedTestSupport.waitUntil { attempts >= 2 })
+        requests.cancelSearch()
+        HostedTestSupport.settle(0.05)
+        let frozen = attempts
+        HostedTestSupport.settle(0.15)
+        XCTAssertEqual(attempts, frozen)
+    }
+
+    func testRetryIsBounded() {
+        let requests = MacFocusRequests()
+        let (window, _) = retryWindow()
+        defer { window.close() }
+        var attempts = 0
+        requests.retrySearchFocus(in: window, interval: 0.005, maxAttempts: 3) { attempts += 1 }
+        XCTAssertTrue(HostedTestSupport.waitUntil { attempts >= 4 })
+        HostedTestSupport.settle(0.1)
+        XCTAssertEqual(attempts, 4, "one immediate attempt plus at most three retries")
+    }
+
+    // MARK: Cmd-F contextual
+
+    private func findWindow(textView: NSTextView) -> (NSWindow, NSScrollView) {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+        textView.frame = NSRect(x: 0, y: 0, width: 300, height: 200)
+        textView.string = "hello find"
+        scroll.documentView = textView
+        window.contentView = scroll
+        window.orderFront(nil)
+        return (window, scroll)
+    }
+
+    func testCmdFOpensTheFindBarOfAFocusedMessageView() {
+        let message = NSTextView()
+        message.isSelectable = true
+        message.usesFindBar = true   // as SelectableTextView does
+        let (window, scroll) = findWindow(textView: message)
+        defer { window.close() }
+        XCTAssertTrue(window.makeFirstResponder(message))
+        let suite = HostedTestSupport.makeSuite()
+        defer { HostedTestSupport.dropSuite(suite) }
+        let requests = MacFocusRequests()
+        let outcome = MacKeyboardActions.findOrSearchSessions(window: window, defaults: suite.defaults, requests: requests)
+        XCTAssertEqual(outcome, .messageFind)
+        XCTAssertTrue(HostedTestSupport.waitUntil { scroll.isFindBarVisible }, "the message view's own find bar opened")
+        XCTAssertFalse(requests.searchPending, "Search Sessions was not asked")
+    }
+
+    func testCmdFFocusesSearchSessionsFromTheComposer() {
+        let composer = ComposerTextView()
+        let (window, scroll) = findWindow(textView: composer)
+        defer { window.close() }
+        XCTAssertTrue(window.makeFirstResponder(composer))
+        let suite = HostedTestSupport.makeSuite()
+        defer { HostedTestSupport.dropSuite(suite) }
+        let requests = MacFocusRequests()
+        XCTAssertEqual(MacKeyboardActions.findOrSearchSessions(window: window, defaults: suite.defaults, requests: requests), .searchSessions)
+        XCTAssertTrue(requests.searchPending)
+        XCTAssertFalse(scroll.isFindBarVisible)
+    }
+
+    func testCmdFFocusesSearchSessionsWhenNothingIsFocusedOrTheViewCannotFind() {
+        let plain = NSTextView()   // usesFindBar false: not a message view
+        let (window, _) = findWindow(textView: plain)
+        defer { window.close() }
+        let suite = HostedTestSupport.makeSuite()
+        defer { HostedTestSupport.dropSuite(suite) }
+        XCTAssertTrue(window.makeFirstResponder(plain))
+        XCTAssertEqual(MacKeyboardActions.findOrSearchSessions(window: window, defaults: suite.defaults, requests: MacFocusRequests()), .searchSessions)
+        XCTAssertNil(MacKeyboardActions.findTarget(in: nil))
+        XCTAssertEqual(MacKeyboardActions.findOrSearchSessions(window: nil, defaults: suite.defaults, requests: MacFocusRequests()), .searchSessions)
+    }
+
+    // MARK: Sheets and windows
+
+    func testCommandsDoNothingWhileASheetIsAttachedOrIsTheKeyWindow() {
+        let suite = HostedTestSupport.makeSuite()
+        defer { HostedTestSupport.dropSuite(suite) }
+        let parent = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        parent.isReleasedWhenClosed = false
+        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
+        sheet.isReleasedWhenClosed = false
+        defer { parent.close(); sheet.close() }
+        parent.orderFront(nil)
+        XCTAssertFalse(MacKeyboardActions.commandsBlocked(by: parent))
+        parent.beginSheet(sheet)
+        defer { parent.endSheet(sheet) }
+        XCTAssertTrue(MacKeyboardActions.commandsBlocked(by: parent), "sheet attached")
+        XCTAssertTrue(MacKeyboardActions.commandsBlocked(by: sheet), "the sheet itself is the key window")
+        XCTAssertFalse(MacKeyboardActions.commandsBlocked(by: nil))
+
+        let requests = MacFocusRequests()
+        MacKeyboardActions.selectTab(.kanban, window: parent, defaults: suite.defaults)
+        XCTAssertNil(suite.defaults.string(forKey: MacSidebarState.tabDefaultsKey))
+        XCTAssertNil(MacKeyboardActions.findOrSearchSessions(window: parent, defaults: suite.defaults, requests: requests))
+        XCTAssertFalse(requests.searchPending)
+        var opened: [String] = []
+        MacKeyboardActions.openNeighbor(.next, order: ["a", "b"], activeID: "a", window: parent) { opened.append($0) }
+        XCTAssertTrue(opened.isEmpty)
+        let center = NotificationCenter()
+        var posts = 0
+        let token = center.addObserver(forName: .macFocusComposerRequested, object: nil, queue: nil) { _ in posts += 1 }
+        defer { center.removeObserver(token) }
+        MacKeyboardActions.focusComposer(window: parent, defaults: suite.defaults, center: center, requests: requests)
+        XCTAssertEqual(posts, 0)
+    }
+
+    func testComposerFocusWithNoWindowReachesNoComposer() {
+        let suite = HostedTestSupport.makeSuite()
+        defer { HostedTestSupport.dropSuite(suite) }
+        let center = NotificationCenter()
+        var posts = 0
+        let token = center.addObserver(forName: .macFocusComposerRequested, object: nil, queue: nil) { _ in posts += 1 }
+        defer { center.removeObserver(token) }
+        suite.defaults.set(SidebarTab.kanban.rawValue, forKey: MacSidebarState.tabDefaultsKey)
+        MacKeyboardActions.focusComposer(window: nil, defaults: suite.defaults, center: center)
+        XCTAssertEqual(posts, 0, "an unaddressed request would reach every composer")
+        XCTAssertEqual(suite.defaults.string(forKey: MacSidebarState.tabDefaultsKey), SidebarTab.kanban.rawValue)
     }
 
     func testComposerFocusReturnsToChatAndNamesTheWindow() {
@@ -274,6 +454,23 @@ final class MacKeyboardMenuTests: XCTestCase {
         let main = try XCTUnwrap(NSApp.mainMenu)
         let found = entries(main).filter { matches($0, key: "s", mask: [.command, .control]) }
         XCTAssertEqual(found.count, 1)
+    }
+
+    /// Ctrl-Cmd-S writes the key `MacSplitLayout` reads. A menu item cannot be
+    /// fired here (it would write the live app's defaults), so the key is
+    /// pinned on both sides.
+    func testSidebarToggleWritesTheKeyTheSplitLayoutReads() throws {
+        XCTAssertEqual(ConduitCommands.sidebarVisibleKey, MacSidebarState.defaultsKey)
+        XCTAssertEqual(MacSidebarState.defaultsKey, "conduit.mac.sidebarVisible")
+        func source(_ path: String) throws -> String {
+            let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            return try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+        }
+        let commands = try source("ConduitMac/App/ConduitCommands.swift")
+        XCTAssertTrue(commands.contains("@AppStorage(ConduitCommands.sidebarVisibleKey) private var sidebarVisible"))
+        XCTAssertFalse(commands.contains("ipadPersistentSidebar"), "the Mac sidebar presentation is always persistent (D6)")
+        let layout = try source("ConduitMac/App/MacSidebarState.swift")
+        XCTAssertTrue(layout.contains("@AppStorage(MacSidebarState.defaultsKey) private var sidebarVisible"))
     }
 
     func testComposerDoesNotSwallowAnyOfTheShortcuts() {
@@ -518,6 +715,22 @@ final class MacSessionListKeyboardTests: XCTestCase {
         return largest
     }
 
+    /// Re-renders until `row` differs from `reference` by more than `threshold`,
+    /// so no fixed wait stands in for SwiftUI's update.
+    private func renderUntilRowDiffers(
+        from reference: NSBitmapImageRep, window: NSWindow, table: NSTableView, row: Int, threshold: Int = 60
+    ) -> NSBitmapImageRep? {
+        guard let view = window.contentView else { return nil }
+        let rect = view.convert(table.rect(ofRow: row), from: table)
+        var latest: NSBitmapImageRep?
+        let changed = HostedTestSupport.waitUntil {
+            guard let rep = self.snapshot(window) else { return false }
+            latest = rep
+            return self.largestChange(reference, rep, in: rect, viewHeight: view.bounds.height, flipped: view.isFlipped) > threshold
+        }
+        return changed ? latest : nil
+    }
+
     func testCursorRingIsVisibleInLightAndDark() throws {
         for dark in [false, true] {
             let model = Model()
@@ -525,16 +738,15 @@ final class MacSessionListKeyboardTests: XCTestCase {
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             let table = try waitForTable(in: window)
             focusList(table, in: window)
+            let mode = dark ? "dark" : "light"
+            guard let bare = snapshot(window) else { return XCTFail("no snapshot") }
             pressDown(window)   // cursor on "c" (row 2)
-            HostedTestSupport.settle(0.4)
-            guard let withCursor = snapshot(window) else { return XCTFail("no snapshot") }
+            let withCursor = renderUntilRowDiffers(from: bare, window: window, table: table, row: 2)
+            XCTAssertNotNil(withCursor, "\(mode): the ring must stand out from the bare row")
+            guard let withCursor else { return }
             pressDown(window)   // cursor on "d" (row 3): row 2 loses its ring
-            HostedTestSupport.settle(0.4)
-            guard let moved = snapshot(window) else { return XCTFail("no snapshot") }
-            let view = try XCTUnwrap(window.contentView)
-            let row = view.convert(table.rect(ofRow: 2), from: table)
-            let change = largestChange(withCursor, moved, in: row, viewHeight: view.bounds.height, flipped: view.isFlipped)
-            XCTAssertGreaterThan(change, 60, "\(dark ? "dark" : "light"): the ring must stand out from the row it leaves")
+            XCTAssertNotNil(renderUntilRowDiffers(from: withCursor, window: window, table: table, row: 2),
+                            "\(mode): the ring leaves the row the cursor left")
             HostedTestSupport.tearDown(window)
             self.window = nil
         }
@@ -545,16 +757,14 @@ final class MacSessionListKeyboardTests: XCTestCase {
         let window = host(model)
         let table = try waitForTable(in: window)
         focusList(table, in: window)
+        guard let bare = snapshot(window) else { return XCTFail("no snapshot") }
         pressDown(window)
-        HostedTestSupport.settle(0.4)
-        guard let focused = snapshot(window) else { return XCTFail("no snapshot") }
+        guard let focused = renderUntilRowDiffers(from: bare, window: window, table: table, row: 2) else {
+            return XCTFail("the ring never appeared")
+        }
         XCTAssertTrue(window.makeFirstResponder(nil))
-        HostedTestSupport.settle(0.4)
-        guard let blurred = snapshot(window) else { return XCTFail("no snapshot") }
-        let view = try XCTUnwrap(window.contentView)
-        let row = view.convert(table.rect(ofRow: 2), from: table)
-        XCTAssertGreaterThan(largestChange(focused, blurred, in: row, viewHeight: view.bounds.height, flipped: view.isFlipped), 60,
-                             "the ring is drawn only while the list has the keyboard")
+        XCTAssertNotNil(renderUntilRowDiffers(from: focused, window: window, table: table, row: 2),
+                        "the ring is drawn only while the list has the keyboard")
     }
 
     // MARK: Tab
@@ -576,6 +786,31 @@ final class MacSessionListKeyboardTests: XCTestCase {
                       "first responder: \(String(describing: window.firstResponder))")
     }
 
+    /// Real Shift-Tab: the back-tab character U+0019 with the Shift flag (not
+    /// Tab plus Shift). It must leave the list, going to the previous view.
+    func testShiftTabLeavesTheList() throws {
+        let model = Model()
+        let window = host(model)
+        let table = try waitForTable(in: window)
+        focusList(table, in: window)
+        window.sendEvent(tab(shift: true, in: window))
+        XCTAssertTrue(HostedTestSupport.waitUntil { window.firstResponder !== table },
+                      "first responder: \(String(describing: window.firstResponder))")
+    }
+
+    func testShiftTabWithAnotherModifierIsNotOurs() throws {
+        let model = Model()
+        let window = host(model)
+        let table = try waitForTable(in: window)
+        focusList(table, in: window)
+        let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.shift, .command], timestamp: 0,
+                                     windowNumber: window.windowNumber, context: nil, characters: "\u{19}",
+                                     charactersIgnoringModifiers: "\u{19}", isARepeat: false, keyCode: 48)!
+        window.sendEvent(event)
+        HostedTestSupport.settle(0.2)
+        XCTAssertTrue(window.firstResponder === table)
+    }
+
     func testControlTabIsNotOurs() throws {
         let model = Model()
         let window = host(model)
@@ -592,11 +827,7 @@ final class MacSessionListKeyboardTests: XCTestCase {
     // MARK: Search focus (Cmd-F)
 
     private func isSearchFieldFocused(_ window: NSWindow) -> Bool {
-        guard let field = MacToolbarSearch.searchField(in: window) else { return false }
-        if window.firstResponder === field { return true }
-        // An editing field's first responder is the shared field editor.
-        if let editor = window.firstResponder as? NSText, editor.delegate === field { return true }
-        return false
+        MacToolbarSearch.isFocused(in: window)
     }
 
     func testSearchRequestFocusesTheSidebarSearchField() throws {

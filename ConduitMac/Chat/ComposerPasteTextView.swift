@@ -124,6 +124,7 @@ struct ComposerPasteTextView: NSViewRepresentable {
 
         /// Cmd-L: the composer in the command's window takes first responder.
         func observeFocusRequests(for textView: ComposerTextView, center: NotificationCenter) {
+            if let focusObserver { focusObserverCenter?.removeObserver(focusObserver) }
             focusObserverCenter = center
             focusObserver = center.addObserver(forName: .macFocusComposerRequested, object: nil, queue: .main) { [weak textView] note in
                 guard let textView, let window = textView.window else { return }

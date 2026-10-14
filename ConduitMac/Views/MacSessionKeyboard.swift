@@ -43,13 +43,13 @@ struct MacSessionListKeyboard: ViewModifier {
     @ObservedObject var requests: MacFocusRequests = .shared
 
     @State private var cursor: String?
-    @State private var host = HostWindow()
+    @State private var host = MacHostWindow()
     @FocusState private var listFocused: Bool
 
     func body(content: Content) -> some View {
         ScrollViewReader { proxy in
             content
-                .background(HostWindowReader(host: host))
+                .background(MacHostWindowReader(host: host))
                 .focused($listFocused)
                 .environment(\.macSessionCursor, listFocused ? cursor : nil)
                 .onKeyPress(.upArrow, phases: [.down, .repeat]) { press in move(.up, press) }
@@ -57,6 +57,8 @@ struct MacSessionListKeyboard: ViewModifier {
                 .onKeyPress(.home, phases: .down) { press in move(.first, press) }
                 .onKeyPress(.end, phases: .down) { press in move(.last, press) }
                 .onKeyPress(.tab, phases: .down) { press in traverse(press) }
+                // Shift-Tab arrives as the back-tab character U+0019, not as Tab.
+                .onKeyPress(characters: CharacterSet(charactersIn: "\u{19}"), phases: .down) { press in traverse(press, backTab: true) }
                 .onKeyPress(.return, phases: .down) { press in
                     guard Self.isPlain(press), let cursor, ids.contains(cursor) else { return .ignored }
                     open(cursor)
@@ -88,10 +90,12 @@ struct MacSessionListKeyboard: ViewModifier {
     /// driven from here. Shift-Tab goes back. Nothing is forced: the loop
     /// holds only what AppKit already lets take the keyboard, so the system
     /// "Keyboard navigation" setting still decides whether buttons are in it.
-    private func traverse(_ press: KeyPress) -> KeyPress.Result {
+    private func traverse(_ press: KeyPress, backTab: Bool = false) -> KeyPress.Result {
         let held = press.modifiers.intersection([.shift, .control, .option, .command])
         guard let window = host.window else { return .ignored }
-        if held.isEmpty {
+        if backTab, held.isSubset(of: .shift) {
+            window.selectPreviousKeyView(nil)
+        } else if held.isEmpty {
             window.selectNextKeyView(nil)
         } else if held == .shift {
             window.selectPreviousKeyView(nil)
@@ -116,12 +120,12 @@ struct MacSessionListKeyboard: ViewModifier {
 }
 
 /// The window hosting the list, for the key view loop.
-final class HostWindow {
+final class MacHostWindow {
     weak var window: NSWindow?
 }
 
-private struct HostWindowReader: NSViewRepresentable {
-    let host: HostWindow
+private struct MacHostWindowReader: NSViewRepresentable {
+    let host: MacHostWindow
 
     func makeNSView(context: Context) -> NSView {
         let view = ReaderView()
@@ -135,7 +139,7 @@ private struct HostWindowReader: NSViewRepresentable {
     }
 
     private final class ReaderView: NSView {
-        var host: HostWindow?
+        var host: MacHostWindow?
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             host?.window = window
@@ -197,11 +201,12 @@ struct MacSessionSearchFocus: ViewModifier {
         }
 
         private func focus() {
-            searchFocused = true
-            // A sidebar still opening has no field to focus yet: ask again
-            // once it has settled (setting true twice is harmless).
-            if requests.searchRevealedSidebar {
-                DispatchQueue.main.asyncAfter(deadline: .now() + MacFocusRequests.sidebarRevealDelay) { searchFocused = true }
+            // Retried while the field may not exist yet (a sidebar still
+            // opening); each try sets the binding afresh, since setting an
+            // already-true state would do nothing.
+            requests.retrySearchFocus(in: NSApp.keyWindow) {
+                searchFocused = false
+                DispatchQueue.main.async { searchFocused = true }
             }
         }
     }
@@ -220,12 +225,7 @@ struct MacSessionSearchFocus: ViewModifier {
         }
 
         private func focus() {
-            MacToolbarSearch.focus(in: NSApp.keyWindow)
-            if requests.searchRevealedSidebar {
-                DispatchQueue.main.asyncAfter(deadline: .now() + MacFocusRequests.sidebarRevealDelay) {
-                    MacToolbarSearch.focus(in: NSApp.keyWindow)
-                }
-            }
+            requests.retrySearchFocus(in: NSApp.keyWindow) { MacToolbarSearch.focus(in: NSApp.keyWindow) }
         }
     }
 }
@@ -236,6 +236,14 @@ enum MacToolbarSearch {
     static func focus(in window: NSWindow?) -> Bool {
         guard let field = searchField(in: window) else { return false }
         return window?.makeFirstResponder(field) ?? false
+    }
+
+    /// The toolbar search field has the keyboard (its field editor is the
+    /// first responder while it edits).
+    static func isFocused(in window: NSWindow?) -> Bool {
+        guard let field = searchField(in: window), let responder = window?.firstResponder else { return false }
+        if responder === field { return true }
+        return (responder as? NSText)?.delegate === field
     }
 
     static func searchField(in window: NSWindow?) -> NSSearchField? {

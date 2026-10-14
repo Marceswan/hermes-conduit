@@ -533,7 +533,9 @@ struct SessionList: View {
     #if os(macOS) // MAC: rows the keyboard reaches, top to bottom, as listed (D10)
     private var keyboardNavigationIDs: [String] {
         if showingProjects { return projectsViewPinnedSessions.map(\.id) }
-        return (pinnedSessions + unpinnedSessions).map(\.id)
+        // One pass over displayedSessions, not one per section.
+        let shown = displayedSessions
+        return (shown.filter { appState.isSessionPinned($0) } + shown.filter { !appState.isSessionPinned($0) }).map(\.id)
     }
     #endif // MAC:
 
