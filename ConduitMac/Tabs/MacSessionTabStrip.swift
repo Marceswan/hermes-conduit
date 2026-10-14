@@ -4,8 +4,6 @@ enum MacSessionTabMetrics {
     static let height: CGFloat = 28
     static let minWidth: CGFloat = 120
     static let maxWidth: CGFloat = 220
-    /// The strip's width until the toolbar has been measured.
-    static let defaultSlotWidth: CGFloat = 360
 }
 
 /// The chat toolbar's session tabs (D11), in place of the title pill. The
@@ -14,7 +12,7 @@ struct MacSessionTabStrip: View {
     @EnvironmentObject private var appState: AppState
     @ObservedObject var store: MacSessionTabsStore
     /// The toolbar room around the strip; the principal slot sizes the item to its ideal width.
-    @State private var slotWidth: CGFloat = MacSessionTabMetrics.defaultSlotWidth
+    @State private var slotWidth: CGFloat = MacSessionTabMetrics.minWidth
     let onRename: (SessionSummary) -> Void
     let onDelete: (SessionSummary) -> Void
 
@@ -50,6 +48,9 @@ struct MacSessionTabStrip: View {
             .mask(MacSessionTabEdgeFade())
             .onAppear { scroll(proxy, animated: false) }
             .onChange(of: store.model.activeID) { _, _ in scroll(proxy, animated: true) }
+            // A narrower strip must not leave the active tab off its edge.
+            .onChange(of: slotWidth) { _, _ in scroll(proxy, animated: false) }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { _ in scroll(proxy, animated: false) }
         }
         .frame(minWidth: MacSessionTabMetrics.minWidth,
                idealWidth: max(MacSessionTabMetrics.minWidth, slotWidth), maxWidth: .infinity)
@@ -77,8 +78,10 @@ private struct MacSessionTabButton: View {
     let onRename: (SessionSummary) -> Void
     let onDelete: (SessionSummary) -> Void
     @State private var hovering = false
+    @Environment(\.colorScheme) private var colorScheme
 
     private var title: String { session?.title ?? tab.title }
+    private var showsClose: Bool { isActive || hovering }
 
     private var liveStatus: SessionLiveStatus? {
         guard let session else { return nil }
@@ -99,18 +102,20 @@ private struct MacSessionTabButton: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 0)
-            if isActive || hovering {
-                Button(action: onClose) {
-                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).frame(width: 16, height: 16)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(AppLocalization.string("Close tab"))
+            // Always laid out: showing it on hover must not change the tab's width.
+            Button(action: onClose) {
+                Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).frame(width: 16, height: 16)
             }
+            .buttonStyle(.plain)
+            .opacity(showsClose ? 1 : 0)
+            .allowsHitTesting(showsClose)
+            .accessibilityHidden(!showsClose)
+            .accessibilityLabel(AppLocalization.string("Close Tab"))
         }
         .padding(.horizontal, 10)
         .frame(minWidth: MacSessionTabMetrics.minWidth, maxWidth: MacSessionTabMetrics.maxWidth,
                minHeight: MacSessionTabMetrics.height, maxHeight: MacSessionTabMetrics.height)
-        .foregroundStyle(isActive ? Color.black.opacity(0.85) : Color.secondary)
+        .foregroundStyle(isActive ? Self.activeText(colorScheme) : Color.secondary)
         .background(Capsule().fill(fill))
         .opacity(tab.unavailable ? 0.45 : 1)
         .contentShape(Capsule())
@@ -129,7 +134,13 @@ private struct MacSessionTabButton: View {
         .accessibilityAddTraits(isActive ? [.isButton, .isSelected] : .isButton)
         // A tap gesture alone gives VoiceOver and Voice Control no press action.
         .accessibilityAction(.default, onSelect)
-        .accessibilityAction(named: Text(AppLocalization.string("Close tab")), onClose)
+        .accessibilityAction(named: Text(AppLocalization.string("Close Tab")), onClose)
+    }
+
+    /// On the accent fill: dark text on the light amber, white on the dark brown
+    /// (black at 85% on the light-mode brown is 3.4:1; white is 5.6:1).
+    static func activeText(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.black.opacity(0.85) : Color.white
     }
 
     private var fill: Color {

@@ -86,26 +86,115 @@ final class MacSessionTabStripTests: XCTestCase {
         XCTAssertFalse(bounds.contains(first), "the first tab scrolled out of view")
     }
 
-    func testRendersInLightAndDark() throws {
+    func testActiveTabStaysInViewWhenTheStripGetsNarrower() throws {
+        try XCTSkipUnless(AccessibilityTreeBoost.isAvailable)
+        let window = HostedTestSupport.host(strip(store(30, active: 29)).frame(maxWidth: .infinity, maxHeight: 44),
+                                            size: NSSize(width: 900, height: 44))
+        self.window = window
+        AccessibilityTreeBoost.set(true)
+        func visible() -> Bool {
+            guard let bounds = window.contentView?.bounds else { return false }
+            return AccessibilityProbe.frame(of: "Session number 29", in: window).map { bounds.contains($0) } ?? false
+        }
+        XCTAssertTrue(HostedTestSupport.waitUntil { visible() }, "visible at 900 pt")
+        window.setContentSize(NSSize(width: 400, height: 44))
+        XCTAssertTrue(HostedTestSupport.waitUntil { visible() }, "still visible at 400 pt")
+    }
+
+    /// Active tab text against its accent fill, sampled from the rendered pixels
+    /// (the darkest or lightest pixel in the tab against a fill pixel).
+    private func activeTabContrast(in window: NSWindow) -> Double? {
+        guard let tab = AccessibilityProbe.frame(of: "Session number 1", in: window),
+              let content = window.contentView,
+              let captured = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { return nil }
+        content.cacheDisplay(in: content.bounds, to: captured)
+        // The capture is in the display's colour space; contrast is defined on sRGB.
+        guard let rep = captured.converting(to: .sRGB, renderingIntent: .default) else { return nil }
+        let scale = CGFloat(rep.pixelsWide) / content.bounds.width
+        func luminance(_ color: NSColor) -> Double? {
+            // `converting(to: .sRGB)` already put the pixels in sRGB; the colour's tag is not trustworthy.
+            let c = color
+            func lin(_ v: CGFloat) -> Double { let v = Double(v); return v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
+            return 0.2126 * lin(c.redComponent) + 0.7152 * lin(c.greenComponent) + 0.0722 * lin(c.blueComponent)
+        }
+        guard let fill = rep.colorAt(x: Int((tab.minX + 8) * scale), y: Int(tab.midY * scale)).flatMap(luminance) else { return nil }
+        var best = 1.0
+        for px in Int((tab.minX + 14) * scale)..<Int((tab.maxX - 14) * scale) {
+            for py in Int((tab.minY + 4) * scale)..<Int((tab.maxY - 4) * scale) {
+                guard let l = rep.colorAt(x: px, y: py).flatMap(luminance) else { continue }
+                best = max(best, (max(l, fill) + 0.05) / (min(l, fill) + 0.05))
+            }
+        }
+        return best
+    }
+
+    func testActiveTabTextHasAtLeast4_5ToOneContrastInLightAndDark() throws {
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
-            let window = try host(store(3, active: 0), width: 700)
+            let window = try host(store(3, active: 1), width: 700)
             window.appearance = NSAppearance(named: appearance)
-            HostedTestSupport.settle()
-            let content = try XCTUnwrap(window.contentView)
-            let image = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
-            content.cacheDisplay(in: content.bounds, to: image)
-            XCTAssertGreaterThan(image.pixelsWide, 0)
+            var ratio = 0.0
+            let reached = HostedTestSupport.waitUntil {
+                ratio = self.activeTabContrast(in: window) ?? 0
+                return ratio >= 4.5
+            }
+            XCTAssertTrue(reached, "\(appearance.rawValue): active tab contrast \(ratio):1")
             HostedTestSupport.tearDown(window)
             self.window = nil
         }
     }
 
+    // MARK: Slot width (pure)
+
+    private func platter(_ minX: CGFloat, _ width: CGFloat = 36) -> ToolbarPlatter {
+        ToolbarPlatter(frame: CGRect(x: minX, y: 0, width: width, height: 36), cornerRadius: 18)
+    }
+
+    func testAvailableWidthIsTheRoomBetweenTheTitleAreaAndTheFirstTrailingItem() {
+        let platters = [platter(300), platter(560, 400), platter(1100), platter(1144)]
+        XCTAssertEqual(MacToolbarSlot.availableWidth(titleEnd: 500, ownMinX: 560, among: platters),
+                       1100 - (500 + MacToolbarSlot.titleGap) - MacToolbarSlot.trailingMargin)
+    }
+
+    func testWithoutATitleAreaItMeasuresFromTheStripsOwnLeftEdge() {
+        let platters = [platter(300), platter(560, 400), platter(1100), platter(1144)]
+        XCTAssertEqual(MacToolbarSlot.availableWidth(titleEnd: nil, ownMinX: 561, among: platters),
+                       1100 - 561 - MacToolbarSlot.trailingMargin)
+    }
+
+    func testNothingToMeasureFromIsNil() {
+        XCTAssertNil(MacToolbarSlot.availableWidth(titleEnd: nil, ownMinX: nil, among: [platter(1100), platter(1144)]))
+    }
+
+    func testTooFewTrailingPlattersShrinksToZero() {
+        XCTAssertEqual(MacToolbarSlot.availableWidth(titleEnd: 500, ownMinX: 560, among: [platter(300)]), 0, "none")
+        XCTAssertEqual(MacToolbarSlot.availableWidth(titleEnd: 500, ownMinX: 560, among: [platter(300), platter(1144)]), 0, "one")
+    }
+
+    /// Refresh in the overflow menu: the strip and the status dot are the two
+    /// rightmost platters. The status dot's room must not be taken as the
+    /// strip's, or the strip would keep Refresh out.
+    func testWithRefreshInOverflowTheStripShrinksToItsOwnLeftEdge() {
+        let platters = [platter(300), platter(560, 400), platter(1144)]
+        XCTAssertEqual(MacToolbarSlot.availableWidth(titleEnd: 500, ownMinX: 560, among: platters),
+                       560 - (500 + MacToolbarSlot.titleGap) - MacToolbarSlot.trailingMargin)
+    }
+
+    func testAvailableWidthNeverGoesNegative() {
+        XCTAssertEqual(MacToolbarSlot.availableWidth(titleEnd: 500, ownMinX: 560, among: [platter(510), platter(540)]), 0)
+    }
+
     // MARK: Toolbar width (D11)
+
+    @MainActor
+    private final class SidebarModel: ObservableObject {
+        @Published var visibility = NavigationSplitViewVisibility.all
+    }
 
     private struct ToolbarRoot: View {
         let store: MacSessionTabsStore
+        @ObservedObject var sidebar: SidebarModel
         var body: some View {
-            NavigationSplitView {
+            NavigationSplitView(columnVisibility: $sidebar.visibility) {
                 List { Text("Sidebar") }
                     .navigationSplitViewColumnWidth(min: 340, ideal: 340, max: 340)
             } detail: {
@@ -135,11 +224,9 @@ final class MacSessionTabStripTests: XCTestCase {
         }
     }
 
-    /// Hosts the chat toolbar's shape (sidebar toggle stand-in, strip, Refresh,
-    /// status) at `width` and returns the platters left to right, in window coordinates.
-    private func toolbarPlatters(width: CGFloat) throws -> [ToolbarPlatter] {
+    private func hostToolbar(width: CGFloat, sidebar: SidebarModel? = nil) throws -> NSWindow {
         guard #available(macOS 26.0, *) else { throw XCTSkip("system toolbar platters need macOS 26") }
-        let controller = NSHostingController(rootView: ToolbarRoot(store: store(30, active: 29)))
+        let controller = NSHostingController(rootView: ToolbarRoot(store: store(30, active: 29), sidebar: sidebar ?? SidebarModel()))
         let window = NSWindow(contentViewController: controller)
         window.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
         window.setContentSize(NSSize(width: width, height: 400))
@@ -147,10 +234,27 @@ final class MacSessionTabStripTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         if let previous = self.window { HostedTestSupport.tearDown(previous) }
         self.window = window
-        HostedTestSupport.settle(1.0)
-        return ToolbarPlatterGeometry.platters(in: window, near: window.frame)
+        return window
+    }
+
+    /// Toggle, strip, Refresh and status on platters, left to right, in window
+    /// coordinates; nil while fewer than four are there or the strip overlaps Refresh.
+    private func settledPlatters(in window: NSWindow, minRatio: CGFloat) -> [ToolbarPlatter]? {
+        let platters = ToolbarPlatterGeometry.platters(in: window, near: window.frame)
             .map { ToolbarPlatter(frame: $0.frame.offsetBy(dx: -window.frame.minX, dy: 0), cornerRadius: $0.cornerRadius) }
             .sorted { $0.frame.minX < $1.frame.minX }
+        guard platters.count == 4, platters[1].frame.maxX < platters[2].frame.minX else { return nil }
+        let gap = platters[2].frame.minX - platters[0].frame.maxX
+        return platters[1].frame.width >= max(MacSessionTabMetrics.minWidth, gap * minRatio) - 1 ? platters : nil
+    }
+
+    /// Polls until the toolbar shows all four items with the strip clear of Refresh.
+    private func expectFourItems(in window: NSWindow, _ step: String, minRatio: CGFloat = 0.6, file: StaticString = #filePath, line: UInt = #line) -> [ToolbarPlatter]? {
+        var found: [ToolbarPlatter]?
+        let settled = HostedTestSupport.waitUntil { found = settledPlatters(in: window, minRatio: minRatio); return found != nil }
+        let now = ToolbarPlatterGeometry.platters(in: window, near: window.frame).map { $0.frame.offsetBy(dx: -window.frame.minX, dy: 0) }
+        XCTAssertTrue(settled, "\(step): toggle, strip (at least \(minRatio) of the toggle-to-Refresh gap, and 120 pt), Refresh and status on platters, strip clear of Refresh; platters now \(now)", file: file, line: line)
+        return found
     }
 
     /// The principal slot does not grow into free space and an ideal wider
@@ -160,13 +264,30 @@ final class MacSessionTabStripTests: XCTestCase {
     /// between the sidebar toggle and Refresh.
     func testStripFillsTheToolbarGapWithoutPushingItemsIntoOverflow() throws {
         for width in [1000, 1200, 1600] as [CGFloat] {
-            let platters = try toolbarPlatters(width: width)
-            XCTAssertEqual(platters.count, 4, "toggle, strip, Refresh and status all stay at \(width) pt: \(platters)")
-            guard platters.count == 4 else { continue }
-            let (toggle, tabs, refresh) = (platters[0].frame, platters[1].frame, platters[2].frame)
-            let gap = refresh.minX - toggle.maxX
-            XCTAssertGreaterThanOrEqual(tabs.width, gap * 0.6, "\(width) pt: strip \(tabs.width) of a \(gap) pt gap")
-            XCTAssertLessThan(tabs.maxX, refresh.minX, "\(width) pt: strip clears Refresh")
+            let window = try hostToolbar(width: width)
+            _ = expectFourItems(in: window, "\(width) pt")
         }
+    }
+
+    /// One window through the sizes and the sidebar changes a user makes: the
+    /// stale ideal after a shrink must not leave Refresh in the overflow menu.
+    /// 820 is the window's minimum width (MacSidebarState.windowMinWidth).
+    func testToolbarKeepsAllItemsThroughResizeAndSidebarToggle() throws {
+        let sidebar = SidebarModel()
+        let window = try hostToolbar(width: 1200, sidebar: sidebar)
+        _ = expectFourItems(in: window, "1200 pt")
+
+        window.setContentSize(NSSize(width: MacSidebarState.windowMinWidth, height: 400))
+        let narrow = expectFourItems(in: window, "820 pt (the window minimum)", minRatio: 0)
+        XCTAssertGreaterThanOrEqual(narrow?[1].frame.width ?? 0, MacSessionTabMetrics.minWidth, "the strip keeps its minimum")
+
+        window.setContentSize(NSSize(width: 1400, height: 400))
+        _ = expectFourItems(in: window, "1400 pt")
+
+        sidebar.visibility = .detailOnly
+        _ = expectFourItems(in: window, "sidebar hidden")
+
+        sidebar.visibility = .all
+        _ = expectFourItems(in: window, "sidebar shown again")
     }
 }
