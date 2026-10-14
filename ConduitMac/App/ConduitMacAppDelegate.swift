@@ -24,6 +24,8 @@ enum MacDefaults {
 final class ConduitMacAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         MacDefaults.register()
+        // Start Sparkle's hourly schedule with the app, not the first menu build.
+        _ = MacUpdater.shared
         if !MacDefaults.isRunningUnderXCTest { HoverAccessibilityEngine.install() }
         Task.detached(priority: .background) {
             AttachmentStaging.sweepStaleFiles()

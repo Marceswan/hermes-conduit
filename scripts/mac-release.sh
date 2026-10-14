@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build, sign, notarize, and staple Conduit for macOS as a DMG.
 # Usage: CONDUIT_NOTARY_PROFILE=conduit-notary scripts/mac-release.sh
+# Optional: CONDUIT_MARKETING_VERSION=0.1.1 CONDUIT_BUILD_NUMBER=2 (set by scripts/mac-ship.sh)
 set -euo pipefail
 
 : "${CONDUIT_NOTARY_PROFILE:?set CONDUIT_NOTARY_PROFILE to a notarytool keychain profile}"
@@ -11,6 +12,9 @@ ARCHIVE="$OUT/Conduit.xcarchive"
 EXPORT="$OUT/export"
 
 cd "$ROOT"
+source "$ROOT/scripts/lib/mac-version.sh"
+VERSION_ARGS=()
+while IFS= read -r arg; do VERSION_ARGS+=("$arg"); done < <(mac_version_args "${CONDUIT_MARKETING_VERSION:-}" "${CONDUIT_BUILD_NUMBER:-}")
 rm -rf "$OUT"
 mkdir -p "$OUT"
 
@@ -19,7 +23,8 @@ xcodegen generate 2>&1 | tee "$OUT/xcodegen.log" | tail -3
 
 echo "::progress::2/7 Archiving" >&2
 xcodebuild archive -scheme ConduitMac -configuration Release \
-  -destination 'generic/platform=macOS' -archivePath "$ARCHIVE" 2>&1 | tee "$OUT/archive.log" | tail -3
+  -destination 'generic/platform=macOS' -archivePath "$ARCHIVE" \
+  ${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"} 2>&1 | tee "$OUT/archive.log" | tail -3
 
 echo "::progress::3/7 Exporting (Developer ID)" >&2
 xcodebuild -exportArchive -archivePath "$ARCHIVE" \

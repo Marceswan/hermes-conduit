@@ -24,6 +24,10 @@ packages:
   WebRTC:
     url: https://github.com/stasel/WebRTC
     exactVersion: 153.0.0
+  # Mac auto-update (D12): Sparkle 2, pinned.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.10.0
 targets:
   Conduit:
     type: application
@@ -293,6 +297,7 @@ targets:
       - target: UIKitCompat
       - target: AppIntentsUIKitOverlay
       - package: WebRTC
+      - package: Sparkle
   ConduitMacTests:
     type: bundle.unit-test
     platform: macOS
