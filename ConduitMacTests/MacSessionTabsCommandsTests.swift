@@ -33,7 +33,7 @@ final class MacSessionTabsCommandsTests: XCTestCase {
 
     func testMainChatWindowIsTheConduitPrimaryWindowGroup() {
         XCTAssertTrue(MacSessionTabsActions.isMainChatWindow(window(identifier: "conduit-primary-AppWindow-1")))
-        XCTAssertFalse(MacSessionTabsActions.isMainChatWindow(window(identifier: "com_apple_SwiftUI_Settings_window")))
+        XCTAssertFalse(MacSessionTabsActions.isMainChatWindow(window(identifier: "auxiliary-window")))
         XCTAssertFalse(MacSessionTabsActions.isMainChatWindow(nil))
     }
 
@@ -43,8 +43,8 @@ final class MacSessionTabsCommandsTests: XCTestCase {
         XCTAssertEqual(opened, ["b"])
     }
 
-    func testCmdWInAnotherWindowClosesThatWindowNotATab() {
-        let other = window(identifier: "com_apple_SwiftUI_Settings_window")
+    func testCmdWInAnAuxiliaryWindowClosesThatWindowNotATab() {
+        let other = window(identifier: "auxiliary-window")
         other.orderFront(nil)
         MacSessionTabsActions.closeTab(store: store, window: other)
         XCTAssertEqual(store.model.tabs.count, 3)
@@ -55,6 +55,7 @@ final class MacSessionTabsCommandsTests: XCTestCase {
         let main = window(identifier: "conduit-primary-AppWindow-1")
         let sheet = window(identifier: nil)
         main.beginSheet(sheet)
+        defer { main.endSheet(sheet) }
         XCTAssertTrue(HostedTestSupport.waitUntil { main.attachedSheet != nil })
         MacSessionTabsActions.closeTab(store: store, window: main)
         MacSessionTabsActions.selectShortcut(1, store: store, window: main)
@@ -62,7 +63,42 @@ final class MacSessionTabsCommandsTests: XCTestCase {
         MacSessionTabsActions.reopen(store: store, window: main)
         XCTAssertEqual(store.model.tabs.count, 3)
         XCTAssertTrue(opened.isEmpty)
-        main.endSheet(sheet)
+    }
+
+    func testCmdWInASheetDoesNothing() {
+        let main = window(identifier: "conduit-primary-AppWindow-1")
+        main.orderFront(nil)
+        let sheet = window(identifier: "auxiliary-window")
+        main.beginSheet(sheet)
+        defer { main.endSheet(sheet) }
+        XCTAssertTrue(HostedTestSupport.waitUntil { sheet.sheetParent != nil })
+        MacSessionTabsActions.closeTab(store: store, window: sheet)
+        HostedTestSupport.settle(0.3)
+        XCTAssertTrue(sheet.sheetParent === main, "still attached")
+        XCTAssertTrue(sheet.isVisible)
+        XCTAssertEqual(store.model.tabs.count, 3)
+    }
+
+    func testCmdWWithNoTabsDoesNothing() {
+        let empty = MacSessionTabsStore(defaults: suite.defaults)
+        empty.setScope(dashboardID: UUID(), profile: "empty")
+        var newChats = 0
+        empty.startNewChat = { newChats += 1 }
+        MacSessionTabsActions.closeTab(store: empty, window: window(identifier: "conduit-primary-AppWindow-1"))
+        XCTAssertTrue(empty.model.tabs.isEmpty)
+        XCTAssertEqual(newChats, 0)
+    }
+
+    func testOtherCommandsDoNothingForNoWindowOrANonChatWindow() {
+        let other = window(identifier: "auxiliary-window")
+        for target in [nil, other] {
+            MacSessionTabsActions.reopen(store: store, window: target)
+            MacSessionTabsActions.selectShortcut(1, store: store, window: target)
+            MacSessionTabsActions.selectNeighbor(.previous, store: store, window: target)
+            MacSessionTabsActions.closeTab(store: store, window: nil)
+        }
+        XCTAssertEqual(store.model.tabs.count, 3)
+        XCTAssertTrue(opened.isEmpty)
     }
 
     func testPanesMovedToControlCommand() {

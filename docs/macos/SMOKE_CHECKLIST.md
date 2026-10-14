@@ -71,6 +71,6 @@ Rule R18: agents never send clicks or key events to the running app. Launch smok
   - [ ] Tab from the composer goes to the sidebar list, then the search field, then back to the composer (Shift-Tab reverses); the list shows an accent ring in light and dark; Up / Down / Home / End move it, Return opens it.
   - [ ] System Settings > Keyboard > Keyboard navigation off and on: Tab still reaches list, search field and composer; buttons join the loop only when it is on.
   - [ ] Session tabs (D11): open 3 sessions and see 3 tabs; Cmd-1, Cmd-9 and Ctrl-Tab move between them.
-  - [ ] Cmd-W twice closes two tabs, then Cmd-Shift-T brings the last one back; Cmd-W in Settings closes Settings, not a tab.
+  - [ ] Cmd-W twice closes two tabs, then Cmd-Shift-T brings the last one back; Cmd-W while Settings (a sheet) is open does nothing; Esc closes it.
   - [ ] Delete a session from the sidebar and its tab goes; rename a session and its tab stays with the new title; relaunch restores the tabs.
   - [ ] Ctrl-Cmd-1..4 switch Sessions / Bots / Cron / Kanban (plain Cmd-1..4 now select tabs).

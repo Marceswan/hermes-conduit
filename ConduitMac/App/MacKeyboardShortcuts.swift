@@ -270,11 +270,12 @@ enum MacSessionTabsActions {
         window?.identifier?.rawValue.hasPrefix("conduit-primary") ?? false
     }
 
-    /// Cmd-W: a tab in the chat window, else that window's ordinary close.
+    /// Cmd-W: a tab in the chat window, else a real non-chat window's ordinary
+    /// close. Under a sheet, or in the sheet itself, nothing happens.
     static func closeTab(store: MacSessionTabsStore? = nil, window: NSWindow?) {
-        guard let window else { return }
+        // A sheet (Settings, pickers) is not a window to close: Esc closes it.
+        guard let window, !MacKeyboardActions.commandsBlocked(by: window) else { return }
         guard isMainChatWindow(window) else { window.performClose(nil); return }
-        guard !MacKeyboardActions.commandsBlocked(by: window) else { return }
         (store ?? .shared).close(nil)
     }
 
