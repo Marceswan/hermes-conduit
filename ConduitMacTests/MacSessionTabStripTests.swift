@@ -145,75 +145,35 @@ final class MacSessionTabStripTests: XCTestCase {
 
     // MARK: Slot width (pure)
 
-    private func platter(_ minX: CGFloat, _ width: CGFloat = 36) -> ToolbarPlatter {
-        ToolbarPlatter(frame: CGRect(x: minX, y: 0, width: width, height: 36), cornerRadius: 18)
+    func testIdealWidthIsTheWindowLessTheLeadingSpaceAndTheTrailingReserve() {
+        // Measured in the hosted harness on macOS 27 (strip platter width, all five items visible).
+        XCTAssertEqual(MacToolbarSlot.trailingReserve, 156)
+        XCTAssertEqual(MacToolbarSlot.idealWidth(windowWidth: 1200, sidebarWidth: 340), 492)
+        XCTAssertEqual(MacToolbarSlot.idealWidth(windowWidth: 1400, sidebarWidth: 340), 692)
+        XCTAssertEqual(MacToolbarSlot.idealWidth(windowWidth: 1200, sidebarWidth: 0), 744, "sidebar hidden: starts after the traffic lights")
+        XCTAssertEqual(MacToolbarSlot.idealWidth(windowWidth: 1200, sidebarWidth: 390), 1200 - 390 - 212 - 156)
     }
 
-    private func stripFrame(_ minX: CGFloat, _ width: CGFloat) -> CGRect { CGRect(x: minX, y: 0, width: width, height: 36) }
-
-    /// Toggle, the strip (560...960) and three trailing items: Refresh, status, search.
-    private var threeTrailing: [ToolbarPlatter] {
-        [platter(300), platter(560, 400), platter(1100), platter(1144), platter(1188)]
-    }
-
-    func testAvailableWidthIsTheRoomBetweenTheTitleAreaAndTheNearestTrailingItem() {
-        XCTAssertEqual(MacToolbarSlot.availableWidth(titleEnd: 500, strip: stripFrame(560, 400), among: threeTrailing),
-                       1100 - (500 + MacToolbarSlot.titleGap) - MacToolbarSlot.trailingMargin)
-    }
-
-    /// The count of trailing items does not matter: one, two, three or five give the same room.
-    func testTheNumberOfTrailingItemsDoesNotChangeTheRoom() {
-        let strip = stripFrame(560, 400)
-        let expected = 1100 - (500 + MacToolbarSlot.titleGap) - MacToolbarSlot.trailingMargin
-        for count in 1...5 {
-            let platters = [platter(300), platter(560, 400)] + (0..<count).map { platter(1100 + CGFloat($0) * 44) }
-            XCTAssertEqual(MacToolbarSlot.availableWidth(titleEnd: 500, strip: strip, among: platters), expected, "\(count) trailing")
+    func testIdealWidthIsMonotonicInTheWindowWidthAndNeverBelowTheMinimumOrNegative() {
+        for sidebar in [0, 260, 340, 390] as [CGFloat] {
+            var previous: CGFloat = 0
+            for width in stride(from: 0 as CGFloat, through: 4000, by: 7) {
+                let ideal = MacToolbarSlot.idealWidth(windowWidth: width, sidebarWidth: sidebar)
+                XCTAssertGreaterThanOrEqual(ideal, MacSessionTabMetrics.minWidth, "window \(width), sidebar \(sidebar)")
+                XCTAssertGreaterThanOrEqual(ideal, previous, "non-decreasing: window \(width), sidebar \(sidebar)")
+                previous = ideal
+            }
         }
+        XCTAssertEqual(MacToolbarSlot.idealWidth(windowWidth: -50, sidebarWidth: 340), MacSessionTabMetrics.minWidth)
+        XCTAssertEqual(MacToolbarSlot.idealWidth(windowWidth: 820, sidebarWidth: 340), MacSessionTabMetrics.minWidth)
     }
 
-    /// The strip's own width is not an input: the same room at 120 pt and at 400 pt.
-    func testTheRoomDoesNotDependOnTheStripsOwnWidth() {
-        let trailing = [platter(1100), platter(1144)]
-        let narrow = MacToolbarSlot.availableWidth(titleEnd: 500, strip: stripFrame(656, 120), among: [platter(300), platter(656, 120)] + trailing)
-        let wide = MacToolbarSlot.availableWidth(titleEnd: 500, strip: stripFrame(504, 560), among: [platter(300), platter(504, 560)] + trailing)
-        XCTAssertEqual(narrow, wide)
-    }
-
-    func testWithoutATitleAreaItMeasuresFromTheStripsOwnLeftEdge() {
-        XCTAssertEqual(MacToolbarSlot.availableWidth(titleEnd: nil, strip: stripFrame(561, 400), among: threeTrailing),
-                       1100 - 561 - MacToolbarSlot.trailingMargin)
-    }
-
-    func testTrailingPlattersAreTheOnesRightOfTheStrip() {
-        XCTAssertEqual(MacToolbarSlot.trailing(of: stripFrame(560, 400), among: threeTrailing).map(\.frame.minX), [1100, 1144, 1188])
-        XCTAssertTrue(MacToolbarSlot.trailing(of: stripFrame(560, 400), among: [platter(300), platter(560, 400)]).isEmpty)
-    }
-
-    func testNothingTrailingTheStripShrinksToZero() {
-        XCTAssertEqual(MacToolbarSlot.availableWidth(titleEnd: 500, strip: stripFrame(560, 400), among: [platter(300), platter(560, 400)]), 0)
-        XCTAssertEqual(MacToolbarSlot.availableWidth(titleEnd: 500, strip: stripFrame(560, 400), among: []), 0)
-    }
-
-    func testAvailableWidthNeverGoesNegative() {
-        XCTAssertEqual(MacToolbarSlot.availableWidth(titleEnd: 500, strip: stripFrame(400, 100), among: [platter(510), platter(540)]), 0)
-    }
-
-    /// A search field (wider than a round button) can squeeze to a magnifier,
-    /// so the optimistic room includes what it would free; round buttons free nothing.
-    func testOptimisticRoomAddsWhatWideTrailingItemsCanGiveUp() {
-        let platters = [platter(300), platter(560, 400), platter(1100), platter(1144), platter(1188, 249)]
-        let strip = stripFrame(560, 400)
-        let conservative = MacToolbarSlot.availableWidth(titleEnd: 500, strip: strip, among: platters)
-        XCTAssertEqual(MacToolbarSlot.availableWidth(titleEnd: 500, strip: strip, among: platters, optimistic: true),
-                       conservative + (249 - MacToolbarSlot.roundPlatterWidth))
-        XCTAssertEqual(MacToolbarSlot.availableWidth(titleEnd: 500, strip: strip, among: threeTrailing, optimistic: true),
-                       MacToolbarSlot.availableWidth(titleEnd: 500, strip: strip, among: threeTrailing))
-    }
-
-    func testOverflowedItemsAreTheOnesMissingFromTheVisibleSetExceptSpacers() {
-        XCTAssertEqual(MacToolbarSlot.overflowed(all: ["a", "NSToolbarFlexibleSpaceItem", "b", "c"], visible: ["a", "c"]), ["b"])
-        XCTAssertEqual(MacToolbarSlot.overflowed(all: ["a", "NSToolbarSidebarTrackingSeparatorItem", "b"], visible: ["a", "b"]), [])
-        XCTAssertEqual(MacToolbarSlot.overflowed(all: [], visible: []), [])
+    /// A wider sidebar leaves the strip less room; hiding it leaves the most.
+    func testIdealWidthShrinksWithTheSidebarAndGrowsWhenItIsHidden() {
+        let widths = [260, 340, 390, 0].map { MacToolbarSlot.idealWidth(windowWidth: 1400, sidebarWidth: $0) }
+        XCTAssertGreaterThan(widths[3], widths[0])
+        XCTAssertGreaterThan(widths[0], widths[1])
+        XCTAssertGreaterThan(widths[1], widths[2])
     }
 
     // MARK: Toolbar width (D11)
@@ -223,6 +183,10 @@ final class MacSessionTabStripTests: XCTestCase {
         @Published var visibility = NavigationSplitViewVisibility.all
         /// Whether the sidebar list carries `.searchable` (the window search item).
         @Published var searchPresent = true
+        /// A rigid extra trailing toolbar item of this width, beyond Refresh, the status dot and the search item.
+        @Published var extraTrailingWidth: CGFloat?
+        let sidebarWidth: CGFloat
+        init(sidebarWidth: CGFloat = 340) { self.sidebarWidth = sidebarWidth }
     }
 
     private struct ToolbarRoot: View {
@@ -242,7 +206,7 @@ final class MacSessionTabStripTests: XCTestCase {
         var body: some View {
             NavigationSplitView(columnVisibility: $sidebar.visibility) {
                 sidebarList
-                    .navigationSplitViewColumnWidth(min: 340, ideal: 340, max: 340)
+                    .navigationSplitViewColumnWidth(min: sidebar.sidebarWidth, ideal: sidebar.sidebarWidth, max: sidebar.sidebarWidth)
             } detail: {
                 NavigationStack {
                     Color.clear
@@ -262,6 +226,12 @@ final class MacSessionTabStripTests: XCTestCase {
                             ToolbarItem(placement: .primaryAction) {
                                 Button {} label: { Circle().fill(.green).frame(width: 9, height: 9) }
                                     .accessibilityLabel("Gateway connected")
+                            }
+                            if let width = sidebar.extraTrailingWidth {
+                                ToolbarItem(placement: .primaryAction) {
+                                    Button {} label: { Color.orange.frame(width: width, height: 12) }
+                                        .accessibilityLabel("Extra trailing item")
+                                }
                             }
                         }
                 }
@@ -310,13 +280,15 @@ final class MacSessionTabStripTests: XCTestCase {
     }
 
     /// Waits for the toolbar to go quiet (no change for 0.5 s; a first layout
-    /// and the search item collapsing take a few turns, the flicker never goes
-    /// quiet), then asserts every toolbar item is on a platter, none in the
-    /// overflow menu, the strip is clear of the item after it and fills at
-    /// least `minRatio` of the gap between the toggle and that item, and then
-    /// that the platters and the visible set stay put for `watch` seconds.
+    /// takes a few turns, the flicker never goes quiet), then asserts every
+    /// toolbar item is on a platter, none in the overflow menu (unless
+    /// `allowOverflow`), the strip is clear of the item after it, fills at
+    /// least `minRatio` of the gap between the toggle and that item and, when
+    /// `idealWidth` is given, is that wide; and then that the platters and the
+    /// visible set stay put for `watch` seconds.
     @discardableResult
-    private func expectSteadyToolbar(in window: NSWindow, _ step: String, minRatio: CGFloat = 0, watch: TimeInterval = 1.0,
+    private func expectSteadyToolbar(in window: NSWindow, _ step: String, minRatio: CGFloat = 0, idealWidth: CGFloat? = nil,
+                                     allowOverflow: Bool = false, watch: TimeInterval = 1.0,
                                      file: StaticString = #filePath, line: UInt = #line) -> ToolbarSnapshot {
         var latest = snapshot(of: window)
         var changedAt = Date()
@@ -326,14 +298,19 @@ final class MacSessionTabStripTests: XCTestCase {
             return Date().timeIntervalSince(changedAt) >= 0.5
         }
         XCTAssertTrue(quiet, "\(step): the toolbar never went quiet; now \(latest)", file: file, line: line)
-        XCTAssertTrue(latest.hidden.isEmpty, "\(step): no toolbar item in the overflow menu; now \(latest)", file: file, line: line)
-        XCTAssertEqual(latest.platters.count, latest.itemCount, "\(step): one platter per toolbar item; now \(latest)", file: file, line: line)
-        if latest.platters.count >= 3 {
-            let platters = latest.platters
-            XCTAssertLessThan(platters[1].frame.maxX, platters[2].frame.minX, "\(step): the strip clear of the next item; now \(latest)", file: file, line: line)
-            let gap = platters[2].frame.minX - platters[0].frame.maxX
-            XCTAssertGreaterThanOrEqual(platters[1].frame.width, max(MacSessionTabMetrics.minWidth, gap * minRatio) - 1,
-                                        "\(step): the strip fills at least \(minRatio) of the toggle-to-next-item gap; now \(latest)", file: file, line: line)
+        if !allowOverflow {
+            XCTAssertTrue(latest.hidden.isEmpty, "\(step): no toolbar item in the overflow menu; now \(latest)", file: file, line: line)
+            XCTAssertEqual(latest.platters.count, latest.itemCount, "\(step): one platter per toolbar item; now \(latest)", file: file, line: line)
+            if latest.platters.count >= 3 {
+                let platters = latest.platters
+                XCTAssertLessThan(platters[1].frame.maxX, platters[2].frame.minX, "\(step): the strip clear of the next item; now \(latest)", file: file, line: line)
+                let gap = platters[2].frame.minX - platters[0].frame.maxX
+                XCTAssertGreaterThanOrEqual(platters[1].frame.width, max(MacSessionTabMetrics.minWidth, gap * minRatio) - 1,
+                                            "\(step): the strip fills at least \(minRatio) of the toggle-to-next-item gap; now \(latest)", file: file, line: line)
+                if let idealWidth {
+                    XCTAssertEqual(platters[1].frame.width, idealWidth, accuracy: 2, "\(step): the strip is its ideal width; now \(latest)", file: file, line: line)
+                }
+            }
         }
         var seen = [snapshot(of: window)]
         let end = Date().addingTimeInterval(watch)
@@ -346,15 +323,20 @@ final class MacSessionTabStripTests: XCTestCase {
         return latest
     }
 
+    /// The ideal width the strip should have in `window` with a sidebar of `sidebar` points.
+    private func ideal(_ window: NSWindow, sidebar: CGFloat) -> CGFloat {
+        MacToolbarSlot.idealWidth(windowWidth: window.frame.width, sidebarWidth: sidebar)
+    }
+
     /// The principal slot does not grow into free space and an ideal wider
-    /// than the room pushes Refresh into the overflow menu, so the strip sizes
-    /// itself from the toolbar (MacToolbarSlotReader). At each width all four
-    /// items stay on the toolbar and the strip fills at least 60% of the gap
-    /// between the sidebar toggle and Refresh.
+    /// than the room pushes trailing items into the overflow menu, so the strip
+    /// is given the window's width less a reserve (MacToolbarSlot). At each
+    /// width all five items stay on the toolbar, the strip is its ideal width
+    /// and fills at least 60% of the gap between the sidebar toggle and Refresh.
     func testStripFillsTheToolbarGapWithoutPushingItemsIntoOverflow() throws {
         for width in [1000, 1200, 1600] as [CGFloat] {
             let window = try hostToolbar(width: width)
-            expectSteadyToolbar(in: window, "\(width) pt", minRatio: 0.6)
+            expectSteadyToolbar(in: window, "\(width) pt", minRatio: 0.6, idealWidth: ideal(window, sidebar: 340))
         }
     }
 
@@ -364,31 +346,56 @@ final class MacSessionTabStripTests: XCTestCase {
     func testToolbarKeepsAllItemsThroughResizeAndSidebarToggle() throws {
         let sidebar = SidebarModel()
         let window = try hostToolbar(width: 1200, sidebar: sidebar)
-        expectSteadyToolbar(in: window, "1200 pt", minRatio: 0.6)
+        expectSteadyToolbar(in: window, "1200 pt", minRatio: 0.6, idealWidth: ideal(window, sidebar: 340))
 
         window.setContentSize(NSSize(width: MacSidebarState.windowMinWidth, height: 400))
         let narrow = expectSteadyToolbar(in: window, "820 pt (the window minimum)")
         XCTAssertGreaterThanOrEqual(narrow.platters[1].frame.width, MacSessionTabMetrics.minWidth, "the strip keeps its minimum")
 
         window.setContentSize(NSSize(width: 1400, height: 400))
-        expectSteadyToolbar(in: window, "1400 pt", minRatio: 0.6)
+        expectSteadyToolbar(in: window, "1400 pt", minRatio: 0.6, idealWidth: ideal(window, sidebar: 340))
 
         sidebar.visibility = .detailOnly
-        expectSteadyToolbar(in: window, "sidebar hidden", minRatio: 0.6)
+        expectSteadyToolbar(in: window, "sidebar hidden", minRatio: 0.6, idealWidth: ideal(window, sidebar: 0))
 
         sidebar.visibility = .all
-        expectSteadyToolbar(in: window, "sidebar shown again", minRatio: 0.6)
+        expectSteadyToolbar(in: window, "sidebar shown again", minRatio: 0.6, idealWidth: ideal(window, sidebar: 340))
     }
 
     /// The live toolbar has a third trailing item, the window search item
-    /// `.searchable` puts there (a magnifier when narrow). The strip must
-    /// leave room for all of them and must not flicker at any width.
+    /// `.searchable` puts there (a magnifier when narrow). The reserve covers
+    /// all of them: nothing in overflow, nothing flickering, at any width.
     func testNoTrailingItemIsPushedIntoOverflowAndTheToolbarDoesNotFlicker() throws {
         for width in [820, 1000, 1200, 1600] as [CGFloat] {
             let window = try hostToolbar(width: width)
             XCTAssertEqual(snapshot(of: window).itemCount, 5, "toggle, strip, Refresh, status and the search item")
-            expectSteadyToolbar(in: window, "\(width) pt", minRatio: width == 820 ? 0 : 0.6)
+            expectSteadyToolbar(in: window, "\(width) pt", minRatio: width == 820 ? 0 : 0.6, idealWidth: ideal(window, sidebar: 340))
         }
+    }
+
+    /// The widest sidebar (390 pt, MacSidebarState.sidebarMaxWidth): all items
+    /// stay at 1000 pt and wider, and hiding and showing the sidebar keeps them
+    /// there. At 820 pt the 390 pt sidebar leaves 430 pt (the detail minimum),
+    /// less than the toggle, the 120 pt strip and the reserve need, so an item
+    /// goes to overflow whatever the strip does; the toolbar must still be still.
+    func testToolbarStaysWholeAndSteadyAtTheSidebarMaximum() throws {
+        for width in [1000, 1200, 1600] as [CGFloat] {
+            let window = try hostToolbar(width: width, sidebar: SidebarModel(sidebarWidth: 390))
+            expectSteadyToolbar(in: window, "\(width) pt, 390 pt sidebar", idealWidth: ideal(window, sidebar: 390))
+        }
+        let sidebar = SidebarModel(sidebarWidth: 390)
+        let window = try hostToolbar(width: 1200, sidebar: sidebar)
+        expectSteadyToolbar(in: window, "1200 pt, 390 pt sidebar", idealWidth: ideal(window, sidebar: 390))
+        sidebar.visibility = .detailOnly
+        expectSteadyToolbar(in: window, "sidebar hidden", idealWidth: ideal(window, sidebar: 0))
+        sidebar.visibility = .all
+        expectSteadyToolbar(in: window, "sidebar shown again", idealWidth: ideal(window, sidebar: 390))
+        window.setContentSize(NSSize(width: MacSidebarState.windowMinWidth, height: 400))
+        expectSteadyToolbar(in: window, "820 pt, 390 pt sidebar", allowOverflow: true)
+        sidebar.visibility = .detailOnly
+        expectSteadyToolbar(in: window, "820 pt, sidebar hidden", idealWidth: ideal(window, sidebar: 0))
+        sidebar.visibility = .all
+        expectSteadyToolbar(in: window, "820 pt, 390 pt sidebar again", allowOverflow: true)
     }
 
     /// The same through the sidebar hiding and showing (the search item lives
@@ -407,20 +414,40 @@ final class MacSessionTabStripTests: XCTestCase {
         expectSteadyToolbar(in: window, "820 pt, sidebar hidden")
     }
 
-    /// The search item may come and go (the sidebar column owns it): the
-    /// strip counts no items, so one fewer or one more is nothing special.
+    /// The search item may come and go (the sidebar column owns it) and the
+    /// width does not read the toolbar, so one item more or less changes nothing.
     func testToolbarDoesNotFlickerWhenTheSearchItemComesAndGoes() throws {
         let sidebar = SidebarModel()
         sidebar.searchPresent = false
         let window = try hostToolbar(width: 1200, sidebar: sidebar)
-        let without = expectSteadyToolbar(in: window, "without the search item", minRatio: 0.6)
+        let without = expectSteadyToolbar(in: window, "without the search item", minRatio: 0.6, idealWidth: ideal(window, sidebar: 340))
         XCTAssertEqual(without.itemCount, 4, "toggle, strip, Refresh, status")
         sidebar.searchPresent = true
-        let with = expectSteadyToolbar(in: window, "search item added", minRatio: 0.6)
+        let with = expectSteadyToolbar(in: window, "search item added", minRatio: 0.6, idealWidth: ideal(window, sidebar: 340))
         XCTAssertEqual(with.itemCount, 5)
         sidebar.searchPresent = false
-        expectSteadyToolbar(in: window, "search item removed", minRatio: 0.6)
+        expectSteadyToolbar(in: window, "search item removed", minRatio: 0.6, idealWidth: ideal(window, sidebar: 340))
         window.setContentSize(NSSize(width: MacSidebarState.windowMinWidth, height: 400))
         expectSteadyToolbar(in: window, "820 pt without the search item")
+    }
+
+    /// The reserve's limit (documented on MacToolbarSlot): a fourth, rigid
+    /// trailing item beyond Refresh, the dot and the search item does not fit,
+    /// so something goes to the overflow menu, and the strip does not give way
+    /// (its width does not read the toolbar). What must hold is that the
+    /// toolbar is still, with and without the item, and that taking the item
+    /// away brings every item back.
+    func testAnExtraWideTrailingItemOverflowsButNothingFlickers() throws {
+        let sidebar = SidebarModel()
+        sidebar.extraTrailingWidth = 120
+        let window = try hostToolbar(width: 1200, sidebar: sidebar)
+        let crowded = expectSteadyToolbar(in: window, "extra 120 pt trailing item", allowOverflow: true)
+        XCTAssertEqual(crowded.itemCount, 6, "toggle, strip, Refresh, status, extra, search")
+        XCTAssertFalse(crowded.hidden.isEmpty, "the reserve is for three trailing items; a fourth wide one overflows: \(crowded)")
+        window.setContentSize(NSSize(width: 1500, height: 400))
+        expectSteadyToolbar(in: window, "extra item, 1500 pt", allowOverflow: true)
+        sidebar.extraTrailingWidth = nil
+        let whole = expectSteadyToolbar(in: window, "extra item removed", minRatio: 0.6, idealWidth: ideal(window, sidebar: 340))
+        XCTAssertEqual(whole.itemCount, 5)
     }
 }
