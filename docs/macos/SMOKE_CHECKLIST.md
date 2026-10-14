@@ -45,6 +45,13 @@ During check (c) an agent AX click on empty window space plus app activation was
 
 Rule R18: agents never send clicks or key events to the running app. Launch smoke checks are launch plus screenshot only; if a system prompt covers the window, do not dismiss it, report the item UNVERIFIED, and quit the app.
 
+## Updates
+
+- [ ] Conduit > Check for Updates... is present after About.
+- [ ] With a newer release published, the prompt shows the release notes and Install / Skip This Version / Remind Me Later.
+- [ ] Install relaunches into the new version (Conduit > About shows it).
+- [ ] On a Mac with an older non-Sparkle build, one manual DMG install enables updates (see docs/macos/RELEASING.md).
+
 ## Open findings
 
 - (c) Login logo clipping: fix applied in `Conduit/Views/LoginView.swift` (focus `scrollTo` gated to iOS, ledger R4). Owner: 11e. Launch screenshot on 2026-10-13 was covered by a keychain prompt (see below), so the visual result is UNVERIFIED; user confirms on the next launch.
