@@ -7,6 +7,7 @@ struct ConduitCommands: Commands {
     static let sidebarVisibleKey = MacSidebarState.defaultsKey
 
     @ObservedObject var appState: AppState
+    @ObservedObject var tabs: MacSessionTabsStore
     @AppStorage(ConduitCommands.sidebarVisibleKey) private var sidebarVisible = true
     @AppStorage(HoverAccessibilityEngine.highlightDefaultsKey) private var hoverHighlight = true
     /// The sidebar list's rows in display order; nil while no list is mounted.
@@ -16,6 +17,12 @@ struct ConduitCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Chat") { Task { await appState.createNewSession() } }
                 .keyboardShortcut("n", modifiers: .command)
+            // Close Tab owns Cmd-W ahead of File > Close; in any other window
+            // it performs that window's ordinary close (D11).
+            Button("Close Tab") { MacSessionTabsActions.closeTab(store: tabs, window: NSApp.keyWindow) }
+                .keyboardShortcut("w", modifiers: .command)
+            Button("Reopen Closed Tab") { MacSessionTabsActions.reopen(store: tabs, window: NSApp.keyWindow) }
+                .keyboardShortcut("t", modifiers: [.shift, .command])
         }
         // No item here is disabled for a sheet: the menu is not rebuilt when a
         // sheet opens or closes, so a stale disabled item would swallow its key
@@ -35,9 +42,24 @@ struct ConduitCommands: Commands {
                 .keyboardShortcut(".", modifiers: .command)
         }
         CommandMenu("Go") {
+            ForEach(1...8, id: \.self) { n in
+                Button("Tab \(n)") { MacSessionTabsActions.selectShortcut(n, store: tabs, window: NSApp.keyWindow) }
+                    .keyboardShortcut(KeyEquivalent(Character("\(n)")), modifiers: .command)
+            }
+            Button("Last Tab") { MacSessionTabsActions.selectShortcut(9, store: tabs, window: NSApp.keyWindow) }
+                .keyboardShortcut("9", modifiers: .command)
+            Button("Next Tab") { MacSessionTabsActions.selectNeighbor(.next, store: tabs, window: NSApp.keyWindow) }
+                .keyboardShortcut("]", modifiers: [.shift, .command])
+            Button("Previous Tab") { MacSessionTabsActions.selectNeighbor(.previous, store: tabs, window: NSApp.keyWindow) }
+                .keyboardShortcut("[", modifiers: [.shift, .command])
+            Button("Show Next Tab") { MacSessionTabsActions.selectNeighbor(.next, store: tabs, window: NSApp.keyWindow) }
+                .keyboardShortcut(.tab, modifiers: .control)
+            Button("Show Previous Tab") { MacSessionTabsActions.selectNeighbor(.previous, store: tabs, window: NSApp.keyWindow) }
+                .keyboardShortcut(.tab, modifiers: [.control, .shift])
+            Divider()
             ForEach(MacSidebarShortcut.allCases) { shortcut in
                 Button(shortcut.title) { MacKeyboardActions.selectTab(shortcut.tab, window: NSApp.keyWindow) }
-                    .keyboardShortcut(shortcut.key, modifiers: .command)
+                    .keyboardShortcut(shortcut.key, modifiers: shortcut.modifiers)
             }
             Divider()
             Button("Previous Session") { open(.previous) }
