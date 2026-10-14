@@ -18,6 +18,14 @@ final class AppShellTests: XCTestCase {
         XCTAssertEqual(registered[ComposerReturnKey.preferenceKey] as? Bool, true)
     }
 
+    /// In-app session tabs replace window tabs; AppKit's Show Next/Previous Tab
+    /// items would compete for Ctrl-Tab and Ctrl-Shift-Tab (D11).
+    func testAutomaticWindowTabbingIsOff() {
+        NSWindow.allowsAutomaticWindowTabbing = true
+        MacDefaults.register()
+        XCTAssertFalse(NSWindow.allowsAutomaticWindowTabbing)
+    }
+
     func testClosingLastWindowDoesNotQuit() {
         XCTAssertFalse(ConduitMacAppDelegate().applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared))
     }

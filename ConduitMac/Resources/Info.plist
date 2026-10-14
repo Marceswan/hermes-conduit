@@ -15,6 +15,11 @@
     <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>LSFileQuarantineEnabled</key><true/>
+    <key>SUFeedURL</key><string>https://github.com/Marceswan/hermes-conduit/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key><string>wa1VnqgoM+ekG9UqFi6r78wInTGSFso0KmwMzlwsIL4=</string>
+    <key>SUEnableAutomaticChecks</key><true/>
+    <key>SUScheduledCheckInterval</key><integer>3600</integer>
+    <key>SUAutomaticallyUpdate</key><false/>
     <key>NSMicrophoneUsageDescription</key><string>Conduit uses the microphone for voice conversations with Hermes.</string>
     <key>NSSpeechRecognitionUsageDescription</key><string>Conduit transcribes your voice on this Mac before sending it to Hermes.</string>
     <key>NSCameraUsageDescription</key><string>Conduit can attach a photo from your camera to a chat.</string>

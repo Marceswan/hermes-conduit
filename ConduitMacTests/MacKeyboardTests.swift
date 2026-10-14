@@ -449,8 +449,19 @@ final class MacKeyboardMenuTests: XCTestCase {
 
     private func shortcuts() -> [(path: String, key: String, mask: NSEvent.ModifierFlags)] {
         var table: [(String, String, NSEvent.ModifierFlags)] = MacSidebarShortcut.allCases.map { shortcut in
-            ("/Go/\(shortcut.title)", String(shortcut.key.character), .command)
+            ("/Go/\(shortcut.title)", String(shortcut.key.character), [.control, .command])
         }
+        table += (1...8).map { ("/Go/Tab \($0)", "\($0)", NSEvent.ModifierFlags.command) }
+        table += [
+            ("/Go/Last Tab", "9", .command),
+            // AppKit reports Cmd-Shift-] as "]" with [.shift, .command] (observed).
+            ("/Go/Next Tab", "]", [.shift, .command]),
+            ("/Go/Previous Tab", "[", [.shift, .command]),
+            ("/Go/Show Next Tab", "\t", .control),
+            ("/Go/Show Previous Tab", "\t", [.control, .shift]),
+            ("/File/Close Tab", "w", .command),
+            ("/File/Reopen Closed Tab", "t", [.shift, .command]),
+        ]
         table += [
             ("/Go/Previous Session", "[", .command),
             ("/Go/Next Session", "]", .command),
