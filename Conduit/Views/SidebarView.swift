@@ -448,6 +448,16 @@ struct SessionList: View {
             .refreshable {
                 await appState.refreshSessionCatalog()
             }
+            #if os(macOS) // MAC: keyboard cursor, Return opens, Cmd-F search focus (D10)
+            .modifier(MacSessionListKeyboard(
+                ids: keyboardNavigationIDs,
+                activeID: appState.activeSessionId,
+                open: { id in
+                    appState.dismissSidebarDrawer()
+                    appState.requestOpenSession(id)
+                }
+            ))
+            #endif // MAC:
         }
         .sheet(isPresented: $showFilterOrder) {
             SessionFilterOrderSheet()
@@ -519,6 +529,15 @@ struct SessionList: View {
         }
 
     }
+
+    #if os(macOS) // MAC: rows the keyboard reaches, top to bottom, as listed (D10)
+    private var keyboardNavigationIDs: [String] {
+        if showingProjects { return projectsViewPinnedSessions.map(\.id) }
+        // One pass over displayedSessions, not one per section.
+        let shown = displayedSessions
+        return (shown.filter { appState.isSessionPinned($0) } + shown.filter { !appState.isSessionPinned($0) }).map(\.id)
+    }
+    #endif // MAC:
 
     private var allSessions: [SessionSummary] {
         var listed = sourceRows(selectedSource)
@@ -862,6 +881,9 @@ struct SessionList: View {
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
         .listRowInsets(EdgeInsets(top: 3, leading: 0, bottom: 3, trailing: 0))
+        #if os(macOS) // MAC: ring on the keyboard cursor row (D10)
+        .modifier(MacSessionCursorRow(id: session.id))
+        #endif // MAC:
     }
 }
 
