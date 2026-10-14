@@ -107,7 +107,13 @@ struct SelectableTextView: NSViewRepresentable {
 
 extension SelectableTextView {
     static func makeTextView(delegate: NSTextViewDelegate? = nil) -> NSTextView {
-        let textView = NSTextView(frame: .zero)
+        // TextKit 1 on purpose. `measuredHeight` (what `sizeThatFits` returns)
+        // lays text out with an NSLayoutManager; a plain `NSTextView(frame:)`
+        // is TextKit 2 on macOS 13+, whose last line fragment is taller (it
+        // includes the trailing line spacing), so the SwiftUI frame came out
+        // short and the final line was clipped (D13). One engine for measuring
+        // and drawing keeps the two equal by construction.
+        let textView = NSTextView(usingTextLayoutManager: false)
         textView.delegate = delegate
         textView.isEditable = false
         textView.isSelectable = true
