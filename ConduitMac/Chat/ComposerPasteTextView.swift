@@ -28,6 +28,8 @@ struct ComposerPasteTextView: NSViewRepresentable {
     var canSubmitFromReturn: Bool = false
     var onSubmitFromReturn: (() -> Bool)? = nil
     var onUserEdit: (() -> Void)? = nil
+    /// Where Cmd-L arrives (`macFocusComposerRequested`); injectable for tests.
+    var focusRequestCenter: NotificationCenter = .default
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -50,6 +52,7 @@ struct ComposerPasteTextView: NSViewRepresentable {
         scroll.documentView = textView
         context.coordinator.lastRevision = programmaticRevision
         configure(textView)
+        context.coordinator.observeFocusRequests(for: textView, center: focusRequestCenter)
         return scroll
     }
 
@@ -110,8 +113,24 @@ struct ComposerPasteTextView: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: ComposerPasteTextView
         var lastRevision: UInt64 = 0
+        private var focusObserver: NSObjectProtocol?
+        private var focusObserverCenter: NotificationCenter?
 
         init(_ parent: ComposerPasteTextView) { self.parent = parent }
+
+        deinit {
+            if let focusObserver { focusObserverCenter?.removeObserver(focusObserver) }
+        }
+
+        /// Cmd-L: the composer in the command's window takes first responder.
+        func observeFocusRequests(for textView: ComposerTextView, center: NotificationCenter) {
+            focusObserverCenter = center
+            focusObserver = center.addObserver(forName: .macFocusComposerRequested, object: nil, queue: .main) { [weak textView] note in
+                guard let textView, let window = textView.window else { return }
+                if let target = note.object as? NSWindow, target !== window { return }
+                textView.focusFromCommand()
+            }
+        }
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
@@ -249,6 +268,25 @@ final class ComposerTextView: NSTextView {
     /// Shift-Return and Option-Return (the Mac chat convention) insert a new line.
     static func isNewlineModifier(_ flags: NSEvent.ModifierFlags) -> Bool {
         !flags.intersection([.shift, .option]).isEmpty
+    }
+
+    /// Cmd-L. Refused while a sheet is attached or the composer is read-only;
+    /// an explicit request replaces any focus the route was holding.
+    @discardableResult
+    func focusFromCommand() -> Bool {
+        guard let window, isEditable, !isHiddenOrHasHiddenAncestor, window.attachedSheet == nil else { return false }
+        heldFocusForRoute = false
+        return window.firstResponder === self || window.makeFirstResponder(self)
+    }
+
+    /// Tab and Shift-Tab leave the composer along the window's key view loop
+    /// (sidebar list, search field, composer), as in a single-line field.
+    override func insertTab(_ sender: Any?) {
+        window?.selectNextKeyView(self)
+    }
+
+    override func insertBacktab(_ sender: Any?) {
+        window?.selectPreviousKeyView(self)
     }
 
     override func keyDown(with event: NSEvent) {
