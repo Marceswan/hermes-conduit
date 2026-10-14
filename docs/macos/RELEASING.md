@@ -42,9 +42,13 @@ Builds installed before Sparkle have no updater. On each other Mac, download `Co
 
 ## After a failed publish
 
-If the script stops after the tag push (the `gh release create` step), it prints both commands:
+If `git push` of the tag fails, the script removes the local tag and publishes nothing; fix the cause and rerun.
 
-- Retry: `gh release create mac-v<version> <dmg> <appcast.xml> -R Marceswan/hermes-conduit --title 'Conduit for macOS <version>' --latest --notes-file <notes>`
+If `gh release create` fails after the tag push, the script prints both commands (the notes are saved in `build/mac/release-notes-<version>.md`, and the DMG and `appcast.xml` stay in `build/mac`):
+
+- Retry: `gh release create mac-v<version> <dmg> <appcast.xml> -R Marceswan/hermes-conduit --title 'Conduit for macOS <version>' --latest --notes-file build/mac/release-notes-<version>.md`, then check the feed: `curl -fsSL 'https://github.com/Marceswan/hermes-conduit/releases/latest/download/appcast.xml' | grep 'sparkle:version'` (it must show the new build).
 - Abandon: `git push origin :refs/tags/mac-v<version> && git tag -d mac-v<version>`
+
+The next ship refuses while the previous `mac-v*` tag has no GitHub Release, so retry or abandon first. It also refuses when there are no commits since the previous tag, and when HEAD moved during the build.
 
 If the feed check fails after the release exists, the release is left in place for inspection; nothing is deleted automatically. A bad release already live is fixed by shipping a higher version (Sparkle never downgrades).
