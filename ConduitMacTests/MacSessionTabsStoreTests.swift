@@ -114,6 +114,50 @@ final class MacSessionTabsStoreTests: XCTestCase {
         XCTAssertEqual(store.model.activeID, "old")
     }
 
+    // MARK: - Chat surface hidden (group room open, or Bots / Cron / Kanban)
+
+    func testShortcutToTheActiveTabReopensItWhenTheChatIsHidden() {
+        ["a", "b", "c"].forEach { store.activeSessionChanged($0, title: $0) }
+        var showing = false
+        store.isChatSurfaceShowing = { showing }
+        store.selectShortcut(3)  // c is active, but the chat is not on screen
+        store.select("c")
+        XCTAssertEqual(opened, ["c", "c"], "requestOpenSession returns the pane to chat and closes a room")
+        showing = true
+        store.selectShortcut(3)
+        XCTAssertEqual(opened, ["c", "c"], "chat showing: the active tab is a no-op again")
+    }
+
+    func testNeighbourOfALoneActiveTabReturnsToItWhenTheChatIsHidden() {
+        store.activeSessionChanged("a", title: "A")
+        var showing = true
+        store.isChatSurfaceShowing = { showing }
+        store.selectNeighbor(.next)
+        XCTAssertTrue(opened.isEmpty, "a single tab has no neighbour while the chat shows")
+        showing = false
+        store.selectNeighbor(.next)
+        store.selectNeighbor(.previous)
+        XCTAssertEqual(opened, ["a", "a"])
+    }
+
+    func testNeighbourStillMovesWhenTheChatIsHidden() {
+        ["a", "b", "c"].forEach { store.activeSessionChanged($0, title: $0) }
+        store.isChatSurfaceShowing = { false }
+        store.selectNeighbor(.next)
+        XCTAssertEqual(opened, ["a"], "wraps from the active last tab")
+    }
+
+    func testCmdWDoesNothingWhenTheChatIsHidden() {
+        ["a", "b"].forEach { store.activeSessionChanged($0, title: $0) }
+        store.isChatSurfaceShowing = { false }
+        store.close(nil)
+        XCTAssertEqual(store.model.tabs.map(\.id), ["a", "b"], "the active tab is invisible: nothing closes")
+        XCTAssertTrue(opened.isEmpty)
+        XCTAssertEqual(newChats, 0)
+        store.close("a")
+        XCTAssertEqual(store.model.tabs.map(\.id), ["b"], "the x on a visible tab still closes it by id")
+    }
+
     func testStorageKey() {
         let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         XCTAssertEqual(MacSessionTabsStore.storageKey(dashboardID: id, profile: "default"),

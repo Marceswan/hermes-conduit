@@ -73,6 +73,7 @@ final class MacSessionTabsCommandsTests: XCTestCase {
         defer { main.endSheet(sheet) }
         XCTAssertTrue(HostedTestSupport.waitUntil { sheet.sheetParent != nil })
         MacSessionTabsActions.closeTab(store: store, window: sheet)
+        // A bounded wait is the only way to prove "nothing happened" (a deliberate fixed delay).
         HostedTestSupport.settle(0.3)
         XCTAssertTrue(sheet.sheetParent === main, "still attached")
         XCTAssertTrue(sheet.isVisible)

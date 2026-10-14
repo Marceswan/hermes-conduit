@@ -37,14 +37,22 @@ final class MacSessionTabsStore: ObservableObject {
     var startNewChat: () -> Void = {}
     var activeChatIsEmpty: () -> Bool = { false }
     var scrollActiveToTop: () -> Void = {}
+    /// True while the chat is what the window shows: the Sessions pane, with
+    /// no group room open. Otherwise the strip is hidden, so a tab shortcut
+    /// to the active tab must still bring the chat back, and Cmd-W must not
+    /// close a tab the user cannot see (D11).
+    var isChatSurfaceShowing: () -> Bool = { true }
 
     private let defaults: UserDefaults
+    private let routeDefaults: UserDefaults
     private var scopeKey: String?
     private var deletionDetector = MacSessionDeletionDetector()
     private var bindings: Set<AnyCancellable> = []
 
-    init(defaults: UserDefaults = .standard) {
+    /// `routeDefaults` holds the sidebar pane (`MacSidebarState.tabDefaultsKey`).
+    init(defaults: UserDefaults = .standard, routeDefaults: UserDefaults = .standard) {
         self.defaults = defaults
+        self.routeDefaults = routeDefaults
     }
 
     static func storageKey(dashboardID: UUID?, profile: String) -> String {
@@ -73,22 +81,25 @@ final class MacSessionTabsStore: ObservableObject {
 
     func select(_ id: String) {
         guard model.index(of: id) != nil else { return }
-        if model.activeID == id { scrollActiveToTop(); return }
+        if model.activeID == id, isChatSurfaceShowing() { scrollActiveToTop(); return }
         openSession(id)
     }
 
     func selectShortcut(_ n: Int) {
-        guard let id = model.id(forShortcut: n), id != model.activeID else { return }
+        guard let id = model.id(forShortcut: n) else { return }
+        if id == model.activeID, isChatSurfaceShowing() { return }
         openSession(id)
     }
 
     func selectNeighbor(_ direction: MacSessionTabsModel.Direction) {
-        guard let id = model.neighbor(direction) else { return }
+        // A lone active tab has no neighbour; with the chat hidden the shortcut still returns to it.
+        guard let id = model.neighbor(direction) ?? (isChatSurfaceShowing() ? nil : model.activeID) else { return }
         openSession(id)
     }
 
-    /// nil closes the active tab (Cmd-W).
+    /// nil closes the active tab (Cmd-W); it does nothing while the chat is hidden.
     func close(_ id: String?) {
+        if id == nil, !isChatSurfaceShowing() { return }
         guard let id = id ?? model.activeID else { return }
         if model.tabs.count == 1, model.activeID == id, activeChatIsEmpty() { return }
         switch model.close(id) {
@@ -138,6 +149,10 @@ final class MacSessionTabsStore: ObservableObject {
         startNewChat = { [weak appState] in Task { await appState?.createNewSession() } }
         activeChatIsEmpty = { [weak appState] in appState?.messages.isEmpty ?? false }
         scrollActiveToTop = { [weak appState] in appState?.requestChatScrollToTop() }
+        isChatSurfaceShowing = { [weak appState, routeDefaults] in
+            MacChatRoute.isChatActive(tabRaw: routeDefaults.string(forKey: MacSidebarState.tabDefaultsKey))
+                && appState?.activeRoomSurface == nil
+        }
 
         // willSet sinks: use the emitted value for the property that changed.
         appState.$activeProfile
@@ -174,7 +189,9 @@ final class MacSessionTabsStore: ObservableObject {
             .sink { [weak self, weak appState] id in
                 DispatchQueue.main.async {
                     guard let self, let appState else { return }
-                    if let deleted = self.deletionDetector.mutationChanged(to: id, catalog: appState.sessions, archived: appState.archivedSessions) {
+                    if let deleted = self.deletionDetector.mutationChanged(
+                        to: id, catalog: appState.sessions + appState.cronSessions, archived: appState.archivedSessions
+                    ) {
                         self.sessionDeleted(deleted)
                     }
                 }
