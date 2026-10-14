@@ -7,12 +7,17 @@ struct ConduitCommands: Commands {
     static let sidebarVisibleKey = MacSidebarState.defaultsKey
 
     @ObservedObject var appState: AppState
+    @ObservedObject var updater: MacUpdater
     @AppStorage(ConduitCommands.sidebarVisibleKey) private var sidebarVisible = true
     @AppStorage(HoverAccessibilityEngine.highlightDefaultsKey) private var hoverHighlight = true
     /// The sidebar list's rows in display order; nil while no list is mounted.
     @FocusedValue(\.macSessionOrder) private var sessionOrder
 
     var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates\u{2026}") { updater.checkForUpdates() }
+                .disabled(!updater.canCheckForUpdates)
+        }
         CommandGroup(replacing: .newItem) {
             Button("New Chat") { Task { await appState.createNewSession() } }
                 .keyboardShortcut("n", modifiers: .command)

@@ -55,7 +55,7 @@ struct ConduitMacApp: App {
                 .frame(minWidth: MacSidebarState.windowMinWidth, minHeight: 560)
         }
         .defaultSize(width: 1180, height: 780)
-        .commands { ConduitCommands(appState: appState) }
+        .commands { ConduitCommands(appState: appState, updater: .shared) }
     }
 
     // Ported from ConduitApp.swift; keep in sync. Skipped: see docs/macos/PORTING_LEDGER.md.
