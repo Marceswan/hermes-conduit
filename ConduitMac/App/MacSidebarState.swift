@@ -20,6 +20,13 @@ enum MacSidebarState {
         isVisible ? .all : .detailOnly
     }
 
+    /// What Hide / Show Sidebar (Ctrl-Cmd-S) does: flips the key `MacSplitLayout`
+    /// reads. Shown when the key was never written.
+    static func toggleVisible(defaults: UserDefaults = .standard) {
+        let shown = defaults.object(forKey: defaultsKey) as? Bool ?? true
+        defaults.set(!shown, forKey: defaultsKey)
+    }
+
     static func isVisible(_ visibility: NavigationSplitViewVisibility) -> Bool {
         visibility != .detailOnly
     }
@@ -28,11 +35,14 @@ enum MacSidebarState {
 /// Native resizable two-column layout for the Mac window: sessions sidebar
 /// on the left, `MacDetailRouter` content on the right.
 struct MacSplitLayout<Sidebar: View, Chat: View>: View {
-    @AppStorage(MacSidebarState.defaultsKey) private var sidebarVisible = true
+    @AppStorage private var sidebarVisible: Bool
     private let sidebar: Sidebar
     private let chat: Chat
 
-    init(@ViewBuilder sidebar: () -> Sidebar, @ViewBuilder chat: () -> Chat) {
+    /// `defaults` is injectable so tests can host a layout without sharing the
+    /// visibility key with the live app.
+    init(defaults: UserDefaults = .standard, @ViewBuilder sidebar: () -> Sidebar, @ViewBuilder chat: () -> Chat) {
+        _sidebarVisible = AppStorage(wrappedValue: true, MacSidebarState.defaultsKey, store: defaults)
         self.sidebar = sidebar()
         self.chat = chat()
     }

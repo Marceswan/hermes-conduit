@@ -277,6 +277,48 @@ final class MacKeyboardActionsTests: XCTestCase {
         XCTAssertFalse(requests.searchPending, "Search Sessions was not asked")
     }
 
+    func testCmdFGoesToSearchSessionsWhenChatIsNotTheShownPane() {
+        // The hidden chat (opacity 0, not AppKit-hidden) can keep a message
+        // view as first responder under Cron / Kanban.
+        for tab in [SidebarTab.bots, .cron, .kanban] {
+            let message = NSTextView()
+            message.isSelectable = true
+            message.usesFindBar = true
+            let (window, scroll) = findWindow(textView: message)
+            defer { window.close() }
+            XCTAssertTrue(window.makeFirstResponder(message))
+            let suite = HostedTestSupport.makeSuite()
+            defer { HostedTestSupport.dropSuite(suite) }
+            suite.defaults.set(tab.rawValue, forKey: MacSidebarState.tabDefaultsKey)
+            let requests = MacFocusRequests()
+            XCTAssertEqual(MacKeyboardActions.findOrSearchSessions(window: window, defaults: suite.defaults, requests: requests),
+                           .searchSessions, "\(tab)")
+            XCTAssertTrue(requests.searchPending, "\(tab)")
+            XCTAssertFalse(scroll.isFindBarVisible, "\(tab): no find bar in the hidden chat")
+        }
+    }
+
+    func testCmdFGoesToSearchSessionsWhenTheMessageViewIsNotOnScreen() {
+        let suite = HostedTestSupport.makeSuite()
+        defer { HostedTestSupport.dropSuite(suite) }
+        let message = NSTextView()
+        message.isSelectable = true
+        message.usesFindBar = true
+        let (window, scroll) = findWindow(textView: message)
+        defer { window.close() }
+        XCTAssertTrue(window.makeFirstResponder(message))
+        scroll.isHidden = true
+        XCTAssertEqual(MacKeyboardActions.findOrSearchSessions(window: window, defaults: suite.defaults, requests: MacFocusRequests()),
+                       .searchSessions, "hidden ancestor")
+        scroll.isHidden = false
+        window.orderOut(nil)
+        XCTAssertEqual(MacKeyboardActions.findOrSearchSessions(window: window, defaults: suite.defaults, requests: MacFocusRequests()),
+                       .searchSessions, "window not visible")
+        window.orderFront(nil)
+        XCTAssertEqual(MacKeyboardActions.findOrSearchSessions(window: window, defaults: suite.defaults, requests: MacFocusRequests()),
+                       .messageFind, "and back on screen it finds again")
+    }
+
     func testCmdFFocusesSearchSessionsFromTheComposer() {
         let composer = ComposerTextView()
         let (window, scroll) = findWindow(textView: composer)
@@ -456,21 +498,46 @@ final class MacKeyboardMenuTests: XCTestCase {
         XCTAssertEqual(found.count, 1)
     }
 
-    /// Ctrl-Cmd-S writes the key `MacSplitLayout` reads. A menu item cannot be
-    /// fired here (it would write the live app's defaults), so the key is
-    /// pinned on both sides.
-    func testSidebarToggleWritesTheKeyTheSplitLayoutReads() throws {
+    /// Ctrl-Cmd-S end to end against injected defaults: the toggle action
+    /// writes the key, and a hosted `MacSplitLayout` reading that same suite
+    /// collapses and reopens its sidebar column.
+    func testSidebarToggleActionDrivesTheSplitLayout() throws {
         XCTAssertEqual(ConduitCommands.sidebarVisibleKey, MacSidebarState.defaultsKey)
-        XCTAssertEqual(MacSidebarState.defaultsKey, "conduit.mac.sidebarVisible")
-        func source(_ path: String) throws -> String {
-            let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            return try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+        let suite = HostedTestSupport.makeSuite()
+        defer { HostedTestSupport.dropSuite(suite) }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 500),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = NSHostingController(rootView: MacSplitLayout(
+            defaults: suite.defaults, sidebar: { List { Text("sidebar row") } }, chat: { Text("chat") })
+            .environmentObject(AppStateRuntimeRegistry.shared.appState))
+        window.setContentSize(NSSize(width: 1000, height: 500))
+        window.orderFront(nil)
+        defer { HostedTestSupport.tearDown(window) }
+
+        /// The sidebar list is on screen: its column wrapper is not hidden.
+        func sidebarShown() -> Bool {
+            func list(_ view: NSView) -> NSView? {
+                if view is NSTableView { return view }
+                for sub in view.subviews { if let found = list(sub) { return found } }
+                return nil
+            }
+            guard let content = window.contentView, let table = list(content) else { return false }
+            return !table.isHiddenOrHasHiddenAncestor
         }
-        let commands = try source("ConduitMac/App/ConduitCommands.swift")
-        XCTAssertTrue(commands.contains("@AppStorage(ConduitCommands.sidebarVisibleKey) private var sidebarVisible"))
-        XCTAssertFalse(commands.contains("ipadPersistentSidebar"), "the Mac sidebar presentation is always persistent (D6)")
-        let layout = try source("ConduitMac/App/MacSidebarState.swift")
-        XCTAssertTrue(layout.contains("@AppStorage(MacSidebarState.defaultsKey) private var sidebarVisible"))
+        XCTAssertTrue(HostedTestSupport.waitUntil { sidebarShown() }, "sidebar shown by default")
+        MacSidebarState.toggleVisible(defaults: suite.defaults)
+        XCTAssertEqual(suite.defaults.object(forKey: MacSidebarState.defaultsKey) as? Bool, false)
+        XCTAssertTrue(HostedTestSupport.waitUntil { !sidebarShown() }, "the layout hid the sidebar")
+        MacSidebarState.toggleVisible(defaults: suite.defaults)
+        XCTAssertTrue(HostedTestSupport.waitUntil { sidebarShown() }, "and showed it again")
+    }
+
+    func testToggleReadsAMissingKeyAsShown() {
+        let suite = HostedTestSupport.makeSuite()
+        defer { HostedTestSupport.dropSuite(suite) }
+        MacSidebarState.toggleVisible(defaults: suite.defaults)
+        XCTAssertEqual(suite.defaults.object(forKey: MacSidebarState.defaultsKey) as? Bool, false)
     }
 
     func testComposerDoesNotSwallowAnyOfTheShortcuts() {

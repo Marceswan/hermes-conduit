@@ -184,8 +184,12 @@ enum MacKeyboardActions {
     /// The text view whose own find bar Cmd-F should open: the first responder
     /// when it is a find-capable text view that validates the Find action
     /// (message text, `SelectableTextView`; not the composer).
-    static func findTarget(in responder: NSResponder?) -> NSTextView? {
-        guard let textView = responder as? NSTextView, textView.usesFindBar || textView.usesFindPanel else { return nil }
+    /// Only while chat is the shown pane and the view is on screen: the hidden
+    /// chat under Bots / Cron / Kanban (opacity 0, not AppKit-hidden) can keep
+    /// a message view as first responder, and its find bar would be invisible.
+    static func findTarget(in responder: NSResponder?, chatActive: Bool = true) -> NSTextView? {
+        guard chatActive, let textView = responder as? NSTextView, textView.usesFindBar || textView.usesFindPanel,
+              let window = textView.window, window.isVisible, !textView.isHiddenOrHasHiddenAncestor else { return nil }
         return textView.validateUserInterfaceItem(findItem()) ? textView : nil
     }
 
@@ -204,7 +208,8 @@ enum MacKeyboardActions {
         requests: MacFocusRequests? = nil
     ) -> FindOutcome? {
         guard !commandsBlocked(by: window) else { return nil }
-        if let target = findTarget(in: window?.firstResponder) {
+        let chatActive = MacChatRoute.isChatActive(tabRaw: defaults.string(forKey: MacSidebarState.tabDefaultsKey))
+        if let target = findTarget(in: window?.firstResponder, chatActive: chatActive) {
             target.performFindPanelAction(findItem())
             return .messageFind
         }

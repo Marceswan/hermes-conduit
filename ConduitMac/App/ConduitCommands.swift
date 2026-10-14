@@ -17,6 +17,10 @@ struct ConduitCommands: Commands {
             Button("New Chat") { Task { await appState.createNewSession() } }
                 .keyboardShortcut("n", modifiers: .command)
         }
+        // No item here is disabled for a sheet: the menu is not rebuilt when a
+        // sheet opens or closes, so a stale disabled item would swallow its key
+        // (AppKit stops at the first match). The actions check for a sheet
+        // when they run instead (`MacKeyboardActions.commandsBlocked`).
         // One contextual Cmd-F: the find bar of a focused message view, else
         // Search Sessions. It sits ahead of Edit > Find on purpose: AppKit stops
         // at the first menu item with a matching key equivalent even when it
@@ -24,7 +28,6 @@ struct ConduitCommands: Commands {
         CommandGroup(after: .pasteboard) {
             Button("Search Sessions") { MacKeyboardActions.findOrSearchSessions(window: NSApp.keyWindow) }
                 .keyboardShortcut("f", modifiers: .command)
-                .disabled(blocked)
             Divider()
         }
         CommandMenu("Chat") {
@@ -35,39 +38,32 @@ struct ConduitCommands: Commands {
             ForEach(MacSidebarShortcut.allCases) { shortcut in
                 Button(shortcut.title) { MacKeyboardActions.selectTab(shortcut.tab, window: NSApp.keyWindow) }
                     .keyboardShortcut(shortcut.key, modifiers: .command)
-                    .disabled(blocked)
             }
             Divider()
             Button("Previous Session") { open(.previous) }
                 .keyboardShortcut("[", modifiers: .command)
-                .disabled(blocked || neighbor(.previous) == nil)
+                .disabled(neighbor(.previous) == nil)
             Button("Next Session") { open(.next) }
                 .keyboardShortcut("]", modifiers: .command)
-                .disabled(blocked || neighbor(.next) == nil)
+                .disabled(neighbor(.next) == nil)
             // The same two commands on the arrow keys, listed by direction.
             Button("Session Above") { open(.previous) }
                 .keyboardShortcut(.upArrow, modifiers: [.option, .command])
-                .disabled(blocked || neighbor(.previous) == nil)
+                .disabled(neighbor(.previous) == nil)
             Button("Session Below") { open(.next) }
                 .keyboardShortcut(.downArrow, modifiers: [.option, .command])
-                .disabled(blocked || neighbor(.next) == nil)
+                .disabled(neighbor(.next) == nil)
             Divider()
             Button("Message Field") { MacKeyboardActions.focusComposer(window: NSApp.keyWindow ?? NSApp.mainWindow) }
                 .keyboardShortcut("l", modifiers: .command)
-                .disabled(blocked)
         }
         CommandGroup(after: .sidebar) {
-            Button(sidebarVisible ? "Hide Sidebar" : "Show Sidebar") { sidebarVisible.toggle() }
+            Button(sidebarVisible ? "Hide Sidebar" : "Show Sidebar") { MacSidebarState.toggleVisible() }
                 .keyboardShortcut("s", modifiers: [.command, .control])
             Toggle("Highlight Controls on Hover", isOn: $hoverHighlight)
         }
         TextEditingCommands()
     }
-
-    /// A sheet is up on the key window: the commands would act behind it. The
-    /// actions check again when they run, since the menu is not rebuilt on a
-    /// sheet change.
-    private var blocked: Bool { MacKeyboardActions.commandsBlocked(by: NSApp.keyWindow) }
 
     private func neighbor(_ direction: MacSessionNavigation.Direction) -> String? {
         guard let sessionOrder else { return nil }
