@@ -67,4 +67,56 @@ final class HoverTooltipPolicyTests: XCTestCase {
         // Symbol-backed is always an icon, whatever the width.
         XCTAssertEqual(HoverTooltipPolicy.tooltipText(node("Send", width: 200, id: "paperplane")), "Send")
     }
+
+    // MARK: Visible label text (tabs, segments, radio buttons)
+
+    private func item(_ role: NSAccessibility.Role, label: String?, title: String? = nil, value: String? = nil,
+                      childTexts: [String] = [], identifier: String? = nil,
+                      size: CGSize = CGSize(width: 49, height: 24)) -> HoverElementSnapshot {
+        HoverElementSnapshot(role: role, label: label, title: title, value: value, imageIdentifier: identifier,
+                             childTexts: childTexts, isEnabled: true,
+                             frame: CGRect(origin: .zero, size: size))
+    }
+
+    func testTitleValueOrChildTextEqualToLabelSuppressesTheTooltipForEveryRole() {
+        for role: NSAccessibility.Role in [.button, .radioButton, .checkBox, .popUpButton, .menuButton, .link] {
+            XCTAssertNil(HoverTooltipPolicy.tooltipText(item(role, label: "Sessions", title: "Sessions")), "title, \(role)")
+            XCTAssertNil(HoverTooltipPolicy.tooltipText(item(role, label: "Sessions", value: "sessions")), "value, \(role)")
+            XCTAssertNil(HoverTooltipPolicy.tooltipText(item(role, label: "Sessions", childTexts: ["Bots", " Sessions "])), "child, \(role)")
+        }
+    }
+
+    func testVisibleTextThatDiffersFromTheLabelKeepsTheTooltip() {
+        XCTAssertEqual(HoverTooltipPolicy.tooltipText(item(.button, label: "Send message", title: "Go")), "Send message")
+        XCTAssertEqual(HoverTooltipPolicy.tooltipText(item(.button, label: "Refresh", childTexts: ["12"])), "Refresh")
+        // A radio button's value is its 0/1 state, never a caption.
+        XCTAssertEqual(HoverTooltipPolicy.tooltipText(item(.checkBox, label: "Mute", value: "1")), "Mute")
+    }
+
+    func testSegmentOrTabRadioButtonShowsItsOwnCaption() {
+        // AppKit: label is the caption, title and value stay empty.
+        XCTAssertNil(HoverTooltipPolicy.tooltipText(item(.radioButton, label: "One")))
+        // Too narrow to hold the caption as text: an icon segment, keeps the tooltip.
+        XCTAssertEqual(HoverTooltipPolicy.tooltipText(item(.radioButton, label: "Notifications", size: CGSize(width: 24, height: 24))),
+                       "Notifications")
+        // A SwiftUI symbol-backed node is an icon whatever its width.
+        XCTAssertEqual(HoverTooltipPolicy.tooltipText(item(.radioButton, label: "Cron", identifier: "clock")), "Cron")
+    }
+
+    func testVisibleLabelHintSuppressesTheTooltipOfASwiftUINode() {
+        // 70 x 36 is below the aspect cutoff that tells a text button from an icon by shape.
+        let tab = item(.button, label: "Sessions", identifier: HoverTooltipPolicy.visibleLabelIdentifier,
+                       size: CGSize(width: 70, height: 36))
+        XCTAssertNil(HoverTooltipPolicy.tooltipText(tab))
+        XCTAssertEqual(HoverTooltipPolicy.decide(tab, highlightEnabled: true),
+                       HoverDecision(tooltip: nil, showsPointingHand: true, highlights: true))
+        // Without the hint the same node reads as an icon and repeats its name.
+        var icon = tab
+        icon.imageIdentifier = "bubble.left"
+        XCTAssertEqual(HoverTooltipPolicy.tooltipText(icon), "Sessions")
+        // An explicit help string still wins over the hint.
+        var withHelp = tab
+        withHelp.help = "Show sessions"
+        XCTAssertEqual(HoverTooltipPolicy.tooltipText(withHelp), "Show sessions")
+    }
 }

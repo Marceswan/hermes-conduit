@@ -87,7 +87,11 @@ struct SidebarView: View {
                                             .foregroundStyle(.secondary)
                                         Text(appState.profileDisplayName(appState.activeProfile))
                                             .font(.subheadline.weight(.semibold))
+                                            #if os(macOS) // MAC: one line so the row keeps its fixed height (D7)
+                                            .lineLimit(1)
+                                            #else // MAC:
                                             .lineLimit(2)
+                                            #endif // MAC:
                                     }
                                     Image(systemName: "chevron.up.chevron.down")
                                         .font(.caption2.weight(.semibold))
@@ -95,7 +99,11 @@ struct SidebarView: View {
                                 }
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 4)
+                                #if os(macOS) // MAC: same height as the Settings button beside it (D7)
+                                .frame(height: MacControlHeight.large)
+                                #else // MAC:
                                 .frame(minHeight: 48)
+                                #endif // MAC:
                             }
                             .disabled(appState.isProfileSwitching)
                             .conduitGlassControl(cornerRadius: 18, tint: .conduitAccent.opacity(0.08))
@@ -109,7 +117,11 @@ struct SidebarView: View {
                             } label: {
                                 Image(systemName: "gearshape")
                                     .font(.system(size: 16, weight: .medium))
+                                    #if os(macOS) // MAC: named row height (D7)
+                                    .frame(width: MacControlHeight.large, height: MacControlHeight.large)
+                                    #else // MAC:
                                     .frame(width: 44, height: 44)
+                                    #endif // MAC:
                             }
                             .conduitGlassControl(cornerRadius: 18)
                             .accessibilityLabel("Settings")
@@ -130,6 +142,9 @@ struct SidebarView: View {
                     .dynamicTypeSize(...DynamicTypeSize.pinnedChromeCap)
 
                     ConduitGlassGroup(spacing: 8) {
+                        #if os(macOS) // MAC: inset, concentric indicator on equal segments (D7)
+                        MacSidebarTabStrip(selectedRaw: $selectedTabRaw)
+                        #else // MAC:
                         // Every tab drops to its icon together once the
                         // names no longer fit their quarters (large text).
                         ViewThatFits(in: .horizontal) {
@@ -138,10 +153,15 @@ struct SidebarView: View {
                         }
                         .padding(4)
                         .conduitGlassSurface(cornerRadius: 20, tint: .conduitAccent.opacity(0.05))
+                        #endif // MAC:
                     }
                     .dynamicTypeSize(...DynamicTypeSize.pinnedChromeCap)
 
                     Group {
+                        #if os(macOS) // MAC: sidebar always lists sessions; tabs drive the main pane (D6)
+                        // Opening a session posts .macSessionOpenRequested (AppState.requestOpenSession), which returns the pane to chat.
+                        SessionList()
+                        #else // MAC:
                         switch selectedTab {
                         case .sessions:
                             SessionList()
@@ -152,6 +172,7 @@ struct SidebarView: View {
                         case .kanban:
                             KanbanView()
                         }
+                        #endif // MAC:
                     }
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
@@ -237,13 +258,23 @@ struct SessionList: View {
                     }
                     .foregroundStyle(Color.conduitBackgroundColor)
                     .frame(maxWidth: .infinity)
+                    #if os(macOS) // MAC: as tall as the icon buttons in this row (D7)
+                    .frame(minHeight: MacControlHeight.large)
+                    #else // MAC:
                     .padding(.vertical, 10)
+                    #endif // MAC:
                     .background(Color.conduitAccent, in: RoundedRectangle(cornerRadius: 14))
                 }
                 .buttonStyle(.plain)
+                #if os(macOS) // MAC: upstream bug, candidate for upstream PR (ledger)
+                // The saved copy only lacks a live gateway while nothing is connected.
+                .disabled(appState.macNewChatDisabled)
+                .opacity(appState.macNewChatDisabled ? 0.6 : 1)
+                #else // MAC:
                 // The saved copy has no live gateway to create a chat on.
                 .disabled(appState.turnState == .synchronizing || appState.offlineChatPresentation != nil)
                 .opacity(appState.turnState == .synchronizing || appState.offlineChatPresentation != nil ? 0.6 : 1)
+                #endif // MAC:
 
                 // A call of its own, not tied to the open chat: its work
                 // runs as jobs on the Voice Jobs model.
@@ -417,6 +448,16 @@ struct SessionList: View {
             .refreshable {
                 await appState.refreshSessionCatalog()
             }
+            #if os(macOS) // MAC: keyboard cursor, Return opens, Cmd-F search focus (D10)
+            .modifier(MacSessionListKeyboard(
+                ids: keyboardNavigationIDs,
+                activeID: appState.activeSessionId,
+                open: { id in
+                    appState.dismissSidebarDrawer()
+                    appState.requestOpenSession(id)
+                }
+            ))
+            #endif // MAC:
         }
         .sheet(isPresented: $showFilterOrder) {
             SessionFilterOrderSheet()
@@ -488,6 +529,15 @@ struct SessionList: View {
         }
 
     }
+
+    #if os(macOS) // MAC: rows the keyboard reaches, top to bottom, as listed (D10)
+    private var keyboardNavigationIDs: [String] {
+        if showingProjects { return projectsViewPinnedSessions.map(\.id) }
+        // One pass over displayedSessions, not one per section.
+        let shown = displayedSessions
+        return (shown.filter { appState.isSessionPinned($0) } + shown.filter { !appState.isSessionPinned($0) }).map(\.id)
+    }
+    #endif // MAC:
 
     private var allSessions: [SessionSummary] {
         var listed = sourceRows(selectedSource)
@@ -660,7 +710,13 @@ struct SessionList: View {
             }
             .padding(.horizontal, 4)
             .padding(.vertical, 8)
+            #if os(macOS) // MAC: room for the last chip to scroll clear of the trailing fade
+            .padding(.trailing, MacTrailingFade.width)
+            #endif // MAC:
         }
+        #if os(macOS) // MAC: fade the trailing edge so the clipped chip row reads as scrolling
+        .macTrailingFade()
+        #endif // MAC:
     }
 
     /// One chip for Needs input, Working and Unread, so they don't crowd the
@@ -825,6 +881,9 @@ struct SessionList: View {
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
         .listRowInsets(EdgeInsets(top: 3, leading: 0, bottom: 3, trailing: 0))
+        #if os(macOS) // MAC: ring on the keyboard cursor row (D10)
+        .modifier(MacSessionCursorRow(id: session.id))
+        #endif // MAC:
     }
 }
 
@@ -1685,6 +1744,7 @@ struct CronList: View {
     var body: some View {
         let jobs = CronJobFilter.visibleJobs(appState.cronJobs, filter: jobFilter.wrappedValue, query: searchText)
         List {
+            #if !os(macOS) // MAC: the Mac pane header (safeAreaInset below) replaces this row
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Scheduled jobs").font(.headline)
@@ -1702,6 +1762,7 @@ struct CronList: View {
             .padding(.vertical, 4)
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
+            #endif // MAC:
 
             if !appState.cronJobs.isEmpty {
                 Picker("Show jobs", selection: jobFilter) {
@@ -1787,7 +1848,18 @@ struct CronList: View {
                 }
             }
         }
+        #if os(macOS) // MAC: a second .searchable crashes NSToolbar (the sessions list owns the window's search item); inline field instead (D6)
+        .safeAreaInset(edge: .top, spacing: 12) {
+            VStack(spacing: 12) {
+                MacPaneHeader(title: AppLocalization.string("Scheduled jobs"), subtitle: macHeaderSubtitle) {
+                    if appState.cronJobsLoading { ProgressView().controlSize(.small) }
+                }
+                MacSearchPill(prompt: AppLocalization.string("Search scheduled jobs"), text: $searchText)
+            }
+        }
+        #else // MAC:
         .searchable(text: $searchText, prompt: AppLocalization.string("Search scheduled jobs"))
+        #endif // MAC:
         .scrollContentBackground(.hidden)
         .listStyle(.plain)
         .task(id: appState.activeProfile) { await appState.refreshCronContent() }
@@ -1807,6 +1879,14 @@ struct CronList: View {
             Label(isPinned ? AppLocalization.string("Unpin") : AppLocalization.string("Pin"), systemImage: isPinned ? "pin.slash" : "pin")
         }
     }
+
+    #if os(macOS) // MAC: same counts the iOS heading row shows
+    private var macHeaderSubtitle: String {
+        appState.cronJobs.isEmpty
+            ? AppLocalization.string("\(appState.cronJobs.count) configured")
+            : AppLocalization.string("\(activeJobCount) active") + " · " + AppLocalization.string("\(inactiveJobCount) inactive")
+    }
+    #endif // MAC:
 
     private var activeJobCount: Int {
         appState.cronJobs.filter(\.isActive).count

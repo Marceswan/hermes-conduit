@@ -71,6 +71,13 @@ final class ComposerPasteTextViewTests: XCTestCase {
         XCTAssertFalse(view.handleReturn(shift: true))
     }
 
+    func testOptionReturnIsANewlineModifier() {
+        XCTAssertTrue(ComposerTextView.isNewlineModifier([.option]))
+        XCTAssertTrue(ComposerTextView.isNewlineModifier([.shift]))
+        XCTAssertFalse(ComposerTextView.isNewlineModifier([]))
+        XCTAssertFalse(ComposerTextView.isNewlineModifier([.numericPad, .function]))
+    }
+
     private func makeWindow(hosting view: NSView) -> NSWindow {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 120),
                               styleMask: [.titled], backing: .buffered, defer: false)

@@ -14,6 +14,7 @@ struct ComposerPasteTextView: NSViewRepresentable {
     static var maximumHeight: CGFloat { min(max(160, ceil(bodyLineHeight) * 4 + 16), 280) }
     private static var bodyLineHeight: CGFloat { NSFont.preferredFont(forTextStyle: .body).lineHeight }
 
+    @AppStorage(MacSidebarState.tabDefaultsKey) private var routeTabRaw = SidebarTab.sessions.rawValue
     @Binding var text: String
     @Binding var isFocused: Bool
     @Binding var measuredHeight: CGFloat
@@ -27,6 +28,8 @@ struct ComposerPasteTextView: NSViewRepresentable {
     var canSubmitFromReturn: Bool = false
     var onSubmitFromReturn: (() -> Bool)? = nil
     var onUserEdit: (() -> Void)? = nil
+    /// Where Cmd-L arrives (`macFocusComposerRequested`); injectable for tests.
+    var focusRequestCenter: NotificationCenter = .default
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -49,6 +52,7 @@ struct ComposerPasteTextView: NSViewRepresentable {
         scroll.documentView = textView
         context.coordinator.lastRevision = programmaticRevision
         configure(textView)
+        context.coordinator.observeFocusRequests(for: textView, center: focusRequestCenter)
         return scroll
     }
 
@@ -66,10 +70,17 @@ struct ComposerPasteTextView: NSViewRepresentable {
                 }
             }
         }
-        if isFocused {
+        // A chat hidden under Bots / Cron / Kanban must not take or keep focus.
+        // Focus lost to the route is held (isFocused stays true) and restored
+        // on return, unless something else owns the keyboard by then.
+        if isFocused && MacChatRoute.isChatActive(tabRaw: routeTabRaw) {
             if let window = textView.window {
                 textView.wantsFocus = false
-                if window.firstResponder !== textView { window.makeFirstResponder(textView) }
+                if textView.heldFocusForRoute {
+                    textView.restoreFocusIfHeld()
+                } else if window.firstResponder !== textView {
+                    window.makeFirstResponder(textView)
+                }
             } else {
                 // Not in a window yet; ComposerTextView.viewDidMoveToWindow applies this.
                 textView.wantsFocus = true
@@ -77,7 +88,11 @@ struct ComposerPasteTextView: NSViewRepresentable {
         } else {
             textView.wantsFocus = false
             if textView.window?.firstResponder === textView {
-                textView.window?.makeFirstResponder(nil)
+                if MacChatRoute.isChatActive(tabRaw: routeTabRaw) {
+                    textView.window?.makeFirstResponder(nil)
+                } else {
+                    textView.resignForRoute()
+                }
             }
         }
         context.coordinator.remeasure(textView)
@@ -98,8 +113,25 @@ struct ComposerPasteTextView: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: ComposerPasteTextView
         var lastRevision: UInt64 = 0
+        private var focusObserver: NSObjectProtocol?
+        private var focusObserverCenter: NotificationCenter?
 
         init(_ parent: ComposerPasteTextView) { self.parent = parent }
+
+        deinit {
+            if let focusObserver { focusObserverCenter?.removeObserver(focusObserver) }
+        }
+
+        /// Cmd-L: the composer in the command's window takes first responder.
+        func observeFocusRequests(for textView: ComposerTextView, center: NotificationCenter) {
+            if let focusObserver { focusObserverCenter?.removeObserver(focusObserver) }
+            focusObserverCenter = center
+            focusObserver = center.addObserver(forName: .macFocusComposerRequested, object: nil, queue: .main) { [weak textView] note in
+                guard let textView, let window = textView.window else { return }
+                if let target = note.object as? NSWindow, target !== window { return }
+                textView.focusFromCommand()
+            }
+        }
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
@@ -162,8 +194,38 @@ final class ComposerTextView: NSTextView {
 
     override func resignFirstResponder() -> Bool {
         let accepted = super.resignFirstResponder()
-        if accepted { onFocusChange?(false) }
+        if accepted && !resigningForRoute { onFocusChange?(false) }
         return accepted
+    }
+
+    /// The route hid the chat while this composer had focus. Not reported as a
+    /// focus loss, so the owner's isFocused stays true and the return to chat
+    /// can restore it.
+    var heldFocusForRoute = false
+    private var resigningForRoute = false
+
+    func resignForRoute() {
+        guard let window, window.firstResponder === self else { return }
+        resigningForRoute = true
+        heldFocusForRoute = window.makeFirstResponder(nil)
+        resigningForRoute = false
+    }
+
+    /// Focus is restored only when no sheet is attached and no other text
+    /// input (sidebar search, a pane field editor) owns the keyboard. When it
+    /// is not restored the owner is told focus is gone, so a later update
+    /// does not steal it.
+    @discardableResult
+    func restoreFocusIfHeld() -> Bool {
+        guard heldFocusForRoute else { return false }
+        heldFocusForRoute = false
+        guard let window else { return false }
+        if window.firstResponder === self { return true }
+        if window.attachedSheet == nil, !(window.firstResponder is NSText), window.makeFirstResponder(self) {
+            return true
+        }
+        onFocusChange?(false)
+        return false
     }
 
     override func viewDidMoveToWindow() {
@@ -204,9 +266,33 @@ final class ComposerTextView: NSTextView {
         return onSubmitFromReturn?() ?? false
     }
 
+    /// Shift-Return and Option-Return (the Mac chat convention) insert a new line.
+    static func isNewlineModifier(_ flags: NSEvent.ModifierFlags) -> Bool {
+        !flags.intersection([.shift, .option]).isEmpty
+    }
+
+    /// Cmd-L. Refused while a sheet is attached or the composer is read-only;
+    /// an explicit request replaces any focus the route was holding.
+    @discardableResult
+    func focusFromCommand() -> Bool {
+        guard let window, isEditable, !isHiddenOrHasHiddenAncestor, window.attachedSheet == nil else { return false }
+        heldFocusForRoute = false
+        return window.firstResponder === self || window.makeFirstResponder(self)
+    }
+
+    /// Tab and Shift-Tab leave the composer along the window's key view loop
+    /// (sidebar list, search field, composer), as in a single-line field.
+    override func insertTab(_ sender: Any?) {
+        window?.selectNextKeyView(self)
+    }
+
+    override func insertBacktab(_ sender: Any?) {
+        window?.selectPreviousKeyView(self)
+    }
+
     override func keyDown(with event: NSEvent) {
         let isReturn = event.keyCode == 36 || event.keyCode == 76
-        if isReturn, handleReturn(shift: event.modifierFlags.contains(.shift)) { return }
+        if isReturn, handleReturn(shift: Self.isNewlineModifier(event.modifierFlags)) { return }
         super.keyDown(with: event)
     }
 

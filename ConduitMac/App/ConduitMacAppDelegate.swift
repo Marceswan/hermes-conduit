@@ -1,16 +1,27 @@
 import AppKit
 
 enum MacDefaults {
-    /// The persistent sidebar column is the natural Mac layout.
+    /// The test host is the real app; global monitors must not run in tests.
+    static var isRunningUnderXCTest: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    }
+
+    /// The persistent sidebar column is the natural Mac layout. Return sends
+    /// (Shift- or Option-Return for a new line): every Mac has a hardware
+    /// keyboard, so upstream's opt-in default is wrong here. Registered, not
+    /// stored, so the Keyboard setting still overrides it.
     static func register() {
-        UserDefaults.standard.register(defaults: ["conduit.ipadPersistentSidebar": true])
+        UserDefaults.standard.register(defaults: [
+            "conduit.ipadPersistentSidebar": true,
+            ComposerReturnKey.preferenceKey: true,
+        ])
     }
 }
 
 final class ConduitMacAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         MacDefaults.register()
-        HoverAccessibilityEngine.install()
+        if !MacDefaults.isRunningUnderXCTest { HoverAccessibilityEngine.install() }
         Task.detached(priority: .background) {
             AttachmentStaging.sweepStaleFiles()
         }

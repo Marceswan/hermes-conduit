@@ -80,14 +80,24 @@ struct MainView: View {
     @State private var chatTitlePendingDeletion: SessionSummary?
 
     private var sidebarPresentation: SidebarPresentation {
-        SidebarLayoutPolicy.resolvePresentation(
+        #if os(macOS) // MAC: always the split view; no drawer, no first-frame flash
+        return .persistent
+        #else // MAC:
+        return SidebarLayoutPolicy.resolvePresentation(
             idiom: UIDevice.current.userInterfaceIdiom,
             prefersPersistentSidebar: prefersPersistentSidebar,
             availableWidth: availableWindowWidth
         )
+        #endif // MAC:
     }
 
     private var isPersistentSidebarActive: Bool { sidebarPresentation == .persistent }
+
+    #if os(macOS) // MAC: route-aware chat chrome (D6): a chat hidden under Bots/Cron/Kanban adds no toolbar items, title or backdrop motion
+    @AppStorage(MacSidebarState.tabDefaultsKey) private var macTabRaw = SidebarTab.sessions.rawValue
+    private var chatPaneActive: Bool { MacChatRoute.isChatActive(tabRaw: macTabRaw) }
+    private var chatWindowTitle: String { MacChatRoute.navigationTitle(tabRaw: macTabRaw) }
+    #endif // MAC:
 
     var body: some View {
         sidebarLayoutContent
@@ -284,6 +294,17 @@ struct MainView: View {
     @ViewBuilder
     private var sidebarLayoutContent: some View {
         if isPersistentSidebarActive {
+            #if os(macOS) // MAC: native resizable split view (D6)
+            MacSplitLayout(
+                sidebar: {
+                    SidebarView(
+                        onRequestSettings: presentSettingsFromPersistentSidebar,
+                        presentation: .persistent
+                    )
+                },
+                chat: { chatNavigationContent }
+            )
+            #else // MAC:
             HStack(spacing: 0) {
                 SidebarView(
                     onRequestSettings: presentSettingsFromPersistentSidebar,
@@ -296,8 +317,69 @@ struct MainView: View {
 
                 chatNavigationContent
             }
+            #endif // MAC:
         } else {
             chatNavigationContent
+        }
+    }
+
+    /// The chat shell's window-toolbar items (moved out of `chatNavigationContent`
+    /// so the Mac route gate can wrap them without touching the iOS call).
+    @ToolbarContentBuilder
+    private var chatToolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            // An open room supplies its own leading Leave button; a
+            // second leading control would be ambiguous. The edge
+            // swipe still opens the sidebar.
+            if !isPersistentSidebarActive && appState.activeRoomSurface == nil {
+                Button {
+                    appState.showSidebar = true
+                } label: {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 16, weight: .semibold))
+                        .frame(width: 40, height: 40)
+                }
+                .conduitGlassControl(cornerRadius: 20, tint: .conduitAccent.opacity(0.10))
+                .accessibilityLabel("Open sessions")
+            }
+        }
+        // Session-only controls: an open room owns the title and
+        // actions (GroupChatView's toolbar), so the session's title,
+        // scroll-to-top, and refresh must not act on the hidden
+        // conversation behind it.
+        if appState.activeRoomSurface == nil {
+            ToolbarItem(placement: .principal) {
+                ChatTitleControl(
+                    onRename: { chatTitlePendingRename = $0 },
+                    onDelete: { chatTitlePendingDeletion = $0 }
+                )
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Task { await appState.refreshActiveSession() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 15, weight: .semibold))
+                        .rotationEffect(.degrees(appState.isChatRefreshing ? 360 : 0))
+                        .animation(
+                            appState.isChatRefreshing
+                                ? .linear(duration: 0.75).repeatForever(autoreverses: false)
+                                : .default,
+                            value: appState.isChatRefreshing
+                        )
+                        #if os(iOS) // MAC: the system toolbar platter sizes the item (D7)
+                        .frame(width: 40, height: 40)
+                        #endif // MAC:
+                }
+                #if os(iOS) // MAC: no second glass layer over the system platter (D7)
+                .conduitGlassControl(cornerRadius: 20, tint: .conduitAccent.opacity(0.10))
+                #endif // MAC:
+                .disabled(!appState.isConnected || appState.isChatRefreshing)
+                .accessibilityLabel("Refresh conversation")
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            ConnectionStatusIndicator()
         }
     }
 
@@ -311,7 +393,11 @@ struct MainView: View {
     private var chatNavigationContent: some View {
         NavigationStack {
             ZStack {
+                #if os(macOS) // MAC: paused while the chat is hidden
+                ConduitBackdrop(drifts: chatPaneActive)
+                #else // MAC:
                 ConduitBackdrop(drifts: true)
+                #endif // MAC:
                 if appState.activeRoomSurface != nil {
                     // Keyed by room: another room starts with its own draft.
                     GroupChatView()
@@ -327,61 +413,18 @@ struct MainView: View {
                         .ignoresSafeArea()
                 }
             }
+            #if os(macOS) // MAC: pane name while chat is hidden, so this stack cannot override the router's title
+            .navigationTitle(chatWindowTitle)
+            #else // MAC:
             .navigationTitle("")
+            #endif // MAC:
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    // An open room supplies its own leading Leave button; a
-                    // second leading control would be ambiguous. The edge
-                    // swipe still opens the sidebar.
-                    if !isPersistentSidebarActive && appState.activeRoomSurface == nil {
-                        Button {
-                            appState.showSidebar = true
-                        } label: {
-                            Image(systemName: "line.3.horizontal")
-                                .font(.system(size: 16, weight: .semibold))
-                                .frame(width: 40, height: 40)
-                        }
-                        .conduitGlassControl(cornerRadius: 20, tint: .conduitAccent.opacity(0.10))
-                        .accessibilityLabel("Open sessions")
-                    }
-                }
-                // Session-only controls: an open room owns the title and
-                // actions (GroupChatView's toolbar), so the session's title,
-                // scroll-to-top, and refresh must not act on the hidden
-                // conversation behind it.
-                if appState.activeRoomSurface == nil {
-                    ToolbarItem(placement: .principal) {
-                        ChatTitleControl(
-                            onRename: { chatTitlePendingRename = $0 },
-                            onDelete: { chatTitlePendingDeletion = $0 }
-                        )
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            Task { await appState.refreshActiveSession() }
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 15, weight: .semibold))
-                                .rotationEffect(.degrees(appState.isChatRefreshing ? 360 : 0))
-                                .animation(
-                                    appState.isChatRefreshing
-                                        ? .linear(duration: 0.75).repeatForever(autoreverses: false)
-                                        : .default,
-                                    value: appState.isChatRefreshing
-                                )
-                                .frame(width: 40, height: 40)
-                        }
-                        .conduitGlassControl(cornerRadius: 20, tint: .conduitAccent.opacity(0.10))
-                        .disabled(!appState.isConnected || appState.isChatRefreshing)
-                        .accessibilityLabel("Refresh conversation")
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    ConnectionStatusIndicator()
-                }
-            }
+            #if os(macOS) // MAC: no chat toolbar items while another pane is shown (D6)
+            .toolbar { if chatPaneActive { chatToolbarContent } }
+            #else // MAC:
+            .toolbar { chatToolbarContent }
+            #endif // MAC:
         }
         // The chat title's menu needs host-owned rename and delete prompts,
         // like the session list's rows.
@@ -533,9 +576,13 @@ private struct ChatTitleControl: View {
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(.primary)
             .lineLimit(1)
+            #if os(macOS) // MAC: flat pill on the system toolbar platter, standard item height (D7)
+            .macToolbarTitlePill()
+            #else // MAC:
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
             .conduitGlassSurface(cornerRadius: 16, tint: .conduitAccent.opacity(0.06))
+            #endif // MAC:
             // The navigation bar doesn't grow; touch and hold shows it large.
             .dynamicTypeSize(...DynamicTypeSize.xxLarge)
     }
@@ -570,9 +617,13 @@ struct ConnectionStatusIndicator: View {
                     .stroke(color.opacity(0.38), lineWidth: 1)
                     .frame(width: 19, height: 19)
             }
+            #if os(iOS) // MAC: the system toolbar platter sizes the item (D7)
             .frame(width: 40, height: 40)
+            #endif // MAC:
         }
+        #if os(iOS) // MAC: no second glass layer over the system platter (D7)
         .conduitGlassControl(cornerRadius: 20, tint: color.opacity(0.10))
+        #endif // MAC:
         .animation(ConduitMotion.response, value: appState.isConnected)
         .accessibilityLabel(appState.isConnected ? AppLocalization.string("Gateway connected") : AppLocalization.string("Gateway disconnected"))
     }

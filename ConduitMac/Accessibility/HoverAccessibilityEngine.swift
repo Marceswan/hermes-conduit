@@ -195,9 +195,10 @@ final class HoverAccessibilityEngine {
             trailingTimer.cancel()
         }
         apply(cursorState.update(showsHand: decision.showsPointingHand))
-        if decision.highlights, let frame = snapshot?.frame,
-           frame.width <= Self.maxHighlightSize.width, frame.height <= Self.maxHighlightSize.height {
-            highlight.show(around: frame, over: window)
+        if decision.highlights, let snapshot, snapshot.frame.width <= Self.maxHighlightSize.width,
+           snapshot.frame.height <= Self.maxHighlightSize.height {
+            highlight.show(shape: HoverOutlineShape.make(frame: snapshot.frame, axPath: snapshot.shapePath,
+                                                           platter: snapshot.platter), over: window)
         } else {
             highlight.hide()
         }
@@ -235,6 +236,10 @@ final class HoverAccessibilityEngine {
         cache = HitCache(window: window, snapshot: snapshot, decision: decision, at: now)
         return (snapshot, decision, false)
     }
+
+    /// Test hooks: run the timer callbacks directly instead of waiting on the run loop.
+    func fireIdleTimerForTesting() { idleTimer.onFire() }
+    func fireTrailingTimerForTesting() { trailingTimer.onFire() }
 
     private func trailingEvaluation() {
         guard let target = trailingTarget, environment.isAppActive(),
@@ -304,7 +309,13 @@ final class HoverAccessibilityEngine {
         var current = window.accessibilityHitTest(screenPoint) as? NSObject
         for _ in 0..<4 {
             guard let element = current else { return nil }
-            if let snapshot = snapshot(of: element) { return snapshot }
+            if var snapshot = snapshot(of: element) {
+                // A window-toolbar item reports its 52 pt slot or just its
+                // text; the outline follows the glass platter instead (D7).
+                snapshot.platter = ToolbarPlatterGeometry.platter(
+                    for: snapshot.frame, among: ToolbarPlatterGeometry.platters(in: window, near: snapshot.frame))
+                return snapshot
+            }
             current = element.axValue("accessibilityParent")
         }
         return nil
@@ -326,11 +337,27 @@ final class HoverAccessibilityEngine {
             role: role,
             label: source.axValue("accessibilityLabel"),
             title: source.axValue("accessibilityTitle"),
+            value: source.axValue("accessibilityValue"),
             help: source.axValue("accessibilityHelp"),
             imageIdentifier: isSwiftUINode ? (identifier ?? "") : nil,
+            childTexts: staticTexts(of: source),
             isEnabled: (element.axValue("accessibilityEnabled") as NSNumber?)?.boolValue ?? true,
-            frame: frame?.rectValue ?? .zero
+            frame: frame?.rectValue ?? .zero,
+            // SwiftUI nodes only. Undocumented (D7): read dynamically and
+            // ignored when absent, so the outline falls back to its heuristic.
+            shapePath: isSwiftUINode ? element.axValue("accessibilityPath") : nil
         )
+    }
+
+    /// Text of the element's static-text children: what a control draws.
+    private static func staticTexts(of element: NSObject) -> [String] {
+        let children: [Any]? = element.axValue("accessibilityChildren")
+        return (children ?? []).prefix(8).compactMap { child -> String? in
+            guard let child = child as? NSObject,
+                  let role: String = child.axValue("accessibilityRole"),
+                  NSAccessibility.Role(rawValue: role) == .staticText else { return nil }
+            return child.axValue("accessibilityValue") ?? child.axValue("accessibilityLabel")
+        }
     }
 }
 
