@@ -59,7 +59,7 @@ Rule R18: agents never send clicks or key events to the running app. Launch smok
   - [ ] Esc closes Settings, Bot editor and Profile sheets.
   - [ ] Esc does nothing in the Model picker while editing; it must never press Done.
   - [ ] Esc in a file Open panel still cancels the panel natively.
-- (d) Dock reopen after Cmd-W and close-window-mid-stream: user.
+- (d) Dock reopen after closing the window with its red close button (Cmd-W now closes a tab, not the window) and close-window-mid-stream: user.
 - Logged-in items (key save end to end, sidebar toggle): user.
 - Keyboard checks (D10), user (hosted tests send synthetic events only; none of these has run against real hardware keys):
   - [ ] Ctrl-Cmd-1 to Ctrl-Cmd-4 switch Sessions / Bots / Cron / Kanban from the composer and from the sidebar search field.
@@ -74,3 +74,9 @@ Rule R18: agents never send clicks or key events to the running app. Launch smok
   - [ ] Cmd-W twice closes two tabs, then Cmd-Shift-T brings the last one back; Cmd-W while Settings (a sheet) is open does nothing; Esc closes it.
   - [ ] Delete a session from the sidebar and its tab goes; rename a session and its tab stays with the new title; relaunch restores the tabs.
   - [ ] Ctrl-Cmd-1..4 switch Sessions / Bots / Cron / Kanban (plain Cmd-1..4 now select tabs).
+  - [ ] Cmd-Shift-] and Cmd-Shift-[ wrap: from the last tab Cmd-Shift-] goes to tab 1, from tab 1 Cmd-Shift-[ goes to the last tab.
+  - [ ] Bot chat tab: open a bot chat, switch to another tab, then click the bot chat's tab. It reopens and is not marked unavailable (dimmed).
+  - [ ] Group room: open a group room (the strip is hidden there), then press Cmd-1. The chat returns with tab 1 selected and the room closes. Cmd-W while the room is open does nothing.
+  - [ ] Cmd-W under Kanban (and Bots, Cron) does nothing; Cmd-1 under Kanban returns to chat with tab 1.
+  - [ ] Tab strip layout, live: drag the window edge wider and narrower, press the green zoom button, enter and leave full screen, and drag the sidebar to its 390 pt maximum with the window at its 820 pt minimum. Refresh and the connection status dot stay visible in the toolbar (never in the overflow menu), the strip regrows after each change, and the active tab stays scrolled into view. Full screen is the known weak point: if the strip stays at about 120 pt until a resize, record it.
+  - [ ] Window tabbing is off: the Window menu has no window-tab items ("Show Next Tab", "Show Previous Tab", "Show Tab Bar", "Merge All Windows"), and Ctrl-Tab switches session tabs.
