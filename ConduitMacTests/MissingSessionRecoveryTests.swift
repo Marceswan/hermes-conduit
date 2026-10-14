@@ -18,7 +18,17 @@ final class MissingSessionRecoveryTests: XCTestCase {
         }
     }
 
-    private final class Requests { var ids: [String] = [] }
+    private final class Requests {
+        var ids: [String] = []
+        /// Runs inside `session.resume`, before it answers (fence tests).
+        var onOpen: ((String) -> Void)?
+        /// `session.create` seam: nil leaves the real client (which throws notConnected).
+        var create: (@MainActor () async throws -> String)?
+        var createCalls = 0
+        var gateDisabledDuringCreate: [Bool] = []
+        var turnStateDuringCreate: [TurnState] = []
+        weak var appState: AppState?
+    }
 
     private struct Fixture {
         let appState: AppState
@@ -58,23 +68,36 @@ final class MissingSessionRecoveryTests: XCTestCase {
         let store = ChatResumeStore(defaults: defaults)
         store.setBehavior(.continueWhereLeftOff)
         let scheduler = Scheduler()
+        var operations = ChatResumeLifecycleOperations(
+            loadCatalog: { _, _ in catalog },
+            openSession: { _, id, _ in
+                requests.ids.append(id)
+                requests.onOpen?(id)
+                return try open(id)
+            },
+            persistedTranscript: persistedTranscript,
+            refreshContext: { _, _ in }
+        )
+        operations.createSession = { [unowned requests] _, _ in
+            requests.createCalls += 1
+            if let state = requests.appState {
+                requests.gateDisabledDuringCreate.append(state.macNewChatDisabled)
+                requests.turnStateDuringCreate.append(state.turnState)
+            }
+            guard let create = requests.create else { throw HermesError.notConnected }
+            let id = try await create()
+            return (sessionId: id, storedSessionId: id, profile: nil)
+        }
         let appState = AppState(
             defaults: defaults,
             chatResumeCoordinator: ChatResumeCoordinator(store: store),
             loadSavedConnection: false,
             clearSessionPresentationCache: {},
             reconnectScheduler: scheduler.schedule(after:operation:),
-            chatResumeLifecycleOperations: ChatResumeLifecycleOperations(
-                loadCatalog: { _, _ in catalog },
-                openSession: { _, id, _ in
-                    requests.ids.append(id)
-                    return try open(id)
-                },
-                persistedTranscript: persistedTranscript,
-                refreshContext: { _, _ in }
-            ),
+            chatResumeLifecycleOperations: operations,
             sessionPresentationCache: SessionPresentationCache(defaults: defaults)
         )
+        requests.appState = appState
         let connection = HermesConnection(baseUrl: "https://one.example", ticket: "ticket")
         appState.connection = connection
         appState.client = HermesClient(connection: connection, profile: "default")
@@ -221,6 +244,133 @@ final class MissingSessionRecoveryTests: XCTestCase {
         XCTAssertEqual(f.scheduler.scheduledCount, 0)
     }
 
+    // MARK: - Probe cap, dead-row memory, fresh-chat success
+
+    private func deadCatalog(_ count: Int) -> [SessionSummary] {
+        (0..<count).map { session("r\($0)") }
+    }
+
+    func testDeadRowWalkIsCappedThenCreatesFreshChatWhileGateStaysClosed() async {
+        let requests = Requests()
+        requests.create = { "new-1" }
+        let f = makeFixture(
+            saved: "r0",
+            catalog: deadCatalog(6),
+            open: { _ in throw self.notFound },
+            requests: requests
+        )
+
+        await coldLaunchSync(f)
+
+        XCTAssertEqual(requests.ids, ["r0", "r1", "r2", "r3"], "the dead target plus at most 3 probes, then create")
+        XCTAssertEqual(requests.createCalls, 1)
+        XCTAssertEqual(requests.turnStateDuringCreate, [.synchronizing])
+        XCTAssertEqual(requests.gateDisabledDuringCreate, [true], "New Chat is not pressable during the helper's create")
+        XCTAssertEqual(f.appState.activeSessionId, "new-1")
+        XCTAssertNil(f.appState.offlineChatPresentation)
+        XCTAssertNotEqual(f.store.lastSessionID(for: "default"), "r0", "the dead pointer is forgotten")
+        XCTAssertEqual(f.appState.turnState, .idle)
+        XCTAssertFalse(f.appState.macNewChatDisabled, "enabled again once the create settled")
+        XCTAssertEqual(f.scheduler.scheduledCount, 0)
+    }
+
+    func testRetryAfterFailedCreateDoesNotReprobeDeadRows() async {
+        let requests = Requests()
+        struct NoNetwork: Error {}
+        requests.create = { throw NoNetwork() }
+        let f = makeFixture(
+            saved: "r0",
+            catalog: deadCatalog(6),
+            open: { _ in throw self.notFound },
+            requests: requests
+        )
+
+        await coldLaunchSync(f)
+
+        XCTAssertEqual(requests.ids, ["r0", "r1", "r2", "r3"])
+        XCTAssertTrue(f.appState.errorMessage?.hasPrefix("Failed to create session:") == true)
+        XCTAssertEqual(f.scheduler.scheduledCount, 1)
+        XCTAssertEqual(f.appState.turnState, .idle)
+        XCTAssertFalse(f.appState.macNewChatDisabled, "a failed create leaves New Chat usable")
+
+        // The scheduled retry: same automatic purpose, pointer already forgotten.
+        requests.create = { "new-2" }
+        await f.appState.syncSession(purpose: .automaticReturn, using: nil, automaticWorkToken: nil)
+
+        XCTAssertEqual(Set(requests.ids).count, requests.ids.count, "no row is probed twice: \(requests.ids)")
+        XCTAssertEqual(requests.ids, ["r0", "r1", "r2", "r3", "r4", "r5"])
+        XCTAssertEqual(f.appState.activeSessionId, "new-2")
+    }
+
+    func testTransientFailureAfterDeadRowDoesNotCreateAndRetries() async {
+        struct Transient: Error {}
+        let requests = Requests()
+        requests.create = { "must-not-happen" }
+        let f = makeFixture(
+            saved: "gone",
+            catalog: [session("gone"), session("flaky"), session("other")],
+            open: { id in
+                if id == "gone" { throw self.notFound }
+                throw Transient()
+            },
+            requests: requests
+        )
+
+        await coldLaunchSync(f)
+
+        XCTAssertEqual(requests.ids, ["gone", "flaky"])
+        XCTAssertEqual(requests.createCalls, 0, "a transient failure is not evidence the catalog is dead")
+        XCTAssertNotEqual(f.store.lastSessionID(for: "default"), "flaky", "the transient row is not forgotten")
+        XCTAssertNil(f.appState.activeSessionId)
+        XCTAssertEqual(f.scheduler.scheduledCount, 1, "exactly one retry")
+    }
+
+    // MARK: - Fences
+
+    func testClientSwitchMidWalkStopsRecovery() async {
+        let requests = Requests()
+        requests.create = { "must-not-happen" }
+        let f = makeFixture(
+            saved: "gone",
+            catalog: [session("gone"), session("d1"), session("good")],
+            open: { _ in throw self.notFound },
+            requests: requests
+        )
+        requests.onOpen = { id in
+            guard id == "d1" else { return }
+            requests.appState?.client = HermesClient(
+                connection: HermesConnection(baseUrl: "https://two.example", ticket: "t2"), profile: "default")
+        }
+
+        await coldLaunchSync(f)
+
+        XCTAssertEqual(requests.ids, ["gone", "d1"], "nothing is probed or created for the replaced client")
+        XCTAssertEqual(requests.createCalls, 0)
+        XCTAssertEqual(f.scheduler.scheduledCount, 0, "the new client owns its own recovery")
+        XCTAssertNil(f.appState.activeSessionId)
+    }
+
+    func testNewReconciliationTakingOverMidWalkStopsRecovery() async {
+        let requests = Requests()
+        requests.create = { "must-not-happen" }
+        let f = makeFixture(
+            saved: "gone",
+            catalog: [session("gone"), session("d1"), session("good")],
+            open: { _ in throw self.notFound },
+            requests: requests
+        )
+        // An explicit open or New Chat begins its own reconciliation.
+        requests.onOpen = { id in
+            if id == "d1" { _ = requests.appState?.beginReconciliation() }
+        }
+
+        await coldLaunchSync(f)
+
+        XCTAssertEqual(requests.ids, ["gone", "d1"])
+        XCTAssertEqual(requests.createCalls, 0)
+        XCTAssertEqual(f.scheduler.scheduledCount, 0)
+    }
+
     // MARK: - Unchanged behavior
 
     func testTransientResumeFailureOnListedSessionKeepsPointerAndRetries() async {
@@ -278,6 +428,9 @@ final class MissingSessionRecoveryTests: XCTestCase {
                 XCTAssertTrue(disabled(.synchronizing, copy: copy, live: live))
             }
         }
+        // createNewSession refuses during a workspace switch, so the button is off too.
+        XCTAssertTrue(AppState.macNewChatDisabled(
+            turnState: .idle, hasSavedCopy: false, hasLiveGateway: true, isProfileSwitching: true))
     }
 
     func testNewChatGateReadsLiveGatewayFromClientState() {
