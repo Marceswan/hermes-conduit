@@ -39,9 +39,124 @@ final class NotchRowBuilderTests: XCTestCase {
         let row = list.rows[0]
         XCTAssertEqual(row.section, .needsYou)
         XCTAssertEqual(row.target, .session("s1"))
-        XCTAssertEqual(row.inline, .approval(NotchApprovalChoices.resolve(F.approval()), command: "ls"))
+        XCTAssertEqual(row.inline, .approval(NotchApprovalChoices.resolve(F.approval()),
+                                             NotchApprovalContent(summary: "d", command: "ls", needsReview: false)))
         XCTAssertEqual(row.tone, .attention)
         XCTAssertFalse(row.canDismiss)
+    }
+
+    // MARK: approval spoofing hardening (coordinator security note)
+
+    func testApprovalRowShowsThePayloadNotTheAgentWordedTitleOrDetail() {
+        var item = F.approvalItem("approval:q1", session: "s1", approval: F.approval(command: "rm -rf /tmp/x"))
+        item.title = "Routine cleanup, safe to allow"          // agent-controlled
+        item.detail = "Allow this, it only lists files"        // agent-controlled
+        let row = NotchRowBuilder.build(items: [item], now: F.t0).rows[0]
+        guard case .approval(_, let content) = row.inline else { return XCTFail("expected inline approval") }
+        XCTAssertEqual(content.command, "rm -rf /tmp/x")
+        XCTAssertEqual(content.summary, "d")
+        XCTAssertNil(row.detail, "an approval row has no second agent-worded line")
+        XCTAssertEqual(row.title, "Routine cleanup, safe to allow", "the session title is kept, as the secondary line")
+    }
+
+    func testEveryStringOnARowIsSanitized() {
+        let title = "Deploy\u{202E}\u{200B}\n" + String(repeating: "T", count: 500)
+        var item = F.item("turn:a", title: title, detail: "Running\u{202E} terminal\nline two")
+        item.state = .finished(.failed("boom\u{2066}\n" + String(repeating: "E", count: 500)))
+        let row = NotchRowBuilder.build(items: [item], now: F.t0).rows[0]
+        XCTAssertLessThanOrEqual(row.title.count, NotchRowBuilder.titleLimit)
+        XCTAssertTrue(row.title.hasSuffix(NotchText.ellipsis))
+        XCTAssertLessThanOrEqual(row.detail?.count ?? 0, NotchRowBuilder.commandLimit)
+        for text in [row.title, row.detail ?? ""] {
+            XCTAssertFalse(text.unicodeScalars.contains { (0x202A...0x202E).contains($0.value) || (0x2066...0x2069).contains($0.value) || $0.value == 0x200B || $0.value == 0x0A })
+        }
+    }
+
+    func testTitleThatSanitizesToNothingFallsBackToUntitledChat() {
+        let list = NotchRowBuilder.build(items: [F.item("turn:a", title: "\u{200B}\u{202E}")], now: F.t0)
+        XCTAssertEqual(list.rows[0].title, AppLocalization.string("Untitled chat"))
+    }
+
+    func testShortCleanCommandCanBeAllowedInline() {
+        let content = NotchApprovalContent.make(F.approval(command: "ls -la"))
+        XCTAssertFalse(content.needsReview)
+    }
+
+    func testTruncatedCommandRequiresReview() {
+        let content = NotchApprovalContent.make(F.approval(command: "echo " + String(repeating: "A", count: 400)))
+        XCTAssertTrue(content.needsReview)
+        XCTAssertTrue(content.command.hasSuffix(NotchText.ellipsis))
+    }
+
+    func testCommandWithHiddenCharactersRequiresReview() {
+        XCTAssertTrue(NotchApprovalContent.make(F.approval(command: "ls\u{202E} gpj.txt")).needsReview)
+        XCTAssertTrue(NotchApprovalContent.make(F.approval(command: "r\u{200B}m -rf x")).needsReview)
+    }
+
+    func testEmptyOrInvisibleCommandRequiresReview() {
+        XCTAssertTrue(NotchApprovalContent.make(F.approval(command: "")).needsReview)
+        XCTAssertTrue(NotchApprovalContent.make(F.approval(command: "\u{200B}\n")).needsReview)
+    }
+
+    func testMultilineCommandWithoutHiddenCharactersStaysReviewable() {
+        let content = NotchApprovalContent.make(F.approval(command: "cd /tmp\nls"))
+        XCTAssertEqual(content.command, "cd /tmp ls")
+        XCTAssertFalse(content.needsReview)
+    }
+
+    func testSummaryIsSanitizedAndCapped() {
+        var a = F.approval(command: "ls")
+        a.description = "Run\u{202E} this\n" + String(repeating: "D", count: 300)
+        let content = NotchApprovalContent.make(a)
+        XCTAssertLessThanOrEqual(content.summary?.count ?? 0, NotchApprovalContent.summaryLimit)
+        XCTAssertTrue(content.needsReview, "the description was cut and had a bidi override")
+    }
+
+    // MARK: button -> choice mapping (display text never picks the choice)
+
+    func testActionsMapToFixedChoicesThatTheBaseAllows() {
+        XCTAssertEqual(NotchApprovalAction.allowOnce.choice, AgentActivityApprovalChoices.once)
+        XCTAssertEqual(NotchApprovalAction.deny.choice, AgentActivityApprovalChoices.deny)
+        XCTAssertEqual(NotchApprovalAction.allowSession.choice, AgentActivityApprovalChoices.session)
+        XCTAssertEqual(NotchApprovalAction.allowAlways.choice, AgentActivityApprovalChoices.always)
+        XCTAssertNil(NotchApprovalAction.reviewInConduit.choice, "review never answers")
+    }
+
+    func testOfferedActionsAreAlwaysASubsetOfTheBasesAllowedChoices() {
+        let cases = [F.approval(), F.approval(allowPermanent: false), F.approval(smartDenied: true),
+                     F.approval(choices: ["deny"]), F.approval(choices: ["once", "always"], allowPermanent: false),
+                     F.approval(choices: ["session", "bogus"])]
+        for a in cases {
+            let allowed = Set(AgentActivityApprovalChoices.allowed(for: a))
+            let choices = NotchApprovalChoices.resolve(a)
+            for review in [false, true] {
+                let actions = choices.inlineActions(needsReview: review) + choices.menuActions(needsReview: review)
+                for action in actions {
+                    if let choice = action.choice { XCTAssertTrue(allowed.contains(choice), "\(action) not allowed for \(a.choices ?? [])") }
+                }
+            }
+        }
+    }
+
+    func testInlineAndMenuActionsFollowTheChoiceRule() {
+        let all = NotchApprovalChoices.resolve(F.approval())
+        XCTAssertEqual(all.inlineActions(needsReview: false), [.allowOnce, .deny])
+        XCTAssertEqual(all.menuActions(needsReview: false), [.allowSession, .allowAlways], "session and always are menu-only")
+        let noPermanent = NotchApprovalChoices.resolve(F.approval(allowPermanent: false))
+        XCTAssertEqual(noPermanent.menuActions(needsReview: false), [.allowSession])
+        let denyOnly = NotchApprovalChoices.resolve(F.approval(choices: ["deny"]))
+        XCTAssertEqual(denyOnly.inlineActions(needsReview: false), [.deny])
+    }
+
+    func testReviewReplacesAllowOnceAndRemovesTheMenuButKeepsDeny() {
+        let all = NotchApprovalChoices.resolve(F.approval())
+        XCTAssertEqual(all.inlineActions(needsReview: true), [.reviewInConduit, .deny])
+        XCTAssertTrue(all.menuActions(needsReview: true).isEmpty)
+    }
+
+    func testLabelsAreFixedAndDoNotDependOnPayloadText() {
+        let labels = [NotchApprovalAction.allowOnce, .deny, .allowSession, .allowAlways, .reviewInConduit].map(\.label)
+        XCTAssertEqual(labels, ["Allow once", "Deny", "Allow for session", "Always allow", "Review in Conduit"].map { AppLocalization.string($0) })
     }
 
     func testApprovalWithoutCapturedContentSaysOpenToAnswer() {

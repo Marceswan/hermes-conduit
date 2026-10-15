@@ -43,7 +43,7 @@ struct NotchRow: Identifiable, Equatable {
     enum Target: Equatable { case session(String), kanban, cron }
     enum Inline: Equatable {
         case none
-        case approval(NotchApprovalChoices, command: String)
+        case approval(NotchApprovalChoices, NotchApprovalContent)
         case answerInConduit   // clarify, sudo, secret, vault: never inline
         case openToAnswer      // approval content not captured or no usable choice
     }
@@ -88,7 +88,7 @@ enum NotchRowBuilder {
         for i in items {
             switch (i.kind, i.state) {
             case (.cron, _):
-                if cron == nil { cron = NotchCronInfo(title: i.title, at: i.since) }
+                if cron == nil { cron = NotchCronInfo(title: NotchText.clean(i.title, limit: titleLimit), at: i.since) }
             case (.turn, .working):
                 if let key = i.sessionKey ?? i.sessionId, decisionSessions.contains(key) { continue }
                 counts.working += 1
@@ -121,12 +121,12 @@ enum NotchRowBuilder {
             nextExpiry: newestDone.map { $0.since.addingTimeInterval(doneLifetime) }.min())
     }
 
-    /// Collapses whitespace runs (including newlines) and cuts at 160 chars.
-    /// Never log the result: it can contain secrets.
+    static let titleLimit = 80
+
+    /// Sanitized (control, bidi and zero-width characters dropped, whitespace and newlines
+    /// collapsed) and cut at 160 chars. Never log the result: it can contain secrets.
     static func truncatedCommand(_ text: String) -> String {
-        let flat = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        guard flat.count > commandLimit else { return flat }
-        return String(flat.prefix(commandLimit - 1)) + "\u{2026}"
+        NotchText.clean(text, limit: commandLimit)
     }
 
     private static func isDecision(_ k: AgentActivityItem.Kind) -> Bool {
@@ -137,14 +137,19 @@ enum NotchRowBuilder {
         guard i.kind == .approval else { return .answerInConduit }
         guard let a = i.approval else { return .openToAnswer }
         let choices = NotchApprovalChoices.resolve(a)
-        return choices.hasInlineButtons ? .approval(choices, command: truncatedCommand(a.command)) : .openToAnswer
+        return choices.hasInlineButtons ? .approval(choices, NotchApprovalContent.make(a)) : .openToAnswer
     }
 
     private static func row(_ i: AgentActivityItem, _ section: NotchRow.Section, tone: NotchRow.Tone, inline: NotchRow.Inline) -> NotchRow {
-        let title = i.title.isEmpty ? AppLocalization.string("Untitled chat") : i.title
+        // Everything the agent or gateway supplies is sanitized here, once, so no view renders raw text.
+        let clean = NotchText.clean(i.title, limit: titleLimit)
+        let title = clean.isEmpty ? AppLocalization.string("Untitled chat") : clean
         let id = i.sessionId ?? i.sessionKey
+        var detail = i.detail.map(truncatedCommand).flatMap { $0.isEmpty ? nil : $0 }
+        // An approval row shows the payload (summary and command), never a second, agent-worded line.
+        if case .approval = inline { detail = nil }
         return NotchRow(
-            id: i.id, section: section, title: title, detail: i.detail.map(truncatedCommand),
+            id: i.id, section: section, title: title, detail: detail,
             target: id.map { .session($0) }, inline: inline, tone: tone, canDismiss: false)
     }
 }
