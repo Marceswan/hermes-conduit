@@ -43,10 +43,10 @@ final class NotchStatusViewModel: ObservableObject {
     var accessibilitySummary: String {
         var parts: [String] = []
         let c = list.counts
-        let working = c.working
-        let needs = c.needsUser
-        if working > 0 { parts.append(AppLocalization.string("\(working) working")) }
-        if needs > 0 { parts.append(AppLocalization.string("\(needs) need you")) }
+        let workingCount = c.working
+        let needsCount = c.needsUser
+        if workingCount > 0 { parts.append(AppLocalization.string("\(workingCount) working")) }
+        if needsCount > 0 { parts.append(AppLocalization.string("\(needsCount) need you")) }
         let body = parts.isEmpty ? AppLocalization.string("idle") : parts.joined(separator: ", ")
         return AppLocalization.string("Agent status: \(body)")
     }

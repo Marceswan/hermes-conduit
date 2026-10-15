@@ -96,7 +96,8 @@ struct NotchStatusView: View {
             if model.layout.isDocked && !model.layout.gripAtBottom { grip }
             if model.list.rows.isEmpty { emptyState } else { rows }
             if model.list.overflow > 0 {
-                Button { model.onOpenMore() } label: { Text("+\(model.list.overflow) more") }
+                let overflowCount = model.list.overflow
+                Button { model.onOpenMore() } label: { Text("+\(overflowCount) more") }
                     .buttonStyle(.plain).padding(.horizontal, 14).padding(.vertical, 6)
                     .foregroundStyle(NotchPalette.secondary)
             }

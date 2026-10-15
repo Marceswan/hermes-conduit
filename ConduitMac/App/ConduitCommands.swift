@@ -96,7 +96,7 @@ struct ConduitCommands: Commands {
                 .disabled(neighbor(.next) == nil)
             Divider()
             // Notch agent status (D16): no key equivalent, nothing to clash with.
-            Button(notch.isCommandPinned ? "Hide Agent Status" : "Show Agent Status") { notch.toggleCommandPin() }
+            Button(notch.isCommandPinned ? AppLocalization.string("Hide Agent Status") : AppLocalization.string("Show Agent Status")) { notch.toggleCommandPin() }
             Button("Reset Agent Status Position") { notch.resetPosition() }
             Divider()
             Button("Message Field") { MacKeyboardActions.focusComposer(window: NSApp.keyWindow ?? NSApp.mainWindow) }
