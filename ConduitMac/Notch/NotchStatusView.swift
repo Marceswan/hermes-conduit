@@ -24,7 +24,40 @@ struct NotchStatusView: View {
 
     // MARK: compact
 
-    private var compact: some View {
+    @ViewBuilder private var compact: some View {
+        Group {
+            switch (model.layout.style, model.layout.compactAxis) {
+            case (.wings, _): wingsCompact
+            case (.pill, .horizontal): pillCompact(vertical: false)
+            case (.pill, .vertical): pillCompact(vertical: true)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { model.onResetPosition() }   // double-click the capsule: back to the default
+    }
+
+    private func pillCompact(vertical: Bool) -> some View {
+        let attention = model.list.counts.needsUser > 0
+        return Group {
+            if vertical {
+                VStack(spacing: 6) {
+                    mark.frame(width: NotchMetrics.pillHeight)
+                    if let short = model.compactLabel.shortCount {
+                        Text(verbatim: short).font(.caption.weight(.semibold)).foregroundStyle(attention ? NotchPalette.attention : NotchPalette.text)
+                    }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    mark.frame(width: 24)
+                    compactText.lineLimit(1)
+                }.padding(.horizontal, 8)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(NotchPalette.surface, in: shape)
+    }
+
+    private var wingsCompact: some View {
         HStack(spacing: 0) {
             mark.frame(width: NotchMetrics.leftWing)
             if model.placement.notchWidth > 0 { Spacer(minLength: model.placement.notchWidth) }
@@ -59,7 +92,8 @@ struct NotchStatusView: View {
 
     private var expanded: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Color.clear.frame(height: model.placement.notchHeight)   // beside the notch the wings stay empty
+            if model.reservedTopHeight > 0 { Color.clear.frame(height: model.reservedTopHeight) }   // beside the notch the wings stay empty
+            if model.layout.isDocked && !model.layout.gripAtBottom { grip }
             if model.list.rows.isEmpty { emptyState } else { rows }
             if model.list.overflow > 0 {
                 Button { model.onOpenMore() } label: { Text("+\(model.list.overflow) more") }
@@ -68,6 +102,7 @@ struct NotchStatusView: View {
             }
             Divider().overlay(NotchPalette.secondary.opacity(0.3))
             footer
+            if model.layout.isDocked && model.layout.gripAtBottom { grip }
         }
         .padding(.bottom, 8)
         .frame(width: NotchMetrics.expandedWidth, alignment: .top)
@@ -138,8 +173,28 @@ struct NotchStatusView: View {
         .padding(.horizontal, 14).padding(.top, 8)
     }
 
+    /// The visible drag handle next to the docked edge. The whole panel drags (the base keeps
+    /// sub-threshold presses as clicks); the grip only signals it and takes the double-click.
+    private var grip: some View {
+        Capsule().fill(NotchPalette.secondary.opacity(0.5))
+            .frame(width: 36, height: 4)
+            .frame(maxWidth: .infinity).frame(height: 14)
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) { model.onResetPosition() }
+            .accessibilityElement()
+            .accessibilityLabel(AppLocalization.string("Agent status position handle"))
+            .accessibilityHint(AppLocalization.string("Drag to move. Double-click to return to the notch."))
+    }
+
+    /// Rounded corners face inward, away from the screen edge.
     private var shape: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(bottomLeadingRadius: 14, bottomTrailingRadius: 14, style: .continuous)
+        let r: CGFloat = 14
+        switch model.layout.inwardSide {
+        case .bottom: return UnevenRoundedRectangle(bottomLeadingRadius: r, bottomTrailingRadius: r, style: .continuous)
+        case .top: return UnevenRoundedRectangle(topLeadingRadius: r, topTrailingRadius: r, style: .continuous)
+        case .trailing: return UnevenRoundedRectangle(bottomTrailingRadius: r, topTrailingRadius: r, style: .continuous)
+        case .leading: return UnevenRoundedRectangle(topLeadingRadius: r, bottomLeadingRadius: r, style: .continuous)
+        }
     }
 }
 

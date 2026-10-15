@@ -166,4 +166,51 @@ final class NotchStatusViewTests: XCTestCase {
         let w = try render(model([item]), dark: true); defer { HostedTestSupport.tearDown(w) }
         XCTAssertTrue(labels(w).contains(AppLocalization.string("Dismiss")))
     }
+
+    func testGripExistsOnlyWhenDocked() throws {
+        let m = model([F.item("turn:a")])
+        m.layout = NotchLayout.make(standardIsNotch: true, dock: nil)
+        let standard = try render(m, dark: true); defer { HostedTestSupport.tearDown(standard) }
+        XCTAssertFalse(labels(standard).contains(AppLocalization.string("Agent status position handle")))
+
+        m.layout = NotchLayout.make(standardIsNotch: true, dock: MacEdgeDock(edge: .maxX, offset: 0.4, screenID: 1))
+        let docked = try render(m, dark: true); defer { HostedTestSupport.tearDown(docked) }
+        XCTAssertTrue(labels(docked).contains(AppLocalization.string("Agent status position handle")))
+    }
+
+    func testCompactRendersForEveryEdgeAndStaysAccessible() throws {
+        for edge in [NSRectEdge.maxY, .minY, .minX, .maxX] {
+            let m = model([F.item("turn:a", detail: "Running terminal")], surface: .compact)
+            m.layout = NotchLayout.make(standardIsNotch: true, dock: MacEdgeDock(edge: edge, offset: 0.5, screenID: 1))
+            let w = try render(m, dark: true); defer { HostedTestSupport.tearDown(w) }
+            XCTAssertTrue(labels(w).contains { $0.contains("Agent status") }, "\(edge)")
+        }
+    }
+
+    func testWingsLayoutLeavesTheNotchBandEmptyOnlyForTheStandardNotchPlacement() {
+        let m = model([F.item("turn:a")])
+        m.placement = .notch(notchRect: CGRect(x: 659, y: 950, width: 194, height: 32))
+        m.layout = NotchLayout.make(standardIsNotch: true, dock: nil)
+        XCTAssertEqual(m.reservedTopHeight, 32)
+        m.layout = NotchLayout.make(standardIsNotch: true, dock: MacEdgeDock(edge: .maxY, offset: 0.5, screenID: 1))
+        XCTAssertEqual(m.reservedTopHeight, 0, "a docked panel has no notch to clear")
+        m.layout = NotchLayout.make(standardIsNotch: false, dock: nil)
+        XCTAssertEqual(m.reservedTopHeight, 0)
+    }
+
+    func testResetHookIsWiredToTheDefault() {
+        let m = NotchStatusViewModel()
+        var resets = 0
+        m.onResetPosition = { resets += 1 }
+        m.onResetPosition()
+        XCTAssertEqual(resets, 1)
+    }
+
+    func testShortCountLabelForTheVerticalCapsule() {
+        XCTAssertEqual(NotchCompactLabel.needYou(2).shortCount, "2")
+        XCTAssertEqual(NotchCompactLabel.working(3).shortCount, "3")
+        XCTAssertEqual(NotchCompactLabel.tool("Running terminal").shortCount, "1")
+        XCTAssertEqual(NotchCompactLabel.done.shortCount, "\u{2713}")
+        XCTAssertNil(NotchCompactLabel.none.shortCount)
+    }
 }

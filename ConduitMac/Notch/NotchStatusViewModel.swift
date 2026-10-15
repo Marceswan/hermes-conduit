@@ -15,6 +15,13 @@ final class NotchStatusViewModel: ObservableObject {
     @Published var submitting: Set<String> = []
     @Published var failedRows: Set<String> = []
 
+    @Published var layout: NotchLayout = .make(standardIsNotch: false, dock: nil)
+    var onResetPosition: () -> Void = {}
+
+    /// Height to leave empty at the top of the expanded panel: only the standard
+    /// wings layout sits beside a physical notch.
+    var reservedTopHeight: CGFloat { layout.style == .wings ? placement.notchHeight : 0 }
+
     var onOpenRow: (NotchRow) -> Void = { _ in }
     /// A button or menu item was activated. The controller maps the action to a choice and
     /// answers by the row's item id; no text from the row is read back.

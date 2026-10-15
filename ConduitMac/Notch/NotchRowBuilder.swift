@@ -185,4 +185,14 @@ enum NotchCompactLabel: Equatable {
         if counts.working > 0 { return .working(counts.working) }
         return counts.recent > 0 ? .done : .none
     }
+
+    /// The one-token form for the vertical capsule (left and right edges), which has no room for words.
+    var shortCount: String? {
+        switch self {
+        case .needYou(let n), .working(let n): return String(n)
+        case .tool: return "1"
+        case .done: return "\u{2713}"
+        case .none: return nil
+        }
+    }
 }
