@@ -52,6 +52,8 @@ Rule R18: agents never send clicks or key events to the running app. Launch smok
 - [ ] Install relaunches into the new version (Conduit > About shows it).
 - [ ] On a Mac with an older non-Sparkle build, one manual DMG install enables updates (see docs/macos/RELEASING.md).
 
+- Light-mode contrast (automated in `ComposerToolCardContrastTests`): the composer reasoning picker ("Medium") reads in primary ink at 4.5:1 or better, not pale gold, and the tool-call card chevron is visible at 3:1 or better in light and dark. Check it by eye in a light-mode window.
+
 ## Open findings
 
 - (c) Login logo clipping: fix applied in `Conduit/Views/LoginView.swift` (focus `scrollTo` gated to iOS, ledger R4). Owner: 11e. Launch screenshot on 2026-10-13 was covered by a keychain prompt (see below), so the visual result is UNVERIFIED; user confirms on the next launch.

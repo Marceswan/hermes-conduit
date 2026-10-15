@@ -2019,7 +2019,8 @@ enum MessageTimestampFormatter {
 
 /// Settled tool-row content, gated on the message and expansion default so
 /// streaming publishes skip its SelectableTextView measurement work.
-private struct SettledToolCardContent: View, Equatable {
+// MAC: internal (was private) so ComposerToolCardContrastTests can host the card
+struct SettledToolCardContent: View, Equatable {
     let message: ChatMessage
     let expandToolsByDefault: Bool
     /// Explicit Dynamic Type input — see SettledAssistantMessageContent.
@@ -2071,11 +2072,20 @@ private struct SettledToolCardContent: View, Equatable {
                             if expanded {
                                 Image(systemName: "chevron.up")
                                     .font(.caption2)
+                                    // MAC: tertiary is nearly invisible on the light card fill.
+#if os(macOS)
+                                    .foregroundStyle(Color.primary.opacity(0.6))
+#else
                                     .foregroundStyle(.tertiary)
+#endif
                             } else {
                                 Image(systemName: "chevron.down")
                                     .font(.caption2)
+#if os(macOS)
+                                    .foregroundStyle(Color.primary.opacity(0.6))
+#else
                                     .foregroundStyle(.tertiary)
+#endif
                             }
                         }
                     }
