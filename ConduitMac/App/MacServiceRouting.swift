@@ -6,7 +6,8 @@ struct MacServiceRouting: ViewModifier {
     @ObservedObject var appState: AppState
     @ObservedObject var inbox: MacServiceInbox
 
-    init(appState: AppState, inbox: MacServiceInbox = .shared) {
+    @MainActor
+    init(appState: AppState, inbox: MacServiceInbox) {
         self.appState = appState
         self.inbox = inbox
     }
@@ -14,8 +15,9 @@ struct MacServiceRouting: ViewModifier {
     func body(content: Content) -> some View {
         content
             .task {
-                inbox.install(scope: { [weak appState] in
-                    MacServiceInbox.scope(dashboardID: appState?.activeDashboardID, profile: appState?.activeProfile ?? "")
+                let state = appState
+                inbox.install(scope: { [weak state] in
+                    MacServiceInbox.scope(dashboardID: state?.activeDashboardID, profile: state?.activeProfile ?? "")
                 })
             }
             .task(id: "\(inbox.revision):\(appState.isConnected)") {
@@ -27,7 +29,7 @@ struct MacServiceRouting: ViewModifier {
 }
 
 extension View {
-    func macServiceRouting(appState: AppState) -> some View {
-        modifier(MacServiceRouting(appState: appState))
+    @MainActor func macServiceRouting(appState: AppState) -> some View {
+        modifier(MacServiceRouting(appState: appState, inbox: .shared))
     }
 }

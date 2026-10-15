@@ -5,7 +5,8 @@ struct MacIntentRouting: ViewModifier {
     @ObservedObject var appState: AppState
     @ObservedObject var inbox: MacIntentInbox
 
-    init(appState: AppState, inbox: MacIntentInbox = .shared) {
+    @MainActor
+    init(appState: AppState, inbox: MacIntentInbox) {
         self.appState = appState
         self.inbox = inbox
     }
@@ -40,7 +41,7 @@ struct MacIntentRouting: ViewModifier {
 }
 
 extension View {
-    func macIntentRouting(appState: AppState) -> some View {
-        modifier(MacIntentRouting(appState: appState))
+    @MainActor func macIntentRouting(appState: AppState) -> some View {
+        modifier(MacIntentRouting(appState: appState, inbox: .shared))
     }
 }
