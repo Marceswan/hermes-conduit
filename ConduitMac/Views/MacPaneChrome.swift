@@ -2,8 +2,8 @@ import SwiftUI
 
 /// Header shared by the Mac main-pane views so Bots, Cron and Kanban read the
 /// same: Kanban's title treatment (`title3.bold` over a caption subtitle) in a
-/// row as tall as Kanban's 36 pt action buttons. Kanban's own header is
-/// upstream and unchanged; this matches it.
+/// row as tall as Kanban's 32 pt (`MacControlHeight.compact`) action buttons.
+/// Kanban's own header is upstream; this matches it.
 struct MacPaneHeader<Trailing: View>: View {
     let title: String
     var subtitle: String?
@@ -30,7 +30,7 @@ struct MacPaneHeader<Trailing: View>: View {
             Spacer(minLength: 4)
             trailing
         }
-        .frame(minHeight: 36)
+        .frame(minHeight: MacControlHeight.compact)
     }
 }
 
@@ -40,8 +40,9 @@ extension MacPaneHeader where Trailing == EmptyView {
     }
 }
 
-/// Inline search field styled like Kanban's "Search tasks" bar: glass pill,
-/// leading magnifier, 40 pt minimum height, 12 pt inset.
+/// Inline search field styled like Kanban's "Search tasks" bar: a compact
+/// (`MacControlHeight.compact`, 32 pt) glass pill, leading magnifier,
+/// subheadline text, 10 pt inset, the same radius as the other compact controls.
 struct MacSearchPill: View {
     let prompt: String
     @Binding var text: String
@@ -56,14 +57,18 @@ struct MacSearchPill: View {
                 Button { text = "" } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.tertiary)
+                        // The full 24 pt is the hit area, not just the glyph.
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear search")
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6).frame(minHeight: 40)
-        .conduitGlassControl(cornerRadius: 15)
+        .font(.subheadline)
+        .padding(.horizontal, MacSidebarMetrics.searchPillPadding)
+        .frame(height: MacControlHeight.compact)
+        .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius)
     }
 }
 
@@ -88,5 +93,14 @@ extension View {
                 }
                 .padding(.vertical, -verticalOverflow)
             )
+    }
+}
+
+extension View {
+    /// Draws a fixed-size view (the Workspace profile avatar, 28 pt) at `size`,
+    /// and lays it out at `size` too: a scale then a frame, because the
+    /// avatar's own frame cannot be overridden from outside.
+    func macCompactAvatar(from natural: CGFloat, to size: CGFloat) -> some View {
+        scaleEffect(size / natural).frame(width: size, height: size)
     }
 }

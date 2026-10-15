@@ -130,11 +130,13 @@ extension SelectableTextView {
         return textView
     }
 
-    static func measuredHeight(
-        of text: NSAttributedString,
+    /// The one TextKit 1 layout setup that measuring and baseline lookup share.
+    /// The caller keeps `storage` alive for as long as it uses `layout`.
+    private static func laidOutText(
+        _ text: NSAttributedString,
         width: CGFloat,
         maximumNumberOfLines: Int = 0
-    ) -> CGFloat {
+    ) -> (storage: NSTextStorage, layout: NSLayoutManager, container: NSTextContainer) {
         let storage = NSTextStorage(attributedString: text)
         let container = NSTextContainer(size: NSSize(width: width, height: .greatestFiniteMagnitude))
         container.lineFragmentPadding = 0
@@ -143,18 +145,55 @@ extension SelectableTextView {
         layout.addTextContainer(container)
         storage.addLayoutManager(layout)
         layout.ensureLayout(for: container)
-        return ceil(layout.usedRect(for: container).height)
+        return (storage, layout, container)
+    }
+
+    static func measuredHeight(
+        of text: NSAttributedString,
+        width: CGFloat,
+        maximumNumberOfLines: Int = 0
+    ) -> CGFloat {
+        let laidOut = laidOutText(text, width: width, maximumNumberOfLines: maximumNumberOfLines)
+        return ceil(laidOut.layout.usedRect(for: laidOut.container).height)
+    }
+
+    /// Distance from the top of the text to the first line's baseline at
+    /// `width`, as upstream's UITextView exposes through its first-baseline
+    /// alignment. An NSViewRepresentable has no baseline of its own, so a
+    /// `.firstTextBaseline` HStack (list bullets) fell back to the view's
+    /// bottom edge and the marker floated a line above its text.
+    func firstBaseline(width: CGFloat) -> CGFloat {
+        let styled = styledText()
+        guard styled.length > 0 else { return ceil(font.ascender) }
+        let laidOut = Self.laidOutText(styled, width: max(1, width))
+        let fragment = laidOut.layout.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil)
+        return fragment.minY + laidOut.layout.location(forGlyphAt: 0).y
+    }
+
+    /// Publishes `firstBaseline(width:)` as this view's `.firstTextBaseline`.
+    func firstBaselineAligned() -> some View {
+        alignmentGuide(.firstTextBaseline) { dimensions in
+            firstBaseline(width: dimensions.width)
+        }
     }
 
     func styledText() -> NSAttributedString {
         let styled = NSMutableAttributedString(attributedString: attributedText)
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = lineSpacing
-        paragraph.alignment = textAlignment
-        paragraph.lineBreakMode = wrapsLines ? .byWordWrapping : .byTruncatingTail
         let fullRange = NSRange(location: 0, length: styled.length)
         guard fullRange.length > 0 else { return styled }
-        styled.addAttribute(.paragraphStyle, value: paragraph, range: fullRange)
+        // Paragraph styles the caller set (list hanging indents) are kept;
+        // the view's spacing, alignment and wrapping fill in on top.
+        var paragraphRuns: [(NSRange, NSParagraphStyle?)] = []
+        styled.enumerateAttribute(.paragraphStyle, in: fullRange, options: []) { value, subrange, _ in
+            paragraphRuns.append((subrange, value as? NSParagraphStyle))
+        }
+        for (subrange, existing) in paragraphRuns {
+            let paragraph = (existing?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+            paragraph.lineSpacing = lineSpacing
+            paragraph.alignment = textAlignment
+            paragraph.lineBreakMode = wrapsLines ? .byWordWrapping : .byTruncatingTail
+            styled.addAttribute(.paragraphStyle, value: paragraph, range: subrange)
+        }
         // Same fill as upstream configure(_:): per-run font and color win,
         // the configured defaults fill only what is missing.
         styled.enumerateAttribute(.font, in: fullRange, options: []) { value, subrange, _ in

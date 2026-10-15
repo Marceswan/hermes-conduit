@@ -7,6 +7,14 @@
 
 import SwiftUI
 
+#if os(macOS) // MAC: density: desktop gaps; iOS keeps its touch gaps
+private let sidebarStackGap = MacSidebarMetrics.stackGap
+private let sidebarRowGap = MacSidebarMetrics.rowGap
+#else // MAC:
+private let sidebarStackGap: CGFloat = 16
+private let sidebarRowGap: CGFloat = 10
+#endif // MAC:
+
 struct SidebarView: View {
     @EnvironmentObject var appState: AppState
     let onRequestSettings: () -> Void
@@ -67,7 +75,7 @@ struct SidebarView: View {
                 // persistent column is a main surface of its own.
                 ConduitBackdrop(drifts: presentation == .persistent)
 
-                VStack(spacing: 16) {
+                VStack(spacing: sidebarStackGap) { // MAC: was spacing: 16
                     ConduitGlassGroup(spacing: 12) {
                         HStack(spacing: 10) {
                             Button {
@@ -81,6 +89,9 @@ struct SidebarView: View {
                                         url: appState.profileAvatarURL(for: appState.activeProfile),
                                         size: 28
                                     )
+                                    #if os(macOS) // MAC: density: 22 pt avatar in the 32 pt pill
+                                    .macCompactAvatar(from: 28, to: MacSidebarMetrics.avatarSize)
+                                    #endif // MAC:
                                     VStack(alignment: .leading, spacing: 1) {
                                         Text("Workspace")
                                             .font(.caption2)
@@ -99,14 +110,18 @@ struct SidebarView: View {
                                 }
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 4)
-                                #if os(macOS) // MAC: same height as the Settings button beside it (D7)
-                                .frame(height: MacControlHeight.large)
+                                #if os(macOS) // MAC: same height as the Settings button beside it (D7, density)
+                                .frame(height: MacControlHeight.compact)
                                 #else // MAC:
                                 .frame(minHeight: 48)
                                 #endif // MAC:
                             }
                             .disabled(appState.isProfileSwitching)
+                            #if os(macOS) // MAC: density
+                            .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius, tint: .conduitAccent.opacity(0.08))
+                            #else // MAC:
                             .conduitGlassControl(cornerRadius: 18, tint: .conduitAccent.opacity(0.08))
+                            #endif // MAC:
                             .accessibilityIdentifier("sidebar.workspace")
 
                             Spacer(minLength: 0)
@@ -116,14 +131,21 @@ struct SidebarView: View {
                                 onRequestSettings()
                             } label: {
                                 Image(systemName: "gearshape")
+                                    #if os(macOS) // MAC: density: the inner (first) font wins, so the upstream line below stays untouched
+                                    .font(.system(size: MacSidebarMetrics.glyphSize, weight: .medium))
+                                    #endif // MAC:
                                     .font(.system(size: 16, weight: .medium))
-                                    #if os(macOS) // MAC: named row height (D7)
-                                    .frame(width: MacControlHeight.large, height: MacControlHeight.large)
+                                    #if os(macOS) // MAC: density
+                                    .frame(width: MacControlHeight.compact, height: MacControlHeight.compact)
                                     #else // MAC:
                                     .frame(width: 44, height: 44)
                                     #endif // MAC:
                             }
+                            #if os(macOS) // MAC: density
+                            .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius)
+                            #else // MAC:
                             .conduitGlassControl(cornerRadius: 18)
+                            #endif // MAC:
                             .accessibilityLabel("Settings")
 
                             if presentation == .drawer {
@@ -243,7 +265,7 @@ struct SessionList: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
+            HStack(spacing: sidebarRowGap) { // MAC: was spacing: 10
                 Button {
                     Haptics.medium()
                     appState.dismissSidebarDrawer()
@@ -251,19 +273,24 @@ struct SessionList: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "plus.circle.fill")
+                            #if os(macOS) // MAC: density
+                            .font(.system(size: MacSidebarMetrics.glyphSize, weight: .semibold))
+                            #else // MAC:
                             .font(.system(size: 16, weight: .semibold))
+                            #endif // MAC:
                         Text("New Chat")
                             .font(.subheadline.weight(.semibold))
                             .lineLimit(2)
                     }
                     .foregroundStyle(Color.conduitBackgroundColor)
                     .frame(maxWidth: .infinity)
-                    #if os(macOS) // MAC: as tall as the icon buttons in this row (D7)
-                    .frame(minHeight: MacControlHeight.large)
+                    #if os(macOS) // MAC: as tall as the icon buttons in this row (D7, density)
+                    .frame(minHeight: MacControlHeight.compact)
+                    .background(Color.conduitAccent, in: RoundedRectangle(cornerRadius: MacSidebarMetrics.controlRadius))
                     #else // MAC:
                     .padding(.vertical, 10)
-                    #endif // MAC:
                     .background(Color.conduitAccent, in: RoundedRectangle(cornerRadius: 14))
+                    #endif // MAC:
                 }
                 .buttonStyle(.plain)
                 #if os(macOS) // MAC: upstream bug, candidate for upstream PR (ledger)
@@ -289,12 +316,24 @@ struct SessionList: View {
                         }
                     } label: {
                         Image(systemName: "waveform")
+                            #if os(macOS) // MAC: density
+                            .font(.system(size: MacSidebarMetrics.glyphSize, weight: .semibold))
+                            #else // MAC:
                             .font(.title3.weight(.semibold))
+                            #endif // MAC:
                             .conduitFixedGlyph()
+                            #if os(macOS) // MAC: density
+                            .frame(width: MacControlHeight.compact, height: MacControlHeight.compact)
+                            #else // MAC:
                             .frame(width: 44, height: 44)
+                            #endif // MAC:
                     }
                     .buttonStyle(.plain)
+                    #if os(macOS) // MAC: density
+                    .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius)
+                    #else // MAC:
                     .conduitGlassControl(cornerRadius: 14)
+                    #endif // MAC:
                     .disabled(!appState.canStartPhoneVoiceConversation || appState.isVoiceInUse)
                     .accessibilityShowsLargeContentViewer {
                         Label("New voice call", systemImage: "waveform")
@@ -336,11 +375,20 @@ struct SessionList: View {
                     .disabled(!appState.supportsProjects)
                 } label: {
                     Image(systemName: "ellipsis.circle")
+                        #if os(macOS) // MAC: density
+                        .font(.system(size: MacSidebarMetrics.glyphSize + 1, weight: .semibold))
+                        .frame(width: MacControlHeight.compact, height: MacControlHeight.compact)
+                        #else // MAC:
                         .font(.system(size: 19, weight: .semibold))
                         .frame(width: 44, height: 44)
+                        #endif // MAC:
                 }
                 .buttonStyle(.plain)
+                #if os(macOS) // MAC: density
+                .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius)
+                #else // MAC:
                 .conduitGlassControl(cornerRadius: 14)
+                #endif // MAC:
                 .accessibilityLabel("Manage sessions")
 
                 if showingProjects {
@@ -349,11 +397,20 @@ struct SessionList: View {
                         showProjectCreator = true
                     } label: {
                         Image(systemName: "folder.badge.plus")
+                            #if os(macOS) // MAC: density
+                            .font(.system(size: MacSidebarMetrics.glyphSize, weight: .semibold))
+                            .frame(width: MacControlHeight.compact, height: MacControlHeight.compact)
+                            #else // MAC:
                             .font(.system(size: 17, weight: .semibold))
                             .frame(width: 44, height: 44)
+                            #endif // MAC:
                     }
                     .buttonStyle(.plain)
+                    #if os(macOS) // MAC: density
+                    .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius)
+                    #else // MAC:
                     .conduitGlassControl(cornerRadius: 14)
+                    #endif // MAC:
                     .disabled(!appState.supportsProjects)
                     .accessibilityLabel("New project")
                 }
@@ -365,14 +422,27 @@ struct SessionList: View {
                     }
                 } label: {
                     Image(systemName: showingProjects ? "list.bullet" : "folder")
+                        #if os(macOS) // MAC: density
+                        .font(.system(size: MacSidebarMetrics.glyphSize, weight: .semibold))
+                        .frame(width: MacControlHeight.compact, height: MacControlHeight.compact)
+                        #else // MAC:
                         .font(.system(size: 17, weight: .semibold))
                         .frame(width: 44, height: 44)
+                        #endif // MAC:
                 }
                 .buttonStyle(.plain)
+                #if os(macOS) // MAC: density
+                .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius, tint: showingProjects ? .conduitAccent.opacity(0.14) : .clear)
+                #else // MAC:
                 .conduitGlassControl(cornerRadius: 14, tint: showingProjects ? .conduitAccent.opacity(0.14) : .clear)
+                #endif // MAC:
                 .accessibilityLabel(showingProjects ? AppLocalization.string("Show sessions") : AppLocalization.string("Browse projects"))
             }
+            #if os(macOS) // MAC: density: the sidebar already insets 14 pt, so this row lines up with Workspace and the tab strip
+            .padding(.horizontal, 0)
+            #else // MAC:
             .padding(.horizontal, 14)
+            #endif // MAC:
             .padding(.top, 8)
             .padding(.bottom, 4)
             .dynamicTypeSize(...DynamicTypeSize.pinnedChromeCap)
@@ -709,7 +779,11 @@ struct SessionList: View {
                 }
             }
             .padding(.horizontal, 4)
+            #if os(macOS) // MAC: density
+            .padding(.vertical, 4)
+            #else // MAC:
             .padding(.vertical, 8)
+            #endif // MAC:
             #if os(macOS) // MAC: room for the last chip to scroll clear of the trailing fade
             .padding(.trailing, MacTrailingFade.width)
             #endif // MAC:
@@ -761,7 +835,12 @@ struct SessionList: View {
             }
             .font(.caption.weight(.semibold))
             .foregroundStyle(selected == nil ? Color.secondary : Color.conduitBackgroundColor)
+            #if os(macOS) // MAC: density
+            .padding(.horizontal, MacSidebarMetrics.chipPadding)
+            .frame(height: MacSidebarMetrics.chipHeight)
+            #else // MAC:
             .padding(.horizontal, 11).padding(.vertical, 7)
+            #endif // MAC:
             .background(selected?.color ?? Color.primary.opacity(0.07), in: Capsule())
         }
         .menuOrder(.fixed)
@@ -779,7 +858,12 @@ struct SessionList: View {
             Text("\(title) \(String(count))")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(selectedSource == source ? Color.conduitBackgroundColor : .secondary)
+                #if os(macOS) // MAC: density
+                .padding(.horizontal, MacSidebarMetrics.chipPadding)
+                .frame(height: MacSidebarMetrics.chipHeight)
+                #else // MAC:
                 .padding(.horizontal, 11).padding(.vertical, 7)
+                #endif // MAC:
                 .background(selectedSource == source ? Color.conduitAccent : Color.primary.opacity(0.07), in: Capsule())
         }
         .buttonStyle(.plain)
@@ -880,7 +964,11 @@ struct SessionList: View {
         }
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
+        #if os(macOS) // MAC: density
+        .listRowInsets(EdgeInsets(top: MacSidebarMetrics.sessionRowInset, leading: 0, bottom: MacSidebarMetrics.sessionRowInset, trailing: 0))
+        #else // MAC:
         .listRowInsets(EdgeInsets(top: 3, leading: 0, bottom: 3, trailing: 0))
+        #endif // MAC:
         #if os(macOS) // MAC: ring on the keyboard cursor row (D10)
         .modifier(MacSessionCursorRow(id: session.id))
         #endif // MAC:
@@ -1063,7 +1151,11 @@ struct SessionRow: View {
                 .font(.caption.weight(.semibold))
                 .conduitFixedGlyph()
                 .foregroundStyle(icon.color)
+                #if os(macOS) // MAC: density
+                .frame(width: MacSidebarMetrics.sessionIconSize, height: MacSidebarMetrics.sessionIconSize)
+                #else // MAC:
                 .frame(width: 30, height: 30)
+                #endif // MAC:
                 .background(icon.color.opacity(0.13), in: Circle())
 
             VStack(alignment: .leading, spacing: 3) {
@@ -1086,6 +1178,9 @@ struct SessionRow: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                #if os(macOS) // MAC: density: a long model name wrapped the detail line and grew the row from 44 to 57 pt; truncate instead
+                .lineLimit(1)
+                #endif // MAC:
             }
 
             Spacer(minLength: 0)
@@ -1126,8 +1221,23 @@ struct SessionRow: View {
                     .foregroundStyle(isSelected ? Color.conduitAccent : Color.secondary.opacity(0.45))
             }
         }
+        #if os(macOS) // MAC: density
+        .padding(.horizontal, MacSidebarMetrics.sessionCardPaddingH)
+        .padding(.vertical, MacSidebarMetrics.sessionCardPaddingV)
+        #else // MAC:
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+        #endif // MAC:
+        #if os(macOS) // MAC: density: a Mac sidebar card radius, not a touch card's
+        .background(
+            isSelected ? Color.conduitAccent.opacity(0.15) : Color.primary.opacity(0.045),
+            in: RoundedRectangle(cornerRadius: MacSidebarMetrics.sessionCardRadius, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: MacSidebarMetrics.sessionCardRadius, style: .continuous)
+                .strokeBorder(isSelected ? Color.conduitAccent.opacity(0.34) : Color.white.opacity(0.08), lineWidth: 1)
+        }
+        #else // MAC:
         .background(
             isSelected ? Color.conduitAccent.opacity(0.15) : Color.primary.opacity(0.045),
             in: RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -1136,6 +1246,7 @@ struct SessionRow: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .strokeBorder(isSelected ? Color.conduitAccent.opacity(0.34) : Color.white.opacity(0.08), lineWidth: 1)
         }
+        #endif // MAC:
         .animation(ConduitMotion.response, value: isSelected)
         .dynamicTypeSize(...DynamicTypeSize.listRowCap)
     }
