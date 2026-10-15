@@ -38,13 +38,20 @@ final class ConduitMacAppDelegate: NSObject, NSApplicationDelegate {
         _ = MacUpdater.shared
         if !MacDefaults.isRunningUnderXCTest { HoverAccessibilityEngine.install() }
         if !MacDefaults.isRunningUnderXCTest { MacActivityBootstrap.start() }
+        if !MacDefaults.isRunningUnderXCTest { MacQuickAskBootstrap.start() }
         Task.detached(priority: .background) {
             AttachmentStaging.sweepStaleFiles()
         }
     }
 
+    /// A failed hotkey registration is retried when the app comes forward (no retry loop).
+    func applicationDidBecomeActive(_ notification: Notification) {
+        if !MacDefaults.isRunningUnderXCTest { MacQuickAskHotKeyManager.shared.refresh() }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         MacActivityBootstrap.stop()
+        if !MacDefaults.isRunningUnderXCTest { MacQuickAskBootstrap.stop() }
     }
 
     /// A Spotlight result opened Conduit (D19). SwiftUI's `.onContinueUserActivity`

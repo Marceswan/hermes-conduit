@@ -361,6 +361,12 @@ final class MacKeyboardActionsTests: XCTestCase {
         XCTAssertTrue(MacKeyboardActions.commandsBlocked(by: parent), "sheet attached")
         XCTAssertTrue(MacKeyboardActions.commandsBlocked(by: sheet), "the sheet itself is the key window")
         XCTAssertFalse(MacKeyboardActions.commandsBlocked(by: nil))
+        let panel = MacFloatingPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 100, height: 40),
+            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        panel.isReleasedWhenClosed = false
+        XCTAssertTrue(MacKeyboardActions.commandsBlocked(by: panel),
+                      "tab, search and session shortcuts never act on the main window from a floating panel")
 
         let requests = MacFocusRequests()
         MacKeyboardActions.selectTab(.kanban, window: parent, defaults: suite.defaults)
