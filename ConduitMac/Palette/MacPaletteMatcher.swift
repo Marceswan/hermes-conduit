@@ -50,7 +50,7 @@ enum MacPaletteMatcher {
         return boost
     }
 
-    private static func words(of text: String) -> [String] {
+    fileprivate static func words(of text: String) -> [String] {
         text.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
     }
 
@@ -69,14 +69,37 @@ enum MacPaletteMatcher {
         return nil
     }
 
+    /// An item with its match text folded once. The store builds the index when
+    /// the palette opens and reuses it for every keystroke, so a query costs
+    /// string comparisons only (no per-keystroke diacritic folding or word
+    /// splitting over 1,000+ sessions).
+    struct Entry {
+        let item: MacPaletteItem
+        let title: String
+        let titleWords: [String]
+        let keywords: String
+
+        init(_ item: MacPaletteItem) {
+            self.item = item
+            title = MacPaletteMatcher.matchTitle(of: item)
+            titleWords = MacPaletteMatcher.words(of: title)
+            keywords = MacPaletteMatcher.normalize(item.keywords.joined(separator: " "))
+        }
+    }
+
+    static func index(_ items: [MacPaletteItem]) -> [Entry] { items.map(Entry.init) }
+
     static func match(tokens: [String], item: MacPaletteItem) -> Match? {
+        match(tokens: tokens, entry: Entry(item))
+    }
+
+    static func match(tokens: [String], entry: Entry) -> Match? {
         guard !tokens.isEmpty else { return nil }
-        let title = matchTitle(of: item)
-        let joined = tokens.joined(separator: " ")
+        let title = entry.title
+        let joined = tokens.count == 1 ? tokens[0] : tokens.joined(separator: " ")
         if title == joined { return Match(tier: .exact, detail: 0) }
         if title.hasPrefix(joined) { return Match(tier: .prefix, detail: 0) }
-        let titleWords = words(of: title)
-        if tokens.allSatisfy({ token in titleWords.contains { $0.hasPrefix(token) } }) {
+        if tokens.allSatisfy({ token in entry.titleWords.contains { $0.hasPrefix(token) } }) {
             return Match(tier: .wordStart, detail: 0)
         }
         if tokens.allSatisfy({ title.contains($0) }) {
@@ -86,8 +109,7 @@ enum MacPaletteMatcher {
         if tokens.count == 1, tokens[0].count >= fuzzyMinimumLength, let gaps = fuzzyGaps(tokens[0], in: title) {
             return Match(tier: .fuzzy, detail: max(0, 150 - gaps * 10))
         }
-        let haystack = normalize(item.keywords.joined(separator: " "))
-        if !haystack.isEmpty, tokens.allSatisfy({ haystack.contains($0) }) {
+        if !entry.keywords.isEmpty, tokens.allSatisfy({ entry.keywords.contains($0) }) {
             return Match(tier: .keyword, detail: 0)
         }
         return nil
@@ -97,14 +119,19 @@ enum MacPaletteMatcher {
     /// nothing (the provider builds the empty-query sections).
     /// `recentIDs` is most recent first and already limited to existing items.
     static func rank(_ items: [MacPaletteItem], query: String, recentIDs: [String], now: Date) -> [MacPaletteItem] {
+        rank(index: index(items), query: query, recentIDs: recentIDs, now: now)
+    }
+
+    static func rank(index: [Entry], query: String, recentIDs: [String], now: Date) -> [MacPaletteItem] {
         let tokens = tokens(of: query)
         guard !tokens.isEmpty else { return [] }
         let recentRank = Dictionary(recentIDs.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
         struct Scored { let item: MacPaletteItem; let tier: Int; let score: Int; let recent: Int }
         var scored: [Scored] = []
-        scored.reserveCapacity(min(items.count, 256))
-        for item in items {
-            guard let match = match(tokens: tokens, item: item) else { continue }
+        scored.reserveCapacity(min(index.count, 256))
+        for entry in index {
+            let item = entry.item
+            guard let match = match(tokens: tokens, entry: entry) else { continue }
             let rank = recentRank[item.id]
             let score = match.tier.rawValue * 1000 + match.detail + kindWeight(item.kind)
                 + recencyBoost(rank: rank) + activityBoost(item, now: now)

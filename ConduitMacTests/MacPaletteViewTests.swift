@@ -20,11 +20,12 @@ final class MacPaletteViewTests: XCTestCase {
         HostedTestSupport.dropSuite(suite)
     }
 
-    private func store(sessions: Int = 3) -> MacPaletteStore {
+    private func store(sessions: Int = 3, unread: Set<String> = [], running: Bool = false) -> MacPaletteStore {
         let store = MacPaletteStore(defaults: suite.defaults)
         let snapshot = MacPaletteSnapshot(
             sessions: (0..<sessions).map { .paletteFixture(id: "s\($0)", title: "Session number \($0)") },
-            activeSessionID: "s0", profiles: ["default"], activeProfile: "default"
+            unreadSessionIDs: unread, activeSessionID: "s0", profiles: ["default"], activeProfile: "default",
+            isTurnRunning: running
         )
         store.snapshot = { snapshot }
         return store
@@ -153,5 +154,39 @@ final class MacPaletteViewTests: XCTestCase {
                                      charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!
         window.sendEvent(event)
         XCTAssertTrue(HostedTestSupport.waitUntil { opened == ["s1"] })
+    }
+
+    func testConfirmationReplacesTheListAndIsReadable() throws {
+        let store = store(running: true)
+        let window = try host(store)
+        store.present()
+        store.query = "stop response"
+        XCTAssertTrue(HostedTestSupport.waitUntil { hasLabel(window, containing: "Stop Response") })
+        store.runSelected()
+        XCTAssertTrue(HostedTestSupport.waitUntil { hasLabel(window, containing: AppLocalization.string("Stop the current response?")) })
+        // The heading is exposed with a label; the message and hint are static
+        // text (read by VoiceOver as values), and the two buttons carry labels.
+        XCTAssertTrue(hasLabel(window, containing: AppLocalization.string("Cancel")))
+        XCTAssertTrue(AccessibilityProbe.nodes(in: window).contains { $0.role == NSAccessibility.Role.button.rawValue && $0.label == AppLocalization.string("Stop") })
+        XCTAssertFalse(hasLabel(window, containing: "Switch Model"), "the list is replaced, not stacked")
+        store.handleEscape()
+        XCTAssertTrue(HostedTestSupport.waitUntil { !hasLabel(window, containing: AppLocalization.string("Stop the current response?")) })
+    }
+
+    func testAnUnreadRowSaysSoToVoiceOver() throws {
+        let store = store(unread: ["s1"])
+        let window = try host(store)
+        store.present()
+        store.query = "number"
+        let unread = AppLocalization.string("Unread")
+        XCTAssertTrue(HostedTestSupport.waitUntil { hasLabel(window, containing: "Session number 1, \(unread)") })
+        XCTAssertFalse(hasLabel(window, containing: "Session number 2, \(unread)"))
+    }
+
+    func testRowLabelJoinsTitleSubtitleReasonAndUnread() {
+        var item = MacPaletteItem.fixture("Title", kind: .slash)
+        XCTAssertEqual(MacPaletteRow.label(for: item), "Title")
+        item.subtitle = "Sub"; item.disabledReason = "No active chat"; item.isUnread = true
+        XCTAssertEqual(MacPaletteRow.label(for: item), "Title, Sub, No active chat, \(AppLocalization.string("Unread"))")
     }
 }

@@ -8,7 +8,9 @@ struct ConduitCommands: Commands {
 
     @ObservedObject var appState: AppState
     @ObservedObject var tabs: MacSessionTabsStore
-    @ObservedObject var palette: MacPaletteStore
+    /// Not observed: the palette publishes on every keystroke, and observing
+    /// it here would rebuild the whole menu bar each time.
+    let palette: MacPaletteStore
     @ObservedObject var updater: MacUpdater
     @AppStorage(ConduitCommands.sidebarVisibleKey) private var sidebarVisible = true
     @AppStorage(HoverAccessibilityEngine.highlightDefaultsKey) private var hoverHighlight = true

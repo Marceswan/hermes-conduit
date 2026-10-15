@@ -47,6 +47,41 @@ enum MacPaletteScope: Equatable {
     }
 }
 
+/// How a slash command runs from the palette. `argsHint` alone is not enough:
+/// the built-in catalog and the gateway's `pairs` catalog carry no hint at
+/// all, so `/background`, `/queue` and `/steer` (a prompt is their argument)
+/// would run bare, and `/undo`, `/compress` or a skill would run on one
+/// Return. Commands known to be read-only or non-destructive run at once;
+/// commands that take an argument are put in the composer; everything else
+/// (state changes, skills, plugins, unknown gateway commands) asks first.
+enum MacPaletteSlashPolicy {
+    enum Mode: Equatable { case run, insert, confirmThenRun }
+
+    private static let runsAtOnce: Set<String> = [
+        "new", "reset", "branch", "fork", "model", "help", "commands", "status", "usage", "version",
+        "agents", "tasks", "save", "debug",
+    ]
+    private static let takesArguments: Set<String> = [
+        "background", "bg", "btw", "queue", "q", "steer", "goal", "personality", "approvals", "tools", "rollback",
+    ]
+
+    static func mode(for command: SlashCommand) -> Mode {
+        if let hint = command.argsHint, !hint.trimmingCharacters(in: .whitespaces).isEmpty { return .insert }
+        let names = Set(([command.name] + command.aliases).map { $0.lowercased() })
+        if !names.isDisjoint(with: takesArguments) { return .insert }
+        if !names.isDisjoint(with: runsAtOnce) { return .run }
+        return .confirmThenRun
+    }
+
+    static func confirmation(for command: SlashCommand) -> MacPaletteConfirmation {
+        MacPaletteConfirmation(
+            title: AppLocalization.string("Run this command?"),
+            message: "/" + command.name + (command.description.isEmpty ? "" : ": " + command.description),
+            confirmTitle: AppLocalization.string("Run Command")
+        )
+    }
+}
+
 enum MacPaletteProvider {
     static let collapsedSlashCount = 5
 
@@ -77,11 +112,13 @@ enum MacPaletteProvider {
     private static func slashItems(_ s: MacPaletteSnapshot) -> [MacPaletteItem] {
         let hasChat = s.activeSessionID != nil
         return s.slashCommands.map { command in
-            MacPaletteItem(
+            let mode = MacPaletteSlashPolicy.mode(for: command)
+            return MacPaletteItem(
                 id: "slash:\(command.name)", kind: .slash, title: "/" + command.name,
                 subtitle: command.description, keywords: command.aliases + [command.description],
                 isEnabled: hasChat, disabledReason: hasChat ? nil : AppLocalization.string("No active chat"),
-                action: command.argsHint == nil ? .runSlash(command.name) : .insertSlash(command.name)
+                confirmation: mode == .confirmThenRun ? MacPaletteSlashPolicy.confirmation(for: command) : nil,
+                action: mode == .insert ? .insertSlash(command.name) : .runSlash(command.name)
             )
         }
     }
@@ -116,8 +153,14 @@ enum MacPaletteProvider {
                            keywords: ["model", "picker", "llm"], action: .openModelPicker),
         ]
         if s.isTurnRunning {
-            list.append(MacPaletteItem(id: "command:stopResponse", kind: .command, title: AppLocalization.string("Stop Response"),
-                                       keywords: ["cancel", "interrupt", "halt"], action: .stopResponse))
+            list.append(MacPaletteItem(
+                id: "command:stopResponse", kind: .command, title: AppLocalization.string("Stop Response"),
+                keywords: ["cancel", "interrupt", "halt"],
+                confirmation: MacPaletteConfirmation(
+                    title: AppLocalization.string("Stop the current response?"),
+                    message: AppLocalization.string("Text received so far stays in the chat."),
+                    confirmTitle: AppLocalization.string("Stop")),
+                action: .stopResponse))
         }
         list += SidebarTab.allCases.map { tab in
             MacPaletteItem(id: "pane:\(tab.rawValue)", kind: .pane, title: tab.displayName,

@@ -78,11 +78,26 @@ final class MacPaletteBindingTests: XCTestCase {
         XCTAssertTrue(appState.showModelPicker)
     }
 
-    func testInsertSlashPrefillsTheComposerWithTrailingSpace() {
+    func testInsertSlashPrefillsTheComposerWithTrailingSpaceAndShowsChat() {
+        suite.defaults.set(SidebarTab.kanban.rawValue, forKey: MacSidebarState.tabDefaultsKey)
         let before = appState.composerPrefillToken
-        MacPaletteCalls.live(appState: appState).insertSlash("title")
+        MacPaletteCalls.live(appState: appState, defaults: suite.defaults).insertSlash("title")
         XCTAssertEqual(appState.composerPrefillText, "/title ")
         XCTAssertNotEqual(appState.composerPrefillToken, before)
+        XCTAssertEqual(suite.defaults.string(forKey: MacSidebarState.tabDefaultsKey), SidebarTab.sessions.rawValue,
+                       "the composer lives in the chat pane; an insert from Kanban must show it")
+    }
+
+    func testComposerTextIsReadFromTheLiveComposerView() {
+        let main = window(identifier: "conduit-primary-AppWindow-1")
+        XCTAssertEqual(MacPaletteDraft.composerText(in: nil), "")
+        XCTAssertEqual(MacPaletteDraft.composerText(in: main), "", "no composer mounted")
+        let host = NSView(frame: .init(x: 0, y: 0, width: 200, height: 100))
+        let composer = ComposerTextView(frame: .init(x: 0, y: 0, width: 100, height: 40))
+        composer.string = "typed but not saved yet"
+        host.addSubview(composer)
+        main.contentView?.addSubview(host)
+        XCTAssertEqual(MacPaletteDraft.composerText(in: main), "typed but not saved yet")
     }
 
     func testToggleOnlyInTheMainChatWindowAndNotUnderASheet() {

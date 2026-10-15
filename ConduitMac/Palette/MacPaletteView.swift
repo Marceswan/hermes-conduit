@@ -28,7 +28,9 @@ struct MacPaletteView: View {
                         .accessibilityHidden(true)
                     panel.padding(.top, 72)
                 }
-                .transition(.opacity)
+                // Everything behind the palette is inert while it is open, and
+                // VoiceOver should treat it that way too.
+                .accessibilityAddTraits(.isModal)
             }
         }
     }
@@ -67,6 +69,7 @@ struct MacPaletteView: View {
                 .focused($searchFocused)
                 .onSubmit { store.runSelected() }
                 .accessibilityLabel(AppLocalization.string("Command palette search"))
+                .accessibilityAddTraits(.isSearchField)
         }
         .padding(.horizontal, 14)
         .frame(height: 44)
@@ -75,9 +78,15 @@ struct MacPaletteView: View {
     private var results: some View {
         let rows = store.rows
         return Group {
-            if rows.isEmpty {
+            if let confirmation = store.pendingConfirmation {
+                MacPaletteConfirmCard(
+                    confirmation: confirmation,
+                    onConfirm: { store.confirmPending() },
+                    onCancel: { store.cancelPending() }
+                )
+            } else if rows.isEmpty {
                 Text(AppLocalization.string("No results"))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(MacPaletteRow.secondaryText)
                     .frame(maxWidth: .infinity, minHeight: MacPaletteMetrics.rowHeight * 2)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(AppLocalization.string("No results"))
@@ -89,7 +98,7 @@ struct MacPaletteView: View {
                                 if let title = section.title {
                                     Text(title)
                                         .font(.caption.weight(.semibold))
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(MacPaletteRow.secondaryText)
                                         .padding(.horizontal, 14)
                                         .padding(.top, 8)
                                         .accessibilityAddTraits(.isHeader)
@@ -112,10 +121,61 @@ struct MacPaletteView: View {
                 }
             }
         }
+        // Focus stays in the search field while the arrows move the highlight,
+        // so VoiceOver would say nothing: speak the row the user moved to.
+        // Typing resets the highlight silently (it would talk over the echo).
+        .onChange(of: store.navigationToken) { _, _ in
+            guard let id = store.selectionID, let item = store.rows.first(where: { $0.id == id }) else { return }
+            AccessibilityNotification.Announcement(MacPaletteRow.label(for: item)).post()
+        }
     }
 }
 
-private struct MacPaletteRow: View {
+/// The second step for a hard-to-undo row. Return (the field's onSubmit)
+/// confirms, Esc or typing goes back; the buttons are for the mouse.
+private struct MacPaletteConfirmCard: View {
+    let confirmation: MacPaletteConfirmation
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(confirmation.title).font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Text(confirmation.message)
+                .font(.callout)
+                .foregroundStyle(MacPaletteRow.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                Text(AppLocalization.string("Press Return to confirm or Esc to go back."))
+                    .font(.caption)
+                    .foregroundStyle(MacPaletteRow.secondaryText)
+                Spacer(minLength: 8)
+                Button(AppLocalization.string("Cancel"), action: onCancel)
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 12).padding(.vertical, 5)
+                    .overlay(Capsule().strokeBorder(Color.primary.opacity(0.35)))
+                    .contentShape(Capsule())
+                Button(confirmation.confirmTitle, action: onConfirm)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(MacPaletteRow.selectedText(scheme))
+                    .padding(.horizontal, 12).padding(.vertical, 5)
+                    .background(Capsule().fill(Color.conduitAccent))
+                    .contentShape(Capsule())
+            }
+        }
+        .font(.callout)
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .onAppear {
+            AccessibilityNotification.Announcement("\(confirmation.title) \(confirmation.message)").post()
+        }
+    }
+}
+
+struct MacPaletteRow: View {
     let item: MacPaletteItem
     let isSelected: Bool
     let onRun: () -> Void
@@ -128,33 +188,54 @@ private struct MacPaletteRow: View {
         scheme == .dark ? Color.black.opacity(0.85) : Color.white
     }
 
+    /// Subtitles, reasons and headers. The system `.secondary` is about
+    /// 3.8:1 on the light window background; primary at 70% clears 4.5:1 in
+    /// both appearances (MacPaletteContrastTests).
+    static let secondaryText = Color.primary.opacity(secondaryOpacity)
+    static let secondaryOpacity = 0.7
+    /// Subtitle on the accent fill: white at 75% over the light-mode brown is
+    /// 3.9:1; 90% is 4.8:1.
+    static let selectedSecondaryOpacity = 0.9
+
+    static func label(for item: MacPaletteItem) -> String {
+        [item.title, item.subtitle, item.disabledReason, item.isUnread ? AppLocalization.string("Unread") : nil]
+            .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
+    }
+
     var body: some View {
+        let dim = item.isEnabled || item.isCurrent ? 1.0 : 0.45
         HStack(spacing: 10) {
-            Image(systemName: symbol).frame(width: 18).accessibilityHidden(true)
-            Text(item.title).lineLimit(1)
+            Image(systemName: symbol).frame(width: 18).opacity(dim).accessibilityHidden(true)
+            Text(item.title).lineLimit(1).layoutPriority(1).opacity(dim)
             if !item.subtitle.isEmpty {
-                Text(item.subtitle).lineLimit(1).foregroundStyle(isSelected ? Self.selectedText(scheme).opacity(0.75) : .secondary)
+                Text(item.subtitle).lineLimit(1).opacity(dim)
+                    .foregroundStyle(isSelected ? Self.selectedText(scheme).opacity(Self.selectedSecondaryOpacity) : Self.secondaryText)
             }
             Spacer(minLength: 0)
             if item.isCurrent { Image(systemName: "checkmark").accessibilityHidden(true) }
-            if let reason = item.disabledReason { Text(reason).font(.caption).foregroundStyle(isSelected ? Self.selectedText(scheme).opacity(0.75) : .secondary) }
-            if item.isUnread { Circle().fill(Color.conduitAccent).frame(width: 6, height: 6).accessibilityHidden(true) }
+            // Not dimmed: it explains why the row is dimmed.
+            if let reason = item.disabledReason {
+                Text(reason).font(.caption)
+                    .foregroundStyle(isSelected ? Self.selectedText(scheme).opacity(Self.selectedSecondaryOpacity) : Self.secondaryText)
+            }
+            // The accent fill hides an accent dot, so the selected row draws it in its text colour.
+            if item.isUnread {
+                Circle().fill(isSelected ? Self.selectedText(scheme) : Color.conduitAccent)
+                    .frame(width: 6, height: 6).accessibilityHidden(true)
+            }
         }
         .font(.callout)
         .padding(.horizontal, 10)
         .frame(height: MacPaletteMetrics.rowHeight)
         .foregroundStyle(isSelected ? Self.selectedText(scheme) : Color.primary)
         .background(Capsule().fill(isSelected ? Color.conduitAccent : .clear))
-        .opacity(item.isEnabled || item.isCurrent ? 1 : 0.45)
         .contentShape(Capsule())
-        .onTapGesture { onRun() }
+        .onTapGesture { if item.isEnabled { onRun() } }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(label)
+        .accessibilityLabel(Self.label(for: item))
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
-    }
-
-    private var label: String {
-        [item.title, item.subtitle, item.disabledReason].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
+        .accessibilityAction { if item.isEnabled { onRun() } }
+        .disabled(!item.isEnabled)
     }
 
     private var symbol: String {

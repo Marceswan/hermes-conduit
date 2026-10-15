@@ -21,6 +21,15 @@ enum MacPaletteAction: Equatable {
     case checkForUpdates
 }
 
+/// A second step the palette asks for before an action that is hard to undo
+/// runs (D18 review round 1). The palette stays open and shows it in place of
+/// the list; Return confirms, Esc goes back.
+struct MacPaletteConfirmation: Equatable {
+    var title: String
+    var message: String
+    var confirmTitle: String
+}
+
 struct MacPaletteItem: Identifiable, Equatable {
     /// "kind:rawID", stable across rebuilds (recents key on it).
     let id: String
@@ -35,6 +44,9 @@ struct MacPaletteItem: Identifiable, Equatable {
     var isUnread = false
     var isActiveSession = false
     var lastActivityAt: TimeInterval?
+    /// Set for rows that always ask first. Profile switches during a turn and
+    /// draft replacement depend on live state and are decided in the store.
+    var confirmation: MacPaletteConfirmation?
     var action: MacPaletteAction
 }
 

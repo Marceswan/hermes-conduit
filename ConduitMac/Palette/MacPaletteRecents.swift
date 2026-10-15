@@ -24,7 +24,13 @@ struct MacPaletteRecents: Equatable {
     /// so "not loaded" is not "gone").
     func resolved(in items: [MacPaletteItem]) -> [MacPaletteItem] {
         let byID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        return ids.compactMap { byID[$0] }
+        return resolved(lookup: { byID[$0] })
+    }
+
+    /// Same, against a lookup the caller built once (the store keeps one per
+    /// open, so a keystroke does not rebuild a dictionary of every session).
+    func resolved(lookup: (String) -> MacPaletteItem?) -> [MacPaletteItem] {
+        ids.compactMap(lookup)
     }
 }
 

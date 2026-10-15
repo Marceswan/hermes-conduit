@@ -146,4 +146,50 @@ final class MacPaletteProviderTests: XCTestCase {
         let built = MacPaletteProvider.items(snapshot(sessions: sessions))
         XCTAssertEqual(MacPaletteProvider.sections(items: built, recents: []).flatMap(\.items).count, MacPaletteMatcher.rowLimit)
     }
+
+    // MARK: - Review round 1
+
+    func testSlashPolicyRunsInsertsOrAsks() {
+        func mode(_ name: String, aliases: [String] = [], hint: String? = nil) -> MacPaletteSlashPolicy.Mode {
+            MacPaletteSlashPolicy.mode(for: SlashCommand(name: name, aliases: aliases, description: "", argsHint: hint))
+        }
+        for name in ["new", "status", "usage", "version", "help", "model", "branch", "agents", "save", "debug"] {
+            XCTAssertEqual(mode(name), .run, name)
+        }
+        XCTAssertEqual(mode("new", aliases: ["reset"]), .run)
+        // A prompt is the argument: bare, these would run with nothing.
+        for name in ["background", "queue", "steer", "goal", "personality", "approvals", "tools", "rollback"] {
+            XCTAssertEqual(mode(name), .insert, name)
+        }
+        XCTAssertEqual(mode("bg"), .insert, "by alias")
+        XCTAssertEqual(mode("something", aliases: ["q"]), .insert)
+        XCTAssertEqual(mode("title", hint: "<name>"), .insert)
+        XCTAssertEqual(mode("status", hint: "[x]"), .insert, "an argument hint always wins")
+        XCTAssertEqual(mode("status", hint: "  "), .run, "a blank hint is no hint")
+        // State changes and anything the palette does not know.
+        for name in ["undo", "retry", "compress", "yolo", "stop", "my-skill", "deploy"] {
+            XCTAssertEqual(mode(name), .confirmThenRun, name)
+        }
+        XCTAssertEqual(mode("compress", aliases: ["compact"]), .confirmThenRun)
+    }
+
+    func testProviderMapsPolicyToActionAndConfirmation() throws {
+        let slash = [SlashCommand(name: "status", description: "Show status"),
+                     SlashCommand(name: "background", aliases: ["bg"], description: "Run a prompt in the background"),
+                     SlashCommand(name: "undo", description: "Remove the last exchange"),
+                     SlashCommand(name: "refactor", description: "A skill")]
+        let all = items(snapshot(active: "a", slash: slash))
+        XCTAssertEqual(all["slash:status"]?.action, .runSlash("status"))
+        XCTAssertNil(all["slash:status"]?.confirmation)
+        XCTAssertEqual(all["slash:background"]?.action, .insertSlash("background"))
+        XCTAssertNil(all["slash:background"]?.confirmation)
+        XCTAssertEqual(all["slash:undo"]?.action, .runSlash("undo"))
+        XCTAssertEqual(try XCTUnwrap(all["slash:undo"]?.confirmation).message, "/undo: Remove the last exchange")
+        XCTAssertNotNil(all["slash:refactor"]?.confirmation, "unknown commands (skills, plugins) ask first")
+    }
+
+    func testStopResponseAlwaysCarriesAConfirmation() throws {
+        let item = try XCTUnwrap(items(snapshot(running: true))["command:stopResponse"])
+        XCTAssertEqual(item.confirmation?.confirmTitle, AppLocalization.string("Stop"))
+    }
 }
