@@ -83,6 +83,15 @@ enum NotchSurfaceStyle: String, CaseIterable, Identifiable {
         }
     }
 
+    /// The opacity of `glassDim`'s black, for the contrast checks that composite it over a backdrop.
+    var glassDimAlpha: Double? {
+        switch self {
+        case .darkGlass: return NotchPalette.darkGlassDimAlpha
+        case .dock: return NotchPalette.dockDimAlpha
+        case .glass, .solid: return nil
+        }
+    }
+
     @available(macOS 26.0, *)
     var glass: Glass {
         switch self {

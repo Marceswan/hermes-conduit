@@ -104,8 +104,7 @@ struct NotchStatusRowView: View {
             HStack(spacing: 8) {
                 ForEach(choices.inlineActions(needsReview: content.needsReview), id: \.self) { action in
                     Button(action.label) { model.onAction(row, action) }
-                        .buttonStyle(.bordered)
-                        .tint(action == .deny ? NotchPalette.failure : NotchPalette.attention)
+                        .buttonStyle(NotchActionButtonStyle(fill: action == .deny ? .failure : .attention))
                         .disabled(!model.canChoose(rowID: row.id))   // 600 ms click guard; never the default key
                 }
                 let menu = choices.menuActions(needsReview: content.needsReview)
@@ -122,5 +121,26 @@ struct NotchStatusRowView: View {
                 }
             }
         }
+    }
+}
+
+/// The Allow / Deny buttons. The system `.bordered` style ignores `.tint` on macOS and draws a
+/// neutral grey pad about 1.1:1 against the surface in every style, so the buttons were found by
+/// their label alone. This one paints the ink itself as the fill (attention for Allow, failure for
+/// Deny) with a label chosen for the fill, so the button edge holds 3:1 against the surface and the
+/// label 4.5:1 against the fill, in light and dark (`NotchPalette.onAccent`, tested in
+/// `NotchStatusViewTests`). The 600 ms click guard disables it; a disabled button is dimmed.
+struct NotchActionButtonStyle: ButtonStyle {
+    let fill: NotchPalette.Ink
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.callout.weight(.medium))
+            .foregroundStyle(NotchPalette.onAccent)
+            .padding(.horizontal, 12).padding(.vertical, 3)
+            .background(NotchPalette.color(fill), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.45)
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }

@@ -214,5 +214,6 @@ Human pass at release time (agents never click or type into the running app, R18
 - [ ] Side edges: drag to the bottom, left and right edges with each style. Dock shows the clear tinted slab there; the other styles keep their look; rows are readable over a bright and over a dark window.
 - [ ] Light mode and dark mode with Liquid Glass: switch System Settings > Appearance while the panel is open; the text turns dark on light glass and white on dark glass, with no black ink on a dark surface and no white ink on light glass. Try Clear and Tinted glass.
 - [ ] Dark glass, Solid black and Dock stay dark with white text when the Mac is in light mode.
+- [ ] Approval row in every style over a white window and over a dark one: the command, the secondary lines and the "Couldn't send" line read clearly, and the Allow (amber) and Deny (pink) buttons show as filled shapes with legible labels, in light and dark Mac appearance.
 - [ ] Reduce Transparency on (System Settings > Accessibility > Display), toggled while the panel is open: every style draws solid black with white text; off restores the chosen style.
 - [ ] On macOS 14 or 15 (if available): the picker shows the note that glass needs macOS 26 and the notch is drawn Solid black.

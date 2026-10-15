@@ -170,11 +170,13 @@ final class NotchStatusViewTests: XCTestCase {
         }
     }
 
-    func testDarkInksKeepTheirOriginalValues() {
+    /// Text, secondary and attention keep the values the black notch shipped with; only the failure
+    /// ink was lightened, because over a washed white window its old value fell under 3:1.
+    func testDarkInksKeepTheirShippedValuesExceptFailure() {
         XCTAssertTrue(NotchPalette.rgb(.text, dark: true) == (1, 1, 1))
         XCTAssertTrue(NotchPalette.rgb(.secondary, dark: true) == (0.78, 0.78, 0.80))
         XCTAssertTrue(NotchPalette.rgb(.attention, dark: true) == (1.0, 0.78, 0.20))
-        XCTAssertTrue(NotchPalette.rgb(.failure, dark: true) == (1.0, 0.45, 0.42))
+        XCTAssertTrue(NotchPalette.rgb(.failure, dark: true) == (1.0, 0.65, 0.63))
     }
 
     /// Every ink is checked as text (4.5:1), which also covers the glyph-only uses (3:1).
