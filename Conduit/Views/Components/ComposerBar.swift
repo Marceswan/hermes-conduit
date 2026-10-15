@@ -358,6 +358,13 @@ struct ComposerBar: View {
     var body: some View {
         let _ = TranscriptPerf.note(.composerBarBody)
         composerWithRequestHandlers
+#if os(macOS)
+        // MAC: files, folders and images dropped on the chat pane attach here.
+        .macAttachmentDropReceiver(
+            isEnabled: { appState.composerIsEnabled },
+            receive: { receiveMacDrop($0) }
+        )
+#endif
         .onAppear {
             if loadedDraftKey == nil {
                 loadDraft(for: activeDraftKey)
@@ -1695,6 +1702,27 @@ struct ComposerBar: View {
             kind: .image
         )
     }
+
+#if os(macOS)
+    // MAC: a drop reuses the picker's and paste's entry points, so size
+    // limits, type handling and per-chat draft isolation are identical.
+    private func receiveMacDrop(_ payload: MacAttachmentDropPayload) {
+        guard appState.composerIsEnabled else { return }
+        composerErrorMessage = nil
+        let origin = asyncAttachmentContext
+        MacAttachmentDropRouter.route(
+            payload,
+            existingCount: attachments.count,
+            cap: Self.photoPickerSelectionLimit,
+            attachFiles: { handleDocumentSelection(.success($0), startedIn: origin) },
+            attachImage: { handlePastedImage($0, editorIdentity: editorIdentity) },
+            overflow: { _ in
+                composerErrorMessage = MacAttachmentDropPolicy.tooManyMessage
+                Haptics.error()
+            }
+        )
+    }
+#endif
 
     private func handlePastedImageError(_ message: String, editorIdentity callbackEditorIdentity: UUID) {
         guard callbackEditorIdentity == editorIdentity else { return }

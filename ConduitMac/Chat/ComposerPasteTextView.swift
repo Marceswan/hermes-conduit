@@ -30,6 +30,8 @@ struct ComposerPasteTextView: NSViewRepresentable {
     var onUserEdit: (() -> Void)? = nil
     /// Where Cmd-L arrives (`macFocusComposerRequested`); injectable for tests.
     var focusRequestCenter: NotificationCenter = .default
+    /// The chat pane's drop sink, when one wraps this composer.
+    @Environment(\.macAttachmentDropSink) private var dropSink
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -104,6 +106,7 @@ struct ComposerPasteTextView: NSViewRepresentable {
         textView.canSubmitFromReturn = canSubmitFromReturn
         textView.onSubmitFromReturn = onSubmitFromReturn
         textView.onPastedImages = { images in images.forEach(onPastedImage) }
+        textView.dropSink = dropSink
         let focus = $isFocused
         textView.onFocusChange = { focused in
             DispatchQueue.main.async { focus.wrappedValue = focused }
@@ -162,6 +165,10 @@ final class ComposerTextView: NSTextView {
     var canSubmitFromReturn = false
     var onSubmitFromReturn: (() -> Bool)?
     var onPastedImages: (([PastedImage]) -> Void)?
+    /// When set, file and image drags belong to the chat pane's drop path
+    /// (same attach routes as the picker); otherwise the legacy image-only
+    /// drop below applies.
+    weak var dropSink: MacAttachmentDropSink?
     var onFocusChange: ((Bool) -> Void)?
     /// Focus requested before the view had a window; honoured in viewDidMoveToWindow.
     var wantsFocus = false
@@ -306,14 +313,35 @@ final class ComposerTextView: NSTextView {
         return images.isEmpty ? .text : .images(images)
     }
 
-    /// `.copy` when the pasteboard carries an image; empty to defer to NSTextView.
+    /// `.copy` when the drag can attach; empty to defer to NSTextView (text
+    /// drags) or, with a pane sink, to refuse (locked composer).
     func dragOperation(for pasteboard: NSPasteboard) -> NSDragOperation {
-        Self.pastedImages(from: pasteboard).isEmpty ? [] : .copy
+        if let dropSink, MacAttachmentDropPolicy.hasAttachableContent(pasteboard) {
+            return dropSink.operation(for: pasteboard)
+        }
+        return Self.pastedImages(from: pasteboard).isEmpty ? [] : .copy
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         let operation = dragOperation(for: sender.draggingPasteboard)
-        return operation.isEmpty ? super.draggingEntered(sender) : operation
+        if operation.isEmpty { return super.draggingEntered(sender) }
+        dropSink?.isTargeted = true
+        return operation
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let operation = dragOperation(for: sender.draggingPasteboard)
+        return operation.isEmpty ? super.draggingUpdated(sender) : operation
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        dropSink?.isTargeted = false
+        super.draggingExited(sender)
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        dropSink?.isTargeted = false
+        super.draggingEnded(sender)
     }
 
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
@@ -331,6 +359,9 @@ final class ComposerTextView: NSTextView {
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if let dropSink, !dragOperation(for: sender.draggingPasteboard).isEmpty {
+            return dropSink.perform(sender.draggingPasteboard)
+        }
         let images = Self.pastedImages(from: sender.draggingPasteboard)
         if !images.isEmpty {
             onPastedImages?(images)

@@ -233,6 +233,10 @@ struct ChatView: View {
         }
         .environment(\.chatTextSize, chatTextSize)
         .background(Color.clear)
+#if os(macOS)
+        // MAC: the whole chat pane takes dropped files, folders and images.
+        .macChatAttachmentDrop()
+#endif
         .overlay(alignment: .top) {
             if appState.isOpeningNotificationSession {
                 Label("Opening conversation…", systemImage: "arrow.down.message")
