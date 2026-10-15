@@ -27,6 +27,7 @@ final class ConduitMacAppDelegate: NSObject, NSApplicationDelegate {
         // Start Sparkle's hourly schedule with the app, not the first menu build.
         _ = MacUpdater.shared
         if !MacDefaults.isRunningUnderXCTest { HoverAccessibilityEngine.install() }
+        if !MacDefaults.isRunningUnderXCTest { MacActivityBootstrap.start() }
         Task.detached(priority: .background) {
             AttachmentStaging.sweepStaleFiles()
         }
