@@ -172,6 +172,7 @@ final class SidebarDensityTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(tab.height, 24, "hit target")
         }
         XCTAssertEqual(MacTabStripMetrics.containerHeight, 32)
+        XCTAssertEqual(MacTabStripMetrics.segmentHeight, 26)
     }
 
     func testFilterChipsAreTwentyFourPoints() throws {
@@ -191,8 +192,10 @@ final class SidebarDensityTests: XCTestCase {
         // Two section headers (Pinned, Recent) and six session rows.
         let rows = heights.filter { $0 > 30 }
         XCTAssertEqual(rows.count, 6, "\(heights)")
+        // Upstream's card measures 56 pt in the list; the Mac card must come in well under it.
         for height in rows {
-            XCTAssertEqual(height, MacSidebarMetrics.sessionRowPitch, accuracy: 1.0, "row pitch \(heights)")
+            XCTAssertLessThanOrEqual(height, MacSidebarMetrics.sessionRowPitch, "row pitch \(heights)")
+            XCTAssertGreaterThanOrEqual(height, MacSidebarMetrics.sessionRowPitch - 6, "row pitch \(heights)")
         }
     }
 

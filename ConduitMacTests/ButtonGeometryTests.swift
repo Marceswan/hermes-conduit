@@ -77,7 +77,7 @@ final class ButtonGeometryTests: XCTestCase {
     private func strip(width: CGFloat) throws -> [Node] {
         try controls(in: MacSidebarTabStrip(selectedRaw: .constant("Sessions"))
                         .padding(.horizontal, 14).padding(.vertical, 20),
-                     size: NSSize(width: width, height: 84))
+                     size: NSSize(width: width, height: MacTabStripMetrics.containerHeight + 40))
     }
 
     func testTabSegmentsAreEqualWidthAndInsetUniformly() throws {
@@ -116,26 +116,26 @@ final class ButtonGeometryTests: XCTestCase {
     func testGlassControlsReportTheirOwnShapeAndSize() throws {
         let nodes = try controls(
             in: HStack(spacing: 12) {
-                Button { } label: { Image(systemName: "gearshape").font(.system(size: 16, weight: .medium)).frame(width: 44, height: 44) }
+                Button { } label: { Image(systemName: "gearshape").font(.system(size: 13, weight: .medium)).frame(width: MacControlHeight.compact, height: MacControlHeight.compact) }
                     .conduitGlassControl(cornerRadius: 18).accessibilityLabel("Settings")
-                Menu { Button("A") { } } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }
-                    .conduitGlassControl(cornerRadius: 14)
+                Menu { Button("A") { } } label: { Image(systemName: "ellipsis.circle").frame(width: MacControlHeight.compact, height: MacControlHeight.compact) }
+                    .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius)
             }.padding(20),
             size: NSSize(width: 200, height: 100))
         XCTAssertEqual(nodes.count, 2)
         for node in nodes {
-            XCTAssertEqual(node.frame.width, 44, accuracy: 0.6, "\(node.role) width")
-            XCTAssertEqual(node.frame.height, 44, accuracy: 0.6, "\(node.role) height")
+            XCTAssertEqual(node.frame.width, MacControlHeight.compact, accuracy: 0.6, "\(node.role) width")
+            XCTAssertEqual(node.frame.height, MacControlHeight.compact, accuracy: 0.6, "\(node.role) height")
             XCTAssertTrue(isRounded(node), "\(node.role) shape")
         }
     }
 
     /// Kanban's header menus were 28 pt tall and its refresh and + buttons 44: a Menu on its
     /// default Mac style ignores the label's frame and a default-style Button adds a bezel
-    /// and padding. All five now come out at `MacControlHeight.regular`.
+    /// and padding. All five now come out at `MacControlHeight.compact`.
     func testPaneHeaderControlsShareOneHeight() throws {
         let icon = { (name: String) in
-            Image(systemName: name).frame(width: MacControlHeight.regular, height: MacControlHeight.regular)
+            Image(systemName: name).frame(width: MacControlHeight.compact, height: MacControlHeight.compact)
         }
         let nodes = try controls(
             in: HStack(spacing: 8) {
@@ -148,8 +148,8 @@ final class ButtonGeometryTests: XCTestCase {
             size: NSSize(width: 320, height: 80))
         XCTAssertEqual(nodes.count, 5)
         for node in nodes {
-            XCTAssertEqual(node.frame.height, MacControlHeight.regular, accuracy: 0.6, "\(node.role)")
-            XCTAssertEqual(node.frame.width, MacControlHeight.regular, accuracy: 0.6, "\(node.role)")
+            XCTAssertEqual(node.frame.height, MacControlHeight.compact, accuracy: 0.6, "\(node.role)")
+            XCTAssertEqual(node.frame.width, MacControlHeight.compact, accuracy: 0.6, "\(node.role)")
         }
     }
 }

@@ -2,8 +2,8 @@ import SwiftUI
 
 /// Header shared by the Mac main-pane views so Bots, Cron and Kanban read the
 /// same: Kanban's title treatment (`title3.bold` over a caption subtitle) in a
-/// row as tall as Kanban's 36 pt action buttons. Kanban's own header is
-/// upstream and unchanged; this matches it.
+/// row as tall as Kanban's 32 pt (`MacControlHeight.compact`) action buttons.
+/// Kanban's own header is upstream; this matches it.
 struct MacPaneHeader<Trailing: View>: View {
     let title: String
     var subtitle: String?
@@ -30,7 +30,7 @@ struct MacPaneHeader<Trailing: View>: View {
             Spacer(minLength: 4)
             trailing
         }
-        .frame(minHeight: 36)
+        .frame(minHeight: MacControlHeight.compact)
     }
 }
 
