@@ -28,6 +28,9 @@ final class AgentActivityFeed: ObservableObject {
     private var started = false
     private var hubToken: MacStreamEventHub.Token?
     private var fetchTasks: [String: Task<Void, Never>] = [:]
+    @Published private(set) var connection: AgentActivityConnectionState = .disconnected(since: Date(timeIntervalSince1970: 0))
+    private var bindings: Set<AnyCancellable> = []
+    private var isBound = false
     private var respondInFlight: Set<String> = []
     private var tickTask: Task<Void, Never>?
     private var panelVisible = false
@@ -58,6 +61,7 @@ final class AgentActivityFeed: ObservableObject {
             self.activeListUnsupported = true
             self.apply(.activeListUnavailable)
         }
+        self.connection = .disconnected(since: clock())
     }
 
     // MARK: - Lifecycle
@@ -65,6 +69,9 @@ final class AgentActivityFeed: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
+        if !isBound {
+            connection = sources.isConnected ? .connected : .disconnected(since: clock())
+        }
         hubToken = hub.subscribe { [weak self] event in self?.observe(event) }
         updateAvailability()
         poller.start()
@@ -196,12 +203,65 @@ final class AgentActivityFeed: ObservableObject {
 
     func updateAvailability() {
         let next: AgentActivityAvailability
-        if !started || !sources.isConnected {
+        if !started || connection != .connected {
             next = .offline
         } else {
             next = activeListUnsupported ? .eventsOnly : .live
         }
         if next != availability { availability = next }
+    }
+
+    /// Folds connection signals into the visible state and tells the reducer
+    /// about drops and restores.
+    func connectionSignalsChanged(_ signals: AgentActivityConnectionSignals) {
+        let next = AgentActivityConnection.state(signals, previous: connection, now: clock())
+        guard next != connection else { return }
+        let wasConnected = connection == .connected
+        connection = next
+        if next == .connected {
+            apply(.connectionRestored)
+            poller.resetCapability()
+            activeListUnsupported = false
+            refreshNow()
+        } else if wasConnected {
+            apply(.connectionLost)
+        }
+        updateAvailability()
+    }
+
+    /// Follows AppState: connection, active session, catalog, client and scope.
+    func bind(to appState: AppState) {
+        guard !isBound else { return }
+        isBound = true
+        // @Published emits in willSet: use the emitted values, never re-read the property inside the sink.
+        Publishers.CombineLatest3(appState.$isConnected, appState.$isConnecting, appState.$connection.map { $0 != nil })
+            .sink { [weak self] connected, connecting, hasCredentials in
+                self?.connectionSignalsChanged(.init(isConnected: connected, isConnecting: connecting, hasCredentials: hasCredentials))
+            }
+            .store(in: &bindings)
+        appState.$activeSessionId
+            .sink { [weak self] id in self?.setActiveSession(id) }
+            .store(in: &bindings)
+        appState.$sessions
+            .sink { [weak self] sessions in self?.setCatalog(sessions) }
+            .store(in: &bindings)
+        appState.$client
+            .dropFirst()
+            .sink { [weak self] _ in
+                self?.poller.resetCapability()
+                self?.activeListUnsupported = false
+            }
+            .store(in: &bindings)
+        // Profile and dashboard switches: read the settled values on the next turn.
+        Publishers.Merge(appState.$activeProfile.map { _ in () }, appState.$connection.map { _ in () })
+            .sink { [weak self, weak appState] _ in
+                DispatchQueue.main.async {
+                    guard let self, let appState else { return }
+                    self.setScope(profile: appState.activeProfile, dashboardID: appState.activeDashboardID?.uuidString ?? "none")
+                }
+            }
+            .store(in: &bindings)
+        setScope(profile: appState.activeProfile, dashboardID: appState.activeDashboardID?.uuidString ?? "none")
     }
 
     /// One `approval.pending` per waiting session whose content is unknown.

@@ -49,6 +49,10 @@ struct AgentActivityState: Equatable {
     var pollAuthoritative = true
     var activeSessionId: String?
     var nextTurnSeq = 1
+    /// Set while the socket is down; rows clear after `offlineGrace`.
+    var offlineSince: Date?
+    /// Runtime ids with live work when the socket dropped.
+    var gapRuntimeIds: Set<String> = []
 }
 
 enum AgentActivityInput {
@@ -66,6 +70,8 @@ enum AgentActivityInput {
     case pendingApprovals(runtimeSessionId: String, [ApprovalActivity])
     case pendingApprovalsFailed(runtimeSessionId: String)
     case catalog([SessionSummary])
+    case connectionLost
+    case connectionRestored
 }
 
 /// `reduce(state, input, now) -> (state, events)`. Pure: no clock, no network, no AppKit.
@@ -81,6 +87,8 @@ enum AgentActivityReducer {
     /// The gateway blocks a decision for about five minutes; this is the backstop.
     static let decisionMaxAge: TimeInterval = 600
     static let previewLimit = 200
+    /// Rows stay this long after the socket drops, then clear silently.
+    static let offlineGrace: TimeInterval = 15
 
     struct Output {
         var state: AgentActivityState
@@ -142,6 +150,7 @@ enum AgentActivityReducer {
             case .activeListUnavailable:
                 s.pollAuthoritative = false
                 s.baselinePending = false
+                s.gapRuntimeIds = []
             case .fetchRequested(let runtime):
                 s.waiting[runtime]?.requested = true
             case .pendingApprovals(let runtime, let list):
@@ -150,6 +159,15 @@ enum AgentActivityReducer {
                 fallbackDecision(runtime, kind: .approval)
             case .catalog(let sessions):
                 catalog(sessions)
+            case .connectionLost:
+                guard s.offlineSince == nil else { return }
+                s.offlineSince = now
+                s.gapRuntimeIds = Set(s.items.values.compactMap {
+                    ($0.state == .working || $0.state == .needsUser) ? $0.sessionId : nil
+                })
+            case .connectionRestored:
+                s.offlineSince = nil
+                s.baselinePending = true
             case .tick:
                 tick()
             }
@@ -414,6 +432,16 @@ enum AgentActivityReducer {
         // MARK: Tick
 
         mutating func tick() {
+            if let offlineSince = s.offlineSince,
+               now.timeIntervalSince(offlineSince) >= AgentActivityReducer.offlineGrace {
+                if !s.items.isEmpty || !s.waiting.isEmpty {
+                    s.items = [:]
+                    s.misses = [:]
+                    s.waiting = [:]
+                }
+                s.gapRuntimeIds = []
+                return
+            }
             let finished = s.items.values.filter(\.isFinished).sorted { $0.since > $1.since }
             for (index, item) in finished.enumerated()
             where index >= AgentActivityReducer.maxFinished
@@ -459,28 +487,33 @@ enum AgentActivityReducer {
                 s.waiting[runtime] = nil
             }
 
+            let gap = s.gapRuntimeIds
             for item in Array(s.items.values) where item.kind == .turn && item.state == .working {
                 guard let runtime = item.sessionId else { continue }
                 if let row = byRuntime[runtime] {
                     if row.isRunning { s.misses[item.id] = 0; continue }
                     if row.status == "starting" { continue }   // runtime present, liveness inconclusive
                 }
+                let inGap = gap.contains(runtime)
+                let needed = (baseline && inGap) ? 1 : AgentActivityReducer.missesToFinish
                 let misses = (s.misses[item.id] ?? 0) + 1
                 s.misses[item.id] = misses
-                if misses >= AgentActivityReducer.missesToFinish {
-                    finish(runtime, outcome: .completed, preview: nil)
+                if misses >= needed {
+                    finish(runtime, outcome: .completed, preview: nil, observedGap: inGap)
                 }
             }
 
             for item in Array(s.items.values) where item.state == .needsUser {
                 guard let runtime = item.sessionId else { continue }
                 if byRuntime[runtime]?.status == "waiting" { s.misses[item.id] = 0; continue }
+                let needed = (baseline && gap.contains(runtime)) ? 1 : AgentActivityReducer.missesToFinish
                 let misses = (s.misses[item.id] ?? 0) + 1
                 s.misses[item.id] = misses
-                if misses >= AgentActivityReducer.missesToFinish {
+                if misses >= needed {
                     resolve(item.id, byRuntime[runtime] == nil ? .sessionClosed : .withdrawn)
                 }
             }
+            if baseline { s.gapRuntimeIds = [] }
         }
 
         mutating func noteWaiting(_ runtime: String, silent: Bool) {
