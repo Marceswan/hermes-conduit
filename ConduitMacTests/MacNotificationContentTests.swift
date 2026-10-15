@@ -45,28 +45,102 @@ final class MacNotificationContentTests: XCTestCase {
         XCTAssertEqual(r.content.categoryIdentifier, "CONDUIT_OPEN")
     }
 
-    func testApprovalRequestCarriesCommandAsSubtitleAndPicksCategoryFromMapping() {
-        let both = MacApprovalChoiceMapper.Mapping(approve: "once", deny: "deny")
+    // MARK: approval integrity
+
+    private let both = MacApprovalChoiceMapper.Mapping(approve: "once", deny: "deny")
+
+    func testApprovalStatesTheCommandFirstAndKeepsTheSessionTitleSecondary() {
         let r = MacNotificationContent.approval(session: session, requestId: "r9", description: "Run a shell command", command: "rm -rf build", mapping: both, sound: true)
         XCTAssertEqual(r.identifier, "conduit.approval.r9")
-        XCTAssertEqual(r.content.subtitle, "rm -rf build")
-        XCTAssertEqual(r.content.body, "Run a shell command")
+        XCTAssertEqual(r.content.title, "Approval needed", "a fixed title: no agent text can sit where the approval is named")
+        XCTAssertEqual(r.content.body, "rm -rf build\nRun a shell command", "the command being approved leads")
+        XCTAssertEqual(r.content.subtitle, "Refactor billing", "the session title is secondary")
         XCTAssertEqual(r.content.categoryIdentifier, "CONDUIT_APPROVAL")
+    }
+
+    func testSessionTitleCannotImpersonateTheApprovalTitle() {
+        let spoof = makeSession(title: "Approval needed: harmless\u{202E}\nrm -rf ~")
+        let r = MacNotificationContent.approval(session: spoof, requestId: "r", description: "d", command: "ls", mapping: both, sound: false)
+        XCTAssertEqual(r.content.title, "Approval needed")
+        XCTAssertFalse(r.content.subtitle.contains("\u{202E}"))
+        XCTAssertFalse(r.content.subtitle.contains("\n"))
+    }
+
+    func testApprovalCategoryFollowsTheMapping() {
         let denyOnly = MacNotificationContent.approval(session: session, requestId: "r9", description: "d", command: "c", mapping: .init(approve: nil, deny: "deny"), sound: true)
         XCTAssertEqual(denyOnly.content.categoryIdentifier, "CONDUIT_APPROVAL_DENY")
         let none = MacNotificationContent.approval(session: session, requestId: "r9", description: "d", command: "c", mapping: .init(approve: nil, deny: nil), sound: true)
         XCTAssertEqual(none.content.categoryIdentifier, "CONDUIT_OPEN")
     }
 
-    func testApprovalWithoutDescriptionUsesTheCommandAsBody() {
-        let r = MacNotificationContent.approval(session: session, requestId: "r", description: "", command: "ls", mapping: .init(approve: "once", deny: "deny"), sound: false)
-        XCTAssertEqual(r.content.body, "ls")
-        XCTAssertEqual(r.content.subtitle, "")
+    func testTruncatedCommandDropsInlineApproveButKeepsDenyAndOpen() {
+        let long = String(repeating: "x", count: MacNotificationContent.commandLimit + 1)
+        let r = MacNotificationContent.approval(session: session, requestId: "r", description: "d", command: long, mapping: both, sound: false)
+        XCTAssertEqual(r.content.categoryIdentifier, "CONDUIT_APPROVAL_DENY")
+        XCTAssertTrue(r.content.body.contains("\u{2026}"))
+        let fits = String(repeating: "x", count: MacNotificationContent.commandLimit)
+        let ok = MacNotificationContent.approval(session: session, requestId: "r", description: "d", command: fits, mapping: both, sound: false)
+        XCTAssertEqual(ok.content.categoryIdentifier, "CONDUIT_APPROVAL", "a command that fits in full keeps Approve")
     }
 
-    func testLongCommandSubtitleIsTruncated() {
-        let r = MacNotificationContent.approval(session: session, requestId: "r", description: "d", command: String(repeating: "x", count: 300), mapping: .init(approve: "once", deny: "deny"), sound: false)
-        XCTAssertLessThanOrEqual(r.content.subtitle.count, 80)
+    func testCommandThatNeededSanitizingDropsInlineApprove() {
+        for hostile in ["ls\u{202E} -la", "ls\u{200B}-la", "echo a\nrm -rf ~", "ls\u{0007}"] {
+            let r = MacNotificationContent.approval(session: session, requestId: "r", description: "d", command: hostile, mapping: both, sound: false)
+            XCTAssertEqual(r.content.categoryIdentifier, "CONDUIT_APPROVAL_DENY", hostile.debugDescription)
+        }
+    }
+
+    func testEmptyCommandNeverOffersApprove() {
+        let r = MacNotificationContent.approval(session: session, requestId: "r", description: "Needs approval", command: "  ", mapping: both, sound: false)
+        XCTAssertEqual(r.content.categoryIdentifier, "CONDUIT_APPROVAL_DENY")
+        XCTAssertEqual(r.content.body, "Needs approval")
+    }
+
+    func testCommandIsFaithfulRule() {
+        XCTAssertTrue(MacNotificationContent.commandIsFaithful("  swift test  "), "edge whitespace is not a change")
+        XCTAssertFalse(MacNotificationContent.commandIsFaithful(""))
+        XCTAssertFalse(MacNotificationContent.commandIsFaithful("a\nb"))
+        XCTAssertFalse(MacNotificationContent.commandIsFaithful(String(repeating: "y", count: 400)))
+    }
+
+    // MARK: sanitizer
+
+    func testSanitizerStripsControlBidiAndZeroWidthCharacters() {
+        let s = MacNotificationContent.sanitize("rm\u{202E} -rf\u{200B} /\u{2066}x\u{2069}\u{0007}\u{FEFF}\u{E0041}", limit: 100)
+        XCTAssertEqual(s.text, "rm -rf /x")
+        XCTAssertTrue(s.wasAltered)
+        XCTAssertFalse(s.wasTruncated)
+        for scalar in [0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069, 0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF] {
+            let t = MacNotificationContent.sanitize("a\(Character(UnicodeScalar(scalar)!))b", limit: 10)
+            XCTAssertEqual(t.text, "ab", String(scalar, radix: 16))
+        }
+    }
+
+    func testSanitizerCollapsesNewlinesAndTabsAndFlagsTheChange() {
+        let s = MacNotificationContent.sanitize("a\n\n\tb", limit: 100)
+        XCTAssertEqual(s.text, "a b")
+        XCTAssertTrue(s.wasAltered)
+        let clean = MacNotificationContent.sanitize("  plain text ", limit: 100)
+        XCTAssertEqual(clean.text, "plain text")
+        XCTAssertFalse(clean.wasAltered)
+    }
+
+    func testSanitizerCapsWithAnEllipsis() {
+        let s = MacNotificationContent.sanitize(String(repeating: "z", count: 50), limit: 10)
+        XCTAssertEqual(s.text.count, 10)
+        XCTAssertTrue(s.text.hasSuffix("\u{2026}"))
+        XCTAssertTrue(s.wasTruncated)
+        let exact = MacNotificationContent.sanitize(String(repeating: "z", count: 10), limit: 10)
+        XCTAssertFalse(exact.wasTruncated)
+    }
+
+    func testEveryAgentControlledStringIsSanitized() {
+        let dirty = "x\u{202E}y\u{200B}z\nw"
+        let done = MacNotificationContent.done(session: makeSession(title: dirty), turnId: "t", preview: dirty, sound: false)
+        XCTAssertEqual(done.content.title, "xyz w")
+        XCTAssertEqual(done.content.body, "xyz w")
+        let q = MacNotificationContent.question(session: session, requestId: "q", text: dirty, openQuestionCount: 1, sound: false)
+        XCTAssertEqual(q.content.body, "xyz w")
     }
 
     func testQuestionRequestOffersReplyOnlyForASingleOpenQuestion() {

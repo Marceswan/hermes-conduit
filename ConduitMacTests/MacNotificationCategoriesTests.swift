@@ -13,11 +13,25 @@ final class MacNotificationCategoriesTests: XCTestCase {
         XCTAssertEqual(byID["CONDUIT_OPEN"]?.actions.map(\.identifier), ["conduit.action.open"])
     }
 
-    func testReplyIsATextInputThatDoesNotForegroundTheApp() throws {
+    func testReplyIsATextInputThatRequiresAuthenticationAndDoesNotForegroundTheApp() throws {
         let done = try XCTUnwrap(MacNotificationCategories.ours().first { $0.identifier == "CONDUIT_DONE" })
         let reply = try XCTUnwrap(done.actions.first { $0.identifier == "conduit.action.reply" })
         XCTAssertTrue(reply is UNTextInputNotificationAction)
+        XCTAssertTrue(reply.options.contains(.authenticationRequired), "a locked Mac must not accept a reply")
         XCTAssertFalse(reply.options.contains(.foreground))
+    }
+
+    func testEveryActionThatActsRequiresAuthenticationAndOnlyOpenForegrounds() {
+        for category in MacNotificationCategories.ours() {
+            for action in category.actions {
+                if action.identifier == MacNotificationCategories.openAction {
+                    XCTAssertTrue(action.options.contains(.foreground), category.identifier)
+                } else {
+                    XCTAssertTrue(action.options.contains(.authenticationRequired), "\(category.identifier)/\(action.identifier)")
+                    XCTAssertFalse(action.options.contains(.foreground), "\(category.identifier)/\(action.identifier)")
+                }
+            }
+        }
     }
 
     func testApproveAndDenyRequireAuthenticationAndDoNotForeground() throws {

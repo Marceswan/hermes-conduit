@@ -6,6 +6,10 @@ import UserNotifications
 /// registration reads the current set, drops only Conduit's own identifiers
 /// and writes the union back. Re-run on app-language change so the button
 /// titles localise.
+///
+/// Every action except Open acts on the user's behalf, so each carries
+/// `.authenticationRequired` (a locked Mac asks for unlock first) and none
+/// brings the app forward. Only Open uses `.foreground`.
 enum MacNotificationCategories {
     static let done = "CONDUIT_DONE"
     static let open = "CONDUIT_OPEN"
@@ -37,7 +41,7 @@ enum MacNotificationCategories {
         let reply = UNTextInputNotificationAction(
             identifier: replyAction,
             title: AppLocalization.string("Reply"),
-            options: [],
+            options: [.authenticationRequired],
             textInputButtonTitle: AppLocalization.string("Send"),
             textInputPlaceholder: AppLocalization.string("Message")
         )

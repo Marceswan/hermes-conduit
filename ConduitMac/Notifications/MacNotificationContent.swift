@@ -49,17 +49,57 @@ struct MacNotificationPayload: Equatable {
 enum MacNotificationContent {
     static let payloadKey = "conduit_mac"
     static let previewLimit = 140
-    static let commandLimit = 80
+    /// A command longer than this does not fit in the banner in full, so Approve is not offered inline.
+    static let commandLimit = 300
+    static let titleLimit = 80
 
-    /// Whitespace collapsed to single spaces, cut to `limit` characters with an ellipsis.
-    static func truncated(_ text: String, limit: Int) -> String {
-        let collapsed = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        guard collapsed.count > limit else { return collapsed }
-        return String(collapsed.prefix(limit - 1)) + "\u{2026}"
+    struct SanitizedText: Equatable {
+        var text: String
+        /// Cut at the limit (ends with an ellipsis).
+        var wasTruncated: Bool
+        /// Anything other than edge whitespace changed: characters stripped or inner whitespace collapsed.
+        var wasAltered: Bool
+    }
+
+    /// Scalars that can hide or reorder text: bidi overrides, embeddings and
+    /// isolates, zero-width and joiner characters, the BOM, soft hyphen,
+    /// interlinear annotation and the invisible tag block.
+    private static func isHidden(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x00AD, 0x061C, 0x180E, 0x200B...0x200F, 0x202A...0x202E, 0x2060...0x2064,
+             0x2066...0x2069, 0xFEFF, 0xFFF9...0xFFFB, 0xE0000...0xE007F:
+            return true
+        default:
+            return scalar.properties.generalCategory == .control
+        }
+    }
+
+    /// Makes an agent- or gateway-controlled string safe to show: whitespace
+    /// (including newlines) collapses to single spaces, control, bidi and
+    /// zero-width scalars are stripped, and the result is cut to `limit`
+    /// characters with an ellipsis.
+    static func sanitize(_ text: String, limit: Int) -> SanitizedText {
+        var kept = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars {
+            if scalar.properties.isWhitespace { kept.append(" ") } else if !isHidden(scalar) { kept.append(scalar) }
+        }
+        let cleaned = String(kept).split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
+        let altered = cleaned != text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleaned.count > limit else { return SanitizedText(text: cleaned, wasTruncated: false, wasAltered: altered) }
+        return SanitizedText(text: String(cleaned.prefix(limit - 1)) + "\u{2026}", wasTruncated: true, wasAltered: altered)
+    }
+
+    static func truncated(_ text: String, limit: Int) -> String { sanitize(text, limit: limit).text }
+
+    /// The command is shown in full and exactly as the gateway sent it (up to
+    /// edge whitespace). Only then may a banner offer Approve for it.
+    static func commandIsFaithful(_ command: String) -> Bool {
+        let s = sanitize(command, limit: commandLimit)
+        return !s.text.isEmpty && !s.wasTruncated && !s.wasAltered
     }
 
     private static func title(for session: MacNotificationSession) -> String {
-        let t = session.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let t = sanitize(session.title, limit: titleLimit).text
         return t.isEmpty ? AppLocalization.string("Conduit") : t
     }
 
@@ -104,17 +144,25 @@ enum MacNotificationContent {
         return UNNotificationRequest(identifier: MacNotificationPolicy.ID.doneSummary, content: c, trigger: nil)
     }
 
+    /// What is being approved comes from the approval payload (command, then
+    /// description), never from the session title. The title is fixed; the
+    /// session title sits in the subtitle as secondary context. Approve is
+    /// offered inline only when the command is shown in full and unaltered.
     static func approval(
         session: MacNotificationSession, requestId: String, description: String, command: String,
         mapping: MacApprovalChoiceMapper.Mapping, sound: Bool
     ) -> UNNotificationRequest {
+        let cmd = sanitize(command, limit: commandLimit)
         let desc = truncated(description, limit: previewLimit)
-        let cmd = truncated(command, limit: commandLimit)
+        var effective = mapping
+        if !commandIsFaithful(command) { effective.approve = nil }
+        let lines = [cmd.text, desc].filter { !$0.isEmpty }
         let c = content(
             session: session, kind: .approval, requestId: requestId,
-            category: MacNotificationCategories.approvalCategory(for: mapping),
-            body: desc.isEmpty ? cmd : desc, subtitle: desc.isEmpty ? "" : cmd, sound: sound
+            category: MacNotificationCategories.approvalCategory(for: effective),
+            body: lines.joined(separator: "\n"), subtitle: title(for: session), sound: sound
         )
+        c.title = AppLocalization.string("Approval needed")
         return UNNotificationRequest(identifier: MacNotificationPolicy.ID.approval(requestId), content: c, trigger: nil)
     }
 
