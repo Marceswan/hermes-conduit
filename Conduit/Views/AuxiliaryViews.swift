@@ -2124,6 +2124,9 @@ private struct NotificationsSettingsDetail: View {
 
     var body: some View {
         SettingsDetailContainer {
+            #if os(macOS) // MAC: local notifications section (D20)
+            MacNotificationSettingsView()
+            #endif // MAC:
             ConduitSettingsSection(title: AppLocalization.string("This iPhone"), symbol: "bell.badge", tint: .conduitAura) {
                 SettingsMetricRow(
                     label: AppLocalization.string("Status"),
