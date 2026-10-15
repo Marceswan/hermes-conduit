@@ -39,6 +39,12 @@ final class ConduitMacAppDelegate: NSObject, NSApplicationDelegate {
         if !MacDefaults.isRunningUnderXCTest { HoverAccessibilityEngine.install() }
         if !MacDefaults.isRunningUnderXCTest { MacActivityBootstrap.start() }
         if !MacDefaults.isRunningUnderXCTest { MacQuickAskBootstrap.start() }
+        // Local notifications (D20). After the activity feed (its events feed
+        // the coordinator) and before this method returns, so a cold-launch
+        // click on a notification finds its delegate.
+        if !MacDefaults.isRunningUnderXCTest {
+            MacNotificationRuntime.shared.start(appState: AppStateRuntimeRegistry.shared.appState)
+        }
         Task.detached(priority: .background) {
             AttachmentStaging.sweepStaleFiles()
         }

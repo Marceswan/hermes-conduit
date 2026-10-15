@@ -97,6 +97,26 @@ Human pass at release time (agents never click or type into the running app, R18
 - [ ] Spotlight (Cmd-Space) shows the app shortcut "New Conduit Chat"; saying or running "Open a chat in Conduit" asks which chat
 - [ ] The existing "Ask Hermes About Screen" shortcut and "Talk to Conduit" still run
 
+## Notifications (D20)
+
+- [ ] Fresh defaults: no permission prompt at launch. Background the app, run a 40 s turn: the prompt appears once, then a Done banner with Reply and Open
+- [ ] Type a reply inline in the banner (banner and alert styles): it is sent to that session; open the session and the message is there. On a locked Mac Reply, Approve and Deny ask for unlock first
+- [ ] Trigger an approval while another app is frontmost: banner after about 3 s titled "Approval needed" with the command in the body and the session name as the subtitle; Approve, Deny, Open; Approve resumes the turn; there is no Always or Session button
+- [ ] Approval whose command is over 300 characters (or has a newline): the banner has Deny and Open only
+- [ ] Answer the same approval in the app inside 3 s: no banner. Answer on a second Mac after delivery: the first Mac's banner disappears
+- [ ] Ask a single-question clarify: Reply answers it; a multi-question clarify has Open only
+- [ ] Look at an approving session (app frontmost, that session active): no banner; switch to another tab or app while it is still pending: the banner arrives
+- [ ] Focus on holds banners; they appear when Focus ends and disappear if the session was opened meanwhile
+- [ ] Quit, then click a delivered notification from a cold launch: the app opens the session once connected
+- [ ] Click a notification from a different dashboard or profile: the app activates only
+- [ ] Disconnect Wi-Fi, then press Approve on an older banner: "Couldn't send" with Open, and the card is still pending in the app
+- [ ] Interrupt a long turn with Stop: no notification. Five quick long turns across sessions: three banners and one "5 conversations finished"
+- [ ] Settings > Notifications > On this Mac: toggles and threshold apply immediately; with notifications blocked in System Settings the status says so and the button opens the pane (record which URL worked)
+- [ ] Limit check: a session started from a terminal Hermes (not attached to this socket) does not notify
+- [ ] Turn off Wi-Fi mid-turn, let the turn finish on the gateway, turn Wi-Fi on: no Done banner for that turn (the feed marks it observedGap)
+- [ ] Quit Conduit while an approval is pending, relaunch with another app frontmost: one Approve/Deny banner arrives (read from the feed snapshot)
+- [ ] Session title containing a right-to-left override or many line breaks shows cleaned up in the banner
+
 ## Open findings
 
 - (c) Login logo clipping: fix applied in `Conduit/Views/LoginView.swift` (focus `scrollTo` gated to iOS, ledger R4). Owner: 11e. Launch screenshot on 2026-10-13 was covered by a keychain prompt (see below), so the visual result is UNVERIFIED; user confirms on the next launch.

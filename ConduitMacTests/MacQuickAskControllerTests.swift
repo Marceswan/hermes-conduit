@@ -360,7 +360,7 @@ final class MacQuickAskControllerTests: XCTestCase {
         XCTAssertEqual(status, "terminal")
         hub.publish(.messageError(sessionId: "rt", message: "bad\u{2028}\u{202D}thing\u{0007}"))
         guard case .failed(let message, _, _) = c.model.state else { return XCTFail("failed expected") }
-        XCTAssertEqual(message, "badthing")
+        XCTAssertEqual(message, "bad thing", "U+2028 becomes a space under the unified sanitizer (was dropped by the Quick Ask one)")
     }
 
     func testProfileNameInTheMismatchMessageIsSanitized() {

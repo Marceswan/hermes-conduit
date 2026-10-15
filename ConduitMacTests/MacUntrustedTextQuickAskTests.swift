@@ -22,7 +22,7 @@ final class MacUntrustedTextQuickAskTests: XCTestCase {
     }
 
     func testLineAndParagraphSeparatorsAreDropped() {
-        XCTAssertEqual(clean("a\u{2028}b\u{2029}c"), "abc")
+        XCTAssertEqual(clean("a\u{2028}b\u{2029}c"), "a b c", "unified rule: Zl and Zp become a space, as in the notifications sanitizer")
     }
 
     func testWhitespaceControlsBecomeOneSpaceAndTheEndsAreTrimmed() {
