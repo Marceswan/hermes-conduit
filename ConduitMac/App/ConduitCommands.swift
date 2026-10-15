@@ -45,6 +45,10 @@ struct ConduitCommands: Commands {
         CommandMenu("Chat") {
             Button("Stop Response") { Task { await appState.cancelCurrent() } }
                 .keyboardShortcut(".", modifiers: .command)
+            Button("Ask About Window\u{2026}") {
+                Task { await MacAskAboutWindow.run(appState: appState, window: NSApp.keyWindow) }
+            }
+            .keyboardShortcut("w", modifiers: [.shift, .command])
         }
         CommandMenu("Go") {
             ForEach(1...8, id: \.self) { n in
