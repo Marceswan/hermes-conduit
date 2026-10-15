@@ -12,6 +12,8 @@ struct ConduitCommands: Commands {
     /// it here would rebuild the whole menu bar each time.
     let palette: MacPaletteStore
     @ObservedObject var updater: MacUpdater
+    @ObservedObject var quickAsk: MacQuickAskHotKeyManager
+    @AppStorage(MacQuickAskHotKeyManager.enabledKey) private var quickAskEnabled = true
     @AppStorage(ConduitCommands.sidebarVisibleKey) private var sidebarVisible = true
     @AppStorage(HoverAccessibilityEngine.highlightDefaultsKey) private var hoverHighlight = true
     /// The sidebar list's rows in display order; nil while no list is mounted.
@@ -52,6 +54,15 @@ struct ConduitCommands: Commands {
                 Task { await MacAskAboutWindow.run(appState: appState, window: NSApp.keyWindow) }
             }
             .keyboardShortcut("w", modifiers: [.shift, .command])
+            Divider()
+            // No key equivalent (the global hotkey is the shortcut) and never
+            // `.disabled`: this is the way in when the hotkey could not register.
+            Button("Quick Ask") { MacQuickAskController.shared.show() }
+            Toggle("Quick Ask Shortcut", isOn: $quickAskEnabled)
+                .onChange(of: quickAskEnabled) { _, _ in quickAsk.refresh() }
+            if let message = quickAsk.unavailableMessage {
+                Text(message)
+            }
         }
         CommandMenu("Go") {
             // Never `.disabled`: a stale disabled item would swallow Cmd-K (see

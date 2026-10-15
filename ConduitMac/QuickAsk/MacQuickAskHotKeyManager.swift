@@ -57,3 +57,7 @@ final class MacQuickAskHotKeyManager: ObservableObject {
         }
     }
 }
+
+extension MacQuickAskHotKeyManager {
+    static let shared = MacQuickAskHotKeyManager(registrar: MacCarbonHotKey())
+}
