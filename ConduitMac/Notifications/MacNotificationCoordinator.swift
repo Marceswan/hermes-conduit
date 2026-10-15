@@ -20,6 +20,14 @@ final class MacNotificationCoordinator {
     private var categoriesRegistered = false
     private var chain: Task<Void, Never>?
 
+    private struct Held { var session: MacNotificationSession; var kind: MacNotificationEvent.Kind }
+    /// requestId -> cancel closure of the grace job.
+    private var graceJobs: [String: () -> Void] = [:]
+    /// Decisions whose grace ended while the user was looking: retried when attention leaves.
+    private var held: [String: Held] = [:]
+    /// sessionKey -> request ids announced (or pending) during the current turn.
+    private var outstanding: [String: Set<String>] = [:]
+
     init(
         center: MacNotificationCenterClient,
         preferences: MacNotificationPreferences,
@@ -112,10 +120,12 @@ final class MacNotificationCoordinator {
 
     private func finish(_ session: MacNotificationSession, turnId: String, at finishedAt: Date, outcome: MacNotificationEvent.Outcome, preview: String?, startedAt: Date?, observedGap: Bool) async {
         let seenStart = turnStarts.removeValue(forKey: turnKey(session, turnId))
-        clearOutstanding(for: session)             // Task 6 hook: the turn is over
-        guard outcome != .interrupted, !observedGap, let started = startedAt ?? seenStart else { return }
-        guard MacNotificationPolicy.isLongRunning(startedAt: started, finishedAt: finishedAt, threshold: preferences.threshold) else { return }
-        guard !toldAlreadyByDecision(session) else { return }        // Task 6 hook
+        guard outcome != .interrupted, !observedGap, let started = startedAt ?? seenStart,
+              MacNotificationPolicy.isLongRunning(startedAt: started, finishedAt: finishedAt, threshold: preferences.threshold) else {
+            outstanding[session.sessionKey] = nil
+            return
+        }
+        guard !toldAlreadyByDecision(session) else { return }
         guard posted.insert(.done, turnId) else { return }
         let kind: MacNotificationKind = outcome == .failed ? .failed : .done
         guard preferences.allows(kind) else { return }
@@ -172,9 +182,82 @@ final class MacNotificationCoordinator {
         }
     }
 
-    // Task 6 fills these three; Task 5 compiles with the empty versions below.
-    private func processDecision(_ event: MacNotificationEvent) {}
-    private func clearOutstanding(for session: MacNotificationSession) {}
-    private func toldAlreadyByDecision(_ session: MacNotificationSession) -> Bool { false }
-    private func retryHeldDecisions() {}
+    // MARK: Decisions (approvals and questions)
+
+    private func processDecision(_ event: MacNotificationEvent) {
+        let session = event.session
+        switch event.kind {
+        case .approvalRequested(let requestId, _, _, _, _):
+            guard posted.insert(.approval, requestId) else { return }
+            beginDecision(requestId, session: session, kind: event.kind)
+        case .questionRequested(let requestId, _, _):
+            guard posted.insert(.question, requestId) else { return }
+            beginDecision(requestId, session: session, kind: event.kind)
+        case .decisionResolved(let requestId, _):
+            graceJobs.removeValue(forKey: requestId)?()
+            held[requestId] = nil
+            outstanding[session.sessionKey]?.remove(requestId)
+            let ids = [MacNotificationPolicy.ID.approval(requestId), MacNotificationPolicy.ID.question(requestId)]
+            center.removeDelivered(ids)
+            center.removePending(ids)
+            for id in ids { delivered[id] = nil }
+        default:
+            break
+        }
+    }
+
+    private func beginDecision(_ requestId: String, session: MacNotificationSession, kind: MacNotificationEvent.Kind) {
+        outstanding[session.sessionKey, default: []].insert(requestId)
+        graceJobs[requestId] = scheduler.schedule(after: MacNotificationPolicy.approvalGrace) { [weak self] in
+            guard let self else { return }
+            self.graceJobs[requestId] = nil
+            self.enqueue { await self.postDecision(requestId, session: session, kind: kind) }
+        }
+    }
+
+    private func postDecision(_ requestId: String, session: MacNotificationSession, kind: MacNotificationEvent.Kind) async {
+        // Resolved while the post waited in the chain.
+        guard outstanding[session.sessionKey]?.contains(requestId) == true else { return }
+        var live = session
+        live.title = titles[session.sessionKey] ?? session.title
+        let sound = preferences.soundEnabled
+        switch kind {
+        case .approvalRequested(_, let description, let command, let choices, _):
+            let mapping = MacApprovalChoiceMapper.map(choices: choices)
+            let did = await postIfNotAttended(.approval, session: live, identifier: MacNotificationPolicy.ID.approval(requestId)) {
+                MacNotificationContent.approval(session: live, requestId: requestId, description: description, command: command, mapping: mapping, sound: sound)
+            }
+            if !did { held[requestId] = Held(session: session, kind: kind) }
+        case .questionRequested(_, let text, let count):
+            let did = await postIfNotAttended(.question, session: live, identifier: MacNotificationPolicy.ID.question(requestId)) {
+                MacNotificationContent.question(session: live, requestId: requestId, text: text, openQuestionCount: count, sound: sound)
+            }
+            if !did { held[requestId] = Held(session: session, kind: kind) }
+        default:
+            break
+        }
+    }
+
+    /// True when the request was added. False means suppressed, disabled or
+    /// unauthorized; only the suppressed case is worth retrying, and
+    /// `recheckAttention` retries every held decision cheaply.
+    private func postIfNotAttended(_ kind: MacNotificationKind, session: MacNotificationSession, identifier: String, build: () -> UNNotificationRequest) async -> Bool {
+        let before = delivered[identifier] != nil
+        await deliver(kind, session: session, identifier: identifier, build: build)
+        return !before && delivered[identifier] != nil
+    }
+
+    /// True when a decision announced during this turn is still outstanding
+    /// (that banner already told the user). Clears the turn's outstanding set.
+    private func toldAlreadyByDecision(_ session: MacNotificationSession) -> Bool {
+        defer { outstanding[session.sessionKey] = nil }
+        return outstanding[session.sessionKey]?.isEmpty == false
+    }
+
+    private func retryHeldDecisions() {
+        for (requestId, entry) in held where !visibility(entry.session).isAttended {
+            held[requestId] = nil
+            enqueue { [self] in await postDecision(requestId, session: entry.session, kind: entry.kind) }
+        }
+    }
 }
