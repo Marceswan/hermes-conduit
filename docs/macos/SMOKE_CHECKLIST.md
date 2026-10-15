@@ -62,6 +62,15 @@ Rule R18: agents never send clicks or key events to the running app. Launch smok
 - [ ] Switch profile before the cold launch connects: the parked text is not applied to the other profile
 - [ ] With a non-English system language, the Services menu item shows the translated title
 
+## System integration: Shortcuts
+
+- [ ] Shortcuts app lists "New Conduit Chat" and "Open Conduit Chat" under Conduit on macOS 14 and on macOS 26
+- [ ] Run "New Conduit Chat" with Conduit closed and with a Message: Conduit opens a new chat with the text in the composer, not sent
+- [ ] Same with a Profile that is not active: the profile switches first; with a Profile that no longer exists the action fails with "Conduit has no profile named ..."
+- [ ] Run "Open Conduit Chat" with a chat picked from the list; with Conduit closed; with a deleted chat (shows "That chat is no longer available.")
+- [ ] Spotlight (Cmd-Space) shows the app shortcut "New Conduit Chat"; saying or running "Open a chat in Conduit" asks which chat
+- [ ] The existing "Ask Hermes About Screen" shortcut and "Talk to Conduit" still run
+
 ## Open findings
 
 - (c) Login logo clipping: fix applied in `Conduit/Views/LoginView.swift` (focus `scrollTo` gated to iOS, ledger R4). Owner: 11e. Launch screenshot on 2026-10-13 was covered by a keychain prompt (see below), so the visual result is UNVERIFIED; user confirms on the next launch.

@@ -110,6 +110,27 @@ struct ConduitVoiceShortcuts: AppShortcutsProvider {
             shortTitle: "Talk to Conduit",
             systemImageName: "mic.fill"
         )
+        #if os(macOS) // MAC: Mac-only intents live in ConduitMac/Intents (D19)
+        AppShortcut(
+            intent: NewChatIntent(),
+            phrases: [
+                "New chat in \(.applicationName)",
+                "Start a new chat in \(.applicationName)",
+                "New \(.applicationName) chat"
+            ],
+            shortTitle: "New Conduit Chat",
+            systemImageName: "square.and.pencil"
+        )
+        AppShortcut(
+            intent: OpenSessionIntent(),
+            phrases: [
+                "Open a chat in \(.applicationName)",
+                "Open \(.applicationName) chat"
+            ],
+            shortTitle: "Open Conduit Chat",
+            systemImageName: "bubble.left.and.text.bubble.right"
+        )
+        #endif // MAC:
     }
 }
 
