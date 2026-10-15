@@ -17,8 +17,8 @@ struct NotchApprovalContent: Equatable {
     var needsReview: Bool
 
     static func make(_ a: ApprovalActivity) -> NotchApprovalContent {
-        let command = NotchText.sanitize(a.command, limit: NotchRowBuilder.commandLimit)
-        let description = NotchText.sanitize(a.description, limit: summaryLimit)
+        let command = MacUntrustedText.sanitize(a.command, limit: NotchRowBuilder.commandLimit)
+        let description = MacUntrustedText.sanitize(a.description, limit: summaryLimit)
         let review = command.truncated || command.stripped || command.text.isEmpty
             || description.truncated || description.stripped
         return NotchApprovalContent(

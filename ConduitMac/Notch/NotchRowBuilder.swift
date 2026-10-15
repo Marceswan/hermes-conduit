@@ -57,6 +57,8 @@ struct NotchRow: Identifiable, Equatable {
     var inline: Inline
     var tone: Tone
     var canDismiss: Bool
+    /// The item's durable session id, kept so the action layer can re-check the live item before answering.
+    var sessionKey: String? = nil
 }
 
 struct NotchRowList: Equatable {
@@ -88,7 +90,7 @@ enum NotchRowBuilder {
         for i in items {
             switch (i.kind, i.state) {
             case (.cron, _):
-                if cron == nil { cron = NotchCronInfo(title: NotchText.clean(i.title, limit: titleLimit), at: i.since) }
+                if cron == nil { cron = NotchCronInfo(title: MacUntrustedText.clean(i.title, limit: titleLimit), at: i.since) }
             case (.turn, .working):
                 if let key = i.sessionKey ?? i.sessionId, decisionSessions.contains(key) { continue }
                 counts.working += 1
@@ -126,7 +128,7 @@ enum NotchRowBuilder {
     /// Sanitized (control, bidi and zero-width characters dropped, whitespace and newlines
     /// collapsed) and cut at 160 chars. Never log the result: it can contain secrets.
     static func truncatedCommand(_ text: String) -> String {
-        NotchText.clean(text, limit: commandLimit)
+        MacUntrustedText.clean(text, limit: commandLimit)
     }
 
     private static func isDecision(_ k: AgentActivityItem.Kind) -> Bool {
@@ -142,7 +144,7 @@ enum NotchRowBuilder {
 
     private static func row(_ i: AgentActivityItem, _ section: NotchRow.Section, tone: NotchRow.Tone, inline: NotchRow.Inline) -> NotchRow {
         // Everything the agent or gateway supplies is sanitized here, once, so no view renders raw text.
-        let clean = NotchText.clean(i.title, limit: titleLimit)
+        let clean = MacUntrustedText.clean(i.title, limit: titleLimit)
         let title = clean.isEmpty ? AppLocalization.string("Untitled chat") : clean
         let id = i.sessionId ?? i.sessionKey
         var detail = i.detail.map(truncatedCommand).flatMap { $0.isEmpty ? nil : $0 }
@@ -150,7 +152,8 @@ enum NotchRowBuilder {
         if case .approval = inline { detail = nil }
         return NotchRow(
             id: i.id, section: section, title: title, detail: detail,
-            target: id.map { .session($0) }, inline: inline, tone: tone, canDismiss: false)
+            target: id.map { .session($0) }, inline: inline, tone: tone, canDismiss: false,
+            sessionKey: i.sessionKey)
     }
 }
 

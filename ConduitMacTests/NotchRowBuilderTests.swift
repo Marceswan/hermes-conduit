@@ -65,7 +65,7 @@ final class NotchRowBuilderTests: XCTestCase {
         item.state = .finished(.failed("boom\u{2066}\n" + String(repeating: "E", count: 500)))
         let row = NotchRowBuilder.build(items: [item], now: F.t0).rows[0]
         XCTAssertLessThanOrEqual(row.title.count, NotchRowBuilder.titleLimit)
-        XCTAssertTrue(row.title.hasSuffix(NotchText.ellipsis))
+        XCTAssertTrue(row.title.hasSuffix(MacUntrustedText.ellipsis))
         XCTAssertLessThanOrEqual(row.detail?.count ?? 0, NotchRowBuilder.commandLimit)
         for text in [row.title, row.detail ?? ""] {
             XCTAssertFalse(text.unicodeScalars.contains { (0x202A...0x202E).contains($0.value) || (0x2066...0x2069).contains($0.value) || $0.value == 0x200B || $0.value == 0x0A })
@@ -85,7 +85,7 @@ final class NotchRowBuilderTests: XCTestCase {
     func testTruncatedCommandRequiresReview() {
         let content = NotchApprovalContent.make(F.approval(command: "echo " + String(repeating: "A", count: 400)))
         XCTAssertTrue(content.needsReview)
-        XCTAssertTrue(content.command.hasSuffix(NotchText.ellipsis))
+        XCTAssertTrue(content.command.hasSuffix(MacUntrustedText.ellipsis))
     }
 
     func testCommandWithHiddenCharactersRequiresReview() {
