@@ -130,4 +130,43 @@ final class MacFloatingPanelPlacementTests: XCTestCase {
         XCTAssertEqual(f.minX, 520)
         XCTAssertEqual(f.midX, start.midX)
     }
+
+    // MARK: - Edge docked
+
+    private func dockedPrimary() -> MacScreenGeometry { MacScreenGeometry(frame: primary.frame, visibleFrame: primary.visibleFrame, id: 1) }
+    private func dockedRight() -> MacScreenGeometry { MacScreenGeometry(frame: right.frame, visibleFrame: right.visibleFrame, id: 2) }
+
+    func testEdgeDockedFrameUsesTheFullScreenFrame() {
+        let p = MacFloatingPanelPlacement.edgeDocked(edge: .minY, offset: 0.5, screenID: 1)
+        XCTAssertEqual(frame(p, on: primary, size: CGSize(width: 400, height: 60)), CGRect(x: 520, y: 0, width: 400, height: 60))
+    }
+
+    func testEdgeDockedTargetsTheSavedScreen() {
+        let p = MacFloatingPanelPlacement.edgeDocked(edge: .maxY, offset: 0.5, screenID: 2)
+        XCTAssertEqual(p.targetScreenIndex(mouse: CGPoint(x: 100, y: 100), screens: [dockedPrimary(), dockedRight()]), 1)
+    }
+
+    func testEdgeDockedWithoutAScreenIdUsesTheMouseScreen() {
+        let p = MacFloatingPanelPlacement.edgeDocked(edge: .maxY, offset: 0.5, screenID: nil)
+        XCTAssertEqual(p.targetScreenIndex(mouse: CGPoint(x: 2000, y: 500), screens: [dockedPrimary(), dockedRight()]), 1)
+    }
+
+    func testEdgeDockedFallsBackToTheDefaultWhenTheSavedScreenIsGone() throws {
+        let p = MacFloatingPanelPlacement.edgeDocked(edge: .minX, offset: 1, screenID: 99)
+        let screens = [dockedPrimary(), dockedRight()]
+        let resolved = try XCTUnwrap(p.resolve(panelSize: CGSize(width: 400, height: 60), mouse: CGPoint(x: 100, y: 100), screens: screens))
+        let expected = MacFloatingPanelPlacement.notchAnchored.frame(
+            panelSize: CGSize(width: 400, height: 60), screenFrame: primary.frame,
+            visibleFrame: primary.visibleFrame, safeAreaTop: 0)
+        XCTAssertEqual(resolved.screenIndex, 0)
+        XCTAssertEqual(resolved.frame, expected, "notch-anchored default, not a left-edge dock")
+    }
+
+    func testResolveForTheExistingPlacementsMatchesFrame() throws {
+        let p = MacFloatingPanelPlacement.screenCenterTop(fromTop: 100)
+        let resolved = try XCTUnwrap(p.resolve(panelSize: size, mouse: CGPoint(x: 2000, y: 500), screens: [primary, right]))
+        XCTAssertEqual(resolved.screenIndex, 1)
+        XCTAssertEqual(resolved.frame, frame(p, on: right))
+        XCTAssertNil(p.resolve(panelSize: size, mouse: .zero, screens: []))
+    }
 }

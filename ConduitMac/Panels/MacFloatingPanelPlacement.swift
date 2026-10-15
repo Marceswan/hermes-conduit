@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 
 /// One screen's geometry in AppKit's bottom-left global coordinates. The
 /// controller builds it from `NSScreen`; tests build it by hand.
@@ -7,6 +8,8 @@ struct MacScreenGeometry: Equatable {
     var visibleFrame: CGRect
     /// `NSScreen.safeAreaInsets.top`: the notch height, 0 without a notch.
     var safeAreaTop: CGFloat = 0
+    /// `CGDirectDisplayID` of the display (`NSScreen.deviceDescription["NSScreenNumber"]`); nil in tests.
+    var id: UInt32? = nil
 
     var hasNotch: Bool { safeAreaTop > 0 }
 }
@@ -19,6 +22,10 @@ enum MacFloatingPanelPlacement {
     case screenCenterTopFraction(CGFloat)
     /// A screen with a notch (else the mouse screen); x centered, top flush with the screen edge.
     case notchAnchored
+    /// Docked to one edge of one screen, `offset` (0...1) of the way along it.
+    /// A saved `screenID` that is gone falls back to the default, `.notchAnchored`;
+    /// a nil `screenID` means the screen under the mouse.
+    case edgeDocked(edge: NSRectEdge, offset: CGFloat, screenID: UInt32?)
     /// The caller computes the whole frame (the notch pill reads `NotchGeometry`).
     case custom((_ panelSize: CGSize) -> CGRect)
 
@@ -33,6 +40,10 @@ enum MacFloatingPanelPlacement {
             let height = min(panelSize.height, screenFrame.height)
             let x = min(max(screenFrame.midX - width / 2, screenFrame.minX), screenFrame.maxX - width)
             return CGRect(x: x, y: screenFrame.maxY - height, width: width, height: height)
+        case .edgeDocked(let edge, let offset, let screenID):
+            return EdgeDockGeometry.frame(
+                for: MacEdgeDock(edge: edge, offset: offset, screenID: screenID),
+                panelSize: panelSize, screenFrame: screenFrame)
         case .custom(let build):
             return build(panelSize)
         }
@@ -42,9 +53,32 @@ enum MacFloatingPanelPlacement {
     func targetScreenIndex(mouse: CGPoint, screens: [MacScreenGeometry]) -> Int? {
         guard !screens.isEmpty else { return nil }
         let mouseIndex = screens.firstIndex { Self.inclusiveContains($0.frame, mouse) } ?? 0
-        guard case .notchAnchored = self else { return mouseIndex }
-        if screens[mouseIndex].hasNotch { return mouseIndex }
-        return screens.firstIndex { $0.hasNotch } ?? mouseIndex
+        func notchOrMouse() -> Int {
+            if screens[mouseIndex].hasNotch { return mouseIndex }
+            return screens.firstIndex { $0.hasNotch } ?? mouseIndex
+        }
+        switch self {
+        case .notchAnchored:
+            return notchOrMouse()
+        case .edgeDocked(_, _, let screenID):
+            guard let screenID else { return mouseIndex }
+            return screens.firstIndex { $0.id == screenID } ?? notchOrMouse()
+        default:
+            return mouseIndex
+        }
+    }
+
+    /// The screen and frame for a panel of `panelSize`. A docked placement whose
+    /// saved screen is gone resolves as the default (`.notchAnchored`).
+    func resolve(panelSize: CGSize, mouse: CGPoint, screens: [MacScreenGeometry]) -> (screenIndex: Int, frame: CGRect)? {
+        var placement = self
+        if case .edgeDocked(_, _, let id?) = self, !screens.contains(where: { $0.id == id }) {
+            placement = .notchAnchored
+        }
+        guard let index = placement.targetScreenIndex(mouse: mouse, screens: screens) else { return nil }
+        let screen = screens[index]
+        return (index, placement.frame(panelSize: panelSize, screenFrame: screen.frame,
+                                       visibleFrame: screen.visibleFrame, safeAreaTop: screen.safeAreaTop))
     }
 
     /// The new frame when content size changes: the top edge and the
