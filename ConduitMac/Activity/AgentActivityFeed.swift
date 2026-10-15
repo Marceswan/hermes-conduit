@@ -28,6 +28,7 @@ final class AgentActivityFeed: ObservableObject {
     private var started = false
     private var hubToken: MacStreamEventHub.Token?
     private var fetchTasks: [String: Task<Void, Never>] = [:]
+    private var respondInFlight: Set<String> = []
     private var tickTask: Task<Void, Never>?
     private var panelVisible = false
     private var activeListUnsupported = false
@@ -134,6 +135,44 @@ final class AgentActivityFeed: ObservableObject {
         apply(.dismiss(itemId: id))
     }
 
+    func respond(to id: String, choice: String) async -> AgentActivityRespondResult {
+        guard let item = state.items[id], item.kind == .approval,
+              let approval = item.approval, let requestId = approval.requestId,
+              let sessionId = item.sessionId else {
+            return .failed(AgentActivityRespondFailure.notAnswerable)
+        }
+        guard AgentActivityApprovalChoices.isAllowed(choice, for: approval) else {
+            return .failed(AgentActivityRespondFailure.choiceNotOffered)
+        }
+        guard sources.isConnected else { return .failed(AgentActivityRespondFailure.notConnected) }
+        guard respondInFlight.insert(id).inserted else { return .failed(AgentActivityRespondFailure.inFlight) }
+        defer { respondInFlight.remove(id) }
+
+        apply(.respondStarted(itemId: id))
+        do {
+            let resolved: Bool
+            if item.isActiveSession, let viaCard = await sources.respondViaActiveCard(requestId: requestId, choice: choice) {
+                guard viaCard else {
+                    apply(.respondFailed(itemId: id, message: AgentActivityRespondFailure.sendFailed))
+                    return .failed(AgentActivityRespondFailure.sendFailed)
+                }
+                resolved = true
+            } else {
+                resolved = try await sources.respondToApproval(sessionId: sessionId, requestId: requestId, choice: choice)
+            }
+            apply(.respondResolved(itemId: id, alreadyResolved: !resolved))
+            return resolved ? .resolved : .alreadyResolved
+        } catch {
+            if AgentActivityRpc.isExpiredPrompt(error) {
+                apply(.respondResolved(itemId: id, alreadyResolved: true))
+                return .alreadyResolved
+            }
+            let message = UserFacingError.message(for: error)
+            apply(.respondFailed(itemId: id, message: message))
+            return .failed(message)
+        }
+    }
+
     // MARK: - Core
 
     private var hasLiveWork: Bool { items.contains { !$0.isFinished } }
@@ -206,4 +245,14 @@ final class AgentActivityFeed: ObservableObject {
             }
         }
     }
+}
+
+/// Stable codes carried in `AgentActivityRespondResult.failed(_)` when no RPC
+/// was attempted or the open card failed. Not user-facing: consumers localize them.
+enum AgentActivityRespondFailure {
+    static let notAnswerable = "not_answerable"
+    static let choiceNotOffered = "choice_not_offered"
+    static let notConnected = "not_connected"
+    static let inFlight = "in_flight"
+    static let sendFailed = "send_failed"
 }
