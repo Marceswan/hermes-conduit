@@ -20,6 +20,7 @@ struct MacQuickAskView: View {
     @ObservedObject var controller: MacQuickAskController
     var onHeight: (CGFloat) -> Void
     @FocusState private var fieldFocused: Bool
+    @State private var windowBox = MacQuickAskWindowBox()
 
     private var model: MacQuickAskModel { controller.model }
     private var connected: Bool { controller.connection == .connected }
@@ -58,15 +59,26 @@ struct MacQuickAskView: View {
         .onPreferenceChange(MacQuickAskHeightKey.self) { onHeight($0) }
         .conduitGlassSurface(cornerRadius: 16)
         .background { hiddenShortcuts }
-        .onAppear { fieldFocused = true }
+        .background(MacQuickAskWindowReader(box: windowBox))
+        .onAppear { refocusField() }
         // A reopened panel keeps its view, so onAppear does not fire again.
-        .onChange(of: controller.focusRequest) { _, _ in
-            fieldFocused = false
-            DispatchQueue.main.async { fieldFocused = true }
-        }
+        .onChange(of: controller.focusRequest) { _, _ in refocusField() }
         // The field is disabled while a turn runs; give it back when the turn ends.
         .onChange(of: model.isTurnRunning) { _, running in
             if !running { DispatchQueue.main.async { fieldFocused = true } }
+        }
+    }
+
+    /// A freshly shown non-activating panel has the window itself as first
+    /// responder, and SwiftUI cannot move focus into a field from there. Hand
+    /// the hosting view first responder, then ask for the field.
+    private func refocusField() {
+        DispatchQueue.main.async {
+            if let window = windowBox.window, window.firstResponder === window {
+                window.makeFirstResponder(window.contentView)
+            }
+            fieldFocused = false
+            DispatchQueue.main.async { fieldFocused = true }
         }
     }
 
@@ -144,6 +156,33 @@ struct MacQuickAskView: View {
         .accessibilityHidden(true)
         .allowsHitTesting(false)
     }
+}
+
+/// Holds the panel's window for `refocusField`; weak, set by the reader.
+@MainActor
+private final class MacQuickAskWindowBox {
+    weak var window: NSWindow?
+}
+
+private struct MacQuickAskWindowReader: NSViewRepresentable {
+    let box: MacQuickAskWindowBox
+
+    final class Reader: NSView {
+        var box: MacQuickAskWindowBox?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            let window = window
+            MainActor.assumeIsolated { box?.window = window }
+        }
+    }
+
+    func makeNSView(context: Context) -> Reader {
+        let view = Reader()
+        view.box = box
+        return view
+    }
+
+    func updateNSView(_ view: Reader, context: Context) { view.box = box }
 }
 
 private struct MacQuickAskHeightKey: PreferenceKey {

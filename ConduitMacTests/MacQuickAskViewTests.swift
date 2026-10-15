@@ -154,4 +154,24 @@ final class MacQuickAskViewTests: XCTestCase {
         let panel = c.makePanel(c)
         XCTAssertFalse(panel.isVisible)
     }
+
+    /// The real panel, not a stand-in: it takes key without activating the app,
+    /// the field gets first responder, and a reopen focuses it again.
+    func testRealPanelTakesKeyAndFocusesTheFieldOnEveryShow() throws {
+        let c = controller()
+        c.installDefaultPanel()
+        let host = try XCTUnwrap(c.makePanel(c) as? MacFloatingPanelController)
+        c.panel = host
+        defer { host.hide(); host.panel.contentView = nil }
+        func fieldIsFocused() -> Bool {
+            host.panel.isKeyWindow && host.panel.firstResponder is NSText
+        }
+        c.show()
+        XCTAssertTrue(HostedTestSupport.waitUntil { fieldIsFocused() }, "first show: \(String(describing: host.panel.firstResponder))")
+        XCTAssertFalse(host.panel.canBecomeMain)
+        c.hide(); c.panelDidDismiss()
+        host.panel.makeFirstResponder(host.panel)   // the state a reopened panel can come back in
+        c.show()
+        XCTAssertTrue(HostedTestSupport.waitUntil { fieldIsFocused() }, "reopen: \(String(describing: host.panel.firstResponder))")
+    }
 }
