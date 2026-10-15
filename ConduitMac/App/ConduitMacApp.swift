@@ -70,6 +70,7 @@ struct ConduitMacApp: App {
             .environment(\.locale, appLanguage.resolvedLocale)
             .onChange(of: appLanguage.selection) { _, _ in
                 appState.appLanguageDidChange()
+                MacNotificationRuntime.shared.languageDidChange()
             }
             .preferredColorScheme(appState.themePreference.colorScheme)
             .tint(.conduitAccent)
