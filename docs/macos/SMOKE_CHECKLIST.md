@@ -68,6 +68,25 @@ Human pass at release time (agents never click or type into the running app, R18
 - [ ] Scroll the chat list so older pages load: older chats are added; chats that scroll out of the loaded page stay listed.
 - [ ] Turn the toggle off: searching a chat title finds nothing. Turn it on, tap "Remove from Spotlight": the index empties, the toggle stays on, and a chat you open or rename is added again.
 - [ ] A stale result (chat deleted on another device) opens Conduit and shows "That chat is no longer available."
+## System integration: Services
+
+- [ ] Run `/System/Library/CoreServices/pbs -update`, relaunch Conduit once; System Settings > Keyboard > Keyboard Shortcuts > Services > Text lists "Send to Hermes"; its toggle works
+- [ ] Select text in TextEdit and Safari, run the Service with Conduit closed: Conduit opens, new chat, text in the composer, not sent
+- [ ] Same with Conduit connected and mid-turn: the running chat is untouched, the text is in a new chat
+- [ ] Select text in a Mail message and an image-only selection: Service is absent or reports "No text selected"; nothing breaks
+- [ ] Run the Service with Conduit running in the background, disconnected (Hermes unreachable), and with its window closed (red close button): Conduit comes forward at once; the text lands in a new chat when Hermes connects
+- [ ] Select a very large block of text (several MB) and run the Service: Conduit stays responsive and the composer holds the first 20,000 characters plus "[truncated]"
+- [ ] Switch profile before the cold launch connects: the parked text is not applied to the other profile
+- [ ] With a non-English system language, the Services menu item shows the translated title
+
+## System integration: Shortcuts
+
+- [ ] Shortcuts app lists "New Conduit Chat" and "Open Conduit Chat" under Conduit on macOS 14 and on macOS 26
+- [ ] Run "New Conduit Chat" with Conduit closed and with a Message: Conduit opens a new chat with the text in the composer, not sent
+- [ ] Same with a Profile that is not active: the profile switches first; with a Profile that no longer exists the action fails with "Conduit has no profile named ..."
+- [ ] Run "Open Conduit Chat" with a chat picked from the list; with Conduit closed; with a deleted chat (shows "That chat is no longer available.")
+- [ ] Spotlight (Cmd-Space) shows the app shortcut "New Conduit Chat"; saying or running "Open a chat in Conduit" asks which chat
+- [ ] The existing "Ask Hermes About Screen" shortcut and "Talk to Conduit" still run
 
 ## Open findings
 

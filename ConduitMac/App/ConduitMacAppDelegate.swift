@@ -23,8 +23,17 @@ enum MacDefaults {
 }
 
 final class ConduitMacAppDelegate: NSObject, NSApplicationDelegate {
+    /// The "Send to Hermes" Service (D19). AppKit holds the provider weakly.
+    /// Conduit comes forward at once, even while disconnected, so the user
+    /// sees the connection UI the text is waiting on.
+    private let servicesProvider = MacServicesProvider { text in
+        MacServiceInbox.shared.submit(text)
+        MacWindowActivation.bringConduitForward()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         MacDefaults.register()
+        NSApp.servicesProvider = servicesProvider
         // Start Sparkle's hourly schedule with the app, not the first menu build.
         _ = MacUpdater.shared
         if !MacDefaults.isRunningUnderXCTest { HoverAccessibilityEngine.install() }
