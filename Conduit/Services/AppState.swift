@@ -3218,7 +3218,12 @@ final class AppState: ObservableObject {
     /// left a socket lost during suspension dead for the whole drive and
     /// CarPlay reporting Voice unavailable.
     private var canRunTransportRecovery: Bool {
-        isSceneActive || isCarPlayVoiceSurfaceActive || isLockedVoiceSurfaceActive || isWatchVoiceCallActive || isNativeHermesCallActive
+        #if os(macOS) // MAC: the window can be closed or hidden while the dashboard socket stays up (activity feed, notifications); the iOS watchdog reason for this gate does not apply
+        return MacTransportRecoveryPolicy.allowsRecoveryWhileInactive
+            || isSceneActive || isCarPlayVoiceSurfaceActive || isLockedVoiceSurfaceActive || isWatchVoiceCallActive || isNativeHermesCallActive
+        #else
+        return isSceneActive || isCarPlayVoiceSurfaceActive || isLockedVoiceSurfaceActive || isWatchVoiceCallActive || isNativeHermesCallActive
+        #endif // MAC:
     }
     /// A transport whose handshake completed but whose post-connect bootstrap
     /// (profiles, Bot Mode roster, catalog sync + resume) was abandoned
