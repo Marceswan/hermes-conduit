@@ -1648,6 +1648,43 @@ struct SystemBubble: View {
     }
 }
 
+/// Blue -> purple -> orange ramp for self-improvement (skill/memory update)
+/// summaries. Colored per composed character so the text stays a selectable
+/// UITextView; colors resolve to static RGB for the current scheme so the
+/// text view's attributed-string equality check does not rebuild every pass.
+private enum ReviewSummaryGradient {
+    private typealias RGB = (r: CGFloat, g: CGFloat, b: CGFloat)
+
+    // Light-mode stops are darker so the ramp keeps contrast on pale glass.
+    private static let darkStops: [RGB] = [(0.42, 0.66, 1.00), (0.72, 0.52, 1.00), (1.00, 0.62, 0.26)]
+    private static let lightStops: [RGB] = [(0.10, 0.36, 0.86), (0.46, 0.22, 0.84), (0.84, 0.38, 0.04)]
+
+    static func attributed(_ text: String, font: UIFont, dark: Bool) -> NSAttributedString {
+        let stops = dark ? darkStops : lightStops
+        let result = NSMutableAttributedString(string: text, attributes: [.font: font])
+        let ns = text as NSString
+        var ranges: [NSRange] = []
+        ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: .byComposedCharacterSequences) { _, range, _, _ in
+            ranges.append(range)
+        }
+        let span = CGFloat(max(ranges.count - 1, 1))
+        for (index, range) in ranges.enumerated() {
+            result.addAttribute(.foregroundColor, value: color(at: CGFloat(index) / span, stops: stops), range: range)
+        }
+        return result
+    }
+
+    private static func color(at t: CGFloat, stops: [RGB]) -> UIColor {
+        let scaled = min(max(t, 0), 1) * CGFloat(stops.count - 1)
+        let lower = min(Int(scaled), stops.count - 2)
+        let f = scaled - CGFloat(lower)
+        let a = stops[lower], b = stops[lower + 1]
+        // Quantize so equal summaries produce byte-identical attributes.
+        func mix(_ x: CGFloat, _ y: CGFloat) -> CGFloat { ((x + (y - x) * f) * 255).rounded() / 255 }
+        return UIColor(red: mix(a.r, b.r), green: mix(a.g, b.g), blue: mix(a.b, b.b), alpha: 1)
+    }
+}
+
 /// Review activity summary. Intentionally OUTSIDE the chat text-size
 /// preference (issue #85): these status/activity cards — like tool cards —
 /// are not ordinary transcript Markdown and keep their fixed typography.
@@ -1659,49 +1696,63 @@ private struct ReviewSummaryCard: View {
     let timestamp: String
     @EnvironmentObject private var appState: AppState
     @Environment(\.chatRowDisclosure) private var disclosure
+    @Environment(\.colorScheme) private var colorScheme
     @State private var expanded = false
 
     private var details: [String] { activity.details?.filter { !$0.isEmpty } ?? [] }
 
+    private var header: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "internaldrive.fill")
+                .foregroundStyle(.conduitAura)
+                .frame(width: 28, height: 28)
+                .background(Color.conduitAura.opacity(0.14), in: Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text("SELF-IMPROVEMENT REVIEW")
+                    .font(.caption2.weight(.bold))
+                    .tracking(0.6)
+                    .foregroundStyle(.secondary)
+                SelectableTextView(
+                    attributedText: ReviewSummaryGradient.attributed(
+                        activity.summary,
+                        font: .preferredFont(forTextStyle: .subheadline).withTraits(.traitBold),
+                        dark: colorScheme == .dark
+                    ),
+                    font: .preferredFont(forTextStyle: .subheadline).withTraits(.traitBold)
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Spacer(minLength: 8)
+            MessageTimestampLabel(timestamp: timestamp, tone: .supporting)
+            if !details.isEmpty {
+                Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                    .font(.caption.weight(.semibold))
+                    .conduitFixedGlyph()
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Button {
-                guard !details.isEmpty else { return }
-                disclosure?.willToggle(nil, to: !expanded)
-                withAnimation(ConduitMotion.response) { expanded.toggle() }
-            } label: {
-                HStack(alignment: .center, spacing: 10) {
-                    Image(systemName: "internaldrive.fill")
-                        .foregroundStyle(.conduitAura)
-                        .frame(width: 28, height: 28)
-                        .background(Color.conduitAura.opacity(0.14), in: Circle())
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("SELF-IMPROVEMENT REVIEW")
-                            .font(.caption2.weight(.bold))
-                            .tracking(0.6)
-                            .foregroundStyle(.secondary)
-                        SelectableTextView(
-                            text: activity.summary,
-                            font: .preferredFont(forTextStyle: .subheadline).withTraits(.traitBold),
-                            textColor: .label
-                        )
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    Spacer(minLength: 8)
-                    MessageTimestampLabel(timestamp: timestamp, tone: .supporting)
-                    if !details.isEmpty {
-                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                            .font(.caption.weight(.semibold))
-                            .conduitFixedGlyph()
-                            .foregroundStyle(.secondary)
-                            .frame(width: 28, height: 28)
-                    }
+            // A disabled Button dims its label, which washed the summary out
+            // to grey on cards with no details. Only wrap when it can expand.
+            if details.isEmpty {
+                header
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(activity.summary)
+            } else {
+                Button {
+                    disclosure?.willToggle(nil, to: !expanded)
+                    withAnimation(ConduitMotion.response) { expanded.toggle() }
+                } label: {
+                    header
                 }
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .accessibilityLabel(expanded ? AppLocalization.string("Collapse review details") : AppLocalization.string("Expand review details"))
             }
-            .buttonStyle(.plain)
-            .disabled(details.isEmpty)
-            .accessibilityLabel(details.isEmpty ? activity.summary : (expanded ? AppLocalization.string("Collapse review details") : AppLocalization.string("Expand review details")))
 
             if expanded, !details.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
