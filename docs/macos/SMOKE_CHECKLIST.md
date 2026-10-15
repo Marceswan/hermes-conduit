@@ -76,6 +76,11 @@ Rule R18: agents never send clicks or key events to the running app. Launch smok
   - [ ] Cmd-F then Cmd-L (or a click in the composer) quickly: the keyboard ends in the composer, not pulled back to the search field. Ctrl-Cmd-1..4, Cmd-1..9, Cmd-]/[, Cmd-W and Cmd-F do nothing while a sheet (model picker, Settings) is open.
   - [ ] Composer: the macOS inline-prediction Tab accept (if enabled) versus Tab leaving the composer.
   - [ ] Cmd-L from Kanban returns to chat and focuses the composer.
+  - [ ] Command palette (D18): Cmd-K opens it from the composer, the sidebar and Bots / Cron / Kanban; Cmd-K again and Esc close it; with text in the composer the draft is untouched and typing resumes there after closing.
+  - [ ] Palette: type a session name, Return opens it; `#`, `/`, `>`, `@` scope the list; Up / Down / Home / End move the highlight, Tab does nothing; Esc clears the query, then closes. (The hosted test sends synthetic arrow and Esc events to the focused field; confirm with the real keyboard.)
+  - [ ] Palette: `/new` with no chat open is disabled with "No active chat"; a slash command with an argument hint (for example `/title`) lands in the composer as `/title ` and replaces the draft.
+  - [ ] Palette: Switch Model... opens the model picker; Settings opens Settings; New Chat, Hide Sidebar, Check for Updates run; the active profile row shows a check and does nothing; Stop Response appears only while a reply streams.
+  - [ ] Palette with a sheet open (Settings, model picker): Cmd-K does nothing. Japanese IME in the search field: Return confirms the composition and does not run the row.
   - [ ] Tab from the composer goes to the sidebar list, then the search field, then back to the composer (Shift-Tab reverses); the list shows an accent ring in light and dark; Up / Down / Home / End move it, Return opens it.
   - [ ] System Settings > Keyboard > Keyboard navigation off and on: Tab still reaches list, search field and composer; buttons join the loop only when it is on.
   - [ ] Session tabs (D11): open 3 sessions and see 3 tabs; Cmd-1, Cmd-9 and Ctrl-Tab move between them.

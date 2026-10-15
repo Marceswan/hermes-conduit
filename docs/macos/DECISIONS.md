@@ -74,6 +74,7 @@ Shortcut table (menus in ConduitCommands; one definition each, guarded by MacKey
 | Opt-Cmd-Up / Opt-Cmd-Down | Go > Session Above / Session Below | same two commands (a menu item has one key equivalent, so a second item, titled by direction) |
 | Cmd-F | Edit > Search Sessions | contextual: a focused message text view opens its own find bar; anywhere else shows the sidebar if hidden and focuses "Search sessions" |
 | Cmd-L | Go > Message Field | sets the tab to Sessions (chat), focuses the composer |
+| Cmd-K | Go > Command Palette | toggles the palette (D18); ignored in non-chat windows and under a sheet |
 | Up / Down / Home / End, Return | (list focused) | move the keyboard cursor over session rows, open the cursor row |
 | Tab / Shift-Tab | (list or composer focused) | next / previous view in the window's key view loop (Shift-Tab is the back-tab character U+0019, handled separately) |
 
@@ -129,3 +130,20 @@ Fix: `ConduitMac/Compat/App/FormShim.swift` defines an app-module `Form` that wr
 Known limit: the offscreen test window cannot become the active window, so accent-tinted controls draw grey in the pictures; the slab-versus-row difference is the shape and fill, not the colour. Left alone: the other Form sheets (filters, orchestration, routing, rename, custom headers, bulk priority, new project) only get the grouped style, with no size change; they looked fine in the shots that could be taken. Task detail's shot is blank (its body is a scroll view of SwiftUI content the offscreen capture drops).
 
 Tripwires: `MacFormStyleTests.testAppFormIsGroupedInAWindow`, `testAppFormIsGroupedInASheet`, `testAppFormIsGroupedInASheetOpenedFromASheet` (removing the shim fails the target's build, and without it the sheet Form is `.columns`); `testFormStyleSetAboveASheetDoesNotReachIt` documents the finding and goes red on a macOS where a root style does reach sheets (then the shim can go); `testAnExplicitFormStyleOnTheShimWins`; `MacComposerSheetTests.testClickingTheSpacerOfTheModelSkillsAndDependsRowsOpensThePicker` (a synthetic click 45% across each row opens its picker; red against the outside-the-Button content shape), `testDescriptionPromptShowsWhileEmptyAndGoesAfterTyping`, `testComposerSheetGeometry` (sheet at least 520 wide, Model and Skills rows span the sheet, description editor 80 to 140 pt, header above its rows, nothing past the right edge).
+
+## D18: Mac command palette (2026-10-15)
+Spec: docs/superpowers/specs/2026-10-15-mac-command-palette-design.md. Cmd-K (Go > Command Palette) toggles an in-window overlay: search field over a ranked list, 560 pt wide, 9 visible rows, scrim, Esc clears then closes. It only dispatches existing app actions and never sends free text as a prompt (Quick Ask owns that). Items: sessions (`activeProfileSessions`, non-archived), slash commands (`slashCommands`; no-arg ones run `executeSlashCommand`, `argsHint` ones go to the composer via `prefillComposer`, which REPLACES the draft), profiles (the active one is a non-runnable check row), "Switch Model..." (opens the model picker; no inline model list), panes, New Chat, Settings, Hide/Show Sidebar, Stop Response (only while a turn runs), Search Sessions, Check for Updates. Prefix scoping `/ > @ #`.
+
+Ranking: tiers exact > prefix > word start > substring > fuzzy (3+ chars) > keyword; kind weights; recency boost 60 decaying 6 per rank; session unread +10 and last-24h +5; disabled rows last in their tier; 50-row cap. Recents: 20 ids per dashboard and profile in `conduit.mac.palette.recents.<dashboard>.<profile>`, 8 shown; items that no longer exist drop on read (lookup), the stored list is not rewritten because the session catalog is paged. The palette closes before the action runs; focus returns to the composer if it held it.
+
+Components (ConduitMac/Palette): MacPaletteItem, MacPaletteMatcher, MacPaletteRecents, MacPaletteProvider, MacPaletteStore (with MacPaletteCalls and MacPaletteDispatcher so tests never touch AppState), MacPaletteBinding (live calls and snapshot), MacPaletteView; `MacPaletteActions` in MacKeyboardShortcuts.swift. The overlay hangs on RootView in ConduitMacApp (`.overlay { MacPaletteView() }`), so it needs no RootView edit.
+
+Upstream edit: one gated `.onReceive(.macOpenSettingsRequested)` in RootView (ledger row), because `settingsLinkRequest` only reaches the calls and voice pages. No AppState edit.
+
+Key handling: the arrow, Home/End, Esc and Tab handlers are `onKeyPress` modifiers on the panel, and they receive the keys from the focused TextField (MacPaletteViewTests.testKeyEventsReachTheStore sends synthetic events to the window; so neither fallback (the modifiers on the field, an NSEvent monitor) was needed; confirm with real keys in the smoke list). Return is never a key handler: it runs through the field's `onSubmit`, so a Return that confirms an IME composition does not run the row. Esc is not intercepted by SheetEscape (that monitor acts only when the window is a sheet).
+
+Selected-row text follows the tab rule (D11): black at 85% on the dark-mode amber, white on the light-mode brown. Menu strings follow the existing Mac menus (SwiftUI literals); palette strings are in the catalog for every shipped language.
+
+Deviations from the plan, found while building: the overflow test needs one key press per run-loop turn (an `onChange` does not fire for selection changes made before the view exists); the empty-state label needs `accessibilityElement(children: .ignore)` to be exposed as a label; the sample query in the row test is "number" because the Sessions pane row outranks session rows for "session".
+
+Out of scope: inline model list, server session search, tab commands, sending prompts.
