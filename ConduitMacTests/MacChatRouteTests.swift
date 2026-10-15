@@ -13,6 +13,7 @@ final class MacChatRouteTests: XCTestCase {
     }
 
     func testHiddenChatTitleIsPaneName() {
+        // The title string stays the pane name (Window menu); on macOS 26+ the toolbar hides it (MacPaneTitleTests).
         XCTAssertEqual(MacChatRoute.navigationTitle(tabRaw: SidebarTab.sessions.rawValue), "")
         XCTAssertEqual(MacChatRoute.navigationTitle(tabRaw: SidebarTab.kanban.rawValue), SidebarTab.kanban.displayName)
         XCTAssertEqual(MacChatRoute.navigationTitle(tabRaw: SidebarTab.bots.rawValue), SidebarTab.bots.displayName)

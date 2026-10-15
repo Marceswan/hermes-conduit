@@ -47,6 +47,8 @@ final class MacToolbarRealWindowTests: XCTestCase {
                 NavigationStack {
                     Color.clear
                         .navigationTitle("")
+                        // As RootView's chat stack: nothing hidden while chat is the route.
+                        .macHidingToolbarTitle(false)
                         .toolbar {
                             ToolbarItem(placement: .principal) {
                                 MacSessionTabStrip(store: store, onRename: { _ in }, onDelete: { _ in })

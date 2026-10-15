@@ -297,6 +297,9 @@ struct BotEditorSheet: View {
                 TextEditor(text: $draft.soul)
                     .frame(minHeight: 160)
                     .font(.callout.monospaced())
+                    #if os(macOS) // MAC: bordered editor with a prompt; the default one is a borderless void in a grouped card
+                    .macFormEditor(text: draft.soul, prompt: "Personality")
+                    #endif // MAC:
             } else if detailsState == .failed {
                 Text(AppLocalization.string("Could not load this bot's personality."))
                     .foregroundStyle(.secondary)

@@ -216,6 +216,9 @@ struct KanbanBoardEditorView: View {
             TextEditor(text: $descriptionText)
                 .frame(minHeight: 90)
                 .accessibilityLabel("Board description")
+                #if os(macOS) // MAC: bordered editor with a prompt; the default one is a borderless void in a grouped card
+                .macFormEditor(text: descriptionText, prompt: "Description")
+                #endif // MAC:
         } header: {
             Text("Basics")
         } footer: {
@@ -240,6 +243,9 @@ struct KanbanBoardEditorView: View {
             }
             .pickerStyle(.menu)
             .accessibilityLabel("Project scope")
+            #if os(macOS) // MAC: the section header already says "Project"; no second label on the row
+            .labelsHidden()
+            #endif // MAC:
             if store.projects.isEmpty {
                 Text("No projects on this server yet — the board stays unscoped (scratch workspaces).")
                     .font(.footnote)
@@ -287,6 +293,9 @@ struct KanbanBoardEditorView: View {
             }
             .pickerStyle(.menu)
             .accessibilityLabel("Default workspace")
+            #if os(macOS) // MAC: the section header already says "Default Workspace"; no second label on the row
+            .labelsHidden()
+            #endif // MAC:
             if workspaceRow == .custom {
                 TextField("Absolute directory path", text: $customPath)
                     .textInputAutocapitalization(.never)

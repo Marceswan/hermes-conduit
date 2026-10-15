@@ -27,6 +27,9 @@ struct KanbanBoardFilterSheet: View {
                         }
                     }
                     .pickerStyle(.menu)
+                    #if os(macOS) // MAC: the section header already says "Assignee"; no second label on the row
+                    .labelsHidden()
+                    #endif // MAC:
                 }
                 if !tenants.isEmpty {
                     Section("Tenant") {
@@ -37,6 +40,9 @@ struct KanbanBoardFilterSheet: View {
                             }
                         }
                         .pickerStyle(.menu)
+                        #if os(macOS) // MAC: the section header already says "Tenant"; no second label on the row
+                        .labelsHidden()
+                        #endif // MAC:
                     }
                 }
                 Section {
