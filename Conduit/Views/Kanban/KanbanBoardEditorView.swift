@@ -216,6 +216,9 @@ struct KanbanBoardEditorView: View {
             TextEditor(text: $descriptionText)
                 .frame(minHeight: 90)
                 .accessibilityLabel("Board description")
+                #if os(macOS) // MAC: bordered editor with a prompt; the default one is a borderless void in a grouped card
+                .macFormEditor(text: descriptionText, prompt: "Description")
+                #endif // MAC:
         } header: {
             Text("Basics")
         } footer: {

@@ -107,6 +107,9 @@ struct KanbanTaskComposerView: View {
             }
         }
         .interactiveDismissDisabled(isSaving)
+        #if os(macOS) // MAC: a Mac sheet takes its content's ideal size; give the form a real one
+        .macFormSheetSize()
+        #endif // MAC:
     }
 
     // MARK: - Sections
@@ -118,6 +121,9 @@ struct KanbanTaskComposerView: View {
             TextEditor(text: $draft.body)
                 .frame(minHeight: 100)
                 .accessibilityLabel("Task description")
+                #if os(macOS) // MAC: bordered editor with a prompt; the default one is a borderless void in a grouped card
+                .macFormEditor(text: draft.body, prompt: "Description")
+                #endif // MAC:
             Picker("Priority", selection: $draft.priority) {
                 Text("Normal").tag(0)
                 Text("High").tag(1)
@@ -212,6 +218,9 @@ struct KanbanTaskComposerView: View {
             }
         }
         .accessibilityHint("Opens the per-task model, provider, and reasoning override picker")
+        #if os(macOS) // MAC: plain full-width row, not a bordered accent slab
+        .macFormNavigationRow()
+        #endif // MAC:
     }
 
     private var skillsRow: some View {
@@ -231,6 +240,9 @@ struct KanbanTaskComposerView: View {
             }
         }
         .accessibilityHint("Opens the task skill picker")
+        #if os(macOS) // MAC: plain full-width row, not a bordered accent slab
+        .macFormNavigationRow()
+        #endif // MAC:
     }
 
     @ViewBuilder
@@ -274,6 +286,9 @@ struct KanbanTaskComposerView: View {
                             .foregroundStyle(.tertiary)
                     }
                 }
+                #if os(macOS) // MAC: plain full-width row, not a bordered accent slab
+                .macFormNavigationRow()
+                #endif // MAC:
             } else {
                 ForEach(draft.parents, id: \.self) { parentID in
                     HStack {

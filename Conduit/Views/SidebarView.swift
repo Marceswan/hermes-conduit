@@ -1592,6 +1592,9 @@ private struct ProjectCreateSheet: View {
                     Section {
                         TextEditor(text: $idea)
                             .frame(minHeight: 120)
+                            #if os(macOS) // MAC: bordered editor with a prompt; the default one is a borderless void in a grouped card
+                            .macFormEditor(text: idea, prompt: "Idea")
+                            #endif // MAC:
                     } header: {
                         Text("Idea (optional)")
                     } footer: {
