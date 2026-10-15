@@ -72,6 +72,13 @@ final class MacNotificationRuntime {
         appState.$activeSessionId.dropFirst().sink { [weak coordinator] _ in Task { @MainActor in coordinator?.recheckAttention() } }.store(in: &cancellables)
         appState.$isConnected.removeDuplicates().sink { [weak router] _ in Task { @MainActor in router?.connectionChanged() } }.store(in: &cancellables)
 
+        eventSource = eventSource ?? MacAgentActivityFeedSource(alternateIDs: { [weak appState] key in
+            guard let appState else { return [] }
+            return appState.sessions
+                .filter { $0.id == key || $0.storedSessionId == key || $0.alternateIds.contains(key) }
+                .flatMap { [$0.id] + ($0.storedSessionId.map { [$0] } ?? []) + $0.alternateIds }
+        })
+        // Under XCTest `AgentActivityFeed.shared` is nil, so the source stays inert.
         eventSource?.start { [weak coordinator] in coordinator?.handle($0) }
     }
 
