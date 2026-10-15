@@ -887,6 +887,9 @@ private struct SettingsHome: View {
                         #if os(macOS) // MAC: Spotlight opt-in (D19)
                         MacSpotlightSettingsRow()
                         #endif
+                        #if os(macOS) // MAC: notch agent status mode (D16)
+                        MacNotchStatusSettingsSection()
+                        #endif
                     }
                     Text("Hermes settings follow the active profile. Appearance, notifications, and privacy controls stay on this device.")
                         .font(.footnote)
