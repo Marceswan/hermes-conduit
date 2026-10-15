@@ -30,3 +30,38 @@ extension View {
     /// Flat, compact title pill for the Mac window toolbar (D7).
     func macToolbarTitlePill() -> some View { modifier(MacToolbarTitlePill()) }
 }
+
+/// The window title on Bots, Cron and Kanban. Those panes keep a title string
+/// (`.navigationTitle(pane name)`: Window menu, Mission Control, accessibility)
+/// but the pane's own header already names the pane, so the toolbar does not
+/// display it (D6). The window's toolbar is owned by the always-mounted chat
+/// `NavigationStack` (`RootView.chatNavigationContent`), so the removal is
+/// applied there.
+enum MacPaneTitle {
+    /// macOS 15 and later can remove the toolbar's title item while the
+    /// window keeps its title string (`toolbar(removing: .title)`). macOS 14
+    /// cannot, and an `NSWindow.titleVisibility` workaround is overridden by
+    /// SwiftUI, so there the title is blank instead: the cost is a blank title
+    /// in the Window menu on those panes.
+    static var canHideKeepingTitle: Bool {
+        if #available(macOS 15.0, *) { return true }
+        return false
+    }
+
+    static func windowTitle(forPane name: String, canHideKeepingTitle: Bool = MacPaneTitle.canHideKeepingTitle) -> String {
+        canHideKeepingTitle ? name : ""
+    }
+}
+
+extension View {
+    /// Removes the title from the window toolbar, keeping the window's title
+    /// string, while `hidden` (macOS 15 and later; a no-op before, see `MacPaneTitle`).
+    @ViewBuilder
+    func macHidingToolbarTitle(_ hidden: Bool) -> some View {
+        if #available(macOS 15.0, *) {
+            toolbar(removing: hidden ? .title : nil)
+        } else {
+            self
+        }
+    }
+}

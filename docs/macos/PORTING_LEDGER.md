@@ -86,6 +86,7 @@ list after each `git merge upstream/main`.
 | Conduit/Views/Kanban/KanbanBoardEditorView.swift description `TextEditor` | R4 (1 region, `// MAC:`) | same void as the composer's; `.macFormEditor(text:prompt:)` | ConduitMac/Views/MacFormChrome.swift |
 | Conduit/Views/BotEditorSheet.swift personality `TextEditor` | R4 (1 region, `// MAC:`) | same void; `.macFormEditor(text:prompt:)` | ConduitMac/Views/MacFormChrome.swift |
 | Conduit/Views/SidebarView.swift new-project "Idea" `TextEditor` | R4 (1 region, `// MAC:`) | same void; `.macFormEditor(text:prompt:)` | ConduitMac/Views/MacFormChrome.swift |
+| Conduit/Views/RootView.swift `chatNavigationContent` title | R4 (1 line in the existing `#if os(macOS)` title region, `// MAC:`) | the window toolbar showed the pane name ("Kanban", "Bots", "Cron") directly above the pane's own header of the same name. `.macHidingToolbarTitle(MacChatRoute.hidesToolbarTitle(...))` is `toolbar(removing: .title)` on macOS 15 and later (SwiftUI then sets `NSWindow.titleVisibility = .hidden`; the window keeps its title string for the Window menu); a no-op on macOS 14, where `MacPaneTitle.windowTitle` blanks the title instead (D6) | ConduitMac/Views/MacToolbarChrome.swift (`MacPaneTitle`), ConduitMac/App/MacChatRoute.swift, `MacPaneTitleTests` |
 
 ## Sync routine
 

@@ -422,6 +422,7 @@ struct MainView: View {
             }
             #if os(macOS) // MAC: pane name while chat is hidden, so this stack cannot override the router's title
             .navigationTitle(chatWindowTitle)
+            .macHidingToolbarTitle(MacChatRoute.hidesToolbarTitle(tabRaw: macTabRaw)) // MAC: the pane header names the pane; keep the title string, hide it from the toolbar
             #else // MAC:
             .navigationTitle("")
             #endif // MAC:
