@@ -18,6 +18,7 @@ final class NotchStatusController: ObservableObject {
     private let now: () -> Date
     private let dockStore: NotchDockStore
     private let connectedScreenIDs: () -> Set<UInt32>
+    private let screenForID: (UInt32) -> NotchScreenMetrics?
 
     private var state: NotchStatusState
     private var host: NotchPanelHosting?
@@ -33,6 +34,10 @@ final class NotchStatusController: ObservableObject {
     private var lastSurface: NotchSurface = .hidden
     private var isDragging = false
     private var currentScreenID: UInt32?
+    /// The display the user last dropped the surface on. It stays there (instead of snapping back to
+    /// `NSScreen.main`) while that display is connected and still has a saved dock.
+    private var homeDisplayID: UInt32?
+    private var lastNextExpiry: Date?
 
     init(
         settings: NotchStatusSettings = .shared,
@@ -43,7 +48,8 @@ final class NotchStatusController: ObservableObject {
         monitor: NotchDismissMonitoring? = nil,
         now: @escaping () -> Date = Date.init,
         dockStore: NotchDockStore = NotchDockStore(),
-        connectedScreenIDs: @escaping () -> Set<UInt32> = { Set(MacFloatingPanelEnvironment.live.screens().compactMap(\.id)) }
+        connectedScreenIDs: @escaping () -> Set<UInt32> = { Set(MacFloatingPanelEnvironment.live.screens().compactMap(\.id)) },
+        screenForID: ((UInt32) -> NotchScreenMetrics?)? = nil
     ) {
         self.settings = settings
         self.actions = actions
@@ -53,6 +59,7 @@ final class NotchStatusController: ObservableObject {
         self.now = now
         self.dockStore = dockStore
         self.connectedScreenIDs = connectedScreenIDs
+        self.screenForID = screenForID ?? { NotchScreenMetrics.display(id: $0) }
         self.state = NotchStatusState(mode: settings.mode)
         let vm = viewModel
         self.makeHost = makeHost ?? { NotchPanelHost(content: NotchStatusView(model: vm)) }
@@ -77,7 +84,10 @@ final class NotchStatusController: ObservableObject {
         source.itemsPublisher.sink { [weak self] in self?.itemsChanged($0) }.store(in: &cancellables)
         source.availabilityPublisher.sink { [weak self] in self?.availabilityChanged($0) }.store(in: &cancellables)
         source.isBaselinedPublisher.sink { [weak self] in self?.baselineChanged($0) }.store(in: &cancellables)
-        settings.$mode.dropFirst().removeDuplicates().sink { [weak self] in self?.send(.mode($0)) }.store(in: &cancellables)
+        settings.$mode.dropFirst().removeDuplicates().sink { [weak self] in
+            self?.send(.mode($0))
+            self?.refreshExpiryTimer()
+        }.store(in: &cancellables)
         viewModel.$contentHeight.removeDuplicates().sink { [weak self] _ in self?.render() }.store(in: &cancellables)
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
             .sink { [weak self] _ in self?.screenParametersChanged() }.store(in: &cancellables)
@@ -88,6 +98,7 @@ final class NotchStatusController: ObservableObject {
     func toggleCommandPin() {
         send(.toggleCommandPin)
         isCommandPinned = state.isCommandPinned
+        refreshExpiryTimer()
     }
 
     func screenParametersChanged() { render() }
@@ -95,6 +106,7 @@ final class NotchStatusController: ObservableObject {
     /// Go > Reset Agent Status Position, and the double-click on the capsule or grip.
     func resetPosition() {
         if let id = currentScreenID { dockStore.clear(screenID: id) }
+        homeDisplayID = nil
         render()
     }
 
@@ -105,11 +117,17 @@ final class NotchStatusController: ObservableObject {
         let t = (baselined && !isBaseline) ? NotchItemDiff.transitions(old: lastItems, new: items) : (newDecision: false, newFinish: false)
         isBaseline = false
         lastItems = items
-        viewModel.list = list
+        // @Published publishes on every assignment, equal or not, and each publish re-evaluates the
+        // whole panel. Assign only on a real change, so a feed emission that changes nothing the
+        // panel shows costs one row build and no view update.
+        if viewModel.list != list { viewModel.list = list }
         let ids = Set(list.rows.map(\.id))
-        viewModel.submitting.formIntersection(ids)
-        viewModel.failedRows.formIntersection(ids)
-        scheduleExpiry(list.nextExpiry)
+        let submitting = viewModel.submitting.intersection(ids)
+        if submitting != viewModel.submitting { viewModel.submitting = submitting }
+        let failed = viewModel.failedRows.intersection(ids)
+        if failed != viewModel.failedRows { viewModel.failedRows = failed }
+        lastNextExpiry = list.nextExpiry
+        refreshExpiryTimer()
         send(.counts(list.counts, newDecision: t.newDecision, newFinish: t.newFinish))
     }
 
@@ -123,7 +141,7 @@ final class NotchStatusController: ObservableObject {
     }
 
     private func availabilityChanged(_ a: NotchAvailability) {
-        viewModel.availability = a
+        if viewModel.availability != a { viewModel.availability = a }
         if a == .offline { send(.online(false)) } else {
             send(.online(true))
             isBaseline = true    // what is already there on (re)connect is a silent baseline
@@ -153,6 +171,13 @@ final class NotchStatusController: ObservableObject {
         }
     }
 
+    /// The "done" row expiry timer runs only while something can show it: never in Off mode
+    /// (unless Show Agent Status pinned the panel), so Off leaves no timer behind.
+    private func refreshExpiryTimer() {
+        let live = state.mode != .off || state.isCommandPinned
+        scheduleExpiry(live ? lastNextExpiry : nil)
+    }
+
     private func scheduleExpiry(_ at: Date?) {
         cancelExpiry?(); cancelExpiry = nil
         guard let at else { return }
@@ -173,12 +198,12 @@ final class NotchStatusController: ObservableObject {
     }
 
     private func render() {
-        viewModel.surface = state.surface
-        viewModel.buttonsEnabled = state.buttonsEnabled
-        isCommandPinned = state.isCommandPinned
+        if viewModel.surface != state.surface { viewModel.surface = state.surface }
+        if viewModel.buttonsEnabled != state.buttonsEnabled { viewModel.buttonsEnabled = state.buttonsEnabled }
+        if isCommandPinned != state.isCommandPinned { isCommandPinned = state.isCommandPinned }
         updateMonitor()
         updateFeedHints()
-        guard state.surface != .hidden, let metrics = screen() else {
+        guard state.surface != .hidden, let metrics = targetScreen() else {
             host?.hide()
             return
         }
@@ -189,9 +214,12 @@ final class NotchStatusController: ObservableObject {
             return nil
         }()
         let layout = NotchLayout.make(standardIsNotch: standard.notchWidth > 0, dock: dock)
-        viewModel.placement = standard
-        viewModel.layout = layout
-        if state.surface == .expanded { viewModel.newChatEnabled = actions.newChatEnabled() }
+        if viewModel.placement != standard { viewModel.placement = standard }
+        if viewModel.layout != layout { viewModel.layout = layout }
+        if state.surface == .expanded {
+            let enabled = actions.newChatEnabled()
+            if viewModel.newChatEnabled != enabled { viewModel.newChatEnabled = enabled }
+        }
         guard !isDragging else { return }          // never move the panel under the user's pointer
         let host = self.host ?? makeWiredHost()
         host.inwardSide = layout.inwardSide
@@ -211,6 +239,17 @@ final class NotchStatusController: ObservableObject {
         if !wasVisible { host.show() }
     }
 
+    /// The display the user dropped the surface on while it is connected and keeps a saved dock,
+    /// else the main display (follows focus). Without this, a drop on another display is undone by
+    /// the next render, which would look up the main display's placement.
+    private func targetScreen() -> NotchScreenMetrics? {
+        if let home = homeDisplayID, connectedScreenIDs().contains(home), dockStore.dock(forScreen: home) != nil,
+           let metrics = screenForID(home) {
+            return metrics
+        }
+        return screen()
+    }
+
     private func makeWiredHost() -> NotchPanelHosting {
         let host = makeHost()
         self.host = host
@@ -223,6 +262,7 @@ final class NotchStatusController: ObservableObject {
     /// A drag release: persist per display. The drag-state callback follows and re-renders.
     private func dockChanged(_ dock: MacEdgeDock) {
         dockStore.save(dock)
+        if let id = dock.screenID { homeDisplayID = id }
     }
 
     private func dragStateChanged(_ dragging: Bool) {
@@ -268,40 +308,65 @@ final class NotchStatusController: ObservableObject {
         viewModel.onResetPosition = { [weak self] in self?.resetPosition() }
     }
 
-    /// A button or menu item on an approval row.
-    ///
-    /// Nothing is parsed from text and no id is reconstructed: the answer goes to the feed under the
-    /// exact id of the live item, and only after that item is read back from the feed and checked
-    /// (still an approval, still waiting, same session as the row that was clicked, the choice
-    /// allowed by `AgentActivityApprovalChoices`, and the command was shown in full).
-    private func perform(_ action: NotchApprovalAction, on row: NotchRow) {
-        guard viewModel.canChoose(rowID: row.id), let source else { return }
+    private enum ApprovalDecision {
+        case ignore
+        /// Not answered: open the session so the user reads the whole request there.
+        case review(AgentActivityItem)
+        /// What the row showed is no longer what the feed holds; the rows are rebuilt from the live items.
+        case stale
+        case send(choice: String, itemID: String)
+    }
+
+    /// Decides what a button or menu item on an approval row may do. Nothing is parsed from text and
+    /// no id is reconstructed: the live item is read back from the feed by the row's exact id and must
+    /// still be an approval, waiting, in the same session as the row, with a pending payload. The
+    /// choice must be allowed by `AgentActivityApprovalChoices`. Anything but Deny also needs the
+    /// command to have been shown in full and unchanged, and the live command to be the one the row
+    /// showed (digest), because the feed can replace a command under the same id without an event.
+    private func decide(_ action: NotchApprovalAction, on row: NotchRow, recheck: Bool = false) -> ApprovalDecision {
+        // On a recheck the row is already marked as submitting by this very click.
+        guard recheck || viewModel.canChoose(rowID: row.id), let source else { return .ignore }
         guard let item = source.items.first(where: { $0.id == row.id }),
               item.kind == .approval, item.state == .needsUser,
               item.sessionKey == row.sessionKey,
-              let approval = item.approval, approval.status == .pending else { return }
+              let approval = item.approval, approval.status == .pending else { return .ignore }
 
-        let needsReview = NotchApprovalContent.make(approval).needsReview
-        guard let choice = action.choice else {
-            openSession(of: item)             // Review in Conduit: never answers
-            return
-        }
-        guard AgentActivityApprovalChoices.isAllowed(choice, for: approval) else { return }
-        if needsReview && choice != AgentActivityApprovalChoices.deny {
-            openSession(of: item)             // the command was not shown in full: Allow opens the session instead
-            return
-        }
+        guard let choice = action.choice else { return .review(item) }      // Review in Conduit: never answers
+        guard AgentActivityApprovalChoices.isAllowed(choice, for: approval) else { return .ignore }
+        if choice == AgentActivityApprovalChoices.deny { return .send(choice: choice, itemID: item.id) }
 
-        viewModel.submitting.insert(item.id)
-        viewModel.failedRows.remove(item.id)
-        send(.interacted)
-        let itemID = item.id
-        Task { @MainActor [weak self] in
-            let result = await source.respond(to: itemID, choice: choice)
-            guard let self else { return }
-            self.viewModel.submitting.remove(itemID)
-            if case .failed = result { self.viewModel.failedRows.insert(itemID) }
-            // .resolved and .alreadyResolved: the feed removes the row itself.
+        guard case .approval(_, let shown) = row.inline, !shown.needsReview,
+              !NotchApprovalContent.make(approval).needsReview else { return .review(item) }
+        guard shown.commandDigest == MacNotificationContent.commandDigest(approval.command) else { return .stale }
+        return .send(choice: choice, itemID: item.id)
+    }
+
+    private func perform(_ action: NotchApprovalAction, on row: NotchRow) {
+        switch decide(action, on: row) {
+        case .ignore:
+            return
+        case .review(let item):
+            openSession(of: item)
+        case .stale:
+            if let source { itemsChanged(source.items) }       // show what the feed holds now; the next click is a fresh decision
+        case .send(let choice, let itemID):
+            guard let source else { return }
+            viewModel.submitting.insert(itemID)
+            viewModel.failedRows.remove(itemID)
+            send(.interacted)
+            Task { @MainActor [weak self] in
+                // The task starts on a later main-actor turn: check again, then call the feed with no
+                // suspension in between, so the command cannot change after the check.
+                guard let self else { return }
+                guard case .send(let c, let id) = self.decide(action, on: row, recheck: true), c == choice, id == itemID else {
+                    self.viewModel.submitting.remove(itemID)
+                    return
+                }
+                let result = await source.respond(to: id, choice: c)
+                self.viewModel.submitting.remove(itemID)
+                if case .failed = result { self.viewModel.failedRows.insert(itemID) }
+                // .resolved and .alreadyResolved: the feed removes the row itself.
+            }
         }
     }
 

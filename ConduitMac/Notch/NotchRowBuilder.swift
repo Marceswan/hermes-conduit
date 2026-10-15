@@ -166,6 +166,8 @@ enum NotchItemDiff {
             switch i.state {
             case .needsUser where i.kind == .approval || i.kind == .clarify || i.kind == .inputPrompt:
                 if before == nil { decision = true }
+                // The command under an existing approval id changed: a different request for the user to read.
+                else if i.kind == .approval, let was = before?.approval, let now = i.approval, was.command != now.command { decision = true }
             case .finished where i.kind == .turn:
                 if case .finished? = before?.state { break }
                 finish = true

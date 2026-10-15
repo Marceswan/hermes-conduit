@@ -11,13 +11,25 @@ struct NotchScreenMetrics: Equatable {
 
     /// The screen of the key window, else the primary (`NSScreen.main`).
     @MainActor static func main() -> NotchScreenMetrics? {
-        guard let s = NSScreen.main else { return nil }
-        return NotchScreenMetrics(
+        NSScreen.main.map(metrics(of:))
+    }
+
+    /// A connected display by `CGDirectDisplayID`.
+    @MainActor static func display(id: UInt32) -> NotchScreenMetrics? {
+        NSScreen.screens.first { screenID($0) == id }.map(metrics(of:))
+    }
+
+    private static func screenID(_ s: NSScreen) -> UInt32? {
+        (s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+    }
+
+    @MainActor private static func metrics(of s: NSScreen) -> NotchScreenMetrics {
+        NotchScreenMetrics(
             frame: s.frame, visibleFrame: s.visibleFrame,
             safeAreaTop: s.safeAreaInsets.top,
             auxiliaryTopLeft: s.auxiliaryTopLeftArea ?? .zero,
             auxiliaryTopRight: s.auxiliaryTopRightArea ?? .zero,
-            id: (s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value)
+            id: screenID(s))
     }
 }
 

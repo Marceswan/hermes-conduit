@@ -40,7 +40,8 @@ final class NotchRowBuilderTests: XCTestCase {
         XCTAssertEqual(row.section, .needsYou)
         XCTAssertEqual(row.target, .session("s1"))
         XCTAssertEqual(row.inline, .approval(NotchApprovalChoices.resolve(F.approval()),
-                                             NotchApprovalContent(summary: "d", command: "ls", needsReview: false)))
+                                             NotchApprovalContent(summary: "d", command: "ls", needsReview: false,
+                                                                  commandDigest: MacNotificationContent.commandDigest("ls"))))
         XCTAssertEqual(row.tone, .attention)
         XCTAssertFalse(row.canDismiss)
     }
@@ -98,10 +99,31 @@ final class NotchRowBuilderTests: XCTestCase {
         XCTAssertTrue(NotchApprovalContent.make(F.approval(command: "\u{200B}\n")).needsReview)
     }
 
-    func testMultilineCommandWithoutHiddenCharactersStaysReviewable() {
+    func testMultilineCommandIsNotApprovableInline() {
+        // "ls\nrm -rf ~" would read as one command, `ls rm -rf ~`, once the line break is flattened.
         let content = NotchApprovalContent.make(F.approval(command: "cd /tmp\nls"))
         XCTAssertEqual(content.command, "cd /tmp ls")
-        XCTAssertFalse(content.needsReview)
+        XCTAssertTrue(content.needsReview, "the flattened line break is not what the gateway sent")
+        XCTAssertTrue(NotchApprovalContent.make(F.approval(command: "ls\u{2028}rm -rf ~")).needsReview)
+        XCTAssertFalse(NotchApprovalContent.make(F.approval(command: "ls -la\n")).needsReview, "edge whitespace is not a rewrite")
+        XCTAssertFalse(NotchApprovalContent.make(F.approval(command: "ls\t-la")).needsReview)
+    }
+
+    func testCommandDigestIdentifiesTheExactRawCommand() {
+        let a = NotchApprovalContent.make(F.approval(command: "ls"))
+        XCTAssertEqual(a.commandDigest, MacNotificationContent.commandDigest("ls"))
+        XCTAssertNotEqual(a.commandDigest, NotchApprovalContent.make(F.approval(command: "ls ")).commandDigest, "trailing space is a different command")
+        XCTAssertNotEqual(a.commandDigest, NotchApprovalContent.make(F.approval(command: "l\u{200B}s")).commandDigest, "hidden characters are a different command")
+        XCTAssertFalse(a.commandDigest.contains("ls"), "no command text is kept")
+    }
+
+    func testAChangedCommandUnderTheSameApprovalIdIsANewDecision() {
+        let old = [F.approvalItem("approval:q", session: "s", approval: F.approval(command: "ls"))]
+        let new = [F.approvalItem("approval:q", session: "s", approval: F.approval(command: "rm -rf ~"))]
+        XCTAssertTrue(NotchItemDiff.transitions(old: old, new: new).newDecision)
+        XCTAssertFalse(NotchItemDiff.transitions(old: old, new: old).newDecision)
+        let bare = [F.approvalItem("approval:q", session: "s", approval: nil)]
+        XCTAssertFalse(NotchItemDiff.transitions(old: bare, new: old).newDecision, "the payload arriving late is not a replacement")
     }
 
     func testSummaryIsSanitizedAndCapped() {

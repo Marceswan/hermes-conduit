@@ -88,6 +88,16 @@ final class NotchStatusViewTests: XCTestCase {
         if let command, let title { XCTAssertLessThan(command, title, "payload first, agent-worded title after it") }
     }
 
+    func testApprovalRowAccessibilityLabelLeadsWithTheCommandNotTheDescription() throws {
+        let command = "rm -rf /tmp/x", harmless = "Harmless cleanup, safe to allow"
+        var a = F.approval(command: command)
+        a.description = harmless
+        let w = try render(model([F.approvalItem("approval:q", session: "s1", approval: a)]), dark: true); defer { HostedTestSupport.tearDown(w) }
+        let l = labels(w)
+        XCTAssertTrue(l.contains(AppLocalization.string("Approval needed: \(command)")), "VoiceOver hears the command first")
+        XCTAssertFalse(l.contains(AppLocalization.string("Approval needed: \(harmless)")), "the agent-worded description is never the label")
+    }
+
     func testTruncatedCommandOffersReviewInsteadOfAllowOnce() throws {
         let long = F.approval(command: "echo " + String(repeating: "A", count: 400))
         let w = try render(model([F.approvalItem("approval:q", session: "s1", approval: long)]), dark: true); defer { HostedTestSupport.tearDown(w) }

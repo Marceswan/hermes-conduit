@@ -188,6 +188,10 @@ Human pass at release time (agents never click or type into the running app, R18
 - [ ] Trigger an approval in a background session: the panel expands and stays; the row says "Approval needed" with the description and command, the chat title in small text below; Allow once and Deny are disabled for about 600 ms and then work; Always allow exists only in the "..." menu; a smart-denied request has no menu.
 - [ ] Approval with a very long command (over 160 characters) or one containing invisible characters: the row shows "Review in Conduit" instead of Allow once, no "..." menu, Deny still works; Review opens the session.
 - [ ] Answer from the notch; answer from the main window; answer from Hermes Desktop: the row disappears each time with no error.
+- [ ] Approval with a multi-line command (for example `ls` then a second line): the row shows "Review in Conduit", not Allow once; Deny still works.
+- [ ] Approval with a 150-character command: the whole command is on screen (no "..." cut by the layout) before Allow once is offered.
+- [ ] Two displays: drop the surface on the second display, then focus a window on the first; the surface stays on the second until Reset Agent Status Position.
+- [ ] Mode Off: no surface, and Activity Monitor shows no wakeups from the notch while an agent works (Show Agent Status pins it for a look).
 - [ ] A clarify or sudo/secret prompt: the row says "Answer in Conduit" and clicking opens that session.
 - [ ] Click a working row: Conduit comes forward on that session. (Kanban rows and the cron footer are follow-up; nothing to test in v1.)
 - [ ] Drag the compact surface to the bottom edge, the left edge, the right edge, then onto a second display: it follows the pointer, snaps to the nearest edge on release, shows a vertical capsule on left and right, and its expanded panel opens inward (up from the bottom, right from the left edge, left from the right edge) with rows stacked. The wings only appear in the default placement.

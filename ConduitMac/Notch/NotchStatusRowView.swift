@@ -26,6 +26,7 @@ struct NotchStatusRowView: View {
         .onTapGesture { model.onOpenRow(row) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(rowAccessibilityLabel)
+        .accessibilityValue(content?.summary ?? "")
     }
 
     private var content: NotchApprovalContent? {
@@ -49,8 +50,8 @@ struct NotchStatusRowView: View {
 
     private var rowAccessibilityLabel: String {
         if let content {
-            let what = content.summary ?? content.command
-            return AppLocalization.string("Approval needed: \(what)")
+            // The command leads, as on screen. The description is agent-worded: it is the value, after the command.
+            return AppLocalization.string("Approval needed: \(content.command)")
         }
         return row.title
     }
@@ -83,10 +84,14 @@ struct NotchStatusRowView: View {
     private func approval(_ choices: NotchApprovalChoices, _ content: NotchApprovalContent) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             if let summary = content.summary {
-                Text(verbatim: summary).font(.caption).foregroundStyle(NotchPalette.text).lineLimit(2)
+                Text(verbatim: summary).font(.caption).foregroundStyle(NotchPalette.text)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Text(verbatim: content.command).font(.system(.caption, design: .monospaced)).lineLimit(2)
+            // No line limit: Allow is offered only for a command that is on screen in full (at most
+            // `commandLimit` characters, so a few lines); a clipped command would look complete.
+            Text(verbatim: content.command).font(.system(.caption, design: .monospaced))
                 .foregroundStyle(NotchPalette.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             // The chat title is agent-controlled: secondary, after the payload, never a button label.
             Text(verbatim: row.title).font(.caption2).foregroundStyle(NotchPalette.secondary).lineLimit(1)
             if content.needsReview {

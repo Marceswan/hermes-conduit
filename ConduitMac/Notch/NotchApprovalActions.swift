@@ -15,6 +15,10 @@ struct NotchApprovalContent: Equatable {
     /// control characters were dropped, or there is nothing to show). Allow is then not
     /// offered inline: it opens the session, where the full request is on screen.
     var needsReview: Bool
+    /// SHA-256 of the raw payload command (no text kept). An answer is sent only while the
+    /// live item still holds a command with this digest: the feed can replace an item's
+    /// command under the same id without an event, and the user must approve what was shown.
+    var commandDigest: String
 
     static func make(_ a: ApprovalActivity) -> NotchApprovalContent {
         let command = MacUntrustedText.sanitizeReport(a.command, maxGraphemes: NotchRowBuilder.commandLimit)
@@ -23,7 +27,8 @@ struct NotchApprovalContent: Equatable {
             || description.truncated || description.changed
         return NotchApprovalContent(
             summary: description.text.isEmpty ? nil : description.text,
-            command: command.text, needsReview: review)
+            command: command.text, needsReview: review,
+            commandDigest: MacNotificationContent.commandDigest(a.command))
     }
 }
 
