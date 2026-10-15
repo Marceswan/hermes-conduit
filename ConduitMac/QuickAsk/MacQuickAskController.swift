@@ -65,12 +65,21 @@ final class MacQuickAskController: ObservableObject {
 
     func show() {
         model.panelOpened(now: environment.now())
+        syncHubSubscription()
         if panel == nil { panel = makePanel(self) }
         panel?.show()
         focusRequest += 1
     }
 
     func hide() { panel?.hide() }
+
+    /// True while the Quick Ask panel is the key window. Chat > Stop Response and
+    /// File > New Chat (Cmd-. and Cmd-N) check it so the shortcuts never reach the
+    /// main chat from the panel, whichever of the menu or the panel's own
+    /// shortcut AppKit offers the key to first.
+    var isPanelKey: Bool {
+        (panel as? MacFloatingPanelController)?.panel.isKeyWindow == true
+    }
 
     /// Called from the panel's onDismiss. Hiding never cancels a turn.
     func panelDidDismiss() { model.panelClosed(now: environment.now()) }
@@ -101,6 +110,7 @@ final class MacQuickAskController: ObservableObject {
         turnTask?.cancel()
         model.reset()
         draft = ""
+        syncHubSubscription()
     }
 
     func promote() {
@@ -108,6 +118,7 @@ final class MacQuickAskController: ObservableObject {
         environment.activateMainWindow()
         environment.openSession(id)
         model.detach()
+        syncHubSubscription()
         hide()
     }
 
@@ -115,8 +126,11 @@ final class MacQuickAskController: ObservableObject {
 
     func connectionChanged(_ value: MacQuickAskConnection) { connection = value }
 
-    /// One stream event, from the hub. Foreign sessions are ignored by the model.
+    /// One stream event, from the hub. Every event of every session passes here, so
+    /// the check is cheap and a foreign or ignored event never writes the published
+    /// model (which would invalidate the panel view on each delta of the main chat).
     func handle(_ event: StreamEvent) {
+        guard model.isRelevant(event) else { return }
         model.apply(event, now: environment.now())
     }
 
@@ -135,6 +149,7 @@ final class MacQuickAskController: ObservableObject {
                         throw MacQuickAskProfileMismatch(profile: profile)
                     }
                     model.sessionCreated(runtimeID: created.sessionId, storedID: created.storedSessionId)
+                    syncHubSubscription()
                     environment.refreshSessions()
                 }
                 guard let id = model.runtimeID else { return }
@@ -153,7 +168,7 @@ final class MacQuickAskController: ObservableObject {
     nonisolated static func classify(_ error: Error) -> (message: String, kind: MacQuickAskModel.FailureKind) {
         if let mismatch = error as? MacQuickAskProfileMismatch {
             return (String(format: AppLocalization.string("Hermes created this in %@. Switch profiles in Conduit and try again."),
-                           mismatch.profile), .generic)
+                           MacQuickAskModel.chrome(mismatch.profile, max: 40)), .generic)
         }
         if let rpc = error as? RpcError, rpc.code == 4090, !rpc.isSessionNotOwned {
             return (AppLocalization.string("Hermes is already running the most sessions it allows. Finish or close one in Conduit, then try again."),
@@ -177,6 +192,13 @@ final class MacQuickAskController: ObservableObject {
         self.hubToken = nil
     }
 
+    /// Listen to the shared stream only while there is a Quick Ask session to
+    /// follow: from the create result until the exchange is reset or promoted.
+    /// Idle, the hub does not call into Quick Ask at all.
+    private func syncHubSubscription() {
+        if model.runtimeID != nil { subscribeToHub() } else { unsubscribeFromHub() }
+    }
+
     func bind(to appState: AppState) {
         guard bindings.isEmpty else { return }
         environment = MacQuickAskEnvironment(
@@ -194,11 +216,13 @@ final class MacQuickAskController: ObservableObject {
                 guard let client = appState?.client else { throw HermesError.notConnected }
                 try await client.cancel(id)
             },
-            openSession: { [weak appState] id in _ = appState?.requestOpenSession(id) },
+            openSession: { [weak appState] id in
+                guard let appState else { return }
+                _ = appState.requestOpenSession(Self.openableID(id, in: appState.sessions))
+            },
             activateMainWindow: { MacWindowActivation.bringConduitForward() },
             refreshSessions: { [weak appState] in Task { await appState?.loadSessions(forceRefresh: true) } },
             now: { Date() })
-        subscribeToHub()
         connection = Self.connection(of: appState)
         Publishers.CombineLatest3(appState.$isConnected, appState.$isConnecting, appState.$isProfileSwitching)
             .receive(on: RunLoop.main)
@@ -206,6 +230,16 @@ final class MacQuickAskController: ObservableObject {
                 self?.connectionChanged(Self.connection(of: appState))
             }
             .store(in: &bindings)
+    }
+
+    /// The id the sidebar would open for this session. Promotion can hold only the
+    /// runtime id (the create result carried no stored id and no `session.title`
+    /// has arrived); when the catalog already lists the session under that alias,
+    /// open its canonical row id. With no catalog row the id goes through as is:
+    /// `requestOpenSession` resumes a live runtime id and captures its identity
+    /// from the response.
+    nonisolated static func openableID(_ id: String, in catalog: [SessionSummary]) -> String {
+        catalog.first(where: { $0.id == id || $0.alternateIds.contains(id) })?.id ?? id
     }
 
     private static func connection(of appState: AppState?) -> MacQuickAskConnection {

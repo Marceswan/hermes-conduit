@@ -114,4 +114,49 @@ final class MacQuickAskHotKeyTests: XCTestCase {
         XCTAssertTrue(fake.registered.isEmpty)
         XCTAssertEqual(m.state, .disabled)
     }
+
+    func testTogglingTheDefaultWithoutRefreshStillUnregistersAndRegisters() {
+        let fake = FakeRegistrar()
+        let m = manager(fake)
+        m.refresh()
+        XCTAssertEqual(m.state, .registered)
+        // The Chat menu toggle only writes the default; the manager follows it.
+        suite.defaults.set(false, forKey: MacQuickAskHotKeyManager.enabledKey)
+        XCTAssertTrue(HostedTestSupport.waitUntil { m.state == .disabled })
+        XCTAssertEqual(fake.unregisters, 1)
+        suite.defaults.set(true, forKey: MacQuickAskHotKeyManager.enabledKey)
+        XCTAssertTrue(HostedTestSupport.waitUntil { m.state == .registered })
+        XCTAssertEqual(fake.registered.count, 2)
+    }
+
+    func testUnrelatedDefaultsWritesDoNotRetryAFailedRegistration() {
+        let fake = FakeRegistrar()
+        fake.failure = .conflict
+        let m = manager(fake)
+        m.refresh()
+        fake.failure = nil
+        suite.defaults.set("x", forKey: "conduit.unrelated")
+        HostedTestSupport.settle(0.1)
+        XCTAssertEqual(m.state, .unavailable(.conflict), "only an activation or the toggle retries")
+        XCTAssertTrue(fake.registered.isEmpty)
+    }
+
+    func testShutdownUnregistersOnceAndIsFinal() {
+        let fake = FakeRegistrar()
+        let m = manager(fake)
+        m.refresh()
+        m.shutdown()
+        XCTAssertEqual(fake.unregisters, 1)
+        XCTAssertEqual(m.state, .disabled)
+        m.refresh()
+        XCTAssertEqual(fake.registered.count, 1, "no re-registration after terminate")
+    }
+
+    func testRepeatedActivationRefreshesNeverRegisterTwice() {
+        let fake = FakeRegistrar()
+        let m = manager(fake)
+        for _ in 0..<5 { m.refresh() }
+        XCTAssertEqual(fake.registered.count, 1)
+        XCTAssertEqual(fake.unregisters, 0)
+    }
 }

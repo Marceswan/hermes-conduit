@@ -267,4 +267,110 @@ final class MacQuickAskControllerTests: XCTestCase {
         c.toggle(); XCTAssertTrue(panel.isVisible)
         c.toggle(); XCTAssertFalse(panel.isVisible)
     }
+
+    // MARK: Stream subscription and isolation (review round 1)
+
+    func testIdleControllerIsNotOnTheStream() {
+        let c = controller()
+        XCTAssertEqual(hub.subscriberCount, 0)
+        c.show(); c.hide(); c.panelDidDismiss()
+        XCTAssertEqual(hub.subscriberCount, 0, "opening and dismissing without sending subscribes nothing")
+    }
+
+    func testSubscribesWhenASessionIsCreatedAndDropsWhenTheExchangeEnds() {
+        let c = controller()
+        c.show()
+        c.draft = "q"; c.submit()
+        settle(calls.sends.count == 1)
+        XCTAssertEqual(hub.subscriberCount, 1)
+        c.newConversation()
+        XCTAssertEqual(hub.subscriberCount, 0)
+        c.draft = "again"; c.submit()
+        settle(calls.sends.count == 2)
+        XCTAssertEqual(hub.subscriberCount, 1)
+        c.promote()
+        XCTAssertEqual(hub.subscriberCount, 0, "promotion hands the session to the main chat")
+    }
+
+    func testReopenAfterTheWindowExpiresDropsTheSubscription() {
+        let c = controller()
+        c.show()
+        c.draft = "q"; c.submit()
+        settle(calls.sends.count == 1)
+        c.hide(); c.panelDidDismiss()
+        XCTAssertEqual(hub.subscriberCount, 1)
+        clock = clock.addingTimeInterval(MacQuickAskModel.restoreWindow + 1)
+        c.show()
+        XCTAssertEqual(c.model.state, .idle)
+        XCTAssertEqual(hub.subscriberCount, 0)
+    }
+
+    func testForeignAndIgnoredEventsDoNotPublishTheModel() {
+        let c = controller()
+        c.subscribeToHub()
+        var publishes = 0
+        let sink = c.objectWillChange.sink { publishes += 1 }
+        defer { sink.cancel() }
+        // Idle: nothing is owned.
+        hub.publish(.messageDelta(sessionId: "main-chat", text: "x"))
+        c.draft = "q"; c.submit()
+        settle(calls.sends.count == 1)
+        let before = publishes
+        for _ in 0..<20 { hub.publish(.messageDelta(sessionId: "main-chat", text: "x")) }
+        hub.publish(.sessionBusy(sessionId: "main-chat", busy: false))
+        XCTAssertEqual(publishes, before, "a delta of the main chat must not invalidate the panel")
+        XCTAssertEqual(c.model.text, "")
+        hub.publish(.messageDelta(sessionId: "rt", text: "mine"))
+        XCTAssertEqual(c.model.text, "mine")
+        XCTAssertGreaterThan(publishes, before)
+    }
+
+    func testEventsUnderTheStoredIdReachTheModelAndOtherSessionsDoNot() {
+        let c = controller()
+        c.draft = "q"; c.submit()
+        settle(calls.sends.count == 1)
+        hub.publish(.messageDelta(sessionId: "st", text: "via stored"))
+        XCTAssertEqual(c.model.text, "via stored")
+        hub.publish(.messageDelta(sessionId: "rt-main", text: " NO"))
+        XCTAssertEqual(c.model.text, "via stored")
+    }
+
+    func testOpenableIDResolvesARuntimeAliasToTheCatalogRow() {
+        let row = SessionSummary(
+            id: "stored-1", alternateIds: ["runtime-1"], title: "t", model: "", updatedLabel: "",
+            profile: "default", source: .chat, isActive: false, isArchived: false)
+        XCTAssertEqual(MacQuickAskController.openableID("runtime-1", in: [row]), "stored-1")
+        XCTAssertEqual(MacQuickAskController.openableID("stored-1", in: [row]), "stored-1")
+        XCTAssertEqual(MacQuickAskController.openableID("runtime-2", in: [row]), "runtime-2", "no row: the id goes through for resume")
+        XCTAssertEqual(MacQuickAskController.openableID("x", in: []), "x")
+    }
+
+    func testPanelKeyIsFalseWithoutARealPanel() {
+        let c = controller()
+        XCTAssertFalse(c.isPanelKey)
+    }
+
+    func testChromeStringsFromTheGatewayAreSanitized() {
+        let c = controller()
+        c.subscribeToHub()
+        c.draft = "q"; c.submit()
+        settle(calls.sends.count == 1)
+        hub.publish(.toolStart(sessionId: "rt", toolName: "term\u{202E}inal\u{200B}\n", toolInput: nil))
+        guard case .streaming(_, let status) = c.model.state else { return XCTFail("streaming expected") }
+        XCTAssertEqual(status, "terminal")
+        hub.publish(.messageError(sessionId: "rt", message: "bad\u{2028}\u{202D}thing\u{0007}"))
+        guard case .failed(let message, _, _) = c.model.state else { return XCTFail("failed expected") }
+        XCTAssertEqual(message, "badthing")
+    }
+
+    func testProfileNameInTheMismatchMessageIsSanitized() {
+        let c = controller()
+        createResult = .success(("rt", "st", "ev\u{202E}il\u{200B}"))
+        c.draft = "q"; c.submit()
+        settle(isFailed(c))
+        guard case .failed(let message, _, _) = c.model.state else { return XCTFail("failed expected") }
+        XCTAssertTrue(message.contains("evil"), message)
+        XCTAssertFalse(message.unicodeScalars.contains("\u{202E}"))
+        XCTAssertFalse(message.unicodeScalars.contains("\u{200B}"))
+    }
 }

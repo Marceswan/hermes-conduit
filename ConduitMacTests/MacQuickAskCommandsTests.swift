@@ -24,11 +24,12 @@ final class MacQuickAskCommandsTests: XCTestCase {
     private final class NoopRegistrar: MacHotKeyRegistering {
         var failure: MacHotKeyRegistrationError?
         var registered = 0
+        var unregisters = 0
         func register(_ key: MacHotKey, handler: @escaping @MainActor () -> Void) throws {
             if let failure { throw failure }
             registered += 1
         }
-        func unregister() {}
+        func unregister() { unregisters += 1 }
     }
 
     private func manager(_ registrar: NoopRegistrar) -> MacQuickAskHotKeyManager {
@@ -53,7 +54,7 @@ final class MacQuickAskCommandsTests: XCTestCase {
 
         XCTAssertEqual(hotKey.state, .registered)
         XCTAssertEqual(registrar.registered, 1)
-        XCTAssertEqual(hub.subscriberCount, 1, "Quick Ask listens to the stream from launch, not from the first window")
+        XCTAssertEqual(hub.subscriberCount, 0, "idle Quick Ask is not on the stream; it subscribes when it owns a session")
         XCTAssertEqual(controller.connection, .disconnected, "a fresh AppState has no connection")
         hotKey.onHotKey()
         XCTAssertTrue(panel.isVisible)
@@ -70,8 +71,26 @@ final class MacQuickAskCommandsTests: XCTestCase {
         let hotKey = manager(registrar)
         MacQuickAskBootstrap.start(appState: fixture.appState, controller: controller, hotKey: hotKey)
         MacQuickAskBootstrap.start(appState: fixture.appState, controller: controller, hotKey: hotKey)
-        XCTAssertEqual(hub.subscriberCount, 1)
+        XCTAssertEqual(hub.subscriberCount, 0)
         XCTAssertEqual(registrar.registered, 1)
+    }
+
+    func testStopReleasesTheHotKeyAndTheStream() {
+        let fixture = MacSharedBaseAppStateFixture()
+        self.fixture = fixture
+        let hub = MacStreamEventHub()
+        let controller = MacQuickAskController(hub: hub)
+        let registrar = NoopRegistrar()
+        let hotKey = manager(registrar)
+        MacQuickAskBootstrap.start(appState: fixture.appState, controller: controller, hotKey: hotKey)
+        controller.subscribeToHub()
+        MacQuickAskBootstrap.stop(controller: controller, hotKey: hotKey)
+        XCTAssertEqual(registrar.unregisters, 1)
+        XCTAssertEqual(hotKey.state, .disabled)
+        XCTAssertEqual(hub.subscriberCount, 0)
+        hotKey.refresh()
+        XCTAssertEqual(registrar.registered, 1, "a late activation after terminate does not register again")
+        XCTAssertEqual(hotKey.state, .disabled)
     }
 
     func testMenuCommandOpensPanelEvenWhenRegistrationFailed() {

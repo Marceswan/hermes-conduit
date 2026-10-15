@@ -166,9 +166,12 @@ final class MacFocusRequests: ObservableObject {
 @MainActor
 enum MacKeyboardActions {
     /// A sheet is attached to the window (or the window is the sheet): the
-    /// commands would act on the window behind it.
+    /// commands would act on the window behind it. The same holds for a floating panel.
     static func commandsBlocked(by window: NSWindow?) -> Bool {
-        window?.attachedSheet != nil || window?.sheetParent != nil
+        // A floating panel (Quick Ask) is not the chat window: the menu's tab,
+        // sidebar, search and session shortcuts must not act on the main window
+        // from behind it.
+        window is MacFloatingPanel || window?.attachedSheet != nil || window?.sheetParent != nil
     }
 
     static func selectTab(

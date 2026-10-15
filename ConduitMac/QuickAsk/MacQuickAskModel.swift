@@ -11,6 +11,14 @@ import Foundation
 /// - Every accepted event and every submit/open/close refreshes lastActivity.
 struct MacQuickAskModel: Equatable {
     static let restoreWindow: TimeInterval = 120
+    /// Gateway-controlled strings shown in the panel chrome (tool name, error text)
+    /// pass through `MacUntrustedText` at the model boundary; the reply body does not.
+    static let maxStatusGraphemes = 60
+    static let maxMessageGraphemes = 300
+
+    static func chrome(_ raw: String, max: Int) -> String {
+        MacUntrustedText.sanitize(raw, maxGraphemes: max)
+    }
 
     enum FailureKind: Equatable { case generic, sessionLimit }
 
@@ -87,8 +95,16 @@ struct MacQuickAskModel: Equatable {
     }
 
     mutating func fail(_ message: String, kind: FailureKind, now: Date) {
-        state = .failed(message: message, partial: turnText, kind: kind)
+        state = .failed(message: Self.chrome(message, max: Self.maxMessageGraphemes), partial: turnText, kind: kind)
         lastActivity = now
+    }
+
+    /// Would `apply` change anything for this event? The controller asks first so
+    /// a foreign or ignored event (every delta of the main chat) never touches the
+    /// published model.
+    func isRelevant(_ event: StreamEvent) -> Bool {
+        if case .sessionTitle(let runtime, let stored, _) = event { return owns(runtime) || owns(stored) }
+        return accepts(event)
     }
 
     mutating func apply(_ event: StreamEvent, now: Date) {
@@ -111,7 +127,8 @@ struct MacQuickAskModel: Equatable {
             turnText += text
             setStreaming(status: currentStatus)
         case .toolStart(_, let toolName, _, _):
-            setStreaming(status: toolName)
+            let status = Self.chrome(toolName, max: Self.maxStatusGraphemes)
+            setStreaming(status: status.isEmpty ? nil : status)
         case .toolComplete:
             setStreaming(status: nil)
         case .messageComplete(_, _, let content, _):
@@ -123,7 +140,7 @@ struct MacQuickAskModel: Equatable {
         case .messageInterrupted:
             state = .done(text: turnText)
         case .messageError(_, let message):
-            state = .failed(message: message, partial: turnText, kind: .generic)
+            state = .failed(message: Self.chrome(message, max: Self.maxMessageGraphemes), partial: turnText, kind: .generic)
         case .approval, .clarify, .inputPrompt:
             state = .needsInput(text: turnText)
         case .sessionBusy(_, let busy):

@@ -16,18 +16,40 @@ final class MacQuickAskHotKeyManager: ObservableObject {
     private let registrar: MacHotKeyRegistering
     private let defaults: UserDefaults
     private let isUnderTest: Bool
+    private var isShutDown = false
+    private var lastEnabled: Bool
+    private nonisolated(unsafe) var defaultsObserver: NSObjectProtocol?
 
     init(registrar: MacHotKeyRegistering, defaults: UserDefaults = .standard,
          isUnderTest: Bool = MacDefaults.isRunningUnderXCTest) {
         self.registrar = registrar
         self.defaults = defaults
         self.isUnderTest = isUnderTest
+        self.lastEnabled = defaults.object(forKey: Self.enabledKey) as? Bool ?? true
+        // The Chat menu toggle only writes the default. A menu item is not a live
+        // view, so do not rely on an onChange there: follow the default itself,
+        // and only react when the Quick Ask key actually flipped (a retry per
+        // unrelated preference write would re-register a failed hotkey each time).
+        defaultsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification, object: defaults, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.isEnabled != self.lastEnabled else { return }
+                self.refresh()
+            }
+        }
+    }
+
+    deinit {
+        if let defaultsObserver { NotificationCenter.default.removeObserver(defaultsObserver) }
     }
 
     var isEnabled: Bool { defaults.object(forKey: Self.enabledKey) as? Bool ?? true }
 
     /// Idempotent: call at launch, on app activation and when the toggle changes.
     func refresh() {
+        lastEnabled = isEnabled
+        guard !isShutDown else { return }
         guard !isUnderTest, isEnabled else {
             if state != .disabled { registrar.unregister() }
             state = .disabled
@@ -42,6 +64,14 @@ final class MacQuickAskHotKeyManager: ObservableObject {
         } catch {
             state = .unavailable(.other(-1))
         }
+    }
+
+    /// App termination: release the Carbon hotkey and its event handler now rather
+    /// than leave it to process teardown. Final; `refresh()` does nothing after it.
+    func shutdown() {
+        isShutDown = true
+        registrar.unregister()
+        state = .disabled
     }
 
     /// Chat-menu text, nil when nothing is wrong.

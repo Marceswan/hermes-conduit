@@ -51,6 +51,7 @@ final class ConduitMacAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         MacActivityBootstrap.stop()
+        if !MacDefaults.isRunningUnderXCTest { MacQuickAskBootstrap.stop() }
     }
 
     /// A Spotlight result opened Conduit (D19). SwiftUI's `.onContinueUserActivity`

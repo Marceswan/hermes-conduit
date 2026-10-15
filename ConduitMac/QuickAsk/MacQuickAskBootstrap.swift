@@ -18,4 +18,13 @@ enum MacQuickAskBootstrap {
         hotKey.onHotKey = { [weak controller] in controller?.toggle() }
         hotKey.refresh()
     }
+
+    /// App termination: release the hotkey and stop listening to the stream.
+    static func stop(
+        controller: MacQuickAskController? = nil,
+        hotKey: MacQuickAskHotKeyManager? = nil
+    ) {
+        (hotKey ?? MacQuickAskHotKeyManager.shared).shutdown()
+        (controller ?? MacQuickAskController.shared).unsubscribeFromHub()
+    }
 }
