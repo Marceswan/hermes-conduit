@@ -173,4 +173,103 @@ final class NotchStatusStateTests: XCTestCase {
         send(&s, .dismissRequested)
         XCTAssertTrue(s.buttonsEnabled)
     }
+    // MARK: drag (user scope change)
+
+    func testDraggingCancelsAPendingHoverExpandAndBlocksIt() {
+        var s = make()
+        send(&s, .counts(counts(working: 1), newDecision: false, newFinish: false))
+        send(&s, .hoverEntered)
+        XCTAssertEqual(send(&s, .dragging(true)), [.cancel(.hoverIn), .cancel(.hoverOut)])
+        send(&s, .timer(.hoverIn))
+        XCTAssertEqual(s.surface, .compact, "never auto-expands mid-drag")
+    }
+
+    func testPointerWobbleDuringADragSchedulesNothingAndKeepsTheSurface() {
+        var s = make()
+        send(&s, .counts(counts(working: 1), newDecision: false, newFinish: false))
+        send(&s, .hoverEntered); send(&s, .timer(.hoverIn))
+        XCTAssertEqual(s.surface, .expanded)
+        send(&s, .dragging(true))
+        XCTAssertTrue(send(&s, .hoverExited).isEmpty)
+        XCTAssertTrue(send(&s, .hoverEntered).isEmpty)
+        send(&s, .timer(.hoverOut))
+        XCTAssertEqual(s.surface, .expanded, "no collapse under the user's pointer mid-drag")
+    }
+
+    func testHoverResumesAfterTheDropWhenThePointerIsOverTheSurface() {
+        var s = make()
+        send(&s, .counts(counts(working: 1), newDecision: false, newFinish: false))
+        send(&s, .hoverEntered)
+        send(&s, .dragging(true))
+        XCTAssertEqual(send(&s, .dragging(false)), [.schedule(.hoverIn, after: 0.2)])
+        send(&s, .timer(.hoverIn))
+        XCTAssertEqual(s.surface, .expanded)
+    }
+
+    func testDropWithThePointerAwayLeavesACompactSurfaceAlone() {
+        var s = make()
+        send(&s, .counts(counts(working: 1), newDecision: false, newFinish: false))
+        send(&s, .hoverEntered)
+        send(&s, .dragging(true))
+        send(&s, .hoverExited)
+        XCTAssertTrue(send(&s, .dragging(false)).isEmpty)
+        XCTAssertEqual(s.surface, .compact)
+    }
+
+    func testDropWithThePointerAwayCollapsesAHoverExpandedSurface() {
+        var s = make()
+        send(&s, .counts(counts(working: 1), newDecision: false, newFinish: false))
+        send(&s, .hoverEntered); send(&s, .timer(.hoverIn))
+        send(&s, .dragging(true))
+        send(&s, .hoverExited)
+        XCTAssertEqual(send(&s, .dragging(false)), [.schedule(.hoverOut, after: 0.4)])
+    }
+
+    func testAttentionArrivingMidDragWaitsForTheDrop() {
+        var s = make()
+        send(&s, .counts(counts(working: 1), newDecision: false, newFinish: false))
+        send(&s, .dragging(true))
+        let fx = send(&s, .counts(counts(decisions: 1, working: 1), newDecision: true, newFinish: false))
+        XCTAssertTrue(fx.isEmpty, "no announcement, no click guard, no expand under the pointer")
+        XCTAssertEqual(s.surface, .compact)
+        XCTAssertEqual(send(&s, .dragging(false)), [.schedule(.clickGuard, after: 0.6), .announceAttention])
+        XCTAssertEqual(s.surface, .expanded)
+        XCTAssertFalse(s.buttonsEnabled, "the 600 ms guard starts at the drop")
+    }
+
+    func testAttentionResolvedMidDragIsNotPinnedAtTheDrop() {
+        var s = make()
+        send(&s, .counts(counts(working: 1), newDecision: false, newFinish: false))
+        send(&s, .dragging(true))
+        send(&s, .counts(counts(decisions: 1, working: 1), newDecision: true, newFinish: false))
+        send(&s, .counts(counts(working: 1), newDecision: false, newFinish: false))
+        XCTAssertTrue(send(&s, .dragging(false)).isEmpty)
+        XCTAssertEqual(s.surface, .compact)
+    }
+
+    func testFinishFlashIsSkippedMidDrag() {
+        var s = make()
+        send(&s, .dragging(true))
+        send(&s, .counts(counts(recent: 1), newDecision: false, newFinish: true))
+        send(&s, .dragging(false))
+        XCTAssertEqual(s.surface, .compact, "no flash for a finish the user dragged through")
+    }
+
+    func testADragIsNotAnInteraction() {
+        var s = make()
+        send(&s, .counts(counts(decisions: 1), newDecision: true, newFinish: false))
+        send(&s, .timer(.clickGuard))
+        send(&s, .hoverEntered)
+        send(&s, .dragging(true))
+        send(&s, .dragging(false))
+        XCTAssertTrue(send(&s, .hoverExited).isEmpty, "still sticky: dragging did not count as interacting")
+        XCTAssertEqual(s.surface, .expanded)
+    }
+
+    func testDropWithoutADragStartIsHarmless() {
+        var s = make()
+        send(&s, .counts(counts(working: 1), newDecision: false, newFinish: false))
+        XCTAssertTrue(send(&s, .dragging(false)).isEmpty)
+        XCTAssertEqual(s.surface, .compact)
+    }
 }

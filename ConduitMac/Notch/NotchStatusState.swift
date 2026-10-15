@@ -18,6 +18,7 @@ enum NotchInput: Equatable {
     case dismissRequested       // Esc or a click outside
     case toggleCommandPin       // Go > Show Agent Status
     case timer(NotchTimer)
+    case dragging(Bool)         // first movement past the threshold / after the release
 }
 
 /// Pure state machine. The controller runs the returned effects and feeds
@@ -38,6 +39,8 @@ struct NotchStatusState: Equatable {
     private var flashing = false
     private var guarding = false
     private var interacted = false
+    private var dragging = false
+    private var pendingAttention = false
 
     init(mode: NotchMode = .activeAgents) { self.mode = mode }
 
@@ -56,6 +59,7 @@ struct NotchStatusState: Equatable {
 
     private mutating func clearTransient() {
         attentionPinned = false; hoverExpanded = false; flashing = false; guarding = false; interacted = false
+        pendingAttention = false
     }
 
     mutating func apply(_ input: NotchInput) -> [NotchEffect] {
@@ -65,18 +69,25 @@ struct NotchStatusState: Equatable {
             counts = c
             let live = online && mode != .off
             if live && newDecision {
-                attentionPinned = true; interacted = false; guarding = true
-                fx += [.schedule(.clickGuard, after: Self.clickGuard), .announceAttention]
-            } else if c.decisions == 0 && attentionPinned {
-                attentionPinned = false; interacted = false; guarding = false
-                fx.append(.cancel(.clickGuard))
+                if dragging {
+                    pendingAttention = true      // expand after the drop, not under the user's pointer
+                } else {
+                    attentionPinned = true; interacted = false; guarding = true
+                    fx += [.schedule(.clickGuard, after: Self.clickGuard), .announceAttention]
+                }
+            } else if c.decisions == 0 {
+                pendingAttention = false
+                if attentionPinned {
+                    attentionPinned = false; interacted = false; guarding = false
+                    fx.append(.cancel(.clickGuard))
+                }
             }
-            if live && mode == .activeAgents && newFinish && !attentionPinned && c.recent > 0 {
+            if live && mode == .activeAgents && newFinish && !attentionPinned && !dragging && c.recent > 0 {
                 flashing = true
                 fx.append(.schedule(.flash, after: Self.flashDuration))
             }
             if !c.hasAnything {
-                flashing = false; hoverExpanded = false
+                flashing = false; hoverExpanded = false; pendingAttention = false
                 fx += [.cancel(.flash), .cancel(.hoverIn), .cancel(.hoverOut)]
             }
         case let .mode(m):
@@ -87,10 +98,12 @@ struct NotchStatusState: Equatable {
             if !o { clearTransient(); fx = Self.allTimers }
         case .hoverEntered:
             hovering = true
+            if dragging { return [] }
             fx.append(.cancel(.hoverOut))
             if surface == .compact && !hoverExpanded { fx.append(.schedule(.hoverIn, after: Self.hoverInDelay)) }
         case .hoverExited:
             hovering = false
+            if dragging { return [] }
             fx.append(.cancel(.hoverIn))
             if hoverExpanded || (attentionPinned && interacted) {
                 fx.append(.schedule(.hoverOut, after: Self.hoverOutDelay))
@@ -105,11 +118,30 @@ struct NotchStatusState: Equatable {
             fx = Self.allTimers
         case .toggleCommandPin:
             commandPinned.toggle()
+        case let .dragging(isDragging):
+            guard isDragging != dragging else { return [] }
+            dragging = isDragging
+            if isDragging {
+                fx += [.cancel(.hoverIn), .cancel(.hoverOut)]
+            } else {
+                if pendingAttention {
+                    pendingAttention = false
+                    if online && mode != .off && counts.decisions > 0 {
+                        attentionPinned = true; interacted = false; guarding = true
+                        fx += [.schedule(.clickGuard, after: Self.clickGuard), .announceAttention]
+                    }
+                }
+                if hovering && surface == .compact {
+                    fx.append(.schedule(.hoverIn, after: Self.hoverInDelay))
+                } else if !hovering && hoverExpanded {
+                    fx.append(.schedule(.hoverOut, after: Self.hoverOutDelay))
+                }
+            }
         case .timer(let t):
             switch t {
-            case .hoverIn: if hovering && surface == .compact { hoverExpanded = true }
+            case .hoverIn: if hovering && !dragging && surface == .compact { hoverExpanded = true }
             case .hoverOut:
-                if !hovering {
+                if !hovering && !dragging {
                     hoverExpanded = false
                     if interacted { attentionPinned = false; interacted = false }
                 }
