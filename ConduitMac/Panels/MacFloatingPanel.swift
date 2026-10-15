@@ -11,6 +11,11 @@ struct MacFloatingPanelConfig {
     var level: NSWindow.Level = .floating
     var joinsAllSpaces: Bool = true        // plus fullScreenAuxiliary
     var onDismiss: (() -> Void)? = nil
+    /// The notch surface sits in the menu bar band; AppKit would push it below.
+    var allowsMenuBarOverlap: Bool = false
+    var hasShadow: Bool = true
+    var onMouseEntered: (() -> Void)? = nil
+    var onMouseExited: (() -> Void)? = nil
 }
 
 /// What the controller needs from the machine. Injected so placement is testable.
@@ -35,11 +40,21 @@ final class MacFloatingPanel: NSPanel {
     var allowsKey = false
     var onCancel: (() -> Void)?
     var onResignKey: (() -> Void)?
+    var allowsMenuBarOverlap = false
+    var onMouseEntered: (() -> Void)?
+    var onMouseExited: (() -> Void)?
 
     override var canBecomeKey: Bool { allowsKey }
     override var canBecomeMain: Bool { false }
 
     override func cancelOperation(_ sender: Any?) { onCancel?() }
+
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        allowsMenuBarOverlap ? frameRect : super.constrainFrameRect(frameRect, to: screen)
+    }
+
+    override func mouseEntered(with event: NSEvent) { onMouseEntered?() }
+    override func mouseExited(with event: NSEvent) { onMouseExited?() }
 
     override func resignKey() {
         super.resignKey()
@@ -76,7 +91,7 @@ final class MacFloatingPanelController {
         panel.isReleasedWhenClosed = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        panel.hasShadow = config.hasShadow
         panel.level = config.level
         panel.collectionBehavior = config.joinsAllSpaces
             ? [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -85,6 +100,14 @@ final class MacFloatingPanelController {
         let hosting = NSHostingView(rootView: content())
         hosting.sizingOptions = []   // the controller owns the panel's size
         panel.contentView = hosting
+        panel.allowsMenuBarOverlap = config.allowsMenuBarOverlap
+        panel.onMouseEntered = config.onMouseEntered
+        panel.onMouseExited = config.onMouseExited
+        if config.onMouseEntered != nil || config.onMouseExited != nil {
+            hosting.addTrackingArea(NSTrackingArea(
+                rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                owner: panel, userInfo: nil))
+        }
         self.panel = panel
         panel.onCancel = { [weak self] in
             guard let self, self.config.dismissOnEscape else { return }
@@ -136,6 +159,12 @@ final class MacFloatingPanelController {
         resize(to: CGSize(width: contentSize.width, height: height))
     }
 
+    /// Width and height follow the content (compact capsule vs expanded list);
+    /// the top edge and the horizontal center stay put.
+    func updateContentSize(_ size: CGSize) {
+        resize(to: size)
+    }
+
     // MARK: - Geometry
 
     func resize(to size: CGSize) {
@@ -147,7 +176,7 @@ final class MacFloatingPanelController {
     }
 
     func bounds(of screen: MacScreenGeometry) -> CGRect {
-        screen.visibleFrame
+        config.allowsMenuBarOverlap ? screen.frame : screen.visibleFrame
     }
 
     private func place() {

@@ -150,4 +150,67 @@ final class MacFloatingPanelTests: XCTestCase {
         controller.show()
         XCTAssertEqual(controller.targetFrame.height, 240)
     }
+
+    func testMenuBarOverlapReturnsTheFrameUnchanged() {
+        let panel = make { $0.allowsMenuBarOverlap = true }.panel
+        let screen = NSScreen.screens[0]
+        let overlapping = NSRect(x: screen.frame.midX - 100, y: screen.frame.maxY - 40, width: 200, height: 40)
+        XCTAssertEqual(panel.constrainFrameRect(overlapping, to: screen), overlapping)
+    }
+
+    func testShadowFollowsConfig() {
+        XCTAssertTrue(make().panel.hasShadow)
+        XCTAssertFalse(make { $0.hasShadow = false }.panel.hasShadow)
+    }
+
+    func testContentSizeChangesWidthAndHeightKeepingTopAndCenter() {
+        let controller = make()
+        controller.show()
+        let top = controller.targetFrame.maxY
+        let midX = controller.targetFrame.midX
+        controller.updateContentSize(CGSize(width: 300, height: 200))
+        XCTAssertEqual(controller.targetFrame.size, CGSize(width: 300, height: 200))
+        XCTAssertEqual(controller.targetFrame.maxY, top)
+        XCTAssertEqual(controller.targetFrame.midX, midX, accuracy: 0.001)
+    }
+
+    func testOverlapAllowedPanelMayGrowIntoTheMenuBarBand() {
+        // notchAnchored sits flush with screen.frame.maxY, above visibleFrame.maxY.
+        let controller = make { $0.placement = .notchAnchored; $0.allowsMenuBarOverlap = true }
+        controller.show()
+        XCTAssertEqual(controller.targetFrame.maxY, 900)   // primary.frame.maxY, not 876
+        controller.updateContentSize(CGSize(width: 600, height: 120))
+        XCTAssertEqual(controller.targetFrame.maxY, 900)
+    }
+
+    func testMouseCallbacksFire() {
+        var entered = 0, exited = 0
+        let controller = make { $0.onMouseEntered = { entered += 1 }; $0.onMouseExited = { exited += 1 } }
+        controller.show()
+        func event(_ type: NSEvent.EventType) -> NSEvent {
+            NSEvent.enterExitEvent(with: type, location: .zero, modifierFlags: [], timestamp: 0,
+                                   windowNumber: controller.panel.windowNumber, context: nil,
+                                   eventNumber: 0, trackingNumber: 0, userData: nil)!
+        }
+        controller.panel.mouseEntered(with: event(.mouseEntered))
+        controller.panel.mouseExited(with: event(.mouseExited))
+        XCTAssertEqual(entered, 1)
+        XCTAssertEqual(exited, 1)
+    }
+
+    func testPlacementFollowsScreenParameterChanges() {
+        var screens = [primary]
+        let environment = MacFloatingPanelEnvironment(screens: { screens }, mouseLocation: { CGPoint(x: 100, y: 100) }, reduceMotion: { true })
+        let controller = MacFloatingPanelController(
+            config: MacFloatingPanelConfig(size: NSSize(width: 600, height: 80), placement: .screenCenterTop(fromTop: 100),
+                                           canBecomeKey: false, dismissOnResignKey: false),
+            environment: environment) { Color.clear }
+        controllers.append(controller)
+        controller.show()
+        XCTAssertEqual(controller.targetFrame.midX, 720, accuracy: 0.001)
+        screens = [MacScreenGeometry(frame: CGRect(x: 0, y: 0, width: 1000, height: 800),
+                                     visibleFrame: CGRect(x: 0, y: 0, width: 1000, height: 780))]
+        NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        XCTAssertTrue(HostedTestSupport.waitUntil { abs(controller.targetFrame.midX - 500) < 0.001 })
+    }
 }
