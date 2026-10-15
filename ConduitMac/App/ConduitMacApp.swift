@@ -91,6 +91,7 @@ struct ConduitMacApp: App {
                 pendingExternalLink = nil
                 appState.openAppLink(link)
             }
+            .macServiceRouting(appState: appState)
             .task { SiriProfileShortcuts.refresh() }
             .task(id: voiceIntentRouteKey) {
                 while await resolvePendingVoiceIntent() {

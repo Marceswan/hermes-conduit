@@ -39,5 +39,19 @@
             </dict>
         </dict>
     </dict>
+    <key>NSServices</key>
+    <array>
+        <dict>
+            <key>NSMenuItem</key>
+            <dict><key>default</key><string>Send to Hermes</string></dict>
+            <key>NSMessage</key><string>sendToHermes</string>
+            <key>NSPortName</key><string>Conduit</string>
+            <key>NSSendTypes</key>
+            <array>
+                <string>public.utf8-plain-text</string>
+                <string>public.plain-text</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

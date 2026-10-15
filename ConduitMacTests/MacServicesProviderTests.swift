@@ -57,6 +57,16 @@ final class MacServicesProviderTests: XCTestCase {
         XCTAssertTrue(received.isEmpty)
     }
 
+    func testInfoPlistDeclaresTheService() throws {
+        let services = try XCTUnwrap(Bundle.main.object(forInfoDictionaryKey: "NSServices") as? [[String: Any]])
+        let service = try XCTUnwrap(services.first)
+        XCTAssertEqual(service["NSMessage"] as? String, MacServicesProvider.selectorName)
+        XCTAssertEqual(service["NSPortName"] as? String, "Conduit")
+        XCTAssertEqual((service["NSMenuItem"] as? [String: String])?["default"], "Send to Hermes")
+        XCTAssertEqual(service["NSSendTypes"] as? [String], ["public.utf8-plain-text", "public.plain-text"])
+        XCTAssertNil(service["NSReturnTypes"], "nothing is returned to the sender")
+    }
+
     func testSelectorNameMatchesTheMethod() {
         XCTAssertTrue(MacServicesProvider.instancesRespond(to: Selector(("\(MacServicesProvider.selectorName):userData:error:"))))
     }
