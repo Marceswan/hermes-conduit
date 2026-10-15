@@ -1763,16 +1763,27 @@ struct KanbanView: View {
                     ? "line.3.horizontal.decrease.circle.fill"
                     : "line.3.horizontal.decrease.circle")
                     .foregroundStyle(filtersActive ? Color.conduitAccent : Color.secondary)
+                    #if os(macOS) // MAC: density: 28 pt inside the 32 pt pill
+                    .frame(width: MacSidebarMetrics.searchPillButton, height: MacSidebarMetrics.searchPillButton)
+                    #else // MAC:
                     .frame(width: 32, height: 32)
+                    #endif // MAC:
             }
             .buttonStyle(.plain)
             .accessibilityLabel(filtersActive ? AppLocalization.string("Filters active — open filters") : AppLocalization.string("Open filters"))
             .accessibilityHint("Shows assignee, tenant, archived, and running grouping options")
             .disabled(!store.isSelectedSnapshotLoaded)
         }
+        #if os(macOS) // MAC: density: a 32 pt compact pill like the header buttons beside it
+        .font(.subheadline)
+        .padding(.horizontal, MacSidebarMetrics.searchPillPadding)
+        .frame(height: MacControlHeight.compact)
+        .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius)
+        #else // MAC:
         .padding(.horizontal, 12)
         .padding(.vertical, 6).frame(minHeight: 40)
         .conduitGlassControl(cornerRadius: 15)
+        #endif // MAC:
     }
 
     /// Active-filter indication for the filter button (sheet-driven filters:

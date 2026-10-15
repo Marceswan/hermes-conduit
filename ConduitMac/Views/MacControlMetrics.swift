@@ -30,6 +30,9 @@ enum MacSidebarMetrics {
     /// Gap between the sidebar's stacked rows (upstream: 16).
     static let stackGap: CGFloat = 10
     /// Filter chip height and horizontal padding (upstream: 27 pt, 11 pt).
+    /// Search pill (Kanban, Cron): 32 pt tall (upstream: 40), 10 pt inset (12), 28 pt filter button (32).
+    static let searchPillPadding: CGFloat = 10
+    static let searchPillButton: CGFloat = 28
     static let chipHeight: CGFloat = 24
     static let chipPadding: CGFloat = 9
     /// A session card's pitch in the list: card plus its top and bottom inset

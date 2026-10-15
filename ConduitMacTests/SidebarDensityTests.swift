@@ -214,6 +214,22 @@ final class SidebarDensityTests: XCTestCase {
         }
     }
 
+    func testSearchPillsAreThirtyTwoPoints() throws {
+        let host = NSHostingView(rootView: MacSearchPill(prompt: "Search scheduled jobs", text: .constant("")).frame(width: 300))
+        XCTAssertEqual(host.fittingSize.height, MacControlHeight.compact, accuracy: 0.6, "Cron search pill")
+        // Kanban's own bar. Its filter button reports only its glyph (11 pt) in the AX tree, so
+        // the pill's height is read from where the button sits: centred in a 32 pt pill below the header.
+        let window = self.host(KanbanView().environmentObject(appState), size: NSSize(width: 760, height: 300), dark: true)
+        let found = try nodes(in: window)
+        let filters = try frame("Open filters", in: found)
+        let field = try XCTUnwrap(found.first { $0.role == "AXTextField" }?.frame, "search field")
+        XCTAssertLessThan(field.height, MacControlHeight.compact)
+        let header = found.filter { ($0.role == "AXButton" || $0.role == "AXMenuButton") && $0.frame.minY < 70 && $0.frame.width < 60 && $0.label != "Open filters" }
+        let lastHeaderBottom = try XCTUnwrap(header.map(\.frame.maxY).max())
+        // Header row, 12 pt stack gap, then the pill: its centre is 16 pt below the pill's top.
+        XCTAssertEqual(filters.midY - lastHeaderBottom, 12 + MacControlHeight.compact / 2, accuracy: 1.5, "pill is 32 pt tall")
+    }
+
     // MARK: - Shots
 
     func testWriteShots() throws {

@@ -40,8 +40,9 @@ extension MacPaneHeader where Trailing == EmptyView {
     }
 }
 
-/// Inline search field styled like Kanban's "Search tasks" bar: glass pill,
-/// leading magnifier, 40 pt minimum height, 12 pt inset.
+/// Inline search field styled like Kanban's "Search tasks" bar: a compact
+/// (`MacControlHeight.compact`, 32 pt) glass pill, leading magnifier,
+/// subheadline text, 10 pt inset, the same radius as the other compact controls.
 struct MacSearchPill: View {
     let prompt: String
     @Binding var text: String
@@ -61,9 +62,10 @@ struct MacSearchPill: View {
                 .accessibilityLabel("Clear search")
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6).frame(minHeight: 40)
-        .conduitGlassControl(cornerRadius: 15)
+        .font(.subheadline)
+        .padding(.horizontal, MacSidebarMetrics.searchPillPadding)
+        .frame(height: MacControlHeight.compact)
+        .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius)
     }
 }
 
