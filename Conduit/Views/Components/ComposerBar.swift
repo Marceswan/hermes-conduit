@@ -934,6 +934,13 @@ struct ComposerBar: View {
             } label: {
                 Label("Workspace", systemImage: "folder")
             }
+            #if os(macOS) // MAC: Ask About Window (system picker capture)
+            Button {
+                Task { await MacAskAboutWindow.run(appState: appState, window: NSApp.keyWindow) }
+            } label: {
+                Label("Ask About Window…", systemImage: "macwindow")
+            }
+            #endif
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 16, weight: .medium))

@@ -46,6 +46,10 @@ struct ConduitCommands: Commands {
         CommandMenu("Chat") {
             Button("Stop Response") { Task { await appState.cancelCurrent() } }
                 .keyboardShortcut(".", modifiers: .command)
+            Button("Ask About Window\u{2026}") {
+                Task { await MacAskAboutWindow.run(appState: appState, window: NSApp.keyWindow) }
+            }
+            .keyboardShortcut("w", modifiers: [.shift, .command])
         }
         CommandMenu("Go") {
             // Never `.disabled`: a stale disabled item would swallow Cmd-K (see
