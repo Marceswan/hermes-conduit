@@ -469,6 +469,7 @@ final class MacKeyboardMenuTests: XCTestCase {
             ("/Go/Session Below", down, [.option, .command]),
             ("/Go/Message Field", "l", .command),
             ("/Edit/Search Sessions", "f", .command),
+            ("/Go/Command Palette", "k", .command),
         ]
         return table
     }
