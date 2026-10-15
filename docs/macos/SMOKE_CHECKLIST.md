@@ -53,6 +53,15 @@ Rule R18: agents never send clicks or key events to the running app. Launch smok
 - [ ] Install relaunches into the new version (Conduit > About shows it).
 - [ ] On a Mac with an older non-Sparkle build, one manual DMG install enables updates (see docs/macos/RELEASING.md).
 
+## System integration: Services
+
+- [ ] Run `/System/Library/CoreServices/pbs -update`, relaunch Conduit once; System Settings > Keyboard > Keyboard Shortcuts > Services > Text lists "Send to Hermes"; its toggle works
+- [ ] Select text in TextEdit and Safari, run the Service with Conduit closed: Conduit opens, new chat, text in the composer, not sent
+- [ ] Same with Conduit connected and mid-turn: the running chat is untouched, the text is in a new chat
+- [ ] Select text in a Mail message and an image-only selection: Service is absent or reports "No text selected"; nothing breaks
+- [ ] Switch profile before the cold launch connects: the parked text is not applied to the other profile
+- [ ] With a non-English system language, the Services menu item shows the translated title
+
 ## Open findings
 
 - (c) Login logo clipping: fix applied in `Conduit/Views/LoginView.swift` (focus `scrollTo` gated to iOS, ledger R4). Owner: 11e. Launch screenshot on 2026-10-13 was covered by a keychain prompt (see below), so the visual result is UNVERIFIED; user confirms on the next launch.
