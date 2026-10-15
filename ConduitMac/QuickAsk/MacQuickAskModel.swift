@@ -30,6 +30,8 @@ struct MacQuickAskModel: Equatable {
     private(set) var lastPrompt = ""
     private(set) var lastActivity: Date?
 
+    init() {}
+
     private var turnText = ""
     private var segmentStart = 0
     private var separatorPending = false
@@ -179,3 +181,16 @@ struct MacQuickAskModel: Equatable {
         }
     }
 }
+
+#if DEBUG
+extension MacQuickAskModel {
+    // test seam: a model already holding a session, in the given state
+    init(testState: State) {
+        self.init()
+        runtimeID = "rt-test"
+        storedID = "st-test"
+        lastPrompt = "test prompt"
+        state = testState
+    }
+}
+#endif
