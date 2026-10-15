@@ -114,6 +114,7 @@ final class AgentActivityFeed: ObservableObject {
         guard state.scope != AgentActivityState.Scope(profile: profile, dashboardID: dashboardID) else { return }
         fetchTasks.values.forEach { $0.cancel() }
         fetchTasks = [:]
+        poller.discardInFlight()
         apply(.reset(profile: profile, dashboardID: dashboardID))
         apply(.activeSession(id: activeSessionId))
         apply(.catalog(catalog))

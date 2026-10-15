@@ -34,9 +34,19 @@ enum AgentActivityPollCadence {
     static let live: TimeInterval = 4
     static let idle: TimeInterval = 15
 
+    /// A gateway that keeps failing is asked less often, up to this ceiling.
+    static let maxBackoff: TimeInterval = 60
+
     /// 4 s while anything is live or a surface is showing; 15 s when idle.
     static func interval(isLive: Bool, panelVisible: Bool) -> TimeInterval {
         isLive || panelVisible ? live : idle
+    }
+
+    /// `interval` doubled per consecutive failure (so 4, 8, 16, 32, 60 s while live), never past `maxBackoff`.
+    static func interval(isLive: Bool, panelVisible: Bool, failures: Int) -> TimeInterval {
+        let base = interval(isLive: isLive, panelVisible: panelVisible)
+        guard failures > 0 else { return base }
+        return min(base * pow(2, Double(min(failures, 6))), max(maxBackoff, base))
     }
 }
 
@@ -96,6 +106,12 @@ final class AgentActivityPoller {
     private let sleep: Sleep
     private var task: Task<Void, Never>?
     private var unavailable = false
+    /// Consecutive failed polls (method-unavailable and offline do not count); stretches the interval.
+    private(set) var failures = 0
+    /// Requests are numbered; a response older than one already applied is dropped, so overlapping
+    /// polls (the loop plus `refreshNow`) can never apply out of order.
+    private var nextSequence = 0
+    private var appliedSequence = -1
 
     init(sources: AgentActivitySources, sleep: @escaping Sleep = AgentActivityPoller.liveSleep) {
         self.sources = sources
@@ -111,7 +127,8 @@ final class AgentActivityPoller {
             while !Task.isCancelled {
                 guard let self else { return }
                 await self.pollNow()
-                let interval = AgentActivityPollCadence.interval(isLive: self.isLive(), panelVisible: self.isPanelVisible())
+                let interval = AgentActivityPollCadence.interval(
+                    isLive: self.isLive(), panelVisible: self.isPanelVisible(), failures: self.failures)
                 do { try await self.sleep(interval) } catch { return }
             }
         }
@@ -120,26 +137,39 @@ final class AgentActivityPoller {
     func stop() {
         task?.cancel()
         task = nil
+        discardInFlight()
     }
 
     /// A new connection probes for `session.active_list` again.
     func resetCapability() {
         unavailable = false
+        failures = 0
+    }
+
+    /// Responses to requests already sent are ignored (a scope change or stop: they describe the old scope).
+    func discardInFlight() {
+        appliedSequence = nextSequence - 1
     }
 
     func pollNow() async {
         guard sources.isConnected, !unavailable else { return }
+        let sequence = nextSequence
+        nextSequence += 1
         do {
             let rows = try await sources.activeSessions()
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, sequence > appliedSequence else { return }
+            appliedSequence = sequence
+            failures = 0
             onRows(rows)
         } catch is CancellationError {
             return
         } catch {
-            // Stop asking a gateway that lacks the method; other failures retry next tick.
+            // Stop asking a gateway that lacks the method; other failures retry on a longer interval.
             if sources.isMethodUnavailable(error) {
                 unavailable = true
                 onUnavailable()
+            } else if sources.isConnected, sequence > appliedSequence {
+                failures += 1
             }
         }
     }

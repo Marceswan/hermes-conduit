@@ -547,15 +547,21 @@ enum AgentActivityReducer {
         // MARK: Catalog
 
         mutating func catalog(_ sessions: [SessionSummary]) {
+            // The catalog can hold thousands of rows and `$sessions` republishes on the main actor, while
+            // only a handful of identities (sessions seen live) can match: look aliases up in a set and
+            // run the identity scan for the rows that hit it.
+            var known = Set(s.identities.values.flatMap(\.allIds))
             for session in sessions {
                 let ids = [session.id, session.storedSessionId, session.lineageRootId].compactMap { $0 } + session.alternateIds
                 for id in ids { s.titles[id] = session.title }
+                guard ids.contains(where: known.contains) else { continue }
                 for (runtime, var identity) in s.identities where ids.contains(where: { identity.matches($0) }) {
                     identity.alternateIds.formUnion(ids.filter { $0 != runtime })
                     identity.catalogId = session.id
                     if identity.lineageRootId == nil { identity.lineageRootId = session.lineageRootId }
                     s.identities[runtime] = identity
                 }
+                known.formUnion(ids)
             }
             for id in Array(s.items.keys) {
                 guard let runtime = s.items[id]?.sessionId else { continue }

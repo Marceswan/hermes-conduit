@@ -66,9 +66,19 @@ final class FakeActivitySources: AgentActivitySources {
     private(set) var cardResponses: [(request: String, choice: String)] = []
     private var gate: CheckedContinuation<Void, Never>?
 
+    /// While true, each `activeSessions()` parks until `releaseActive(_:rows:)` (oldest request is index 0).
+    var holdActive = false
+    private var activeWaiters: [CheckedContinuation<[LiveSessionStatus], Never>] = []
+    var heldActiveCount: Int { activeWaiters.count }
+
+    func releaseActive(_ index: Int, rows: [LiveSessionStatus]) {
+        activeWaiters.remove(at: index).resume(returning: rows)
+    }
+
     func activeSessions() async throws -> [LiveSessionStatus] {
         activeCalls += 1
         if let activeError { throw activeError }
+        if holdActive { return await withCheckedContinuation { activeWaiters.append($0) } }
         return rows
     }
 

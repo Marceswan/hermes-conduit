@@ -22,6 +22,8 @@ struct MacFloatingPanelConfig {
     var dragThreshold: CGFloat = 4
     /// Called once after a drag with the resulting `.edgeDocked` placement, so the owner can persist it.
     var onPlacementChanged: ((MacFloatingPanelPlacement) -> Void)? = nil
+    /// Spoken by VoiceOver for the panel itself (a borderless window has no title bar to read); pass a localized string.
+    var accessibilityLabel: String? = nil
 }
 
 /// What the controller needs from the machine. Injected so placement is testable.
@@ -83,7 +85,9 @@ final class MacFloatingPanel: NSPanel {
             drag.begin(pointer: screenPoint(of: event), frame: frame)
             super.sendEvent(event)               // a click must still reach the content
         case .leftMouseDragged:
+            let wasDragging = drag.isDragging
             if let moved = drag.move(to: screenPoint(of: event)) {
+                if !wasDragging { cancelContentPress(like: event) }
                 setFrame(moved, display: true)
                 onDragMoved?(moved)              // swallowed: the content never sees a drag
             } else {
@@ -99,6 +103,18 @@ final class MacFloatingPanel: NSPanel {
         default:
             super.sendEvent(event)
         }
+    }
+
+    /// The content saw the press that became a drag. It never gets the drag or the real
+    /// release, so end its press with a release far outside the window: a control treats
+    /// that as a cancel (no highlight left behind, no click).
+    private func cancelContentPress(like event: NSEvent) {
+        guard let release = NSEvent.mouseEvent(
+            with: .leftMouseUp, location: CGPoint(x: -100_000, y: -100_000), modifierFlags: event.modifierFlags,
+            timestamp: event.timestamp, windowNumber: windowNumber, context: nil,
+            eventNumber: event.eventNumber, clickCount: 1, pressure: 0)
+        else { return }
+        super.sendEvent(release)
     }
 
     override func resignKey() {
@@ -144,6 +160,8 @@ final class MacFloatingPanelController {
             ? [.canJoinAllSpaces, .fullScreenAuxiliary]
             : [.fullScreenAuxiliary]
         panel.allowsKey = config.canBecomeKey
+        panel.isExcludedFromWindowsMenu = true
+        if let label = config.accessibilityLabel { panel.setAccessibilityLabel(label) }
         let hosting = NSHostingView(rootView: content())
         hosting.sizingOptions = []   // the controller owns the panel's size
         panel.contentView = hosting

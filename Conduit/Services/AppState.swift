@@ -25735,11 +25735,19 @@ final class AppState: ObservableObject {
         // A conversation kept running while locked relies on the transport
         // the same way, and so do a call the Apple Watch started and a call
         // from Hermes answered in CallKit.
+        #if os(macOS) // MAC: scene .inactive/.background drop the armed reconnect timer (cancelScheduledReconnect); with the Mac exemption the app must re-arm it here, or a socket that dies just before the user switches away stays dead until foregrounded
+        guard canRunTransportRecovery,
+              !isSceneActive,
+              connection != nil,
+              !isConnected,
+              !isConnecting else { return }
+        #else
         guard isCarPlayVoiceSurfaceActive || isLockedVoiceSurfaceActive || isWatchVoiceCallActive || isNativeHermesCallActive,
               !isSceneActive,
               connection != nil,
               !isConnected,
               !isConnecting else { return }
+        #endif // MAC:
         scheduleReconnect(immediately: immediately, purpose: chatResumePurposeForDisconnect())
     }
 

@@ -34,6 +34,10 @@ final class ConduitMacAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        MacActivityBootstrap.stop()
+    }
+
     /// A Spotlight result opened Conduit (D19). SwiftUI's `.onContinueUserActivity`
     /// may not fire when the activity launches the app cold, so this AppKit door
     /// feeds the same inbox; the inbox drops the repeat if both fire.

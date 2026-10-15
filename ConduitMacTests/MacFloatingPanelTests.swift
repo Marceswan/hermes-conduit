@@ -58,6 +58,11 @@ final class MacFloatingPanelTests: XCTestCase {
         XCTAssertTrue(panel.collectionBehavior.contains(.fullScreenAuxiliary))
     }
 
+    func testAccessibilityLabelIsSetWhenGiven() {
+        XCTAssertEqual(make { $0.accessibilityLabel = "Quick Ask" }.panel.accessibilityLabel(), "Quick Ask")
+        XCTAssertTrue(make().panel.isExcludedFromWindowsMenu, "a utility panel does not belong in the Window menu")
+    }
+
     func testCanBecomeKeyFollowsConfig() {
         XCTAssertTrue(make().panel.canBecomeKey)
         XCTAssertFalse(make { $0.canBecomeKey = false }.panel.canBecomeKey)
@@ -306,6 +311,43 @@ final class MacFloatingPanelTests: XCTestCase {
         XCTAssertEqual(edge, .maxY)
         XCTAssertEqual(screenID, 2)
         XCTAssertEqual(controller.targetFrame.maxY, 1080)
+    }
+
+    @MainActor
+    private final class PressProbe: ObservableObject {
+        @Published var pressed = false
+        var fired = 0
+    }
+
+    private struct ProbeStyle: ButtonStyle {
+        let probe: PressProbe
+        func makeBody(configuration: Configuration) -> some View {
+            let _ = DispatchQueue.main.async { probe.pressed = configuration.isPressed }
+            return configuration.label.frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())
+        }
+    }
+
+    func testADragThatStartsOnAControlDoesNotLeaveItPressedOrFireIt() {
+        let probe = PressProbe()
+        let screens = [MacScreenGeometry(frame: primary.frame, visibleFrame: primary.visibleFrame, id: 1)]
+        var config = MacFloatingPanelConfig(
+            size: NSSize(width: 600, height: 80), placement: .screenCenterTop(fromTop: 100),
+            canBecomeKey: false, dismissOnResignKey: false)
+        config.isDraggable = true
+        config.allowsMenuBarOverlap = true
+        let environment = MacFloatingPanelEnvironment(
+            screens: { screens }, mouseLocation: { CGPoint(x: 100, y: 100) }, reduceMotion: { true })
+        let controller = MacFloatingPanelController(config: config, environment: environment) {
+            Button("Probe") { probe.fired += 1 }.buttonStyle(ProbeStyle(probe: probe))
+        }
+        controllers.append(controller)
+        controller.show()
+        send(.leftMouseDown, at: CGPoint(x: 720, y: 736), to: controller.panel)
+        XCTAssertTrue(HostedTestSupport.waitUntil { probe.pressed }, "the press reaches the control")
+        send(.leftMouseDragged, at: CGPoint(x: 720, y: 300), to: controller.panel)
+        send(.leftMouseUp, at: CGPoint(x: 720, y: 300), to: controller.panel)
+        XCTAssertTrue(HostedTestSupport.waitUntil { !probe.pressed }, "a drag releases the control it began on")
+        XCTAssertEqual(probe.fired, 0, "and never fires it")
     }
 
     func testANonDraggablePanelIgnoresDrags() {

@@ -198,6 +198,17 @@ final class AgentActivityReducerPollTests: XCTestCase {
         XCTAssertEqual(h.item("turn:rt1")?.title, "Laravel")
     }
 
+    func testACatalogRowThatSharesOnlyAnAliasLearnedFromAnEarlierRowStillMatches() {
+        var h = baselined([Support.row("rt1", stored: "st1", "working")])
+        h.send(.catalog([
+            Support.summary(id: "cat1", stored: "st1", alternates: ["old"], title: "First"),
+            Support.summary(id: "cat2", stored: "old", title: "Second"),
+            Support.summary(id: "unrelated", stored: "zz", title: "Other"),
+        ]))
+        XCTAssertEqual(h.item("turn:rt1")?.sessionKey, "cat2", "the later row matched through 'old', learned from the earlier one")
+        XCTAssertEqual(h.state.identities.count, 1, "a catalog row for no known session adds no identity")
+    }
+
     func testCatalogRenameUpdatesTheRow() {
         var h = baselined([Support.row("rt1", stored: "st1", "working")])
         h.send(.catalog([Support.summary(id: "cat1", stored: "st1", title: "One")]))
