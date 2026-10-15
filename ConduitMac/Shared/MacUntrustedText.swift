@@ -12,7 +12,9 @@ import Foundation
 /// in a row (a joined sequence is one grapheme, so without this cap a chain of
 /// joined pictographs would defeat the grapheme cap). Scanning stops once far
 /// more than the cap has been kept, so a huge input costs a bounded amount of
-/// work; the result then ends with the ellipsis.
+/// work; the result then ends with the ellipsis. Show the result with
+/// `Text(verbatim:)` or a `String`-typed `Text`, never as a `LocalizedStringKey`,
+/// Markdown or a link. Shared by the notifications, the notch and Quick Ask.
 enum MacUntrustedText {
     static let ellipsis = "\u{2026}"
     static let maxCombiningMarks = 2
@@ -21,15 +23,21 @@ enum MacUntrustedText {
     private static let scalarsPerGraphemeBound = 32
 
     static func sanitize(_ text: String, maxGraphemes: Int) -> String {
-        let scalars = Array(text.precomposedStringWithCanonicalMapping.unicodeScalars)
+        guard maxGraphemes > 0 else { return "" }
+        let keepBound = maxGraphemes * scalarsPerGraphemeBound + 64
+        // Bound the work before normalising: a hostile input can be megabytes. Anything
+        // past the prefix is cut, and a cut input always ends in the ellipsis.
+        let rawLimit = keepBound * 4
+        var clipped = text.unicodeScalars.dropFirst(rawLimit).isEmpty == false
+        var prefix = String.UnicodeScalarView()
+        prefix.append(contentsOf: text.unicodeScalars.prefix(rawLimit))
+        let scalars = Array(String(prefix).precomposedStringWithCanonicalMapping.unicodeScalars)
         var kept = String.UnicodeScalarView()
         var lastKept: Unicode.Scalar?
         var marks = 0
         var joiners = 0
         var pendingSpace = false
         var keptCount = 0
-        var clipped = false
-        let keepBound = max(1, maxGraphemes) * scalarsPerGraphemeBound + 64
 
         for (index, scalar) in scalars.enumerated() {
             if keptCount > keepBound { clipped = true; break }
@@ -66,7 +74,7 @@ enum MacUntrustedText {
         }
 
         let characters = Array(String(kept))
-        let limit = max(1, maxGraphemes)
+        let limit = maxGraphemes
         guard clipped || characters.count > limit else { return String(characters) }
         return String(characters.prefix(limit - 1)) + ellipsis
     }

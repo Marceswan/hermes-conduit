@@ -38,6 +38,7 @@ final class ConduitMacAppDelegate: NSObject, NSApplicationDelegate {
         _ = MacUpdater.shared
         if !MacDefaults.isRunningUnderXCTest { HoverAccessibilityEngine.install() }
         if !MacDefaults.isRunningUnderXCTest { MacActivityBootstrap.start() }
+        if !MacDefaults.isRunningUnderXCTest { MacQuickAskBootstrap.start() }
         // Local notifications (D20). After the activity feed (its events feed
         // the coordinator) and before this method returns, so a cold-launch
         // click on a notification finds its delegate.
@@ -49,8 +50,14 @@ final class ConduitMacAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// A failed hotkey registration is retried when the app comes forward (no retry loop).
+    func applicationDidBecomeActive(_ notification: Notification) {
+        if !MacDefaults.isRunningUnderXCTest { MacQuickAskHotKeyManager.shared.refresh() }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         MacActivityBootstrap.stop()
+        if !MacDefaults.isRunningUnderXCTest { MacQuickAskBootstrap.stop() }
     }
 
     /// A Spotlight result opened Conduit (D19). SwiftUI's `.onContinueUserActivity`
