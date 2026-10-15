@@ -1960,6 +1960,10 @@ struct ThinkingCard: View {
 private enum MessageTimestampTone {
     case subtle
     case supporting
+#if os(macOS)
+    // MAC: tool-call card row only (the accent measured 2.8:1 in light mode)
+    case toolRow
+#endif
 }
 
 private struct MessageTimestampLabel: View {
@@ -1970,7 +1974,12 @@ private struct MessageTimestampLabel: View {
         if let label = MessageTimestampFormatter.displayString(for: timestamp) {
             Text(label)
                 .font(.caption2.weight(.medium))
+#if os(macOS)
+                // MAC: the tool-row time uses primary 85% to clear 4.5:1; other tones unchanged
+                .foregroundStyle(tone == .toolRow ? Color.primary.opacity(0.85) : tone == .supporting ? Color.conduitAccent.opacity(0.78) : Color.conduitAccent.opacity(0.70))
+#else
                 .foregroundStyle(tone == .supporting ? Color.conduitAccent.opacity(0.78) : Color.conduitAccent.opacity(0.70))
+#endif
                 .monospacedDigit()
                 .accessibilityLabel("Sent \(label)")
         }
@@ -2062,20 +2071,39 @@ private struct SettledToolCardContent: View, Equatable {
 
                             Text(tool.name)
                                 .font(.system(.caption, design: .monospaced).bold())
+#if os(macOS)
+                                // MAC: secondary is a faded accent here (1.8:1 light); primary 85% clears 4.5:1
+                                .foregroundStyle(Color.primary.opacity(0.85))
+#else
                                 .foregroundStyle(.secondary)
+#endif
 
+#if os(macOS)
+                            // MAC: tool-row tone (primary 85%) for contrast
+                            MessageTimestampLabel(timestamp: message.timestamp, tone: .toolRow)
+#else
                             MessageTimestampLabel(timestamp: message.timestamp, tone: .supporting)
+#endif
 
                             Spacer()
 
                             if expanded {
                                 Image(systemName: "chevron.up")
                                     .font(.caption2)
+                                    // MAC: tertiary is nearly invisible on the light card fill.
+#if os(macOS)
+                                    .foregroundStyle(Color.primary.opacity(0.6))
+#else
                                     .foregroundStyle(.tertiary)
+#endif
                             } else {
                                 Image(systemName: "chevron.down")
                                     .font(.caption2)
+#if os(macOS)
+                                    .foregroundStyle(Color.primary.opacity(0.6))
+#else
                                     .foregroundStyle(.tertiary)
+#endif
                             }
                         }
                     }
