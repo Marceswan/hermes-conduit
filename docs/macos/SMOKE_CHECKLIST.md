@@ -53,6 +53,15 @@ Rule R18: agents never send clicks or key events to the running app. Launch smok
 - [ ] Install relaunches into the new version (Conduit > About shows it).
 - [ ] On a Mac with an older non-Sparkle build, one manual DMG install enables updates (see docs/macos/RELEASING.md).
 
+## Shared base (floating panel, stream hub, activity feed)
+
+- [ ] Panel (needs a consumer panel): click a control without moving the mouse and it still clicks; drag past about 4 pt and the panel follows; releasing near each of the four edges snaps to that edge; releasing on an external display docks there; unplug that display and the panel returns to its default notch-anchored spot; after a drag a control under the pointer is not left highlighted and does not fire.
+- [ ] Panel never takes focus from the front app: show it from Safari and keep typing there; it appears over a full-screen app and on the current Space.
+- [ ] Reconnect while behind other windows: close the Conduit window (Cmd-W), switch to another app, restart the gateway (or turn Wi-Fi off for 20 s and on again). Conduit reconnects within about 30 s without being brought forward (before this change it stayed disconnected until foregrounded).
+- [ ] Feed while not frontmost: start a turn in session A, open session B in the main window, switch to another app. A consumer (notch, notifications) still sees A working and then finished.
+- [ ] Poll-only session: a session running in the same gateway process but opened by another client shows as working or waiting with no tool name; a CLI or Slack session from another process never appears (expected).
+- [ ] Disconnect: turn Wi-Fi off; the consumer shows reconnecting at once and clears its rows after about 15 s with no "done" notification; turn it back on and a turn that finished during the outage is dropped without a notification.
+
 ## System integration: Spotlight
 
 Human pass at release time (agents never click or type into the running app, R18).

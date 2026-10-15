@@ -3218,7 +3218,12 @@ final class AppState: ObservableObject {
     /// left a socket lost during suspension dead for the whole drive and
     /// CarPlay reporting Voice unavailable.
     private var canRunTransportRecovery: Bool {
-        isSceneActive || isCarPlayVoiceSurfaceActive || isLockedVoiceSurfaceActive || isWatchVoiceCallActive || isNativeHermesCallActive
+        #if os(macOS) // MAC: the window can be closed or hidden while the dashboard socket stays up (activity feed, notifications); the iOS watchdog reason for this gate does not apply
+        return MacTransportRecoveryPolicy.allowsRecoveryWhileInactive
+            || isSceneActive || isCarPlayVoiceSurfaceActive || isLockedVoiceSurfaceActive || isWatchVoiceCallActive || isNativeHermesCallActive
+        #else
+        return isSceneActive || isCarPlayVoiceSurfaceActive || isLockedVoiceSurfaceActive || isWatchVoiceCallActive || isNativeHermesCallActive
+        #endif // MAC:
     }
     /// A transport whose handshake completed but whose post-connect bootstrap
     /// (profiles, Bot Mode roster, catalog sync + resume) was abandoned
@@ -23410,6 +23415,9 @@ final class AppState: ObservableObject {
     // MARK: - Stream event handling
 
     func handleStreamEvent(_ event: StreamEvent) {
+        #if os(macOS) // MAC: Mac-side subscribers (Quick Ask, activity feed) see every session's events, ahead of the active-session filter
+        MacStreamEventHub.shared.publish(event)
+        #endif // MAC:
         // Voice background jobs are not the active conversation, so they
         // observe every event before the active-session filter below.
         voiceBackgroundJobSupervisor.observe(event)
@@ -25727,11 +25735,19 @@ final class AppState: ObservableObject {
         // A conversation kept running while locked relies on the transport
         // the same way, and so do a call the Apple Watch started and a call
         // from Hermes answered in CallKit.
+        #if os(macOS) // MAC: scene .inactive/.background drop the armed reconnect timer (cancelScheduledReconnect); with the Mac exemption the app must re-arm it here, or a socket that dies just before the user switches away stays dead until foregrounded
+        guard canRunTransportRecovery,
+              !isSceneActive,
+              connection != nil,
+              !isConnected,
+              !isConnecting else { return }
+        #else
         guard isCarPlayVoiceSurfaceActive || isLockedVoiceSurfaceActive || isWatchVoiceCallActive || isNativeHermesCallActive,
               !isSceneActive,
               connection != nil,
               !isConnected,
               !isConnecting else { return }
+        #endif // MAC:
         scheduleReconnect(immediately: immediately, purpose: chatResumePurposeForDisconnect())
     }
 
