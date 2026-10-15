@@ -1587,9 +1587,17 @@ struct KanbanView: View {
                 }
             } label: {
                 Image(systemName: "square.grid.2x2")
+                    #if os(macOS) // MAC: density: 32 pt desktop buttons
+                    .frame(width: MacControlHeight.compact, height: MacControlHeight.compact)
+                    #else // MAC:
                     .frame(width: 36, height: 36)
+                    #endif // MAC:
             }
+            #if os(macOS) // MAC: density
+            .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius)
+            #else // MAC:
             .conduitGlassControl(cornerRadius: 14)
+            #endif // MAC:
             .accessibilityLabel("Choose Kanban board")
             .disabled(isSelectionActive || bulkBusy)
 
@@ -1646,9 +1654,17 @@ struct KanbanView: View {
                 .disabled(store.isMutating || !store.isSelectedSnapshotLoaded)
             } label: {
                 Image(systemName: "ellipsis.circle")
+                    #if os(macOS) // MAC: density: 32 pt desktop buttons
+                    .frame(width: MacControlHeight.compact, height: MacControlHeight.compact)
+                    #else // MAC:
                     .frame(width: 36, height: 36)
+                    #endif // MAC:
             }
+            #if os(macOS) // MAC: density
+            .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius)
+            #else // MAC:
             .conduitGlassControl(cornerRadius: 14)
+            #endif // MAC:
             .accessibilityLabel("Kanban board actions")
             .disabled(bulkBusy || isSelectionActive)
 
@@ -1660,10 +1676,18 @@ struct KanbanView: View {
                 enterSelectionMode()
             } label: {
                 Image(systemName: "checkmark.circle")
+                    #if os(macOS) // MAC: density: 32 pt desktop buttons
+                    .frame(width: MacControlHeight.compact, height: MacControlHeight.compact)
+                    #else // MAC:
                     .frame(width: 36, height: 36)
+                    #endif // MAC:
             }
             .buttonStyle(.plain)
+            #if os(macOS) // MAC: density
+            .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius)
+            #else // MAC:
             .conduitGlassControl(cornerRadius: 14)
+            #endif // MAC:
             .accessibilityLabel("Select tasks")
             .accessibilityHint("Enter selection mode to run bulk operations")
             .disabled(store.isMutating || !store.isSelectedSnapshotLoaded || loadedBoardMetadata == nil || bulkBusy)
@@ -1672,9 +1696,17 @@ struct KanbanView: View {
                 Task { await store.refresh(includeArchived: includeArchived) }
             } label: {
                 Image(systemName: store.isLoading ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
+                    #if os(macOS) // MAC: density: 32 pt desktop buttons
+                    .frame(width: MacControlHeight.compact, height: MacControlHeight.compact)
+                    #else // MAC:
                     .frame(width: 36, height: 36)
+                    #endif // MAC:
             }
+            #if os(macOS) // MAC: density
+            .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius)
+            #else // MAC:
             .conduitGlassControl(cornerRadius: 14)
+            #endif // MAC:
             .disabled(store.isLoading || store.isMutating)
             .accessibilityLabel("Refresh Kanban board")
 
@@ -1689,9 +1721,17 @@ struct KanbanView: View {
                 showNewTask = true
             } label: {
                 Image(systemName: "plus")
+                    #if os(macOS) // MAC: density: 32 pt desktop buttons
+                    .frame(width: MacControlHeight.compact, height: MacControlHeight.compact)
+                    #else // MAC:
                     .frame(width: 36, height: 36)
+                    #endif // MAC:
             }
+            #if os(macOS) // MAC: density
+            .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius, tint: .conduitAccent.opacity(0.12))
+            #else // MAC:
             .conduitGlassControl(cornerRadius: 14, tint: .conduitAccent.opacity(0.12))
+            #endif // MAC:
             .disabled(store.board == nil || store.isMutating || !store.isSelectedSnapshotLoaded || isSelectionActive)
             .accessibilityLabel("New Kanban task")
         }
@@ -1723,16 +1763,28 @@ struct KanbanView: View {
                     ? "line.3.horizontal.decrease.circle.fill"
                     : "line.3.horizontal.decrease.circle")
                     .foregroundStyle(filtersActive ? Color.conduitAccent : Color.secondary)
+                    #if os(macOS) // MAC: density: 28 pt inside the 32 pt pill
+                    .frame(width: MacSidebarMetrics.searchPillButton, height: MacSidebarMetrics.searchPillButton)
+                    .contentShape(Rectangle())
+                    #else // MAC:
                     .frame(width: 32, height: 32)
+                    #endif // MAC:
             }
             .buttonStyle(.plain)
             .accessibilityLabel(filtersActive ? AppLocalization.string("Filters active — open filters") : AppLocalization.string("Open filters"))
             .accessibilityHint("Shows assignee, tenant, archived, and running grouping options")
             .disabled(!store.isSelectedSnapshotLoaded)
         }
+        #if os(macOS) // MAC: density: a 32 pt compact pill like the header buttons beside it
+        .font(.subheadline)
+        .padding(.horizontal, MacSidebarMetrics.searchPillPadding)
+        .frame(height: MacControlHeight.compact)
+        .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius)
+        #else // MAC:
         .padding(.horizontal, 12)
         .padding(.vertical, 6).frame(minHeight: 40)
         .conduitGlassControl(cornerRadius: 15)
+        #endif // MAC:
     }
 
     /// Active-filter indication for the filter button (sheet-driven filters:
