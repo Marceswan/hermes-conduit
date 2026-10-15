@@ -12,37 +12,58 @@ protocol SearchableIndexing: AnyObject {
 }
 
 /// The real index. Errors are logged, never thrown: Spotlight is best effort.
+/// Item building and every Core Spotlight call run on one serial utility queue,
+/// off the main thread; the serial order keeps an index followed by a delete
+/// of the same id in call order.
 @MainActor
 final class CoreSpotlightIndex: SearchableIndexing {
-    private let index = CSSearchableIndex.default()
+    private let queue = DispatchQueue(label: "ai.conduit.mac.spotlight", qos: .utility)
 
     func index(_ items: [MacSpotlightItem]) {
         guard !items.isEmpty else { return }
-        let converted = items.map { item -> CSSearchableItem in
-            let attributes = CSSearchableItemAttributeSet(contentType: .text)
-            attributes.title = item.title
-            attributes.displayName = item.title
-            attributes.contentDescription = item.contentDescription
-            attributes.contentModificationDate = item.modified
-            return CSSearchableItem(uniqueIdentifier: item.uniqueIdentifier,
-                                    domainIdentifier: item.domainIdentifier,
-                                    attributeSet: attributes)
+        queue.async {
+            let converted = items.map(Self.searchableItem(for:))
+            CSSearchableIndex.default().indexSearchableItems(converted) { Self.log("index", $0) }
         }
-        index.indexSearchableItems(converted) { @Sendable in Self.log("index", $0) }
+    }
+
+    /// The only place an item becomes a `CSSearchableItem`: title, model and
+    /// count line, date. Nothing else is ever set (no `textContent`).
+    nonisolated static func searchableItem(for item: MacSpotlightItem) -> CSSearchableItem {
+        let attributes = CSSearchableItemAttributeSet(contentType: .text)
+        attributes.title = item.title
+        attributes.displayName = item.title
+        attributes.contentDescription = item.contentDescription
+        attributes.contentModificationDate = item.modified
+        let searchable = CSSearchableItem(uniqueIdentifier: item.uniqueIdentifier,
+                                          domainIdentifier: item.domainIdentifier,
+                                          attributeSet: attributes)
+        // Core Spotlight drops items after one month by default. The indexer
+        // only re-sends rows that changed, so an idle chat would vanish from
+        // Spotlight while the snapshot still lists it. Removal is explicit
+        // instead (delete, archive, scope change, toggle off).
+        searchable.expirationDate = .distantFuture
+        return searchable
     }
 
     func delete(ids: [String]) {
         guard !ids.isEmpty else { return }
-        index.deleteSearchableItems(withIdentifiers: ids) { @Sendable in Self.log("delete ids", $0) }
+        queue.async {
+            CSSearchableIndex.default().deleteSearchableItems(withIdentifiers: ids) { Self.log("delete ids", $0) }
+        }
     }
 
     func delete(domains: [String]) {
         guard !domains.isEmpty else { return }
-        index.deleteSearchableItems(withDomainIdentifiers: domains) { @Sendable in Self.log("delete domains", $0) }
+        queue.async {
+            CSSearchableIndex.default().deleteSearchableItems(withDomainIdentifiers: domains) { Self.log("delete domains", $0) }
+        }
     }
 
     func deleteAll() {
-        index.deleteAllSearchableItems { @Sendable in Self.log("delete all", $0) }
+        queue.async {
+            CSSearchableIndex.default().deleteAllSearchableItems { Self.log("delete all", $0) }
+        }
     }
 
     private nonisolated static func log(_ what: String, _ error: Error?) {
@@ -77,6 +98,9 @@ final class MacSpotlightIndexer {
 
     var isEnabled: Bool { defaults.bool(forKey: Self.enabledKey) }
 
+    /// Whether `setScope(new)` would do anything.
+    func hasScopeChange(to new: MacSpotlightScope?) -> Bool { new != scope || scope == nil }
+
     func setEnabled(_ on: Bool, catalog: [SessionSummary]) {
         defaults.set(on, forKey: Self.enabledKey)
         if on {
@@ -105,7 +129,7 @@ final class MacSpotlightIndexer {
     /// nil means no signed-in dashboard: nothing is indexed and the previous
     /// scope's items go.
     func setScope(_ new: MacSpotlightScope?, catalog: [SessionSummary]) {
-        guard new != scope || scope == nil else { return }
+        guard hasScopeChange(to: new) else { return }
         let previous = scope ?? lastPersistedScope()
         if let previous, previous != new, isEnabled {
             index.delete(domains: [previous.domainIdentifier])
@@ -126,6 +150,7 @@ final class MacSpotlightIndexer {
         guard isEnabled, let scope else { return }
         var removed: [String] = []
         var changed: [MacSpotlightItem] = []
+        var addedThisRun: Set<String> = []
 
         // Rows the catalog itself marks archived.
         for session in sessions where session.isArchived {
@@ -143,11 +168,15 @@ final class MacSpotlightIndexer {
             }
             let row = Row(title: session.title, at: session.lastActivityAt)
             guard snapshot[session.id] != row else { continue }
+            if snapshot[session.id] == nil { addedThisRun.insert(session.id) }
             snapshot[session.id] = row
             changed.append(MacSpotlightItemFactory.item(for: session, scope: scope))
         }
 
-        // The cap holds across pages: the oldest indexed rows make room.
+        // The cap holds across pages: the oldest indexed rows make room. A row
+        // new this run and already the oldest was never sent, so it is
+        // dropped without a delete (otherwise every run would re-add and
+        // re-delete it).
         if snapshot.count > Self.itemCap {
             let overflow = snapshot
                 .sorted { ($0.value.at ?? 0, $0.key) < ($1.value.at ?? 0, $1.key) }
@@ -155,9 +184,10 @@ final class MacSpotlightIndexer {
                 .map(\.key)
             for id in overflow {
                 snapshot[id] = nil
-                removed.append(id)
+                if !addedThisRun.contains(id) { removed.append(id) }
             }
-            changed.removeAll { item in overflow.contains { item.uniqueIdentifier == MacSpotlightItemID.make(scope: scope, sessionID: $0) } }
+            let dropped = Set(overflow.map { MacSpotlightItemID.make(scope: scope, sessionID: $0) })
+            changed.removeAll { dropped.contains($0.uniqueIdentifier) }
         }
 
         guard !changed.isEmpty || !removed.isEmpty else { return }

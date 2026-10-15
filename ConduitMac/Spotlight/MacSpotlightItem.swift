@@ -15,7 +15,7 @@ struct MacSpotlightScope: Equatable {
 }
 
 /// What Spotlight shows for one chat. A plain value so tests need no index.
-struct MacSpotlightItem: Equatable {
+struct MacSpotlightItem: Equatable, Sendable {
     var uniqueIdentifier: String
     var domainIdentifier: String
     var title: String

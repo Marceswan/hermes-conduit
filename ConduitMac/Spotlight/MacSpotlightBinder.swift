@@ -43,6 +43,9 @@ final class MacSpotlightBinder {
     }
 
     func scopeDidChange(_ scope: MacSpotlightScope?) {
+        // A registry publish that leaves the scope alone must not eat a
+        // pending catalog sync: nothing would reschedule it.
+        guard indexer.hasScopeChange(to: scope) else { return }
         pendingSync?.cancel()
         indexer.setScope(scope, catalog: catalog())
     }
@@ -94,11 +97,15 @@ extension View {
     /// Mirrors the session catalog into Spotlight when the user opted in, and
     /// opens a chat when the user picks one of those results (D19). `openLink`
     /// parks the link until Hermes is connected (the app's `pendingExternalLink`).
+    /// Two doors feed `MacSpotlightInbox`: this modifier's
+    /// `.onContinueUserActivity` and the app delegate's
+    /// `application(_:continue:restorationHandler:)`, which covers a cold launch.
     func macSpotlightBinding(appState: AppState, openLink: @escaping (ConduitAppLink) -> Void) -> some View {
-        task { MacSpotlightBinder.shared.bind(to: appState) }
-            .onContinueUserActivity(CSSearchableItemActionType) { activity in
+        task {
+            MacSpotlightBinder.shared.bind(to: appState)
+            MacSpotlightInbox.shared.attach { raw in
                 let key = appState.activeDashboardID?.uuidString ?? "none"
-                switch MacSpotlightContinuation.outcome(userInfo: activity.userInfo, currentDashboardKey: key) {
+                switch MacSpotlightContinuation.outcome(rawID: raw, currentDashboardKey: key) {
                 case .open(let link):
                     openLink(link)
                 case .foreignDashboard:
@@ -107,5 +114,9 @@ extension View {
                     break
                 }
             }
+        }
+        .onContinueUserActivity(CSSearchableItemActionType) { activity in
+            MacSpotlightInbox.shared.receive(userInfo: activity.userInfo)
+        }
     }
 }

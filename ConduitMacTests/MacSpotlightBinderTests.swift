@@ -103,4 +103,14 @@ final class MacSpotlightBinderTests: XCTestCase {
         HostedTestSupport.settle(0.2)
         XCTAssertEqual(index.allIndexedIDs, [MacSpotlightItemID.make(scope: other, sessionID: "new")])
     }
+
+    func testAScopePublishThatChangesNothingKeepsThePendingSync() {
+        catalog = [row("a")]
+        binder.catalogDidChange()
+        // The dashboard registry republishes (metadata only): same scope.
+        binder.scopeDidChange(scope)
+        XCTAssertTrue(HostedTestSupport.waitUntil { !self.index.indexed.isEmpty },
+                      "the debounced sync must still run")
+        XCTAssertEqual(index.allIndexedIDs, [MacSpotlightItemID.make(scope: scope, sessionID: "a")])
+    }
 }

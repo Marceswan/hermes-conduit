@@ -1,3 +1,4 @@
+import CoreSpotlight
 import XCTest
 @testable import ConduitMac
 
@@ -21,6 +22,31 @@ final class MacSpotlightItemTests: XCTestCase {
         XCTAssertEqual(item.modified, Date(timeIntervalSince1970: 1_700_000_000))
         XCTAssertEqual(item.domainIdentifier, scope().domainIdentifier)
         XCTAssertTrue(item.uniqueIdentifier.hasPrefix(scope().domainIdentifier + "|"))
+    }
+
+    func testSearchableItemCarriesOnlyTitleDescriptionAndDate() {
+        var s = summary("s1", title: "Laravel queues", count: 4)
+        s.model = "gpt-x"
+        let item = MacSpotlightItemFactory.item(for: s, scope: scope())
+        let searchable = CoreSpotlightIndex.searchableItem(for: item)
+        let attributes = searchable.attributeSet
+        XCTAssertEqual(searchable.uniqueIdentifier, item.uniqueIdentifier)
+        XCTAssertEqual(searchable.domainIdentifier, item.domainIdentifier)
+        XCTAssertEqual(attributes.title, "Laravel queues")
+        XCTAssertEqual(attributes.displayName, "Laravel queues")
+        XCTAssertEqual(attributes.contentDescription, item.contentDescription)
+        XCTAssertEqual(attributes.contentModificationDate, item.modified)
+        XCTAssertNil(attributes.textContent, "message text never reaches Spotlight")
+        XCTAssertNil(attributes.keywords)
+        XCTAssertNil(attributes.subject)
+        XCTAssertNil(attributes.comment)
+    }
+
+    func testSearchableItemNeverExpires() {
+        // Core Spotlight's default is one month; the diff-based indexer would not re-send an idle chat.
+        let item = MacSpotlightItemFactory.item(for: summary("s1"), scope: scope())
+        let searchable = CoreSpotlightIndex.searchableItem(for: item)
+        XCTAssertEqual(searchable.expirationDate, .distantFuture)
     }
 
     func testBlankTitleFallsBack() {

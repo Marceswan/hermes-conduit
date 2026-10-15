@@ -256,6 +256,32 @@ final class MacSpotlightIndexerTests: XCTestCase {
         XCTAssertEqual(index.indexed.last?.count, 3)
     }
 
+    func testARowOlderThanAFullIndexIsNeverSentAndNeverDeleted() {
+        enabled()
+        let full = (0..<MacSpotlightIndexer.itemCap).map { s("s\($0)", at: TimeInterval($0 + 100)) }
+        indexer.catalogChanged(full)
+        index.indexed = []
+        index.deletedIDs = []
+        // A later page holds only an older chat; the index is already full of newer ones.
+        let ancient = s("old", at: 1)
+        indexer.catalogChanged([ancient])
+        indexer.catalogChanged([ancient])
+        XCTAssertTrue(index.indexed.allSatisfy(\.isEmpty), "the over-cap row is not sent")
+        XCTAssertTrue(index.deletedIDs.allSatisfy(\.isEmpty), "nor deleted on every pass: it was never indexed")
+    }
+
+    func testAnIndexedRowEvictedByTheCapIsDeletedEvenWhenItChangedThisRun() {
+        enabled()
+        let full = (0..<MacSpotlightIndexer.itemCap).map { s("s\($0)", at: TimeInterval($0 + 100)) }
+        indexer.catalogChanged(full)
+        index.indexed = []
+        index.deletedIDs = []
+        // s0 is the oldest and is retitled in the same pass a newer row arrives.
+        indexer.catalogChanged([s("s0", "Renamed", at: 100), s("fresh", at: 9_999)])
+        XCTAssertEqual(index.deletedIDs.last, [id("s0")], "it was in the index, so it must leave it")
+        XCTAssertEqual(index.indexed.last?.map(\.uniqueIdentifier), [id("fresh")], "the evicted row is not re-sent")
+    }
+
     func testNonIndexableRowsAreSkipped() {
         enabled()
         let cron = SessionSummary.macTestSummary(id: "c", alternateIds: [], title: "job", source: .cron)
