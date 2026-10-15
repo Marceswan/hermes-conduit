@@ -74,6 +74,7 @@ Shortcut table (menus in ConduitCommands; one definition each, guarded by MacKey
 | Opt-Cmd-Up / Opt-Cmd-Down | Go > Session Above / Session Below | same two commands (a menu item has one key equivalent, so a second item, titled by direction) |
 | Cmd-F | Edit > Search Sessions | contextual: a focused message text view opens its own find bar; anywhere else shows the sidebar if hidden and focuses "Search sessions" |
 | Cmd-L | Go > Message Field | sets the tab to Sessions (chat), focuses the composer |
+| Cmd-Shift-W (D17) | Chat > Ask About Window… | system window picker, capture, attach to the current chat |
 | Up / Down / Home / End, Return | (list focused) | move the keyboard cursor over session rows, open the cursor row |
 | Tab / Shift-Tab | (list or composer focused) | next / previous view in the window's key view loop (Shift-Tab is the back-tab character U+0019, handled separately) |
 
@@ -129,6 +130,21 @@ Fix: `ConduitMac/Compat/App/FormShim.swift` defines an app-module `Form` that wr
 Known limit: the offscreen test window cannot become the active window, so accent-tinted controls draw grey in the pictures; the slab-versus-row difference is the shape and fill, not the colour. Left alone: the other Form sheets (filters, orchestration, routing, rename, custom headers, bulk priority, new project) only get the grouped style, with no size change; they looked fine in the shots that could be taken. Task detail's shot is blank (its body is a scroll view of SwiftUI content the offscreen capture drops).
 
 Tripwires: `MacFormStyleTests.testAppFormIsGroupedInAWindow`, `testAppFormIsGroupedInASheet`, `testAppFormIsGroupedInASheetOpenedFromASheet` (removing the shim fails the target's build, and without it the sheet Form is `.columns`); `testFormStyleSetAboveASheetDoesNotReachIt` documents the finding and goes red on a macOS where a root style does reach sheets (then the shim can go); `testAnExplicitFormStyleOnTheShimWins`; `MacComposerSheetTests.testClickingTheSpacerOfTheModelSkillsAndDependsRowsOpensThePicker` (a synthetic click 45% across each row opens its picker; red against the outside-the-Button content shape), `testDescriptionPromptShowsWhileEmptyAndGoesAfterTyping`, `testComposerSheetGeometry` (sheet at least 520 wide, Model and Skills rows span the sheet, description editor 80 to 140 pt, header above its rows, nothing past the right edge).
+
+## D17: Ask About Window (2026-10-15)
+Plan: docs/superpowers/plans/2026-10-15-mac-ask-about-window.md. Chat > Ask About Window… (Cmd-Shift-W; also an "Ask About Window…" item in the composer "+" menu) opens `SCContentSharingPicker.shared` in single-window mode, captures the chosen window with `SCScreenshotManager.captureImage(contentFilter:configuration:)` and stages the PNG or JPEG through `AttachmentStaging.stageScreenshot` as the chat's pending screenshot. The picker grants per-window access, so there is no Screen Recording prompt, no `NSScreenCaptureUsageDescription` and no entitlement change. Components: MacWindowCaptureMath (pure: 2560 px longest-side cap, never upscales; encode ladder; file name), MacWindowCaptureService (picker bridge and capture, one in flight, a second call returns cancelled), MacAskAboutWindow (staging, target chat read after the picker returns, creates a chat when none is open, errors through `appState.errorMessage`).
+
+Size: limit is the attachment-size preference (`AttachmentSizeLimit`, default 16 MB), never a hard-coded number. PNG when it is within 80% of the limit; otherwise JPEG at 0.85 / 1.0 scale, 0.7 / 0.75, 0.5 / 0.5625; nothing fits gives the existing `AttachmentSizeLimit.tooLargeMessage`. ScreenCaptureKit is asked for the capped pixel size directly, so the common path has no second resample, with `ignoreShadowsSingleWindow` on so the output matches `contentRect` (the default framing adds the shadow and would squeeze it). Encoding runs off the main actor.
+
+Cancel versus failure: `MacWindowCaptureService.classify` maps (cancelled, picker error, capture error, image present) to proceed / cancelled / failed. An error always wins over a cancel; cancel shows nothing and a second invocation works (the picker is removed and deactivated on every exit). Three failure sentences (picker, capture, prepare image) plus the existing "Couldn't start a new chat" when no chat could be created offline.
+
+Own windows: `config.excludedWindowIDs` is set to Conduit's `NSApp.windows` window numbers. Whether the picker honours it on macOS 14 and 15 is not verified by a test (the picker is system UI); the smoke line records the result. The picker works either way.
+
+Window name: `SCContentFilter.includedWindows` is macOS 15.2 and later; on 14 through 15.1 the screenshot is named "Window".
+
+Shortcut: Cmd-Shift-W was free in the live menu (MacKeyboardMenuTests pins it unique and first-match, alongside the D10 and D11 table). Fallback if a future change claims it: Cmd-Shift-A. The item is never `.disabled`; the action does nothing while a sheet is attached (`MacKeyboardActions.commandsBlocked`).
+
+Not verified live (picker is system UI): the picker on macOS 14 and 15, `excludedWindowIDs`, a real 5K capture. See the SMOKE_CHECKLIST line.
 
 ## D19 System integration: Services and Shortcuts (2026-10-15)
 Spec: docs/superpowers/specs/2026-10-15-mac-system-integration-design.md; plan: docs/superpowers/plans/2026-10-15-mac-system-integration.md (the plan and spec call this D15 and D12; D15 to D18 went to other work, so this record is D19). The Spotlight part appends its own `D19 System integration: Spotlight` section.
