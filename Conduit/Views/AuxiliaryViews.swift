@@ -884,6 +884,9 @@ private struct SettingsHome: View {
                         settingsLink(.notifications, icon: "bell", title: AppLocalization.string("Notifications"), detail: AppLocalization.string("Delivery status and setup"))
                         settingsLink(.screenQuestion, icon: "camera.viewfinder", title: AppLocalization.string("Ask Hermes About Screen"), detail: AppLocalization.string("Action Button shortcut for screenshots"), identifier: "settings.screen-question")
                         settingsLink(.about, icon: "shield", title: AppLocalization.string("About & privacy"), detail: AppLocalization.string("App information and data handling"))
+                        #if os(macOS) // MAC: Spotlight opt-in (D19)
+                        MacSpotlightSettingsRow()
+                        #endif
                     }
                     Text("Hermes settings follow the active profile. Appearance, notifications, and privacy controls stay on this device.")
                         .font(.footnote)

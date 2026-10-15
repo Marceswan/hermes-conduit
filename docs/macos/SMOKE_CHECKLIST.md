@@ -53,6 +53,22 @@ Rule R18: agents never send clicks or key events to the running app. Launch smok
 - [ ] Install relaunches into the new version (Conduit > About shows it).
 - [ ] On a Mac with an older non-Sparkle build, one manual DMG install enables updates (see docs/macos/RELEASING.md).
 
+## System integration: Spotlight
+
+Human pass at release time (agents never click or type into the running app, R18).
+
+- [ ] Settings > On this device shows "Show chats in Spotlight", off by default, with "Remove from Spotlight" below it.
+- [ ] With the toggle off, Cmd-Space on a known chat title lists no Conduit result. (`mdfind "<chat title>"` is not a reliable check for Core Spotlight items, which live in Spotlight's own index and may not appear there even when indexed; treat an empty `mdfind` as inconclusive, verify on your macOS build.)
+- [ ] Turn the toggle on, wait about 5 seconds (2 s debounce), Cmd-Space a chat title: the chat is listed with the model and "N messages", no message text.
+- [ ] Open the result with Conduit closed: Conduit opens on that chat once connected. If it only activates the app and nothing opens on a cold launch, add the AppKit route `application(_:continue:restorationHandler:)` to `ConduitMacAppDelegate` (see D19) and record it.
+- [ ] Open the result with Conduit running on another profile: Conduit switches to the chat's profile and opens it.
+- [ ] Rename a chat: Spotlight shows the new title. Archive a chat: its result disappears. Delete a chat: its result disappears. Restore an archived chat: it reappears.
+- [ ] Switch profile: the new profile's chats are listed and the first profile's are gone.
+- [ ] Switch to another dashboard: the old dashboard's chats are gone.
+- [ ] Scroll the chat list so older pages load: older chats are added; chats that scroll out of the loaded page stay listed.
+- [ ] Turn the toggle off: searching a chat title finds nothing. Turn it on, tap "Remove from Spotlight": the index empties, the toggle stays on, and a chat you open or rename is added again.
+- [ ] A stale result (chat deleted on another device) opens Conduit and shows "That chat is no longer available."
+
 ## Open findings
 
 - (c) Login logo clipping: fix applied in `Conduit/Views/LoginView.swift` (focus `scrollTo` gated to iOS, ledger R4). Owner: 11e. Launch screenshot on 2026-10-13 was covered by a keychain prompt (see below), so the visual result is UNVERIFIED; user confirms on the next launch.
