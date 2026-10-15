@@ -62,6 +62,22 @@ Rule R18: agents never send clicks or key events to the running app. Launch smok
 - [ ] Poll-only session: a session running in the same gateway process but opened by another client shows as working or waiting with no tool name; a CLI or Slack session from another process never appears (expected).
 - [ ] Disconnect: turn Wi-Fi off; the consumer shows reconnecting at once and clears its rows after about 15 s with no "done" notification; turn it back on and a turn that finished during the outage is dropped without a notification.
 
+## System integration: Spotlight
+
+Human pass at release time (agents never click or type into the running app, R18).
+
+- [ ] Settings > On this device shows "Show chats in Spotlight", off by default, with "Remove from Spotlight" below it.
+- [ ] With the toggle off, Cmd-Space on a known chat title lists no Conduit result. (`mdfind "<chat title>"` is not a reliable check for Core Spotlight items, which live in Spotlight's own index and may not appear there even when indexed; treat an empty `mdfind` as inconclusive, verify on your macOS build.)
+- [ ] Turn the toggle on, wait about 5 seconds (2 s debounce), Cmd-Space a chat title: the chat is listed with the model and "N messages", no message text.
+- [ ] Open the result with Conduit closed: Conduit opens on that chat once connected, and opens it once (the SwiftUI and AppKit routes both feed one inbox; see D19). Repeat with Conduit running.
+- [ ] Open the result with Conduit running on another profile: Conduit switches to the chat's profile and opens it.
+- [ ] Rename a chat: Spotlight shows the new title. Archive a chat: its result disappears. Delete a chat: its result disappears. Restore an archived chat: it reappears.
+- [ ] Switch profile: the new profile's chats are listed and the first profile's are gone.
+- [ ] Switch to another dashboard: the old dashboard's chats are gone.
+- [ ] Scroll the chat list so older pages load: older chats are added; chats that scroll out of the loaded page stay listed.
+- [ ] Turn the toggle off: searching a chat title finds nothing. Turn it on, tap "Remove from Spotlight": the index empties, the toggle stays on, and a chat you open or rename is added again.
+- [ ] A stale result (chat deleted on another device) opens Conduit and shows "That chat is no longer available."
+
 ## Open findings
 
 - (c) Login logo clipping: fix applied in `Conduit/Views/LoginView.swift` (focus `scrollTo` gated to iOS, ledger R4). Owner: 11e. Launch screenshot on 2026-10-13 was covered by a keychain prompt (see below), so the visual result is UNVERIFIED; user confirms on the next launch.
@@ -106,3 +122,4 @@ Rule R18: agents never send clicks or key events to the running app. Launch smok
   - [ ] Pane title (macOS 26 and later; check in the installed build and confirm About shows the version under test): on Bots, Cron and Kanban the toolbar shows no pane name above the pane's own header, the search item sits at the trailing edge (same place as on Sessions), nothing is in the overflow menu, and the Window menu lists the pane name. Switch back to Sessions: the tab strip, Refresh, status dot and search are unchanged. On macOS 14 to 25 the pane title still shows in the toolbar (the 0.1.3 layout).
   - [ ] Bulleted and numbered lists in an assistant reply: each marker sits on its item's first line, items are evenly spaced, and wrapped lines hang under the item text. Check a reply that has a list plus a divider, table or code block (that path renders lists as marker + text rows), light and dark.
   - [ ] Density: the sidebar uses desktop sizes. Workspace, Settings, New Chat, voice, more and folder are 32 pt tall with 6 pt gaps; the tab strip is a 32 pt container; filter chips are 24 pt; session cards are about 44 pt apart with a 24 pt icon; the Kanban header buttons are 32 pt. Check light and dark, and that Tab focus rings and hover outlines still follow each control's rounded shape. Toolbar items (Refresh, status dot, search) and the composer are unchanged.
+  - [ ] Ask About Window (macOS 14 and 15, clean Screen Recording state: remove Conduit under System Settings > Privacy & Security > Screen & System Audio Recording first): Chat > Ask About Window... (Cmd-Shift-W) opens the system window picker with no Screen Recording permission prompt. Pick a Safari window: a screenshot chip appears in the open chat's composer. Esc in the picker: nothing happens and no error shows, and the item works again. With no chat open it creates one and attaches. Conduit's own windows are not offered (or, if the picker still lists them, record it). Set the attachment limit to 8 MB and pick a large busy window: it attaches as JPEG or shows the too-large message, never a crash. The composer + menu has the same item.

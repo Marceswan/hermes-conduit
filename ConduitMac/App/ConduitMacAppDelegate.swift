@@ -1,4 +1,5 @@
 import AppKit
+import CoreSpotlight
 
 enum MacDefaults {
     /// The test host is the real app; global monitors must not run in tests.
@@ -31,6 +32,17 @@ final class ConduitMacAppDelegate: NSObject, NSApplicationDelegate {
         Task.detached(priority: .background) {
             AttachmentStaging.sweepStaleFiles()
         }
+    }
+
+    /// A Spotlight result opened Conduit (D19). SwiftUI's `.onContinueUserActivity`
+    /// may not fire when the activity launches the app cold, so this AppKit door
+    /// feeds the same inbox; the inbox drops the repeat if both fire.
+    func application(
+        _ application: NSApplication,
+        continue userActivity: NSUserActivity,
+        restorationHandler: @escaping ([any NSUserActivityRestoring]) -> Void
+    ) -> Bool {
+        MacSpotlightInbox.shared.receive(activity: userActivity)
     }
 
     /// Closing the window keeps Conduit (and its dashboard socket) running.

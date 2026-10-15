@@ -220,12 +220,16 @@ final class MacSessionDeletionDetectorTests: XCTestCase {
 }
 
 extension SessionSummary {
-    /// A minimal summary for tab tests.
-    static func macTestSummary(id: String, alternateIds: [String], title: String) -> SessionSummary {
+    /// A minimal summary for tab and Spotlight tests.
+    static func macTestSummary(
+        id: String, alternateIds: [String], title: String,
+        source: SessionSource = .chat, isArchived: Bool = false,
+        messageCount: Int? = nil, lastActivityAt: TimeInterval? = nil
+    ) -> SessionSummary {
         SessionSummary(
             id: id, storedSessionId: nil, alternateIds: alternateIds, title: title, model: "",
-            updatedLabel: "", profile: "default", source: .chat, isActive: false,
-            isArchived: false, lineageRootId: nil
+            updatedLabel: "", lastActivityAt: lastActivityAt, profile: "default", source: source,
+            isActive: false, isArchived: isArchived, messageCount: messageCount, lineageRootId: nil
         )
     }
 }
