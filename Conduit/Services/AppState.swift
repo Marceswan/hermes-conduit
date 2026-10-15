@@ -16875,6 +16875,12 @@ final class AppState: ObservableObject {
             activeSessionTitle = previousTitle
         }
         guard widgetLease?.isCurrent != false else { return }
+        #if os(macOS) // MAC: a new chat lands with the cursor in the message field
+        if let created = activeSessionId, created != previousSessionID {
+            // Held until the composer unlocks.
+            requestComposerFocus(on: created)
+        }
+        #endif
     }
 
     /// Re-resume the currently visible conversation. This uses the same
