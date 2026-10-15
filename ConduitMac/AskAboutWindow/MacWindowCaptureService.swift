@@ -95,7 +95,8 @@ final class MacWindowCaptureService: NSObject, SCContentSharingPickerObserver {
         let picker = SCContentSharingPicker.shared
         var config = SCContentSharingPickerConfiguration()
         config.allowedPickerModes = [.singleWindow]
-        config.excludedWindowIDs = NSApp.windows.map { Int($0.windowNumber) }
+        // Unrealized windows report a number of 0 or -1; only real ids go to the picker.
+        config.excludedWindowIDs = NSApp.windows.map { Int($0.windowNumber) }.filter { $0 > 0 }
         picker.defaultConfiguration = config
         picker.add(self)
         picker.isActive = true
@@ -129,6 +130,9 @@ final class MacWindowCaptureService: NSObject, SCContentSharingPickerObserver {
             cfg.width = px.width
             cfg.height = px.height
             cfg.showsCursor = false
+            // Default framing adds the window shadow, which makes the image larger than
+            // `contentRect` and squeezes it into the contentRect-sized buffer.
+            cfg.ignoreShadowsSingleWindow = true
             do {
                 image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
             } catch {
@@ -141,7 +145,11 @@ final class MacWindowCaptureService: NSObject, SCContentSharingPickerObserver {
         case .failed(let failure): return .failed(failure)
         case .proceed:
             guard let image else { return .failed(.noPicture) }
-            guard let encoded = Self.encode(image, limitBytes: limitBytes) else { return .tooLarge(suggestedName: name) }
+            // PNG and JPEG encoding of a window-sized image takes long enough to hitch the UI.
+            let encoded = await Task.detached(priority: .userInitiated) {
+                Self.encode(image, limitBytes: limitBytes)
+            }.value
+            guard let encoded else { return .tooLarge(suggestedName: name) }
             return .captured(data: encoded.data, isJPEG: encoded.isJPEG, suggestedName: name)
         }
     }

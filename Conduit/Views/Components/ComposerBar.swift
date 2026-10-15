@@ -938,7 +938,7 @@ struct ComposerBar: View {
             Button {
                 Task { await MacAskAboutWindow.run(appState: appState, window: NSApp.keyWindow) }
             } label: {
-                Label("Window", systemImage: "macwindow")
+                Label("Ask About Window…", systemImage: "macwindow")
             }
             #endif
         } label: {
