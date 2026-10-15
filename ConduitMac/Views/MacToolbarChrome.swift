@@ -65,3 +65,18 @@ extension View {
         }
     }
 }
+
+/// Keeps the window search item at the trailing edge on Bots, Cron and Kanban.
+/// The item follows the title slot: with the pane name removed from the toolbar
+/// (`macHidingToolbarTitle`) nothing is left to push it right, so it moved to the
+/// leading edge beside the sidebar toggle. A flexible spacer takes the slack
+/// (macOS 26 and later); before that an empty principal item does.
+struct MacPaneToolbarFill: ToolbarContent {
+    var body: some ToolbarContent {
+        if #available(macOS 26.0, *) {
+            ToolbarSpacer(.flexible)
+        } else {
+            ToolbarItem(placement: .principal) { Color.clear.frame(minWidth: 1, maxWidth: .infinity, minHeight: 1) }
+        }
+    }
+}

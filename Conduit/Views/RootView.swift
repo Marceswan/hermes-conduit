@@ -428,8 +428,8 @@ struct MainView: View {
             #endif // MAC:
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
-            #if os(macOS) // MAC: no chat toolbar items while another pane is shown (D6)
-            .toolbar { if chatPaneActive { chatToolbarContent } }
+            #if os(macOS) // MAC: no chat toolbar items while another pane is shown (D6); the filler keeps the window search item trailing now the pane title is hidden
+            .toolbar { if chatPaneActive { chatToolbarContent } else { MacPaneToolbarFill() } }
             #else // MAC:
             .toolbar { chatToolbarContent }
             #endif // MAC:

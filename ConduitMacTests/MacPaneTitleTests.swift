@@ -47,6 +47,8 @@ final class MacPaneTitleTests: XCTestCase {
                                     Button {} label: { Image(systemName: "arrow.clockwise") }
                                         .accessibilityLabel("Refresh conversation")
                                 }
+                            } else {
+                                MacPaneToolbarFill()
                             }
                         }
                 }
@@ -103,6 +105,48 @@ final class MacPaneTitleTests: XCTestCase {
     }
 
     /// Switching panes in a live window flips the title in and out of the toolbar.
+    /// The window search item's platter (the rightmost one: the toolbar holds
+    /// the sidebar toggle and, on the chat route, the strip and Refresh to its
+    /// left), in window coordinates.
+    private func searchFrame(in window: NSWindow) -> CGRect? {
+        ToolbarStability.snapshot(of: window).platters.last?.frame
+    }
+
+    /// With the pane name gone from the toolbar the window search item must
+    /// stay where it sits on the chat route, at the trailing edge (it follows
+    /// the title slot otherwise and jumps to the leading edge).
+    func testSearchItemStaysTrailingOnBotsCronAndKanban() throws {
+        try XCTSkipUnless(MacPaneTitle.canHideKeepingTitle)
+        for tab in [SidebarTab.bots, .cron, .kanban, .sessions] {
+            let window = try appWindow(tab: tab)
+            var frame: CGRect?
+            HostedTestSupport.settle(0.8)
+            frame = searchFrame(in: window)
+            let search = try XCTUnwrap(frame, "\(tab): the window search item is in the toolbar")
+            XCTAssertGreaterThan(search.midX, window.frame.width / 2, "\(tab): the search item is in the trailing half of the window")
+            XCTAssertGreaterThan(search.maxX, window.frame.width - 40, "\(tab): the search item sits at the trailing edge")
+            // Steady: no change in the toolbar over a second (the flicker class, D11).
+            let first = ToolbarStability.snapshot(of: window)
+            HostedTestSupport.settle(1.0)
+            XCTAssertEqual(ToolbarStability.snapshot(of: window), first, "\(tab): the toolbar stays still")
+            XCTAssertTrue(first.hidden.isEmpty, "\(tab): nothing in the overflow menu: \(first)")
+        }
+    }
+
+    /// The search item stays trailing while the route changes in a live window.
+    func testSearchItemStaysTrailingAcrossRouteChanges() throws {
+        try XCTSkipUnless(MacPaneTitle.canHideKeepingTitle)
+        let window = try appWindow(tab: .kanban)
+        for tab in [SidebarTab.sessions, .bots, .sessions, .cron, .kanban] {
+            suite.defaults.set(tab.rawValue, forKey: MacSidebarState.tabDefaultsKey)
+            XCTAssertTrue(HostedTestSupport.waitUntil { window.titleVisibility == (tab == .sessions ? .visible : .hidden) })
+            HostedTestSupport.settle(1.0)
+            let search = try XCTUnwrap(searchFrame(in: window))
+            XCTAssertGreaterThan(search.maxX, window.frame.width - 40, "after switching to \(tab): the search item is trailing")
+            XCTAssertTrue(ToolbarStability.snapshot(of: window).hidden.isEmpty, "after switching to \(tab): nothing in the overflow menu")
+        }
+    }
+
     func testTitleFollowsTheRoute() throws {
         try XCTSkipUnless(MacPaneTitle.canHideKeepingTitle)
         let window = try appWindow(tab: .kanban)
@@ -131,6 +175,8 @@ final class MacPaneTitleTests: XCTestCase {
         let source = try String(contentsOf: root, encoding: .utf8)
         XCTAssertTrue(source.contains(".navigationTitle(chatWindowTitle)\n            .macHidingToolbarTitle(MacChatRoute.hidesToolbarTitle(tabRaw: macTabRaw))"),
                       "RootView.chatNavigationContent must hide the pane-name title from the toolbar")
+        XCTAssertTrue(source.contains(".toolbar { if chatPaneActive { chatToolbarContent } else { MacPaneToolbarFill() } }"),
+                      "RootView.chatNavigationContent must keep the search item trailing on the other panes")
     }
 
     func testPaneTopShots() throws {
