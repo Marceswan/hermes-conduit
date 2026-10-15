@@ -1587,13 +1587,13 @@ struct KanbanView: View {
                 }
             } label: {
                 Image(systemName: "square.grid.2x2")
-                    #if os(macOS) // MAC: density (density): 32 pt desktop buttons
+                    #if os(macOS) // MAC: density: 32 pt desktop buttons
                     .frame(width: MacControlHeight.compact, height: MacControlHeight.compact)
                     #else // MAC:
                     .frame(width: 36, height: 36)
                     #endif // MAC:
             }
-            #if os(macOS) // MAC: density (density)
+            #if os(macOS) // MAC: density
             .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius)
             #else // MAC:
             .conduitGlassControl(cornerRadius: 14)
@@ -1654,13 +1654,13 @@ struct KanbanView: View {
                 .disabled(store.isMutating || !store.isSelectedSnapshotLoaded)
             } label: {
                 Image(systemName: "ellipsis.circle")
-                    #if os(macOS) // MAC: density (density): 32 pt desktop buttons
+                    #if os(macOS) // MAC: density: 32 pt desktop buttons
                     .frame(width: MacControlHeight.compact, height: MacControlHeight.compact)
                     #else // MAC:
                     .frame(width: 36, height: 36)
                     #endif // MAC:
             }
-            #if os(macOS) // MAC: density (density)
+            #if os(macOS) // MAC: density
             .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius)
             #else // MAC:
             .conduitGlassControl(cornerRadius: 14)
@@ -1676,14 +1676,14 @@ struct KanbanView: View {
                 enterSelectionMode()
             } label: {
                 Image(systemName: "checkmark.circle")
-                    #if os(macOS) // MAC: density (density): 32 pt desktop buttons
+                    #if os(macOS) // MAC: density: 32 pt desktop buttons
                     .frame(width: MacControlHeight.compact, height: MacControlHeight.compact)
                     #else // MAC:
                     .frame(width: 36, height: 36)
                     #endif // MAC:
             }
             .buttonStyle(.plain)
-            #if os(macOS) // MAC: density (density)
+            #if os(macOS) // MAC: density
             .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius)
             #else // MAC:
             .conduitGlassControl(cornerRadius: 14)
@@ -1696,13 +1696,13 @@ struct KanbanView: View {
                 Task { await store.refresh(includeArchived: includeArchived) }
             } label: {
                 Image(systemName: store.isLoading ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
-                    #if os(macOS) // MAC: density (density): 32 pt desktop buttons
+                    #if os(macOS) // MAC: density: 32 pt desktop buttons
                     .frame(width: MacControlHeight.compact, height: MacControlHeight.compact)
                     #else // MAC:
                     .frame(width: 36, height: 36)
                     #endif // MAC:
             }
-            #if os(macOS) // MAC: density (density)
+            #if os(macOS) // MAC: density
             .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius)
             #else // MAC:
             .conduitGlassControl(cornerRadius: 14)
@@ -1721,13 +1721,13 @@ struct KanbanView: View {
                 showNewTask = true
             } label: {
                 Image(systemName: "plus")
-                    #if os(macOS) // MAC: density (density): 32 pt desktop buttons
+                    #if os(macOS) // MAC: density: 32 pt desktop buttons
                     .frame(width: MacControlHeight.compact, height: MacControlHeight.compact)
                     #else // MAC:
                     .frame(width: 36, height: 36)
                     #endif // MAC:
             }
-            #if os(macOS) // MAC: density (density)
+            #if os(macOS) // MAC: density
             .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius, tint: .conduitAccent.opacity(0.12))
             #else // MAC:
             .conduitGlassControl(cornerRadius: 14, tint: .conduitAccent.opacity(0.12))
@@ -1765,6 +1765,7 @@ struct KanbanView: View {
                     .foregroundStyle(filtersActive ? Color.conduitAccent : Color.secondary)
                     #if os(macOS) // MAC: density: 28 pt inside the 32 pt pill
                     .frame(width: MacSidebarMetrics.searchPillButton, height: MacSidebarMetrics.searchPillButton)
+                    .contentShape(Rectangle())
                     #else // MAC:
                     .frame(width: 32, height: 32)
                     #endif // MAC:

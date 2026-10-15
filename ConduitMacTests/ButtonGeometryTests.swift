@@ -113,6 +113,10 @@ final class ButtonGeometryTests: XCTestCase {
 
     // MARK: Glass controls
 
+    // The two tests below build their own views from `MacControlHeight.compact`: they pin what
+    // `conduitGlassControl` reports (shape and size) for any control. The production sidebar and
+    // Kanban header sizes are pinned in SidebarDensityTests.
+
     func testGlassControlsReportTheirOwnShapeAndSize() throws {
         let nodes = try controls(
             in: HStack(spacing: 12) {

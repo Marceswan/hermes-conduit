@@ -4,7 +4,7 @@ import SwiftUI
 @testable import ConduitMac
 
 /// The Mac density pass: the sidebar and the pane-header buttons use desktop
-/// sizes (32 pt controls, 24 pt chips, ~52 pt session rows) instead of the
+/// sizes (32 pt controls, 24 pt chips, 44 pt session row pitch) instead of the
 /// iPad touch sizes upstream draws. The geometry tests read what SwiftUI lays
 /// out through the accessibility tree (the tree the hover layer uses), in a
 /// real window, so a reverted size goes red. The shot test is env-gated:
@@ -47,6 +47,9 @@ final class SidebarDensityTests: XCTestCase {
             summary("r2", "Cron nightly digest", model: "claude-sonnet-5", when: "Yesterday", source: .discord),
             summary("r3", "Refactor the sync service for offline use", model: "claude-opus-5", when: "Tue"),
             summary("r4", "Voice call with the design team", model: "gemini-live", when: "Mon", source: .voice),
+            // A long title and a long model line: both truncate to one line, so the pitch must not grow.
+            summary("r5", "Investigate why the nightly Salesforce deployment pipeline keeps failing the Apex coverage gate on Sundays",
+                    model: "claude-opus-5-20261001-extended-thinking-preview", when: "Last Sunday"),
         ]
         appState.activeSessionId = "r1"
         appState.toggleSessionPinned(appState.sessions[0])
@@ -189,13 +192,13 @@ final class SidebarDensityTests: XCTestCase {
         let window = host(sidebar(), size: NSSize(width: 340, height: 900), dark: true)
         let heights = try sessionRowHeights(in: window)
         if ProcessInfo.processInfo.environment["CONDUIT_DENSITY_DUMP"] == "1" { print("DENSITY-ROWS \(heights)") }
-        // Two section headers (Pinned, Recent) and six session rows.
+        // Two section headers (Pinned, Recent) and seven session rows, one with a truncated title.
         let rows = heights.filter { $0 > 30 }
-        XCTAssertEqual(rows.count, 6, "\(heights)")
-        // Upstream's card measures 56 pt in the list; the Mac card must come in well under it.
+        XCTAssertEqual(rows.count, 7, "\(heights)")
+        // Upstream's card measures 56 pt in the list; the Mac pitch is 44 (a 40 pt card, 2 pt insets).
         for height in rows {
-            XCTAssertLessThanOrEqual(height, MacSidebarMetrics.sessionRowPitch, "row pitch \(heights)")
-            XCTAssertGreaterThanOrEqual(height, MacSidebarMetrics.sessionRowPitch - 6, "row pitch \(heights)")
+            XCTAssertEqual(height, MacSidebarMetrics.sessionRowPitch, accuracy: 2, "row pitch \(heights)")
+            XCTAssertLessThan(height, 56, "tighter than the touch card: \(heights)")
         }
     }
 
@@ -212,6 +215,29 @@ final class SidebarDensityTests: XCTestCase {
             XCTAssertEqual(button.frame.height, MacControlHeight.compact, accuracy: 0.6, "\(button.label ?? button.role)")
             XCTAssertEqual(button.frame.width, MacControlHeight.compact, accuracy: 0.6, "\(button.label ?? button.role)")
         }
+    }
+
+    func testCardRadiusAvatarAndRingAreCompact() throws {
+        XCTAssertEqual(MacSidebarMetrics.sessionCardRadius, 12)
+        XCTAssertEqual(MacSidebarMetrics.controlRadius, 12)
+        // The keyboard cursor ring and its fill follow the card's corners.
+        XCTAssertEqual(MacSessionCursorRow.ringRadius, MacSidebarMetrics.sessionCardRadius)
+        // The Workspace avatar is laid out at 22 pt (a 28 pt view scaled), not 28.
+        XCTAssertEqual(MacSidebarMetrics.avatarSize, 22)
+        let avatar = NSHostingView(rootView: Color.red.frame(width: 28, height: 28)
+            .macCompactAvatar(from: 28, to: MacSidebarMetrics.avatarSize))
+        XCTAssertEqual(avatar.fittingSize.width, 22, accuracy: 0.5)
+        XCTAssertEqual(avatar.fittingSize.height, 22, accuracy: 0.5)
+    }
+
+    func testNewChatRowLinesUpWithWorkspaceAndTheTabStrip() throws {
+        let window = host(sidebar(), size: NSSize(width: 340, height: 900), dark: true)
+        let found = try nodes(in: window)
+        let workspace = try XCTUnwrap(found.first { ($0.label ?? "").contains("Workspace") }?.frame)
+        XCTAssertEqual(try frame("New Chat", in: found).minX, workspace.minX, accuracy: 0.6, "leading edge")
+        let gear = try frame("Settings", in: found)
+        let folder = try frame("Browse projects", in: found)
+        XCTAssertEqual(folder.maxX, gear.maxX, accuracy: 0.6, "trailing edge")
     }
 
     func testSearchPillsAreThirtyTwoPoints() throws {

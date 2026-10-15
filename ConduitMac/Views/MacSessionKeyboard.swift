@@ -151,16 +151,20 @@ private struct MacHostWindowReader: NSViewRepresentable {
 /// cursor. An overlay on the row content, so swipe actions, the context menu
 /// and hit testing are untouched.
 struct MacSessionCursorRow: ViewModifier {
+    /// The ring follows the session card's own corners (`SessionRow`), so the
+    /// card never pokes out past it.
+    static let ringRadius: CGFloat = MacSidebarMetrics.sessionCardRadius
+
     let id: String
     @Environment(\.macSessionCursor) private var cursor
 
     func body(content: Content) -> some View {
         content.overlay {
             if cursor == id {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: Self.ringRadius, style: .continuous)
                     .strokeBorder(Color.conduitAccent, lineWidth: 2)
                     .background(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        RoundedRectangle(cornerRadius: Self.ringRadius, style: .continuous)
                             .fill(Color.conduitAccent.opacity(0.10))
                     )
                     .allowsHitTesting(false)
