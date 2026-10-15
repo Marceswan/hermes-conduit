@@ -1,9 +1,9 @@
 import Foundation
 
-/// Display sanitizer for text the agent, the gateway or a chat controls: session
-/// titles, commands, descriptions, tool names, reply previews, error text. Shared by
-/// every Mac surface that shows such text outside the chat transcript (the notch,
-/// notifications).
+/// Display sanitizer for text the agent, the gateway or a chat controls and a Mac surface
+/// shows outside the chat transcript: status lines, session titles, commands, descriptions,
+/// tool names, error text, reply previews. Shared by the notch, Quick Ask and notifications.
+/// The reply body in the chat renders as Markdown like the main chat and is not run through this.
 ///
 /// A hostile or confused agent can put text in a title or a command that reorders what
 /// the user reads (bidi controls), hides characters (zero-width and other format
@@ -15,29 +15,37 @@ import Foundation
 ///   RLM, ALM, zero-width characters, BOM, soft hyphen, tag characters E0000-E007F,
 ///   private use, unassigned, U+2028 and U+2029).
 /// - Keep ZWJ (U+200D) only between two emoji, so emoji sequences survive.
-/// - Tabs, newlines and every space separator (Zs) become one space; runs collapse.
+/// - Tabs, newlines and every space separator (Zs) become one space; runs collapse and the
+///   ends are trimmed.
 /// - At most two combining marks (Mn, Me) follow a base scalar.
 /// - Cap the length by grapheme count and end a cut string with a visible ellipsis.
 ///
-/// Render the result with `Text(verbatim:)` (or an `NSTextField` string value), never as
-/// Markdown, a `LocalizedStringKey` or an attributed link.
+/// Show the result with `Text(verbatim:)` or a `String`-typed `Text`, never as a
+/// `LocalizedStringKey`, Markdown or a link.
 enum MacUntrustedText {
-    struct Result: Equatable {
+    /// What `sanitizeReport` found, for callers that must not trust a changed string
+    /// (the notch will not offer Allow on a command it did not show faithfully).
+    struct Report: Equatable {
         var text: String
-        /// The visible text is shorter than the input (cut at the limit).
+        /// The visible text is shorter than the input (cut at the cap).
         var truncated: Bool
-        /// Control, invisible or excess combining characters were dropped, so the visible text is
+        /// Control, invisible or excess combining characters were dropped, so the text is
         /// not a faithful copy of the input (whitespace collapsing does not count).
-        var stripped: Bool
+        var changed: Bool
     }
 
     static let ellipsis = "\u{2026}"
     static let maxCombiningMarks = 2
     private static let zwj: Unicode.Scalar = "\u{200D}"
 
-    static func sanitize(_ raw: String, limit: Int) -> Result {
+    static func sanitize(_ raw: String, maxGraphemes: Int) -> String {
+        sanitizeReport(raw, maxGraphemes: maxGraphemes).text
+    }
+
+    static func sanitizeReport(_ raw: String, maxGraphemes: Int) -> Report {
+        guard maxGraphemes > 0 else { return Report(text: "", truncated: !raw.isEmpty, changed: false) }
         // Bound the work on a very long input: keep a generous prefix, remember that we cut.
-        let scanLimit = max(limit, 1) * 8
+        let scanLimit = maxGraphemes * 8 + 16
         var cutInput = false
         var prefix = String.UnicodeScalarView()
         var taken = 0
@@ -49,15 +57,15 @@ enum MacUntrustedText {
         let scalars = Array(String(prefix).precomposedStringWithCanonicalMapping.unicodeScalars)
 
         var out = String.UnicodeScalarView()
-        var stripped = false
+        var changed = false
         var pendingSpace = false
         var marks = 0
         var previousIsEmoji = false     // the last kept scalar can start a ZWJ sequence
 
         for (index, scalar) in scalars.enumerated() {
-            // Line and paragraph separators are dropped (not turned into a space).
             let category = scalar.properties.generalCategory
-            if category == .lineSeparator || category == .paragraphSeparator { stripped = true; continue }
+            // Line and paragraph separators are dropped (not turned into a space).
+            if category == .lineSeparator || category == .paragraphSeparator { changed = true; continue }
 
             if scalar == zwj {
                 let next = index + 1 < scalars.count ? scalars[index + 1] : nil
@@ -66,7 +74,7 @@ enum MacUntrustedText {
                     previousIsEmoji = false      // the next emoji restarts the check
                     marks = 0
                 } else {
-                    stripped = true
+                    changed = true
                 }
                 continue
             }
@@ -81,11 +89,11 @@ enum MacUntrustedText {
 
             switch category {
             case .control, .format, .surrogate, .privateUse, .unassigned:
-                stripped = true
+                changed = true
                 continue
             case .nonspacingMark, .enclosingMark:
                 marks += 1
-                if marks > maxCombiningMarks { stripped = true; continue }
+                if marks > maxCombiningMarks { changed = true; continue }
             default:
                 marks = 0
             }
@@ -100,15 +108,11 @@ enum MacUntrustedText {
         }
 
         let text = String(out)
-        guard text.count > limit || cutInput else {
-            return Result(text: text, truncated: false, stripped: stripped)
+        guard text.count > maxGraphemes || cutInput else {
+            return Report(text: text, truncated: false, changed: changed)
         }
-        let kept = String(text.prefix(max(limit - 1, 0))).trimmingCharacters(in: .whitespaces)
-        return Result(text: kept + ellipsis, truncated: true, stripped: stripped)
-    }
-
-    static func clean(_ raw: String, limit: Int) -> String {
-        sanitize(raw, limit: limit).text
+        let kept = String(text.prefix(max(maxGraphemes - 1, 0))).trimmingCharacters(in: .whitespaces)
+        return Report(text: kept + ellipsis, truncated: true, changed: changed)
     }
 
     /// A pictographic scalar. ASCII digits, `#` and `*` carry the Emoji property but are not

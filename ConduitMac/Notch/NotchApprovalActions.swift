@@ -17,10 +17,10 @@ struct NotchApprovalContent: Equatable {
     var needsReview: Bool
 
     static func make(_ a: ApprovalActivity) -> NotchApprovalContent {
-        let command = MacUntrustedText.sanitize(a.command, limit: NotchRowBuilder.commandLimit)
-        let description = MacUntrustedText.sanitize(a.description, limit: summaryLimit)
-        let review = command.truncated || command.stripped || command.text.isEmpty
-            || description.truncated || description.stripped
+        let command = MacUntrustedText.sanitizeReport(a.command, maxGraphemes: NotchRowBuilder.commandLimit)
+        let description = MacUntrustedText.sanitizeReport(a.description, maxGraphemes: summaryLimit)
+        let review = command.truncated || command.changed || command.text.isEmpty
+            || description.truncated || description.changed
         return NotchApprovalContent(
             summary: description.text.isEmpty ? nil : description.text,
             command: command.text, needsReview: review)
