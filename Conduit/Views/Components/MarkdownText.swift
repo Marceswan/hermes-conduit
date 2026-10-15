@@ -544,6 +544,7 @@ enum MarkdownSelectionFormatter {
             } else {
                 marker = ordered ? "\(index + 1). " : "• "
             }
+            let itemStart = result.length
             result.append(NSAttributedString(
                 string: marker,
                 attributes: [
@@ -558,6 +559,16 @@ enum MarkdownSelectionFormatter {
                 textColor: textColor,
                 linkColor: linkColor
             ))
+#if os(macOS)
+            // MAC: wrapped lines hang under the item text, not under the marker.
+            let hanging = NSMutableParagraphStyle()
+            hanging.headIndent = ceil((marker as NSString).size(withAttributes: [.font: markerFont]).width)
+            result.addAttribute(
+                .paragraphStyle,
+                value: hanging,
+                range: NSRange(location: itemStart, length: result.length - itemStart)
+            )
+#endif
         }
         return result
     }
@@ -977,6 +988,11 @@ private struct InlineMarkdown: View {
             selectionCoordinator: selectionCoordinator,
             selectionSegment: selectionSegment
         )
+#if os(macOS)
+            // MAC: an NSViewRepresentable has no baseline, so the list marker's
+            // firstTextBaseline HStack floated it a line above its text.
+            .firstBaselineAligned()
+#endif
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

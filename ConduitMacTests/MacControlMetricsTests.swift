@@ -4,23 +4,37 @@ import XCTest
 final class MacControlMetricsTests: XCTestCase {
     func testNamedControlHeights() {
         XCTAssertEqual(MacControlHeight.regular, 36)
-        XCTAssertEqual(MacControlHeight.large, 44)
-        XCTAssertLessThan(MacControlHeight.regular, MacControlHeight.large)
-        // The Mac pane header row (MacPaneHeader.minHeight) and the window-toolbar
-        // platter measured on macOS 27 are both a regular control tall.
+        XCTAssertEqual(MacControlHeight.compact, 32)
+        XCTAssertLessThan(MacControlHeight.compact, MacControlHeight.regular)
+        // The window-toolbar platter measured on macOS 27 is a regular control tall.
+        // Sidebar rows, the tab strip and the pane-header buttons (and the
+        // `MacPaneHeader` row) are compact.
         XCTAssertEqual(MacControlHeight.toolbarItem, MacControlHeight.regular)
+    }
+
+    func testSidebarMetricsAreProportionalToTheCompactControl() {
+        XCTAssertEqual(MacSidebarMetrics.chipHeight, 24)
+        XCTAssertGreaterThanOrEqual(MacSidebarMetrics.chipHeight, 24, "hit target")
+        XCTAssertLessThan(MacSidebarMetrics.glyphSize, MacControlHeight.compact / 2, "glyph sits inside the control")
+        XCTAssertLessThan(MacSidebarMetrics.rowGap, 10, "tighter than upstream's gap")
+        XCTAssertLessThan(MacSidebarMetrics.stackGap, 16, "tighter than upstream's gap")
+        XCTAssertEqual(MacSidebarMetrics.controlRadius, MacTabStripMetrics.containerRadius)
+        XCTAssertLessThan(MacSidebarMetrics.avatarSize, MacControlHeight.compact)
     }
 
     func testIndicatorRadiusIsConcentricWithTheContainer() {
         XCTAssertEqual(MacTabStripMetrics.indicatorRadius, MacTabStripMetrics.containerRadius - MacTabStripMetrics.inset)
         XCTAssertEqual(MacTabStripMetrics.concentricRadius(outer: 18, inset: 4), 14)
+        XCTAssertEqual(MacTabStripMetrics.indicatorRadius, 9, "12 pt container, 3 pt inset")
         XCTAssertEqual(MacTabStripMetrics.concentricRadius(outer: 3, inset: 4), 0, "never negative")
     }
 
     func testContainerHeightIsSegmentPlusInsetOnBothSides() {
-        XCTAssertEqual(MacTabStripMetrics.inset, 4)
-        XCTAssertEqual(MacTabStripMetrics.containerHeight, MacTabStripMetrics.segmentHeight + 8)
-        XCTAssertEqual(MacTabStripMetrics.containerHeight, MacControlHeight.large, "the strip is as tall as a sidebar row")
+        XCTAssertEqual(MacTabStripMetrics.inset, 3)
+        XCTAssertEqual(MacTabStripMetrics.containerHeight, MacTabStripMetrics.segmentHeight + 6)
+        XCTAssertEqual(MacTabStripMetrics.segmentHeight, 26)
+        XCTAssertGreaterThanOrEqual(MacTabStripMetrics.segmentHeight, 24, "hit target")
+        XCTAssertEqual(MacTabStripMetrics.containerHeight, MacControlHeight.compact, "the strip is as tall as a sidebar row")
     }
 
     func testSegmentsAreEqualWidthAndTileTheContainer() {

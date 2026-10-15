@@ -1112,12 +1112,24 @@ struct ComposerBar: View {
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 8, weight: .bold))
             }
+            // MAC: the app's gold tint made the label pale gold on white in
+            // light mode and read as disabled; primary matches the model name.
+#if os(macOS)
+            .foregroundStyle(.primary)
+#else
             .foregroundStyle(.secondary)
+#endif
             .padding(.horizontal, 4)
             .frame(minWidth: 44, minHeight: 44)
             .contentShape(Rectangle())
         }
         .menuOrder(.fixed)
+#if os(macOS)
+        // MAC: a pull-down label takes the app tint over foregroundStyle.
+        .tint(.primary)
+        // MAC: the label already draws its own up/down chevrons; hide the system one.
+        .menuIndicator(.hidden)
+#endif
         // Picks land in order: the next waits for this write.
         .disabled(appState.isWritingReasoningEffort)
         .accessibilityLabel(Text("Reasoning"))
