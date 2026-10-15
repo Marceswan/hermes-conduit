@@ -118,6 +118,9 @@ struct MacToolbarSlotReader: NSViewRepresentable {
         deinit { observers.forEach(NotificationCenter.default.removeObserver) }
 
         /// The width of the visible sidebar column, zero when it is collapsed or there is no split view.
+        /// The app's window holds one `NSSplitView` under the theme frame, the navigation split, so the
+        /// first one found is the sidebar's; `MacToolbarRealWindowTests` pins that in a window shaped like
+        /// the `WindowGroup`'s, and that its width does not move with the strip's.
         static func sidebarWidth(in window: NSWindow) -> CGFloat {
             func findSplit(_ view: NSView, depth: Int) -> NSSplitView? {
                 if let split = view as? NSSplitView { return split }
