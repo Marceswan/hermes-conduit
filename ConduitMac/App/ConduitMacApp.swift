@@ -55,7 +55,7 @@ struct ConduitMacApp: App {
                 .frame(minWidth: MacSidebarState.windowMinWidth, minHeight: 560)
         }
         .defaultSize(width: 1180, height: 780)
-        .commands { ConduitCommands(appState: appState, tabs: .shared, palette: .shared, updater: .shared, quickAsk: .shared) }
+        .commands { ConduitCommands(appState: appState, tabs: .shared, notch: .shared, palette: .shared, updater: .shared, quickAsk: .shared) }
     }
 
     // Ported from ConduitApp.swift; keep in sync. Skipped: see docs/macos/PORTING_LEDGER.md.
@@ -65,6 +65,7 @@ struct ConduitMacApp: App {
             .overlay { MacPaletteView() }
             .environmentObject(appState)
             .task { MacSessionTabsStore.shared.bind(to: appState) }
+            .task(id: appState.isConnected) { NotchStatusController.shared.bind(to: appState) }   // no-op once bound; the feed is created by the shared base's bootstrap
             .macSpotlightBinding(appState: appState, openLink: { pendingExternalLink = $0 })
             .task { MacPaletteStore.shared.bind(to: appState) }
             .environment(\.locale, appLanguage.resolvedLocale)

@@ -8,6 +8,8 @@ struct ConduitCommands: Commands {
 
     @ObservedObject var appState: AppState
     @ObservedObject var tabs: MacSessionTabsStore
+    /// Pin state of the notch agent status panel (D16); drives Show / Hide Agent Status.
+    @ObservedObject var notch: NotchStatusController
     /// Not observed: the palette publishes on every keystroke, and observing
     /// it here would rebuild the whole menu bar each time.
     let palette: MacPaletteStore
@@ -118,6 +120,10 @@ struct ConduitCommands: Commands {
             Button("Session Below") { open(.next) }
                 .keyboardShortcut(.downArrow, modifiers: [.option, .command])
                 .disabled(neighbor(.next) == nil)
+            Divider()
+            // Notch agent status (D16): no key equivalent, nothing to clash with.
+            Button(notch.isCommandPinned ? AppLocalization.string("Hide Agent Status") : AppLocalization.string("Show Agent Status")) { notch.toggleCommandPin() }
+            Button("Reset Agent Status Position") { notch.resetPosition() }
             Divider()
             Button("Message Field") { MacKeyboardActions.focusComposer(window: NSApp.keyWindow ?? NSApp.mainWindow) }
                 .keyboardShortcut("l", modifiers: .command)

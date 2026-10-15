@@ -179,3 +179,32 @@ Human pass at release time (agents never click or type into the running app, R18
   - [ ] Quick Ask, macOS 15.0 or 15.1 only: the Chat menu shows "Quick Ask shortcut unavailable on this macOS version. Use Chat > Quick Ask." and Chat > Quick Ask still opens the panel. Any macOS: switch Chat > Quick Ask Shortcut off and the hotkey stops (Space types normally), on again and it works. Register Option-Shift-Space in another app first (or run a second Conduit) to see the "taken by another app" line.
   - [ ] Quick Ask: with Conduit running and no window open (red close button), the hotkey opens the panel and an ask works (the stream subscription starts at launch). Quit and relaunch with the shortcut toggle off: the hotkey does nothing.
   - [ ] Quick Ask in VoiceOver: the panel is announced as "Quick Ask", the field is "Ask Hermes", every button is announced, and the panel is reachable while key.
+
+## Notch status (D16)
+
+- [ ] Idle: nothing at the top of the screen; Settings > On this device > Notch status shows the three modes and the visibility footnote.
+- [ ] Start a long turn: compact wings appear around the notch (a pill on an external or non-notch display); the mark pulses; the right wing names the tool or the count.
+- [ ] Hover the compact surface: it expands after about 200 ms and collapses about 400 ms after the pointer leaves. Reduce Motion on: fade only.
+- [ ] Trigger an approval in a background session: the panel expands and stays; the row says "Approval needed" with the description and command, the chat title in small text below; Allow once and Deny are disabled for about 600 ms and then work; Always allow exists only in the "..." menu; a smart-denied request has no menu.
+- [ ] Approval with a very long command (over 160 characters) or one containing invisible characters: the row shows "Review in Conduit" instead of Allow once, no "..." menu, Deny still works; Review opens the session.
+- [ ] Answer from the notch; answer from the main window; answer from Hermes Desktop: the row disappears each time with no error.
+- [ ] Approval with a multi-line command (for example `ls` then a second line): the row shows "Review in Conduit", not Allow once; Deny still works.
+- [ ] Approval with a 150-character command: the whole command is on screen (no "..." cut by the layout) before Allow once is offered.
+- [ ] Two displays: drop the surface on the second display, then focus a window on the first; the surface stays on the second until Reset Agent Status Position.
+- [ ] Mode Off: no surface, and Activity Monitor shows no wakeups from the notch while an agent works (Show Agent Status pins it for a look).
+- [ ] A clarify or sudo/secret prompt: the row says "Answer in Conduit" and clicking opens that session.
+- [ ] Click a working row: Conduit comes forward on that session. (Kanban rows and the cron footer are follow-up; nothing to test in v1.)
+- [ ] Drag the compact surface to the bottom edge, the left edge, the right edge, then onto a second display: it follows the pointer, snaps to the nearest edge on release, shows a vertical capsule on left and right, and its expanded panel opens inward (up from the bottom, right from the left edge, left from the right edge) with rows stacked. The wings only appear in the default placement.
+- [ ] Docked at the bottom, left and right edges, with the Dock visible at that edge: the surface draws above the Dock (window level `.statusBar`).
+- [ ] Quit and relaunch: it returns to the saved spot on each display. Unplug the display it was docked on: it falls back to the notch (or the top-center pill) and returns to the saved spot when the display is plugged in again.
+- [ ] Press and release Allow once without moving: it fires. Press it and drag past a few points: the panel moves, nothing is approved, and no control stays highlighted afterwards.
+- [ ] While dragging, let an approval arrive: nothing resizes or announces until you release, then the panel expands and the buttons are disabled for about 600 ms.
+- [ ] Go > Reset Agent Status Position, then (docked again) double-click the capsule or grip: both return it to the notch.
+- [ ] Turn finishes: checkmark row for 4 s expanded, stays as a row for 30 s (max 3), then disappears. A failed turn is red with the error text.
+- [ ] A session started in the CLI or Slack never shows (known limit, D16).
+- [ ] Go > Show Agent Status pins the panel (also with the mode Off) and shows "No agents running" with the limit note; again hides it. Esc collapses it with Conduit frontmost; click outside collapses it always.
+- [ ] Disconnect Hermes: rows clear after about 15 s and the panel hides; pinned shows "Not connected to Hermes".
+- [ ] Capture on a notch Mac: `NSScreen.main` `safeAreaInsets.top`, `auxiliaryTopLeftArea`, `auxiliaryTopRightArea` and record them next to the fixture in NotchGeometryTests.
+- [ ] Hardware matrix: external display only (lid closed), mirrored display, a full-screen app, two Spaces, unplug the external display while expanded.
+- [ ] VoiceOver: the panel reads "Agent status: ..." and every row and button is reachable; an approval announces.
+- [ ] Click the empty corners of the compact capsule: clicks pass through to the menu bar.
