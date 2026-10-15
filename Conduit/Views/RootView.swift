@@ -251,6 +251,17 @@ struct MainView: View {
             appState.settingsLinkRequest = nil
             openSettings(at: page)
         }
+        #if os(macOS) // MAC: the command palette opens Settings (D18)
+        .onReceive(NotificationCenter.default.publisher(for: .macOpenSettingsRequested)) { _ in
+            guard settingsPresentation == nil else { return }
+            settingsOpensAt = nil
+            if appState.showSidebar, !isPersistentSidebarActive {
+                presentSettingsFromDrawer()
+            } else {
+                presentSettings()
+            }
+        }
+        #endif // MAC:
     }
 
     /// An in-app settings link (`conduit://settings/calls` or `/voice`, in a reply):

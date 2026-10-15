@@ -52,6 +52,8 @@ final class MacPaletteStore: ObservableObject {
 
     var snapshot: () -> MacPaletteSnapshot = { .empty }
     var calls = MacPaletteCalls()
+    /// Set by `bind(to:)` (MacPaletteBinding.swift); a plain var because an extension cannot store.
+    var isBound = false
 
     private let recentsStore: MacPaletteRecentsStore
     private let now: () -> Date

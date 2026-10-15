@@ -294,3 +294,18 @@ enum MacSessionTabsActions {
         (store ?? .shared).selectNeighbor(direction)
     }
 }
+
+/// What Go > Command Palette does (D18). The store is optional because a
+/// `.shared` default argument trips Swift 6 isolation (same as the tabs).
+@MainActor
+enum MacPaletteActions {
+    /// Cmd-K: only in the chat window, never under a sheet. When the composer
+    /// held focus, closing the palette gives it back.
+    static func toggle(store: MacPaletteStore? = nil, window: NSWindow?) {
+        let store = store ?? .shared
+        guard MacSessionTabsActions.isMainChatWindow(window),
+              !MacKeyboardActions.commandsBlocked(by: window) else { return }
+        let composerHadFocus = window?.firstResponder is ComposerTextView
+        store.toggle(restoreFocus: composerHadFocus ? { MacKeyboardActions.focusComposer(window: window) } : nil)
+    }
+}

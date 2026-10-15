@@ -63,6 +63,7 @@ struct ConduitMacApp: App {
         RootView()
             .environmentObject(appState)
             .task { MacSessionTabsStore.shared.bind(to: appState) }
+            .task { MacPaletteStore.shared.bind(to: appState) }
             .environment(\.locale, appLanguage.resolvedLocale)
             .onChange(of: appLanguage.selection) { _, _ in
                 appState.appLanguageDidChange()
