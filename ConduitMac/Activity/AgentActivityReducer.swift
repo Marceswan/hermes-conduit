@@ -60,6 +60,12 @@ enum AgentActivityInput {
     case dismiss(itemId: String)
     case reset(profile: String, dashboardID: String)
     case tick
+    case activeList([LiveSessionStatus])
+    case activeListUnavailable
+    case fetchRequested(runtimeSessionId: String)
+    case pendingApprovals(runtimeSessionId: String, [ApprovalActivity])
+    case pendingApprovalsFailed(runtimeSessionId: String)
+    case catalog([SessionSummary])
 }
 
 /// `reduce(state, input, now) -> (state, events)`. Pure: no clock, no network, no AppKit.
@@ -85,6 +91,11 @@ enum AgentActivityReducer {
         var engine = Engine(s: state, now: now)
         engine.apply(input)
         return Output(state: engine.s, payloads: engine.out)
+    }
+
+    /// Runtime ids whose `approval.pending` the feed still has to fetch.
+    static func fetchTargets(_ state: AgentActivityState) -> [String] {
+        state.waiting.filter { !$0.value.requested }.map(\.key).sorted()
     }
 
     private struct Engine {
@@ -126,6 +137,19 @@ enum AgentActivityReducer {
                 fresh.nextTurnSeq = s.nextTurnSeq
                 fresh.activeSessionId = s.activeSessionId
                 s = fresh
+            case .activeList(let rows):
+                activeList(rows)
+            case .activeListUnavailable:
+                s.pollAuthoritative = false
+                s.baselinePending = false
+            case .fetchRequested(let runtime):
+                s.waiting[runtime]?.requested = true
+            case .pendingApprovals(let runtime, let list):
+                pendingApprovals(runtime, list)
+            case .pendingApprovalsFailed(let runtime):
+                fallbackDecision(runtime, kind: .approval)
+            case .catalog(let sessions):
+                catalog(sessions)
             case .tick:
                 tick()
             }
@@ -407,6 +431,105 @@ enum AgentActivityReducer {
                 default:
                     break
                 }
+            }
+        }
+
+        // MARK: Poll
+
+        mutating func activeList(_ rows: [LiveSessionStatus]) {
+            let baseline = s.baselinePending
+            s.baselinePending = false
+            s.pollAuthoritative = true
+            var byRuntime: [String: LiveSessionStatus] = [:]
+            for row in rows {
+                ensureIdentity(row.runtimeSessionId, stored: row.storedSessionId)
+                byRuntime[row.runtimeSessionId] = row
+            }
+
+            for row in rows where row.isRunning {
+                let runtime = row.runtimeSessionId
+                ensureWorkingTurn(runtime, source: .poll, announce: !baseline)
+                if row.status == "waiting" {
+                    noteWaiting(runtime, silent: baseline)
+                } else {
+                    s.waiting[runtime] = nil
+                }
+            }
+            for runtime in Array(s.waiting.keys) where byRuntime[runtime]?.status != "waiting" {
+                s.waiting[runtime] = nil
+            }
+
+            for item in Array(s.items.values) where item.kind == .turn && item.state == .working {
+                guard let runtime = item.sessionId else { continue }
+                if let row = byRuntime[runtime] {
+                    if row.isRunning { s.misses[item.id] = 0; continue }
+                    if row.status == "starting" { continue }   // runtime present, liveness inconclusive
+                }
+                let misses = (s.misses[item.id] ?? 0) + 1
+                s.misses[item.id] = misses
+                if misses >= AgentActivityReducer.missesToFinish {
+                    finish(runtime, outcome: .completed, preview: nil)
+                }
+            }
+
+            for item in Array(s.items.values) where item.state == .needsUser {
+                guard let runtime = item.sessionId else { continue }
+                if byRuntime[runtime]?.status == "waiting" { s.misses[item.id] = 0; continue }
+                let misses = (s.misses[item.id] ?? 0) + 1
+                s.misses[item.id] = misses
+                if misses >= AgentActivityReducer.missesToFinish {
+                    resolve(item.id, byRuntime[runtime] == nil ? .sessionClosed : .withdrawn)
+                }
+            }
+        }
+
+        mutating func noteWaiting(_ runtime: String, silent: Bool) {
+            let hasDecision = s.items.values.contains { $0.sessionId == runtime && $0.state == .needsUser }
+            guard !hasDecision, s.waiting[runtime] == nil else { return }
+            s.waiting[runtime] = .init(silent: silent)
+        }
+
+        mutating func pendingApprovals(_ runtime: String, _ list: [ApprovalActivity]) {
+            guard let wait = s.waiting[runtime] else { return }
+            if list.isEmpty {
+                fallbackDecision(runtime, kind: .clarify)
+                return
+            }
+            s.waiting[runtime] = nil
+            for approval in list {
+                let id = approval.requestId.map { "approval:\($0)" } ?? "approval:legacy:\(runtime)"
+                let detail = approval.description.isEmpty ? approval.command : approval.description
+                addDecision(decision(id: id, kind: .approval, runtime: runtime, detail: detail, approval: approval), announce: !wait.silent)
+            }
+        }
+
+        /// A waiting session whose content could not be fetched (or is not an approval):
+        /// a row with no buttons that says "open in Conduit".
+        mutating func fallbackDecision(_ runtime: String, kind: AgentActivityItem.Kind) {
+            guard let wait = s.waiting.removeValue(forKey: runtime) else { return }
+            let prefix = kind == .approval ? "approval" : "clarify"
+            addDecision(decision(id: "\(prefix):waiting:\(runtime)", kind: kind, runtime: runtime, detail: nil), announce: !wait.silent)
+        }
+
+        // MARK: Catalog
+
+        mutating func catalog(_ sessions: [SessionSummary]) {
+            for session in sessions {
+                let ids = [session.id, session.storedSessionId, session.lineageRootId].compactMap { $0 } + session.alternateIds
+                for id in ids { s.titles[id] = session.title }
+                for (runtime, var identity) in s.identities where ids.contains(where: { identity.matches($0) }) {
+                    identity.alternateIds.formUnion(ids.filter { $0 != runtime })
+                    identity.catalogId = session.id
+                    if identity.lineageRootId == nil { identity.lineageRootId = session.lineageRootId }
+                    s.identities[runtime] = identity
+                }
+            }
+            for id in Array(s.items.keys) {
+                guard let runtime = s.items[id]?.sessionId else { continue }
+                let latest = title(runtime)
+                if !latest.isEmpty, s.items[id]?.title != latest { s.items[id]?.title = latest }
+                let key = sessionKey(runtime)
+                s.items[id]?.sessionKey = key
             }
         }
     }
