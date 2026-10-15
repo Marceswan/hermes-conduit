@@ -1,4 +1,5 @@
 import Combine
+import CoreSpotlight
 import Foundation
 import SwiftUI
 
@@ -90,8 +91,21 @@ final class MacSpotlightBinder {
 }
 
 extension View {
-    /// Mirrors the session catalog into Spotlight when the user opted in (D19).
-    func macSpotlightBinding(appState: AppState) -> some View {
+    /// Mirrors the session catalog into Spotlight when the user opted in, and
+    /// opens a chat when the user picks one of those results (D19). `openLink`
+    /// parks the link until Hermes is connected (the app's `pendingExternalLink`).
+    func macSpotlightBinding(appState: AppState, openLink: @escaping (ConduitAppLink) -> Void) -> some View {
         task { MacSpotlightBinder.shared.bind(to: appState) }
+            .onContinueUserActivity(CSSearchableItemActionType) { activity in
+                let key = appState.activeDashboardID?.uuidString ?? "none"
+                switch MacSpotlightContinuation.outcome(userInfo: activity.userInfo, currentDashboardKey: key) {
+                case .open(let link):
+                    openLink(link)
+                case .foreignDashboard:
+                    appState.errorMessage = AppLocalization.string("That chat belongs to a different Hermes dashboard.")
+                case .ignored:
+                    break
+                }
+            }
     }
 }

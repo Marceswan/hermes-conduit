@@ -63,7 +63,7 @@ struct ConduitMacApp: App {
         RootView()
             .environmentObject(appState)
             .task { MacSessionTabsStore.shared.bind(to: appState) }
-            .macSpotlightBinding(appState: appState)
+            .macSpotlightBinding(appState: appState, openLink: { pendingExternalLink = $0 })
             .environment(\.locale, appLanguage.resolvedLocale)
             .onChange(of: appLanguage.selection) { _, _ in
                 appState.appLanguageDidChange()
