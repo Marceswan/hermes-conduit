@@ -1960,17 +1960,28 @@ struct ThinkingCard: View {
 private enum MessageTimestampTone {
     case subtle
     case supporting
+    /// Tool-call card row only; iOS draws it like `.supporting`.
+    case toolRow
 }
 
 private struct MessageTimestampLabel: View {
     let timestamp: String
     var tone: MessageTimestampTone = .subtle
 
+    /// MAC: on macOS the tool-row time uses primary 70% (accent text measured
+    /// 2.8:1 light, under 4.5:1). Other tones and iOS are unchanged.
+    private var ink: Color {
+#if os(macOS)
+        if tone == .toolRow { return Color.primary.opacity(0.85) }
+#endif
+        return tone == .subtle ? Color.conduitAccent.opacity(0.70) : Color.conduitAccent.opacity(0.78)
+    }
+
     var body: some View {
         if let label = MessageTimestampFormatter.displayString(for: timestamp) {
             Text(label)
                 .font(.caption2.weight(.medium))
-                .foregroundStyle(tone == .supporting ? Color.conduitAccent.opacity(0.78) : Color.conduitAccent.opacity(0.70))
+                .foregroundStyle(ink)
                 .monospacedDigit()
                 .accessibilityLabel("Sent \(label)")
         }
@@ -2019,8 +2030,7 @@ enum MessageTimestampFormatter {
 
 /// Settled tool-row content, gated on the message and expansion default so
 /// streaming publishes skip its SelectableTextView measurement work.
-// MAC: internal (was private) so ComposerToolCardContrastTests can host the card
-struct SettledToolCardContent: View, Equatable {
+private struct SettledToolCardContent: View, Equatable {
     let message: ChatMessage
     let expandToolsByDefault: Bool
     /// Explicit Dynamic Type input — see SettledAssistantMessageContent.
@@ -2063,9 +2073,14 @@ struct SettledToolCardContent: View, Equatable {
 
                             Text(tool.name)
                                 .font(.system(.caption, design: .monospaced).bold())
+#if os(macOS)
+                                // MAC: secondary is a faded accent here (1.8:1 light); primary 70% clears 4.5:1
+                                .foregroundStyle(Color.primary.opacity(0.85))
+#else
                                 .foregroundStyle(.secondary)
+#endif
 
-                            MessageTimestampLabel(timestamp: message.timestamp, tone: .supporting)
+                            MessageTimestampLabel(timestamp: message.timestamp, tone: .toolRow)
 
                             Spacer()
 

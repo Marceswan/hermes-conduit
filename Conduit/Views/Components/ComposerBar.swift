@@ -1127,6 +1127,8 @@ struct ComposerBar: View {
 #if os(macOS)
         // MAC: a pull-down label takes the app tint over foregroundStyle.
         .tint(.primary)
+        // MAC: the label already draws its own up/down chevrons; hide the system one.
+        .menuIndicator(.hidden)
 #endif
         // Picks land in order: the next waits for this write.
         .disabled(appState.isWritingReasoningEffort)

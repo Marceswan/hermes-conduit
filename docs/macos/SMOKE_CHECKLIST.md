@@ -9,6 +9,7 @@ Run against a real Hermes dashboard before every release build.
 - [ ] Select text in a reply across a line; Cmd-C copies; Cmd-F finds (per message; transcript-wide Find in Chat is deferred)
 - [ ] Paste a screenshot (Cmd-Shift-Ctrl-4 then Cmd-V): attaches as image
 - [ ] Copy a PNG in Finder, paste: attaches as image; drag an image file onto composer: attaches as image (non-image drops are not supported, same as upstream)
+- [ ] Composer reasoning picker ("Medium") and the tool-call card (name, time, chevron) read in light mode: the picker label is near-black, not pale gold, and the card's tool name, time and chevron are clearly legible in light and dark (automated in `ComposerToolCardContrastTests`; check by eye in a light-mode window).
 - [ ] Return sends; Shift-Return newline; Japanese IME Return confirms without sending
 - [ ] Approve a tool call inline
 - [ ] Switch model and reasoning effort
@@ -51,8 +52,6 @@ Rule R18: agents never send clicks or key events to the running app. Launch smok
 - [ ] With a newer release published, the prompt shows the release notes and Install / Skip This Version / Remind Me Later.
 - [ ] Install relaunches into the new version (Conduit > About shows it).
 - [ ] On a Mac with an older non-Sparkle build, one manual DMG install enables updates (see docs/macos/RELEASING.md).
-
-- Light-mode contrast (automated in `ComposerToolCardContrastTests`): the composer reasoning picker ("Medium") reads in primary ink at 4.5:1 or better, not pale gold, and the tool-call card chevron is visible at 3:1 or better in light and dark. Check it by eye in a light-mode window.
 
 ## Open findings
 
