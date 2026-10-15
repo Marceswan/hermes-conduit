@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import UserNotifications
 
@@ -16,6 +17,9 @@ struct MacNotificationPayload: Equatable {
     var itemId: String?
     /// Open questions in a clarify request; Reply exists only for 1.
     var questionCount: Int = 1
+    /// SHA-256 of the command the banner showed (approvals only). Approve acts
+    /// only while the feed still holds that same command under the item id.
+    var commandDigest: String?
 
     var userInfo: [AnyHashable: Any] {
         var routing: [String: Any] = [
@@ -28,27 +32,35 @@ struct MacNotificationPayload: Equatable {
         if let dashboardID { routing["dashboard_id"] = dashboardID.uuidString }
         if let requestId { routing["request_id"] = requestId }
         if let itemId { routing["item_id"] = itemId }
+        if let commandDigest { routing["command_digest"] = commandDigest }
         return [MacNotificationContent.payloadKey: routing]
     }
 
-    init(kind: MacNotificationKind, sessionId: String, sessionKey: String, profile: String, dashboardID: UUID?, requestId: String?, itemId: String? = nil, questionCount: Int = 1) {
+    init(kind: MacNotificationKind, sessionId: String, sessionKey: String, profile: String, dashboardID: UUID?, requestId: String?, itemId: String? = nil, questionCount: Int = 1, commandDigest: String? = nil) {
         self.kind = kind; self.sessionId = sessionId; self.sessionKey = sessionKey
         self.profile = profile; self.dashboardID = dashboardID; self.requestId = requestId
         self.itemId = itemId
         self.questionCount = questionCount
+        self.commandDigest = commandDigest
     }
 
     init?(userInfo: [AnyHashable: Any]) {
+        // Fail closed: a payload that does not name its kind and profile is not
+        // ours (or is from another version), and must never default into a
+        // kind that can send text or an answer.
         guard let routing = userInfo[MacNotificationContent.payloadKey] as? [String: Any],
               let sessionId = (routing["session_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !sessionId.isEmpty else { return nil }
-        self.kind = (routing["kind"] as? String).flatMap(MacNotificationKind.init(rawValue:)) ?? .done
+              !sessionId.isEmpty,
+              let kind = (routing["kind"] as? String).flatMap(MacNotificationKind.init(rawValue:)),
+              let profile = routing["profile"] as? String else { return nil }
+        self.kind = kind
         self.sessionId = sessionId
         self.sessionKey = (routing["session_key"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? sessionId
-        self.profile = (routing["profile"] as? String) ?? "default"
+        self.profile = profile
         self.dashboardID = (routing["dashboard_id"] as? String).flatMap(UUID.init(uuidString:))
         self.requestId = routing["request_id"] as? String
         self.itemId = routing["item_id"] as? String
+        self.commandDigest = routing["command_digest"] as? String
         self.questionCount = (routing["question_count"] as? Int) ?? 1
     }
 }
@@ -56,8 +68,12 @@ struct MacNotificationPayload: Equatable {
 enum MacNotificationContent {
     static let payloadKey = "conduit_mac"
     static let previewLimit = 140
-    /// A command longer than this does not fit in the banner in full, so Approve is not offered inline.
+    /// The most of a command the body shows.
     static let commandLimit = 300
+    /// Approve is offered inline only for a command up to this long. A banner
+    /// clips its body to a few lines, so a longer command could hide its tail
+    /// behind the clip; such a command is approved in the app.
+    static let inlineApproveLimit = 160
     static let titleLimit = 80
 
     /// Every agent- or gateway-controlled string goes through here
@@ -67,11 +83,17 @@ enum MacNotificationContent {
         MacUntrustedText.sanitize(text, maxGraphemes: limit)
     }
 
-    /// The command is shown in full and exactly as the gateway sent it (up to
-    /// edge whitespace). Only then may a banner offer Approve for it.
+    /// The command is short enough to survive the banner's clip, shown in full
+    /// and exactly as the gateway sent it (up to edge whitespace). Only then
+    /// may a banner offer Approve for it.
     static func commandIsFaithful(_ command: String) -> Bool {
-        let shown = truncated(command, limit: commandLimit)
+        let shown = truncated(command, limit: inlineApproveLimit)
         return !shown.isEmpty && shown == command.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Identifies the exact command a banner showed, for the Approve check.
+    static func commandDigest(_ command: String) -> String {
+        SHA256.hash(data: Data(command.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     private static func title(for session: MacNotificationSession) -> String {
@@ -81,7 +103,7 @@ enum MacNotificationContent {
 
     private static func content(
         session: MacNotificationSession, kind: MacNotificationKind, requestId: String?, itemId: String? = nil, questionCount: Int = 1,
-        category: String, body: String, subtitle: String = "", sound: Bool
+        commandDigest: String? = nil, category: String, body: String, subtitle: String = "", sound: Bool
     ) -> UNMutableNotificationContent {
         let c = UNMutableNotificationContent()
         c.title = title(for: session)
@@ -93,7 +115,8 @@ enum MacNotificationContent {
         if sound { c.sound = .default }
         c.userInfo = MacNotificationPayload(
             kind: kind, sessionId: session.sessionId, sessionKey: session.sessionKey, profile: session.profile,
-            dashboardID: session.dashboardID, requestId: requestId, itemId: itemId, questionCount: questionCount
+            dashboardID: session.dashboardID, requestId: requestId, itemId: itemId, questionCount: questionCount,
+            commandDigest: commandDigest
         ).userInfo
         return c
     }
@@ -134,7 +157,7 @@ enum MacNotificationContent {
         if !commandIsFaithful(command) { effective.approve = nil }
         let lines = [cmd, desc].filter { !$0.isEmpty }
         let c = content(
-            session: session, kind: .approval, requestId: requestId, itemId: itemId,
+            session: session, kind: .approval, requestId: requestId, itemId: itemId, commandDigest: commandDigest(command),
             category: MacNotificationCategories.approvalCategory(for: effective),
             body: lines.joined(separator: "\n"), subtitle: title(for: session), sound: sound
         )

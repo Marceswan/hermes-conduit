@@ -77,3 +77,38 @@ final class MacUntrustedTextTests: XCTestCase {
         XCTAssertEqual(clean("caf\u{00E9} \u{65E5}\u{672C}\u{8A9E}"), "caf\u{00E9} \u{65E5}\u{672C}\u{8A9E}")
     }
 }
+
+final class MacUntrustedTextBoundsTests: XCTestCase {
+    private func clean(_ text: String, _ max: Int = 200) -> String {
+        MacUntrustedText.sanitize(text, maxGraphemes: max)
+    }
+
+    func testAChainOfJoinedPictographsCannotDefeatTheGraphemeCap() {
+        // Joined emoji form ONE grapheme, so a long chain would pass a grapheme-count cap untouched.
+        let chain = Array(repeating: "\u{1F468}", count: 5000).joined(separator: "\u{200D}")
+        XCTAssertEqual(chain.count, 1, "the premise: one grapheme")
+        let result = clean(chain, 80)
+        XCTAssertLessThanOrEqual(result.count, 80)
+        let longest = result.map { $0.unicodeScalars.count }.max() ?? 0
+        XCTAssertLessThanOrEqual(longest, 2 * MacUntrustedText.maxJoinersPerSequence + 1, "no grapheme chains more than the joiner cap")
+    }
+
+    func testARealisticFamilySequenceIsStillKeptWhole() {
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}"
+        XCTAssertEqual(clean(family), family)
+    }
+
+    func testAHugeInputIsBoundedAndEndsWithAnEllipsis() {
+        let huge = String(repeating: "a ", count: 2_000_000)
+        let result = clean(huge, 10)
+        XCTAssertEqual(result.count, 10)
+        XCTAssertTrue(result.hasSuffix("\u{2026}"))
+    }
+
+    func testAClippedInputAlwaysShowsAnEllipsisEvenIfWhitespaceFollowsTheKeptPart() {
+        let text = String(repeating: "z", count: 100_000) + String(repeating: " ", count: 1_000_000) + "tail"
+        let result = clean(text, 10)
+        XCTAssertTrue(result.hasSuffix("\u{2026}"))
+        XCTAssertEqual(result.count, 10)
+    }
+}

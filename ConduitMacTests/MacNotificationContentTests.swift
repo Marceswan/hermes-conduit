@@ -78,9 +78,31 @@ final class MacNotificationContentTests: XCTestCase {
         let r = MacNotificationContent.approval(session: session, requestId: "r", description: "d", command: long, mapping: both, sound: false)
         XCTAssertEqual(r.content.categoryIdentifier, "CONDUIT_APPROVAL_DENY")
         XCTAssertTrue(r.content.body.contains("\u{2026}"))
-        let fits = String(repeating: "x", count: MacNotificationContent.commandLimit)
+        let fits = String(repeating: "x", count: MacNotificationContent.inlineApproveLimit)
         let ok = MacNotificationContent.approval(session: session, requestId: "r", description: "d", command: fits, mapping: both, sound: false)
         XCTAssertEqual(ok.content.categoryIdentifier, "CONDUIT_APPROVAL", "a command that fits in full keeps Approve")
+    }
+
+    func testCommandLongerThanABannerClipDropsInlineApproveEvenWhenTheBodyShowsItWhole() {
+        // Shown in full in the body (<= commandLimit) but past what a banner shows before clipping.
+        let mid = String(repeating: "x", count: MacNotificationContent.inlineApproveLimit + 1)
+        XCTAssertLessThanOrEqual(mid.count, MacNotificationContent.commandLimit)
+        let r = MacNotificationContent.approval(session: session, requestId: "r", description: "d", command: mid, mapping: both, sound: false)
+        XCTAssertEqual(r.content.categoryIdentifier, "CONDUIT_APPROVAL_DENY")
+        XCTAssertTrue(r.content.body.hasPrefix(mid), "the body still shows it whole")
+        XCTAssertFalse(MacNotificationContent.commandIsFaithful(mid))
+        XCTAssertTrue(MacNotificationContent.commandIsFaithful(String(repeating: "x", count: MacNotificationContent.inlineApproveLimit)))
+    }
+
+    func testApprovalPayloadBindsTheExactCommandWithoutCarryingItsText() throws {
+        let r = MacNotificationContent.approval(session: session, requestId: "r", description: "d", command: "SECRET CMD", mapping: both, itemId: "approval:r", sound: false)
+        let payload = try XCTUnwrap(MacNotificationPayload(userInfo: r.content.userInfo))
+        XCTAssertEqual(payload.commandDigest, MacNotificationContent.commandDigest("SECRET CMD"))
+        XCTAssertNotEqual(MacNotificationContent.commandDigest("SECRET CMD"), MacNotificationContent.commandDigest("SECRET CMD "))
+        XCTAssertEqual(MacNotificationContent.commandDigest("SECRET CMD").count, 64)
+        XCTAssertFalse("\(r.content.userInfo)".contains("SECRET"))
+        let done = MacNotificationContent.done(session: session, turnId: "t", preview: "p", sound: false)
+        XCTAssertNil(try XCTUnwrap(MacNotificationPayload(userInfo: done.content.userInfo)).commandDigest)
     }
 
     func testCommandThatNeededSanitizingDropsInlineApprove() {
@@ -150,7 +172,18 @@ final class MacNotificationContentTests: XCTestCase {
     }
 
     func testPayloadRejectsMissingSessionId() {
-        XCTAssertNil(MacNotificationPayload(userInfo: ["conduit_mac": ["kind": "done"]]))
+        XCTAssertNil(MacNotificationPayload(userInfo: ["conduit_mac": ["kind": "done", "profile": "default"]]))
         XCTAssertNil(MacNotificationPayload(userInfo: [:]))
+    }
+
+    func testPayloadFailsClosedOnAMissingOrUnknownKindOrProfile() {
+        let ok: [String: Any] = ["kind": "done", "session_id": "run-1", "profile": "default"]
+        XCTAssertNotNil(MacNotificationPayload(userInfo: ["conduit_mac": ok]))
+        var noKind = ok; noKind["kind"] = nil
+        XCTAssertNil(MacNotificationPayload(userInfo: ["conduit_mac": noKind]), "a missing kind must not default to Done (which can send a reply)")
+        var oddKind = ok; oddKind["kind"] = "reply-all"
+        XCTAssertNil(MacNotificationPayload(userInfo: ["conduit_mac": oddKind]))
+        var noProfile = ok; noProfile["profile"] = nil
+        XCTAssertNil(MacNotificationPayload(userInfo: ["conduit_mac": noProfile]), "a missing profile must not default to the default profile")
     }
 }

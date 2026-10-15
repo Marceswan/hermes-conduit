@@ -68,6 +68,9 @@ protocol MacNotificationGateway: AnyObject {
     var isConnected: Bool { get }
     var activeDashboardID: UUID? { get }
     var activeProfile: String { get }
+    /// The feed exists and has finished its first poll. Until then an empty
+    /// lookup means "not loaded yet", not "answered", so no banner is cleared on it.
+    var isFeedReady: Bool { get }
     /// Exact-id lookup in the feed: an approval item that is pending. Nil when absent or not pending.
     func pendingApproval(itemId: String) -> MacPendingApproval?
     /// Exact-id lookup in the feed: a clarify item that is pending.
@@ -87,6 +90,7 @@ final class MacHermesNotificationGateway: MacNotificationGateway {
     var isConnected: Bool { appState?.isConnected == true && appState?.client != nil }
     var activeDashboardID: UUID? { appState?.activeDashboardID }
     var activeProfile: String { appState?.activeProfile ?? "default" }
+    var isFeedReady: Bool { AgentActivityFeed.shared?.state.baselinePending == false }
 
     private func client() throws -> HermesClient {
         guard let client = appState?.client, appState?.isConnected == true else { throw HermesError.invalidResponse }
@@ -172,17 +176,22 @@ final class MacNotificationActionHandler {
         // Only these two literals can ever leave this method.
         precondition(choice == "once" || choice == "deny")
         guard payload.kind == .approval, let itemId = payload.itemId else { return }
-        guard canAct(on: payload) else { coordinator.postNotice(for: payload, reply: false); return }
+        guard canAct(on: payload), gateway.isFeedReady else { coordinator.postNotice(for: payload, reply: false); return }
         guard let pending = gateway.pendingApproval(itemId: itemId) else {
             removeDelivered([action.notificationIdentifier])   // answered or gone: nothing to act on
             return
         }
         guard pending.sessionKey == payload.sessionKey else { return }
         guard pending.allowedChoices.contains(choice) else { return }
-        if choice == MacApprovalChoiceMapper.approveChoice, !MacNotificationContent.commandIsFaithful(pending.command) {
-            // The banner could not show the whole command; approve it in the app.
-            router.route(payload)
-            return
+        if choice == MacApprovalChoiceMapper.approveChoice {
+            // Approve only what the banner showed: the whole command, and the
+            // same command the feed holds now (an item can be replaced under
+            // its id). Anything else is reviewed in the app.
+            guard MacNotificationContent.commandIsFaithful(pending.command),
+                  let digest = payload.commandDigest, digest == MacNotificationContent.commandDigest(pending.command) else {
+                router.route(payload)
+                return
+            }
         }
         switch await gateway.respondToApproval(itemId: pending.itemId, choice: choice) {
         case .resolved, .alreadyResolved:
@@ -203,6 +212,7 @@ final class MacNotificationActionHandler {
                 try await gateway.sendPrompt(sessionId: payload.sessionId, text: text)
             case .question:
                 guard payload.questionCount == 1, let itemId = payload.itemId else { return }
+                guard gateway.isFeedReady else { coordinator.postNotice(for: payload, reply: true); return }
                 guard let pending = gateway.pendingQuestion(itemId: itemId) else {
                     removeDelivered([action.notificationIdentifier])
                     return

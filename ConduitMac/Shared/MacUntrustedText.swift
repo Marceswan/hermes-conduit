@@ -8,30 +8,44 @@ import Foundation
 /// U+2028/2029, no-break and other spaces) to one space, caps combining marks
 /// at two per base scalar, and caps the length by grapheme clusters with an
 /// ellipsis. The one Cf scalar kept is the zero-width joiner, and only
-/// between two pictographs (emoji sequences).
+/// between two pictographs (emoji sequences), at most `maxJoinersPerSequence`
+/// in a row (a joined sequence is one grapheme, so without this cap a chain of
+/// joined pictographs would defeat the grapheme cap). Scanning stops once far
+/// more than the cap has been kept, so a huge input costs a bounded amount of
+/// work; the result then ends with the ellipsis.
 enum MacUntrustedText {
     static let ellipsis = "\u{2026}"
     static let maxCombiningMarks = 2
+    static let maxJoinersPerSequence = 4
+    /// Upper bound on scalars one grapheme can keep (base, marks, joined pictographs with their marks).
+    private static let scalarsPerGraphemeBound = 32
 
     static func sanitize(_ text: String, maxGraphemes: Int) -> String {
         let scalars = Array(text.precomposedStringWithCanonicalMapping.unicodeScalars)
         var kept = String.UnicodeScalarView()
         var lastKept: Unicode.Scalar?
         var marks = 0
+        var joiners = 0
         var pendingSpace = false
+        var keptCount = 0
+        var clipped = false
+        let keepBound = max(1, maxGraphemes) * scalarsPerGraphemeBound + 64
 
         for (index, scalar) in scalars.enumerated() {
+            if keptCount > keepBound { clipped = true; break }
             if scalar.properties.isWhitespace {
                 pendingSpace = lastKept != nil
                 continue
             }
             if scalar.value == 0x200D {
                 // Keep a joiner only inside an emoji sequence: pictograph, joiner, pictograph.
-                guard !pendingSpace, let previous = lastKept, isPictographLike(previous),
+                guard !pendingSpace, joiners < maxJoinersPerSequence, let previous = lastKept, isPictographLike(previous),
                       index + 1 < scalars.count, isPictographLike(scalars[index + 1]) else { continue }
                 kept.append(scalar)
+                keptCount += 1
                 lastKept = scalar
                 marks = 0
+                joiners += 1
                 continue
             }
             switch scalar.properties.generalCategory {
@@ -42,15 +56,18 @@ enum MacUntrustedText {
                 if marks > maxCombiningMarks { continue }
             default:
                 marks = 0
+                // A scalar that does not continue a joined sequence ends it.
+                if lastKept?.value != 0x200D && !scalar.properties.isEmojiModifier { joiners = 0 }
             }
-            if pendingSpace { kept.append(" "); pendingSpace = false }
+            if pendingSpace { kept.append(" "); keptCount += 1; pendingSpace = false }
             kept.append(scalar)
+            keptCount += 1
             lastKept = scalar
         }
 
         let characters = Array(String(kept))
         let limit = max(1, maxGraphemes)
-        guard characters.count > limit else { return String(characters) }
+        guard clipped || characters.count > limit else { return String(characters) }
         return String(characters.prefix(limit - 1)) + ellipsis
     }
 

@@ -57,11 +57,18 @@ final class MacNotificationRuntime {
         }
         // The delegate must be set before applicationDidFinishLaunching returns,
         // or a cold-launch click is not delivered.
-        UNUserNotificationCenter.current().delegate = delegate
+        // `install` keeps any delegate already in the slot (Sparkle's, say) and
+        // forwards what is not ours to it; it runs again on activation in case
+        // another component takes the slot later.
+        let notificationCenter = UNUserNotificationCenter.current()
+        delegate.install(on: notificationCenter)
 
         self.coordinator = coordinator; self.router = router; self.handler = handler
 
         let nc = NotificationCenter.default
+        observers.append(nc.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.delegate.install(on: notificationCenter) }
+        })
         let recheck: (Notification) -> Void = { [weak coordinator] _ in Task { @MainActor in coordinator?.recheckAttention() } }
         for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification,
                      NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
