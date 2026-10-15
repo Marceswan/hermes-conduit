@@ -61,6 +61,8 @@ struct ConduitMacApp: App {
     // Ported from ConduitApp.swift; keep in sync. Skipped: see docs/macos/PORTING_LEDGER.md.
     private var rootContent: some View {
         RootView()
+            // Cmd-K palette (D18): over the whole root view, so a sheet covers it.
+            .overlay { MacPaletteView() }
             .environmentObject(appState)
             .task { MacSessionTabsStore.shared.bind(to: appState) }
             .task { MacPaletteStore.shared.bind(to: appState) }
