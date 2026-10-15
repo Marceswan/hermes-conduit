@@ -57,6 +57,14 @@ final class NotchPanelHostTests: XCTestCase {
         XCTAssertTrue(panel.isDraggable, "the whole surface is the drag handle")
     }
 
+    func testPanelAppearanceIsPinnedOrReleasedOnRequest() {
+        let host = makeHost(); defer { host.hide() }
+        host.setPanelAppearance(NSAppearance(named: .darkAqua))
+        XCTAssertEqual(host.panelForTesting.appearance?.name, .darkAqua)
+        host.setPanelAppearance(nil)
+        XCTAssertNil(host.panelForTesting.appearance, "nil hands light or dark back to the Mac")
+    }
+
     func testShowDoesNotActivateTheAppAndHideLeavesNoWindowOnScreen() {
         let host = makeHost()
         host.setFrame(offscreen, animated: false)

@@ -164,10 +164,97 @@ final class NotchStatusViewTests: XCTestCase {
         XCTAssertNotEqual(NotchMotion.animation(reduceMotion: false), .easeInOut(duration: 0.15))
     }
 
-    func testTextColoursMeetContrastOnTheBlackSurface() {
-        for (name, c) in [("text", NotchPalette.textRGB), ("secondary", NotchPalette.secondaryRGB),
-                          ("attention", NotchPalette.attentionRGB), ("failure", NotchPalette.failureRGB)] {
-            XCTAssertGreaterThanOrEqual(NotchPalette.contrast(c, NotchPalette.surfaceRGB), 4.5, name)
+    func testDarkInksMeetTextContrastOnTheBlackSurface() {
+        for ink in NotchPalette.Ink.allCases {
+            XCTAssertGreaterThanOrEqual(NotchPalette.contrast(NotchPalette.rgb(ink, dark: true), NotchPalette.surfaceRGB), 4.5, "\(ink)")
+        }
+    }
+
+    /// Text, secondary and attention keep the values the black notch shipped with; only the failure
+    /// ink was lightened, because over a washed white window its old value fell under 3:1.
+    func testDarkInksKeepTheirShippedValuesExceptFailure() {
+        XCTAssertTrue(NotchPalette.rgb(.text, dark: true) == (1, 1, 1))
+        XCTAssertTrue(NotchPalette.rgb(.secondary, dark: true) == (0.78, 0.78, 0.80))
+        XCTAssertTrue(NotchPalette.rgb(.attention, dark: true) == (1.0, 0.78, 0.20))
+        XCTAssertTrue(NotchPalette.rgb(.failure, dark: true) == (1.0, 0.65, 0.63))
+    }
+
+    /// Every ink is checked as text (4.5:1), which also covers the glyph-only uses (3:1).
+    func testLightInksMeetTextContrastOnLightGlass() {
+        XCTAssertFalse(NotchPalette.lightGlassReferenceRGBs.isEmpty)
+        for background in NotchPalette.lightGlassReferenceRGBs {
+            for ink in NotchPalette.Ink.allCases {
+                XCTAssertGreaterThanOrEqual(NotchPalette.contrast(NotchPalette.rgb(ink, dark: false), background), 4.5,
+                                            "\(ink) on \(background)")
+            }
+        }
+    }
+
+    func testLightInksAreDarkerThanTheirDarkPairsAndNotTheHardCodedWhite() {
+        func luminance(_ c: NotchPalette.RGB) -> Double { 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b }
+        for ink in NotchPalette.Ink.allCases {
+            XCTAssertLessThan(luminance(NotchPalette.rgb(ink, dark: false)), luminance(NotchPalette.rgb(ink, dark: true)), "\(ink)")
+        }
+    }
+
+    func testLightGlassReferencesAreLight() {
+        for background in NotchPalette.lightGlassReferenceRGBs {
+            XCTAssertGreaterThanOrEqual(NotchPalette.contrast(background, NotchPalette.surfaceRGB), 10, "\(background)")
+        }
+    }
+
+    func testAdaptiveColoursResolveToTheMatchingVariantForEachAppearance() {
+        for ink in NotchPalette.Ink.allCases {
+            for dark in [true, false] {
+                let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+                var resolved: NSColor?
+                appearance.performAsCurrentDrawingAppearance {
+                    resolved = NSColor(NotchPalette.color(ink)).usingColorSpace(.sRGB)
+                }
+                let expected = NotchPalette.rgb(ink, dark: dark)
+                XCTAssertEqual(Double(resolved?.redComponent ?? -1), expected.r, accuracy: 0.01, "\(ink) dark=\(dark)")
+                XCTAssertEqual(Double(resolved?.greenComponent ?? -1), expected.g, accuracy: 0.01, "\(ink) dark=\(dark)")
+                XCTAssertEqual(Double(resolved?.blueComponent ?? -1), expected.b, accuracy: 0.01, "\(ink) dark=\(dark)")
+            }
+        }
+    }
+
+    /// The black band pins `colorScheme` to dark while the window follows the Mac (light): the ink
+    /// there must be the dark variant (white), or the text would be dark on black.
+    func testColourSchemeOverrideSelectsTheInkVariantInsideALightWindow() {
+        func centrePixel(dark: Bool?) -> NSColor? {
+            let swatch = Rectangle().fill(NotchPalette.text).frame(width: 40, height: 40)
+            let w = HostedTestSupport.host(Group {
+                if let dark { swatch.environment(\.colorScheme, dark ? .dark : .light) } else { swatch }
+            }, size: NSSize(width: 40, height: 40))
+            defer { HostedTestSupport.tearDown(w) }
+            w.appearance = NSAppearance(named: .aqua)
+            HostedTestSupport.settle(0.3)
+            guard let view = w.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            return rep.colorAt(x: 20, y: 20)?.usingColorSpace(.sRGB)
+        }
+        XCTAssertLessThan(centrePixel(dark: nil)?.redComponent ?? 1, 0.2, "a light window with no override: dark ink")
+        XCTAssertGreaterThan(centrePixel(dark: true)?.redComponent ?? 0, 0.9, "the dark override wins inside a light window")
+    }
+
+    func testViewModelDefaultsToTheGlassStyleAndTakesAnotherOne() {
+        let m = NotchStatusViewModel()
+        XCTAssertEqual(m.surfaceStyle, .glass)
+        m.surfaceStyle = .solid
+        XCTAssertEqual(m.surfaceStyle, .solid)
+    }
+
+    func testEveryStyleRendersExpandedAndCompactInBothAppearances() throws {
+        for style in NotchSurfaceStyle.allCases {
+            for surface in [NotchSurface.expanded, .compact] {
+                for dark in [false, true] {
+                    let m = model([F.item("turn:a", detail: "Running terminal")], surface: surface)
+                    m.surfaceStyle = style
+                    let w = try render(m, dark: dark); defer { HostedTestSupport.tearDown(w) }
+                    XCTAssertTrue(labels(w).contains { $0.contains("Agent status") }, "\(style) \(surface) dark=\(dark)")
+                }
+            }
         }
     }
 
@@ -206,6 +293,28 @@ final class NotchStatusViewTests: XCTestCase {
         XCTAssertEqual(m.reservedTopHeight, 0, "a docked panel has no notch to clear")
         m.layout = NotchLayout.make(standardIsNotch: false, dock: nil)
         XCTAssertEqual(m.reservedTopHeight, 0)
+    }
+
+    func testOnlyTheStandardNotchPlacementWeldsItsBandToTheHardware() {
+        let m = model([F.item("turn:a")])
+        m.placement = .notch(notchRect: CGRect(x: 659, y: 950, width: 194, height: 32))
+        m.layout = NotchLayout.make(standardIsNotch: true, dock: nil)
+        XCTAssertTrue(m.weldsToHardwareNotch)
+        m.layout = NotchLayout.make(standardIsNotch: true, dock: MacEdgeDock(edge: .maxY, offset: 0.5, screenID: 1))
+        XCTAssertFalse(m.weldsToHardwareNotch, "docked at the top: a capsule, no hardware beside it")
+        m.layout = NotchLayout.make(standardIsNotch: false, dock: nil)
+        m.placement = .pill
+        XCTAssertFalse(m.weldsToHardwareNotch, "the pill on an external display draws the chosen style")
+    }
+
+    func testDrawnStyleFollowsTheLayoutTheChoiceAndReduceTransparency() {
+        let m = model([F.item("turn:a")])
+        m.glassAvailable = true
+        m.surfaceStyle = .dock
+        m.layout = NotchLayout.make(standardIsNotch: false, dock: MacEdgeDock(edge: .minY, offset: 0.5, screenID: 1))
+        XCTAssertEqual(m.drawnSurfaceStyle, .dock)
+        m.reduceTransparency = true
+        XCTAssertEqual(m.drawnSurfaceStyle, .solid)
     }
 
     func testResetHookIsWiredToTheDefault() {

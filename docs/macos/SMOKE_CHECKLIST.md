@@ -208,3 +208,12 @@ Human pass at release time (agents never click or type into the running app, R18
 - [ ] Hardware matrix: external display only (lid closed), mirrored display, a full-screen app, two Spaces, unplug the external display while expanded.
 - [ ] VoiceOver: the panel reads "Agent status: ..." and every row and button is reachable; an approval announces.
 - [ ] Click the empty corners of the compact capsule: clicks pass through to the menu bar.
+- [ ] Notch style (Settings > On this device): the picker lists Liquid Glass, Dark glass, Solid black and Dock, each with a one-line explanation; the default on a fresh install is Liquid Glass; the choice survives a relaunch.
+- [ ] Each style on the notch display: the resting wings stay black beside the hardware notch in every style; the expanded panel keeps a black band across the top and draws the chosen style below it. Dock on the notch display draws as Dark glass.
+- [ ] Each style on an external display (pill at the top centre): the pill and the expanded panel draw the chosen style; Dock draws as Dark glass at the top.
+- [ ] Side edges: drag to the bottom, left and right edges with each style. Dock shows the clear tinted slab there; the other styles keep their look; rows are readable over a bright and over a dark window.
+- [ ] Light mode and dark mode with Liquid Glass: switch System Settings > Appearance while the panel is open; the text turns dark on light glass and white on dark glass, with no black ink on a dark surface and no white ink on light glass. Try Clear and Tinted glass.
+- [ ] Dark glass, Solid black and Dock stay dark with white text when the Mac is in light mode.
+- [ ] Approval row in every style over a white window and over a dark one: the command, the secondary lines and the "Couldn't send" line read clearly, and the Allow (amber) and Deny (pink) buttons show as filled shapes with legible labels, in light and dark Mac appearance.
+- [ ] Reduce Transparency on (System Settings > Accessibility > Display), toggled while the panel is open: every style draws solid black with white text; off restores the chosen style.
+- [ ] On macOS 14 or 15 (if available): the picker shows the note that glass needs macOS 26 and the notch is drawn Solid black.

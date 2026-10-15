@@ -16,7 +16,26 @@ final class NotchStatusViewModel: ObservableObject {
     @Published var failedRows: Set<String> = []
 
     @Published var layout: NotchLayout = .make(standardIsNotch: false, dock: nil)
+    /// The chosen surface style (Settings), and the two facts that can override it. The controller
+    /// keeps `reduceTransparency` in step with the system setting.
+    @Published var surfaceStyle: NotchSurfaceStyle = .glass
+    @Published var reduceTransparency = false
+    var glassAvailable = NotchSurfaceStyle.glassAvailable
     var onResetPosition: () -> Void = {}
+
+    /// The style that is painted: the choice, resolved for this placement, then for this Mac.
+    var drawnSurfaceStyle: NotchSurfaceStyle {
+        surfaceStyle.drawn(on: layout, glassAvailable: glassAvailable, reduceTransparency: reduceTransparency)
+    }
+
+    /// Light or dark comes from the Mac only for system glass; every other outcome is a dark surface.
+    var followsSystemAppearance: Bool {
+        surfaceStyle.followsSystemAppearance(glassAvailable: glassAvailable, reduceTransparency: reduceTransparency)
+    }
+
+    /// The standard placement on a notch display: its band is welded to the hardware, so it stays
+    /// black where it touches the notch whatever the chosen style.
+    var weldsToHardwareNotch: Bool { layout.style == .wings && placement.notchWidth > 0 }
 
     /// Height to leave empty at the top of the expanded panel: only the standard
     /// wings layout sits beside a physical notch.

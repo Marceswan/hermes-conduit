@@ -6,6 +6,7 @@ import SwiftUI
 struct NotchStatusView: View {
     @ObservedObject var model: NotchStatusViewModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Group {
@@ -16,11 +17,15 @@ struct NotchStatusView: View {
             }
         }
         .foregroundStyle(NotchPalette.text)
-        .environment(\.colorScheme, .dark)
+        // System glass follows the Mac's light or dark (the panel has no appearance of its own);
+        // every other style is a dark surface and pins the white ink.
+        .environment(\.colorScheme, inkScheme)
         .animation(NotchMotion.animation(reduceMotion: reduceMotion), value: model.surface)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(model.accessibilitySummary)
     }
+
+    private var inkScheme: ColorScheme { model.followsSystemAppearance ? colorScheme : .dark }
 
     // MARK: compact
 
@@ -54,7 +59,7 @@ struct NotchStatusView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(NotchPalette.surface, in: shape)
+        .background { NotchSurfaceBackground(style: model.drawnSurfaceStyle, shape: shape) }
     }
 
     private var wingsCompact: some View {
@@ -64,7 +69,10 @@ struct NotchStatusView: View {
             compactText.frame(maxWidth: .infinity, alignment: model.placement.notchWidth > 0 ? .leading : .center).padding(.horizontal, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(NotchPalette.surface, in: shape)
+        // Resting and welded to the hardware notch: the band stays black, as the notch itself is.
+        .background { NotchSurfaceBackground(style: model.weldsToHardwareNotch ? .solid : model.drawnSurfaceStyle, shape: shape) }
+        // On the black band the ink is the dark-surface (white) variant even when the Mac is light.
+        .environment(\.colorScheme, model.weldsToHardwareNotch ? .dark : inkScheme)
     }
 
     private var mark: some View {
@@ -107,7 +115,7 @@ struct NotchStatusView: View {
         }
         .padding(.bottom, 8)
         .frame(width: NotchMetrics.expandedWidth, alignment: .top)
-        .background(NotchPalette.surface, in: shape)
+        .background { NotchSurfaceBackground(style: model.drawnSurfaceStyle, shape: shape, blackBandHeight: model.weldsToHardwareNotch ? model.reservedTopHeight : 0) }
         .background(GeometryReader { g in Color.clear.preference(key: NotchHeightKey.self, value: g.size.height) })
         .onPreferenceChange(NotchHeightKey.self) { model.contentHeight = $0 }
     }
