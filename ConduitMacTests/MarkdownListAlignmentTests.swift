@@ -12,13 +12,14 @@ import SwiftUI
 final class MarkdownListAlignmentTests: XCTestCase {
     static let message = "Important constraints:\n\n- A companion org can't connect to multiple home instances simultaneously.\n- You can't connect a production org to a sandbox through One.\n- An org already hosting Data Cloud requires cleanup/conversion before becoming a companion.\n\n**Bottom line:** keep the home org clean."
 
-    private func host(_ source: String, width: CGFloat, dark: Bool) -> NSWindow {
+    private func host(_ source: String, width: CGFloat, dark: Bool, textSize: ChatTextSize = .default) -> NSWindow {
         let content = MarkdownText(source: source)
             .padding(16)
             .frame(width: width, alignment: .topLeading)
             .frame(maxHeight: .infinity, alignment: .topLeading)
             .background(dark ? Color(white: 0.12) : Color.white)
             .environment(\.colorScheme, dark ? .dark : .light)
+            .environment(\.chatTextSize, textSize)
         let window = HostedTestSupport.host(content, size: NSSize(width: width, height: 700))
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         HostedTestSupport.settle(0.3)
@@ -77,8 +78,8 @@ final class MarkdownListAlignmentTests: XCTestCase {
         return textView.convert(NSPoint(x: 0, y: rect.midY), to: host).y
     }
 
-    private func assertMarkersCentered(_ source: String, items: [String], file: StaticString = #filePath, line: UInt = #line) throws {
-        let window = host(source, width: 420, dark: false)
+    private func assertMarkersCentered(_ source: String, items: [String], textSize: ChatTextSize = .default, file: StaticString = #filePath, line: UInt = #line) throws {
+        let window = host(source, width: 420, dark: false, textSize: textSize)
         defer { HostedTestSupport.tearDown(window) }
         let host = try XCTUnwrap(window.contentView)
         let itemViews = textViews(in: host).filter { view in items.contains { view.string.hasPrefix($0) } }
@@ -96,8 +97,10 @@ final class MarkdownListAlignmentTests: XCTestCase {
     /// A divider keeps the message out of the single flow text view, so the
     /// list renders through `MarkdownList` (marker + text view in an HStack).
     func testBulletsSitOnTheirItemsFirstLine() throws {
-        try assertMarkersCentered(Self.message + "\n\n---\n\nfin", items: [
-            "A companion org", "You can't connect", "An org already"])
+        for size in ChatTextSize.allCases {
+            try assertMarkersCentered(Self.message + "\n\n---\n\nfin", items: [
+                "A companion org", "You can't connect", "An org already"], textSize: size)
+        }
     }
 
     func testOrderedMarkersSitOnTheirItemsFirstLine() throws {
@@ -127,8 +130,17 @@ final class MarkdownListAlignmentTests: XCTestCase {
         let text = flow.string as NSString
         let wrapped = text.range(of: "simultaneously.")
         let glyph = layout.glyphIndexForCharacter(at: wrapped.location)
-        let x = layout.location(forGlyphAt: glyph).x + layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minX
-        XCTAssertGreaterThan(x, 6, "wrapped line must be indented past the marker, got x=\(x)")
+        let wrappedFragment = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let itemStart = text.range(of: "\u{2022} A companion").location
+        let firstFragment = layout.lineFragmentRect(
+            forGlyphAt: layout.glyphIndexForCharacter(at: itemStart), effectiveRange: nil)
+        XCTAssertGreaterThan(wrappedFragment.minY, 0)
+        XCTAssertGreaterThan(wrappedFragment.minY, firstFragment.minY, "the item must really wrap")
+        let style = try XCTUnwrap(flow.textStorage?.attribute(.paragraphStyle, at: itemStart, effectiveRange: nil) as? NSParagraphStyle)
+        let markerWidth = ceil(("\u{2022} " as NSString).size(withAttributes: [.font: ChatTypography.font(for: .body, chatSize: .default).withTraits(.traitBold)]).width)
+        let x = layout.location(forGlyphAt: glyph).x + wrappedFragment.minX
+        XCTAssertEqual(style.headIndent, markerWidth, accuracy: 1)
+        XCTAssertEqual(x, markerWidth, accuracy: 1, "wrapped line must start at the marker width")
     }
 
     func testShots() throws {

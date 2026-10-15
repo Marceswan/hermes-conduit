@@ -130,11 +130,13 @@ extension SelectableTextView {
         return textView
     }
 
-    static func measuredHeight(
-        of text: NSAttributedString,
+    /// The one TextKit 1 layout setup that measuring and baseline lookup share.
+    /// The caller keeps `storage` alive for as long as it uses `layout`.
+    private static func laidOutText(
+        _ text: NSAttributedString,
         width: CGFloat,
         maximumNumberOfLines: Int = 0
-    ) -> CGFloat {
+    ) -> (storage: NSTextStorage, layout: NSLayoutManager, container: NSTextContainer) {
         let storage = NSTextStorage(attributedString: text)
         let container = NSTextContainer(size: NSSize(width: width, height: .greatestFiniteMagnitude))
         container.lineFragmentPadding = 0
@@ -143,7 +145,16 @@ extension SelectableTextView {
         layout.addTextContainer(container)
         storage.addLayoutManager(layout)
         layout.ensureLayout(for: container)
-        return ceil(layout.usedRect(for: container).height)
+        return (storage, layout, container)
+    }
+
+    static func measuredHeight(
+        of text: NSAttributedString,
+        width: CGFloat,
+        maximumNumberOfLines: Int = 0
+    ) -> CGFloat {
+        let laidOut = laidOutText(text, width: width, maximumNumberOfLines: maximumNumberOfLines)
+        return ceil(laidOut.layout.usedRect(for: laidOut.container).height)
     }
 
     /// Distance from the top of the text to the first line's baseline at
@@ -154,15 +165,9 @@ extension SelectableTextView {
     func firstBaseline(width: CGFloat) -> CGFloat {
         let styled = styledText()
         guard styled.length > 0 else { return ceil(font.ascender) }
-        let storage = NSTextStorage(attributedString: styled)
-        let container = NSTextContainer(size: NSSize(width: max(1, width), height: .greatestFiniteMagnitude))
-        container.lineFragmentPadding = 0
-        let layout = NSLayoutManager()
-        layout.addTextContainer(container)
-        storage.addLayoutManager(layout)
-        layout.ensureLayout(for: container)
-        let fragment = layout.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil)
-        return fragment.minY + layout.location(forGlyphAt: 0).y
+        let laidOut = Self.laidOutText(styled, width: max(1, width))
+        let fragment = laidOut.layout.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil)
+        return fragment.minY + laidOut.layout.location(forGlyphAt: 0).y
     }
 
     /// Publishes `firstBaseline(width:)` as this view's `.firstTextBaseline`.
