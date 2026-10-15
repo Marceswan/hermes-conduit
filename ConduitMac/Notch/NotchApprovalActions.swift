@@ -30,7 +30,7 @@ struct NotchApprovalContent: Equatable {
 /// The only things an approval row's buttons can do. Each action maps to a fixed
 /// choice string from `AgentActivityApprovalChoices` and a fixed localized label;
 /// no label or choice is ever derived from payload text.
-enum NotchApprovalAction: Equatable {
+enum NotchApprovalAction: Hashable {
     case allowOnce, deny, allowSession, allowAlways
     /// Opens the session instead of answering (used in place of Allow when the command was not shown in full).
     case reviewInConduit
