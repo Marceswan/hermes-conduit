@@ -6,6 +6,9 @@ extension Notification.Name {
     /// explicit session open, including re-opening the already-active one,
     /// which changes no published state. The router returns to chat on it.
     static let macSessionOpenRequested = Notification.Name("conduit.mac.sessionOpenRequested")
+
+    /// The command palette asks the root view to open Settings (D18).
+    static let macOpenSettingsRequested = Notification.Name("conduit.mac.openSettingsRequested")
 }
 
 /// Route-aware chrome for the chat that `MacDetailRouter` keeps mounted but

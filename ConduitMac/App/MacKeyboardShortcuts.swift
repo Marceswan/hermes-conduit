@@ -294,3 +294,40 @@ enum MacSessionTabsActions {
         (store ?? .shared).selectNeighbor(direction)
     }
 }
+
+/// What Go > Command Palette does (D18). The store is optional because a
+/// `.shared` default argument trips Swift 6 isolation (same as the tabs).
+@MainActor
+enum MacPaletteActions {
+    /// Cmd-K: only in the chat window, never under a sheet. Closing the
+    /// palette gives focus back to whatever held it when it opened.
+    static func toggle(store: MacPaletteStore? = nil, window: NSWindow?) {
+        let store = store ?? .shared
+        guard MacSessionTabsActions.isMainChatWindow(window),
+              !MacKeyboardActions.commandsBlocked(by: window) else { return }
+        store.toggle(restoreFocus: store.isPresented ? nil : focusRestorer(in: window))
+    }
+
+    /// The composer takes focus back through the same request Cmd-L sends
+    /// (it also returns the chat pane); any other AppKit responder, such as
+    /// the session list or the search field, is made first responder again
+    /// if it is still on screen. Held weakly: the store keeps this until the
+    /// palette closes.
+    static func focusRestorer(in window: NSWindow?) -> (() -> Void)? {
+        guard let window else { return nil }
+        let responder = window.firstResponder
+        if responder is ComposerTextView {
+            return { [weak window] in MacKeyboardActions.focusComposer(window: window) }
+        }
+        var target = responder as? NSView
+        // A text field edits through the window's shared field editor.
+        if let editor = target as? NSTextView, editor.isFieldEditor, let owner = editor.delegate as? NSView {
+            target = owner
+        }
+        guard let view = target, view !== window.contentView else { return nil }
+        return { [weak window, weak view] in
+            guard let window, let view, view.window === window, !view.isHiddenOrHasHiddenAncestor else { return }
+            window.makeFirstResponder(view)
+        }
+    }
+}

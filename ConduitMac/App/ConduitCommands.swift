@@ -8,6 +8,9 @@ struct ConduitCommands: Commands {
 
     @ObservedObject var appState: AppState
     @ObservedObject var tabs: MacSessionTabsStore
+    /// Not observed: the palette publishes on every keystroke, and observing
+    /// it here would rebuild the whole menu bar each time.
+    let palette: MacPaletteStore
     @ObservedObject var updater: MacUpdater
     @AppStorage(ConduitCommands.sidebarVisibleKey) private var sidebarVisible = true
     @AppStorage(HoverAccessibilityEngine.highlightDefaultsKey) private var hoverHighlight = true
@@ -51,6 +54,11 @@ struct ConduitCommands: Commands {
             .keyboardShortcut("w", modifiers: [.shift, .command])
         }
         CommandMenu("Go") {
+            // Never `.disabled`: a stale disabled item would swallow Cmd-K (see
+            // the comment above). The action checks the window and any sheet.
+            Button("Command Palette") { MacPaletteActions.toggle(store: palette, window: NSApp.keyWindow) }
+                .keyboardShortcut("k", modifiers: .command)
+            Divider()
             ForEach(1...8, id: \.self) { n in
                 Button("Tab \(n)") { MacSessionTabsActions.selectShortcut(n, store: tabs, window: NSApp.keyWindow) }
                     .keyboardShortcut(KeyEquivalent(Character("\(n)")), modifiers: .command)
