@@ -23410,6 +23410,9 @@ final class AppState: ObservableObject {
     // MARK: - Stream event handling
 
     func handleStreamEvent(_ event: StreamEvent) {
+        #if os(macOS) // MAC: Mac-side subscribers (Quick Ask, activity feed) see every session's events, ahead of the active-session filter
+        MacStreamEventHub.shared.publish(event)
+        #endif // MAC:
         // Voice background jobs are not the active conversation, so they
         // observe every event before the active-session filter below.
         voiceBackgroundJobSupervisor.observe(event)
