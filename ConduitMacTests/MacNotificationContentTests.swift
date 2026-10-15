@@ -103,37 +103,6 @@ final class MacNotificationContentTests: XCTestCase {
         XCTAssertFalse(MacNotificationContent.commandIsFaithful(String(repeating: "y", count: 400)))
     }
 
-    // MARK: sanitizer
-
-    func testSanitizerStripsControlBidiAndZeroWidthCharacters() {
-        let s = MacNotificationContent.sanitize("rm\u{202E} -rf\u{200B} /\u{2066}x\u{2069}\u{0007}\u{FEFF}\u{E0041}", limit: 100)
-        XCTAssertEqual(s.text, "rm -rf /x")
-        XCTAssertTrue(s.wasAltered)
-        XCTAssertFalse(s.wasTruncated)
-        for scalar in [0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069, 0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF] {
-            let t = MacNotificationContent.sanitize("a\(Character(UnicodeScalar(scalar)!))b", limit: 10)
-            XCTAssertEqual(t.text, "ab", String(scalar, radix: 16))
-        }
-    }
-
-    func testSanitizerCollapsesNewlinesAndTabsAndFlagsTheChange() {
-        let s = MacNotificationContent.sanitize("a\n\n\tb", limit: 100)
-        XCTAssertEqual(s.text, "a b")
-        XCTAssertTrue(s.wasAltered)
-        let clean = MacNotificationContent.sanitize("  plain text ", limit: 100)
-        XCTAssertEqual(clean.text, "plain text")
-        XCTAssertFalse(clean.wasAltered)
-    }
-
-    func testSanitizerCapsWithAnEllipsis() {
-        let s = MacNotificationContent.sanitize(String(repeating: "z", count: 50), limit: 10)
-        XCTAssertEqual(s.text.count, 10)
-        XCTAssertTrue(s.text.hasSuffix("\u{2026}"))
-        XCTAssertTrue(s.wasTruncated)
-        let exact = MacNotificationContent.sanitize(String(repeating: "z", count: 10), limit: 10)
-        XCTAssertFalse(exact.wasTruncated)
-    }
-
     func testEveryAgentControlledStringIsSanitized() {
         let dirty = "x\u{202E}y\u{200B}z\nw"
         let done = MacNotificationContent.done(session: makeSession(title: dirty), turnId: "t", preview: dirty, sound: false)
@@ -170,6 +139,14 @@ final class MacNotificationContentTests: XCTestCase {
         XCTAssertEqual(payload.requestId, "r9")
         let dump = "\(r.content.userInfo)"
         XCTAssertFalse(dump.contains("SECRET"))
+    }
+
+    func testPayloadCarriesTheFeedsExactItemId() throws {
+        let a = MacNotificationContent.approval(session: session, requestId: "q1", description: "d", command: "ls", mapping: both, itemId: "approval:q1", sound: false)
+        XCTAssertEqual(try XCTUnwrap(MacNotificationPayload(userInfo: a.content.userInfo)).itemId, "approval:q1")
+        let q = MacNotificationContent.question(session: session, requestId: "c1", text: "t", openQuestionCount: 1, itemId: "clarify:c1", sound: false)
+        XCTAssertEqual(try XCTUnwrap(MacNotificationPayload(userInfo: q.content.userInfo)).itemId, "clarify:c1")
+        XCTAssertNil(try XCTUnwrap(MacNotificationPayload(userInfo: MacNotificationContent.done(session: session, turnId: "t", preview: "p", sound: false).content.userInfo)).itemId)
     }
 
     func testPayloadRejectsMissingSessionId() {

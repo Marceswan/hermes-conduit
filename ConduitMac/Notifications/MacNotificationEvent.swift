@@ -28,8 +28,9 @@ struct MacNotificationEvent: Equatable {
         case turnStarted(turnId: String, at: Date)
         /// `startedAt` is the feed's own turn start (authoritative; a turn already running at baseline has no `turnStarted`). `observedGap` means the turn ended while the socket was down: never notify.
         case turnFinished(turnId: String, at: Date, outcome: Outcome, replyPreview: String?, startedAt: Date? = nil, observedGap: Bool = false)
-        case approvalRequested(requestId: String, description: String, command: String, choices: [String]?, allowPermanent: Bool)
-        case questionRequested(requestId: String, firstQuestionText: String, openQuestionCount: Int)
+        /// `itemId` is the feed's exact item id; actions look it up verbatim.
+        case approvalRequested(requestId: String, description: String, command: String, choices: [String]?, allowPermanent: Bool, itemId: String? = nil)
+        case questionRequested(requestId: String, firstQuestionText: String, openQuestionCount: Int, itemId: String? = nil)
         case decisionResolved(requestId: String, reason: Resolution)
         case sessionTitleChanged(title: String)
     }

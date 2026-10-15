@@ -10,6 +10,10 @@ struct MacNotificationPayload: Equatable {
     var profile: String
     var dashboardID: UUID?
     var requestId: String?
+    /// The feed's exact item id (`approval:<id>`, `clarify:<id>`), stored as the
+    /// feed produced it. Actions look this exact id up in the feed; ids are never
+    /// rebuilt from `requestId` or from any displayed text.
+    var itemId: String?
     /// Open questions in a clarify request; Reply exists only for 1.
     var questionCount: Int = 1
 
@@ -23,12 +27,14 @@ struct MacNotificationPayload: Equatable {
         ]
         if let dashboardID { routing["dashboard_id"] = dashboardID.uuidString }
         if let requestId { routing["request_id"] = requestId }
+        if let itemId { routing["item_id"] = itemId }
         return [MacNotificationContent.payloadKey: routing]
     }
 
-    init(kind: MacNotificationKind, sessionId: String, sessionKey: String, profile: String, dashboardID: UUID?, requestId: String?, questionCount: Int = 1) {
+    init(kind: MacNotificationKind, sessionId: String, sessionKey: String, profile: String, dashboardID: UUID?, requestId: String?, itemId: String? = nil, questionCount: Int = 1) {
         self.kind = kind; self.sessionId = sessionId; self.sessionKey = sessionKey
         self.profile = profile; self.dashboardID = dashboardID; self.requestId = requestId
+        self.itemId = itemId
         self.questionCount = questionCount
     }
 
@@ -42,6 +48,7 @@ struct MacNotificationPayload: Equatable {
         self.profile = (routing["profile"] as? String) ?? "default"
         self.dashboardID = (routing["dashboard_id"] as? String).flatMap(UUID.init(uuidString:))
         self.requestId = routing["request_id"] as? String
+        self.itemId = routing["item_id"] as? String
         self.questionCount = (routing["question_count"] as? Int) ?? 1
     }
 }
@@ -53,58 +60,27 @@ enum MacNotificationContent {
     static let commandLimit = 300
     static let titleLimit = 80
 
-    struct SanitizedText: Equatable {
-        var text: String
-        /// Cut at the limit (ends with an ellipsis).
-        var wasTruncated: Bool
-        /// Anything other than edge whitespace changed: characters stripped or inner whitespace collapsed.
-        var wasAltered: Bool
+    /// Every agent- or gateway-controlled string goes through here
+    /// (`MacUntrustedText`): category-based scalar filtering, whitespace
+    /// collapse, a combining-mark cap and a grapheme cap with an ellipsis.
+    static func truncated(_ text: String, limit: Int) -> String {
+        MacUntrustedText.sanitize(text, maxGraphemes: limit)
     }
-
-    /// Scalars that can hide or reorder text: bidi overrides, embeddings and
-    /// isolates, zero-width and joiner characters, the BOM, soft hyphen,
-    /// interlinear annotation and the invisible tag block.
-    private static func isHidden(_ scalar: Unicode.Scalar) -> Bool {
-        switch scalar.value {
-        case 0x00AD, 0x061C, 0x180E, 0x200B...0x200F, 0x202A...0x202E, 0x2060...0x2064,
-             0x2066...0x2069, 0xFEFF, 0xFFF9...0xFFFB, 0xE0000...0xE007F:
-            return true
-        default:
-            return scalar.properties.generalCategory == .control
-        }
-    }
-
-    /// Makes an agent- or gateway-controlled string safe to show: whitespace
-    /// (including newlines) collapses to single spaces, control, bidi and
-    /// zero-width scalars are stripped, and the result is cut to `limit`
-    /// characters with an ellipsis.
-    static func sanitize(_ text: String, limit: Int) -> SanitizedText {
-        var kept = String.UnicodeScalarView()
-        for scalar in text.unicodeScalars {
-            if scalar.properties.isWhitespace { kept.append(" ") } else if !isHidden(scalar) { kept.append(scalar) }
-        }
-        let cleaned = String(kept).split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
-        let altered = cleaned != text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard cleaned.count > limit else { return SanitizedText(text: cleaned, wasTruncated: false, wasAltered: altered) }
-        return SanitizedText(text: String(cleaned.prefix(limit - 1)) + "\u{2026}", wasTruncated: true, wasAltered: altered)
-    }
-
-    static func truncated(_ text: String, limit: Int) -> String { sanitize(text, limit: limit).text }
 
     /// The command is shown in full and exactly as the gateway sent it (up to
     /// edge whitespace). Only then may a banner offer Approve for it.
     static func commandIsFaithful(_ command: String) -> Bool {
-        let s = sanitize(command, limit: commandLimit)
-        return !s.text.isEmpty && !s.wasTruncated && !s.wasAltered
+        let shown = truncated(command, limit: commandLimit)
+        return !shown.isEmpty && shown == command.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func title(for session: MacNotificationSession) -> String {
-        let t = sanitize(session.title, limit: titleLimit).text
+        let t = truncated(session.title, limit: titleLimit)
         return t.isEmpty ? AppLocalization.string("Conduit") : t
     }
 
     private static func content(
-        session: MacNotificationSession, kind: MacNotificationKind, requestId: String?, questionCount: Int = 1,
+        session: MacNotificationSession, kind: MacNotificationKind, requestId: String?, itemId: String? = nil, questionCount: Int = 1,
         category: String, body: String, subtitle: String = "", sound: Bool
     ) -> UNMutableNotificationContent {
         let c = UNMutableNotificationContent()
@@ -117,7 +93,7 @@ enum MacNotificationContent {
         if sound { c.sound = .default }
         c.userInfo = MacNotificationPayload(
             kind: kind, sessionId: session.sessionId, sessionKey: session.sessionKey, profile: session.profile,
-            dashboardID: session.dashboardID, requestId: requestId, questionCount: questionCount
+            dashboardID: session.dashboardID, requestId: requestId, itemId: itemId, questionCount: questionCount
         ).userInfo
         return c
     }
@@ -150,15 +126,15 @@ enum MacNotificationContent {
     /// offered inline only when the command is shown in full and unaltered.
     static func approval(
         session: MacNotificationSession, requestId: String, description: String, command: String,
-        mapping: MacApprovalChoiceMapper.Mapping, sound: Bool
+        mapping: MacApprovalChoiceMapper.Mapping, itemId: String? = nil, sound: Bool
     ) -> UNNotificationRequest {
-        let cmd = sanitize(command, limit: commandLimit)
+        let cmd = truncated(command, limit: commandLimit)
         let desc = truncated(description, limit: previewLimit)
         var effective = mapping
         if !commandIsFaithful(command) { effective.approve = nil }
-        let lines = [cmd.text, desc].filter { !$0.isEmpty }
+        let lines = [cmd, desc].filter { !$0.isEmpty }
         let c = content(
-            session: session, kind: .approval, requestId: requestId,
+            session: session, kind: .approval, requestId: requestId, itemId: itemId,
             category: MacNotificationCategories.approvalCategory(for: effective),
             body: lines.joined(separator: "\n"), subtitle: title(for: session), sound: sound
         )
@@ -166,9 +142,9 @@ enum MacNotificationContent {
         return UNNotificationRequest(identifier: MacNotificationPolicy.ID.approval(requestId), content: c, trigger: nil)
     }
 
-    static func question(session: MacNotificationSession, requestId: String, text: String, openQuestionCount: Int, sound: Bool) -> UNNotificationRequest {
+    static func question(session: MacNotificationSession, requestId: String, text: String, openQuestionCount: Int, itemId: String? = nil, sound: Bool) -> UNNotificationRequest {
         let c = content(
-            session: session, kind: .question, requestId: requestId, questionCount: openQuestionCount,
+            session: session, kind: .question, requestId: requestId, itemId: itemId, questionCount: openQuestionCount,
             category: openQuestionCount == 1 ? MacNotificationCategories.question : MacNotificationCategories.open,
             body: truncated(text, limit: previewLimit), sound: sound
         )

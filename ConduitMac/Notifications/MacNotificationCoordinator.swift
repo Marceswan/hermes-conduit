@@ -187,10 +187,10 @@ final class MacNotificationCoordinator {
     private func processDecision(_ event: MacNotificationEvent) {
         let session = event.session
         switch event.kind {
-        case .approvalRequested(let requestId, _, _, _, _):
+        case .approvalRequested(let requestId, _, _, _, _, _):
             guard posted.insert(.approval, requestId) else { return }
             beginDecision(requestId, session: session, kind: event.kind)
-        case .questionRequested(let requestId, _, _):
+        case .questionRequested(let requestId, _, _, _):
             guard posted.insert(.question, requestId) else { return }
             beginDecision(requestId, session: session, kind: event.kind)
         case .decisionResolved(let requestId, _):
@@ -222,15 +222,15 @@ final class MacNotificationCoordinator {
         live.title = titles[session.sessionKey] ?? session.title
         let sound = preferences.soundEnabled
         switch kind {
-        case .approvalRequested(_, let description, let command, let choices, _):
+        case .approvalRequested(_, let description, let command, let choices, _, let itemId):
             let mapping = MacApprovalChoiceMapper.map(choices: choices)
             let did = await postIfNotAttended(.approval, session: live, identifier: MacNotificationPolicy.ID.approval(requestId)) {
-                MacNotificationContent.approval(session: live, requestId: requestId, description: description, command: command, mapping: mapping, sound: sound)
+                MacNotificationContent.approval(session: live, requestId: requestId, description: description, command: command, mapping: mapping, itemId: itemId, sound: sound)
             }
             if !did { held[requestId] = Held(session: session, kind: kind) }
-        case .questionRequested(_, let text, let count):
+        case .questionRequested(_, let text, let count, let itemId):
             let did = await postIfNotAttended(.question, session: live, identifier: MacNotificationPolicy.ID.question(requestId)) {
-                MacNotificationContent.question(session: live, requestId: requestId, text: text, openQuestionCount: count, sound: sound)
+                MacNotificationContent.question(session: live, requestId: requestId, text: text, openQuestionCount: count, itemId: itemId, sound: sound)
             }
             if !did { held[requestId] = Held(session: session, kind: kind) }
         default:
