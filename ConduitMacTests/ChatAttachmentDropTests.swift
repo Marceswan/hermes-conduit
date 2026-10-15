@@ -138,6 +138,58 @@ final class ChatAttachmentDropTests: XCTestCase {
         XCTAssertEqual(expansion.overflow, 1)
     }
 
+    private func makePackage(_ name: String, in dir: URL) throws -> URL {
+        let pkg = dir.appendingPathComponent(name, isDirectory: true)
+        let contents = pkg.appendingPathComponent("Contents", isDirectory: true)
+        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+        try touch("Info.plist", in: contents)
+        return pkg
+    }
+
+    func testDroppedPackageIsRefusedNotExpandedOrAttached() throws {
+        let dir = try makeDirectory()
+        let app = try makePackage("Tool.app", in: dir)
+        let loose = try touch("keep.txt", in: dir)
+
+        let expansion = MacAttachmentDropPolicy.expand([app, loose], existingCount: 0, cap: 10)
+        XCTAssertEqual(expansion.urls, [loose])
+        XCTAssertEqual(expansion.packages, ["Tool.app"])
+        XCTAssertEqual(expansion.overflow, 0)
+    }
+
+    func testRouterReportsDroppedPackagesOnceAndAttachesNothingForThem() throws {
+        let dir = try makeDirectory()
+        let app = try makePackage("Tool.app", in: dir)
+        let rtfd = try makePackage("Note.rtfd", in: dir)
+
+        var attached = false
+        var reported: [[String]] = []
+        MacAttachmentDropRouter.route(
+            .fileURLs([app, rtfd]), existingCount: 0, cap: 10,
+            attachFiles: { _ in attached = true },
+            attachImage: { _ in },
+            overflow: { _ in XCTFail("a package is not overflow") },
+            packages: { reported.append($0) }
+        )
+        XCTAssertFalse(attached)
+        XCTAssertEqual(reported, [["Tool.app", "Note.rtfd"]])
+    }
+
+    func testFolderSkipsNestedPackagesSymlinksAndHiddenFiles() throws {
+        let dir = try makeDirectory()
+        let outside = try makeDirectory()
+        let secret = try touch("secret.txt", in: outside)
+        try touch("real.txt", in: dir)
+        try touch(".DS_Store", in: dir)
+        try makePackage("Inner.app", in: dir)
+        try FileManager.default.createSymbolicLink(at: dir.appendingPathComponent("link.txt"), withDestinationURL: secret)
+        try FileManager.default.createSymbolicLink(at: dir.appendingPathComponent("linkdir"), withDestinationURL: outside)
+
+        let expansion = MacAttachmentDropPolicy.expand([dir], existingCount: 0, cap: 10)
+        XCTAssertEqual(expansion.urls.map(\.lastPathComponent), ["real.txt"])
+        XCTAssertTrue(expansion.packages.isEmpty, "a nested package is skipped like a subfolder, not reported")
+    }
+
     // MARK: Router: same entry point as the picker
 
     func testDroppedFilesReachTheSameEntryPointAsPickedFiles() throws {
@@ -280,6 +332,71 @@ final class ChatAttachmentDropTests: XCTestCase {
         XCTAssertTrue(received.isEmpty)
     }
 
+    private final class StubDraggingInfo: NSObject, NSDraggingInfo {
+        let draggingPasteboard: NSPasteboard
+        init(_ pasteboard: NSPasteboard) { draggingPasteboard = pasteboard }
+        var draggingDestinationWindow: NSWindow? { nil }
+        var draggingSourceOperationMask: NSDragOperation { .every }
+        var draggingLocation: NSPoint { .zero }
+        var draggedImageLocation: NSPoint { .zero }
+        var draggedImage: NSImage? { nil }
+        var draggingSource: Any? { nil }
+        var draggingSequenceNumber: Int { 0 }
+        func slideDraggedImage(to screenPoint: NSPoint) {}
+        override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+        var draggingFormation: NSDraggingFormation { get { .default } set {} }
+        var animatesToDestination: Bool { get { false } set {} }
+        var numberOfValidItemsForDrop: Int { get { 1 } set {} }
+        func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions = [], for view: NSView?, classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:], using block: @escaping (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+        var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+        func resetSpringLoading() {}
+    }
+
+    func testLockedComposerRefusesFileDragsInsteadOfFallingBackToTheTextView() throws {
+        let dir = try makeDirectory()
+        let file = try touch("a.txt", in: dir)
+        let pb = board()
+        pb.writeObjects([file as NSURL])
+        let info = StubDraggingInfo(pb)
+
+        let view = ComposerTextView()
+        let locked = sink(enabled: false)
+        view.dropSink = locked
+        XCTAssertEqual(view.draggingEntered(info), [], "no-drop cursor, not NSTextView's own file handling")
+        XCTAssertEqual(view.draggingUpdated(info), [])
+        XCTAssertFalse(view.prepareForDragOperation(info))
+        XCTAssertFalse(view.performDragOperation(info))
+        XCTAssertFalse(locked.isTargeted)
+    }
+
+    func testEnabledComposerShowsTheOverlayAndTracksTheDrag() throws {
+        let dir = try makeDirectory()
+        let file = try touch("a.txt", in: dir)
+        let pb = board()
+        pb.writeObjects([file as NSURL])
+        let info = StubDraggingInfo(pb)
+
+        var received: [MacAttachmentDropPayload] = []
+        let open = sink(enabled: true) { received.append($0) }
+        let view = ComposerTextView()
+        view.dropSink = open
+
+        XCTAssertEqual(view.draggingEntered(info), .copy)
+        XCTAssertTrue(open.isTargeted)
+        // The pane's own target can report its exit after this view's entry;
+        // the next update restores the overlay.
+        open.setTargeted(false)
+        XCTAssertEqual(view.draggingUpdated(info), .copy)
+        XCTAssertTrue(open.isTargeted)
+        view.draggingExited(info)
+        XCTAssertFalse(open.isTargeted)
+
+        XCTAssertEqual(view.draggingEntered(info), .copy)
+        XCTAssertTrue(view.performDragOperation(info))
+        XCTAssertFalse(open.isTargeted)
+        XCTAssertEqual(received, [.fileURLs([file])])
+    }
+
     // MARK: Hosted: a drop lands in the composer's draft like a picked file
 
     private final class SinkBox { var sink: MacAttachmentDropSink? }
@@ -292,7 +409,11 @@ final class ChatAttachmentDropTests: XCTestCase {
         }
     }
 
-    func testDroppedFileStagesIntoTheActiveChatsDraftOnly() throws {
+    func testDroppedFilesStageIntoTheActiveChatsDraftOnly() throws {
+        try XCTSkipUnless(AccessibilityTreeBoost.isAvailable)
+        let boostWasOn = AccessibilityTreeBoost.isOn
+        defer { AccessibilityTreeBoost.set(boostWasOn) }
+
         let appState = AppStateRuntimeRegistry.shared.appState
         let previousSession = appState.activeSessionId
         let chatA = "drop-test-\(UUID().uuidString)"
@@ -302,9 +423,11 @@ final class ChatAttachmentDropTests: XCTestCase {
         try XCTSkipUnless(appState.composerIsEnabled, "shared AppState composer is locked in this run")
 
         let dir = try makeDirectory()
-        let file = try touch("dropped-note.txt", in: dir)
+        let note = try touch("dropped-note.txt", in: dir)
+        let picture = dir.appendingPathComponent("dropped-pic.png")
+        try pngData().write(to: picture)
         let pb = board()
-        pb.writeObjects([file as NSURL])
+        pb.writeObjects([note as NSURL, picture as NSURL])
 
         let box = SinkBox()
         let window = HostedTestSupport.host(
@@ -317,6 +440,7 @@ final class ChatAttachmentDropTests: XCTestCase {
             size: NSSize(width: 720, height: 300)
         )
         defer { HostedTestSupport.tearDown(window) }
+        AccessibilityTreeBoost.set(true)
 
         XCTAssertTrue(HostedTestSupport.waitUntil { box.sink?.receiver != nil }, "composer never registered as the drop receiver")
         let keyA = ComposerBar.composerDraftKey(for: chatA, profile: appState.activeProfile)
@@ -327,19 +451,31 @@ final class ChatAttachmentDropTests: XCTestCase {
         }
 
         XCTAssertTrue(box.sink?.perform(pb) == true)
-        // Staging copies the file off the main actor, then appends it.
-        HostedTestSupport.settle(1.5)
+        // Staging copies off the main actor, then appends: each attachment
+        // shows up as a chip with a Remove button named after it.
+        func chipShown(_ name: String) -> Bool {
+            AccessibilityProbe.labels(in: window).contains { $0.contains(name) }
+        }
+        XCTAssertTrue(
+            HostedTestSupport.waitUntil(timeout: 10) { chipShown("dropped-note.txt") && chipShown("dropped-pic.png") },
+            "\(AccessibilityProbe.labels(in: window))"
+        )
 
-        // Leaving the chat saves its draft: the dropped file is in A, not B.
+        // Leaving the chat saves its draft: the dropped files are in A, not B.
         appState.activeSessionId = chatB
-        HostedTestSupport.settle(0.3)
+        XCTAssertTrue(HostedTestSupport.waitUntil { !appState.composerDraftStore.draft(for: keyA).attachments.isEmpty })
         let staged = appState.composerDraftStore.draft(for: keyA).attachments
         defer {
             staged.forEach {
                 if let url = URL(string: $0.uri), url.isFileURL { try? FileManager.default.removeItem(at: url) }
             }
         }
-        XCTAssertEqual(staged.map(\.name), ["dropped-note.txt"])
+        XCTAssertEqual(staged.map(\.name), ["dropped-note.txt", "dropped-pic.png"])
+        // An image FILE takes the picker's staging and stays an image.
+        let image = try XCTUnwrap(staged.last)
+        XCTAssertEqual(image.kind, .image)
+        XCTAssertEqual(image.mimeType, "image/png")
+        XCTAssertEqual(staged.first?.kind, .document)
         XCTAssertTrue(appState.composerDraftStore.draft(for: keyB).attachments.isEmpty)
     }
 }

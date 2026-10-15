@@ -1719,6 +1719,10 @@ struct ComposerBar: View {
             overflow: { _ in
                 composerErrorMessage = MacAttachmentDropPolicy.tooManyMessage
                 Haptics.error()
+            },
+            packages: { names in
+                // A package (.app, .rtfd) is not a file the host can take.
+                reportImportProblems(oversized: [], failed: names, limitMegabytes: attachmentLimitMegabytes)
             }
         )
     }

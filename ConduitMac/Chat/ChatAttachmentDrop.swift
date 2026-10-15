@@ -43,10 +43,16 @@ enum MacAttachmentDropPolicy {
         var urls: [URL]
         /// Files left out because the message is full.
         var overflow: Int
+        /// Names of dropped packages (.app, .rtfd, ...). A package is a folder
+        /// on disk but one item to the user: it is neither expanded nor staged
+        /// (copying it would pull its whole tree in with no size check, and
+        /// the result cannot be uploaded as a file).
+        var packages: [String] = []
     }
 
-    /// Folders become their top-level regular files (hidden files and
-    /// subfolders skipped, no recursion), name order. Everything is then
+    /// Folders become their top-level regular files (hidden files, symlinks,
+    /// subfolders and nested packages skipped, no recursion), name order.
+    /// Dropped packages are set aside, not expanded. Everything is then
     /// trimmed to the slots left under `cap`.
     static func expand(
         _ urls: [URL],
@@ -55,15 +61,26 @@ enum MacAttachmentDropPolicy {
         fileManager: FileManager = .default
     ) -> Expansion {
         var files: [URL] = []
+        var packages: [String] = []
         for url in urls {
-            if isDirectory(url) {
+            if isPackage(url) {
+                packages.append(url.lastPathComponent)
+            } else if isDirectory(url) {
                 files.append(contentsOf: topLevelFiles(of: url, fileManager: fileManager))
             } else {
                 files.append(url)
             }
         }
         let slots = max(0, cap - existingCount)
-        return Expansion(urls: Array(files.prefix(slots)), overflow: max(0, files.count - slots))
+        return Expansion(
+            urls: Array(files.prefix(slots)),
+            overflow: max(0, files.count - slots),
+            packages: packages
+        )
+    }
+
+    private static func isPackage(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isPackageKey]).isPackage) == true
     }
 
     private static func isDirectory(_ url: URL) -> Bool {
@@ -86,20 +103,23 @@ enum MacAttachmentDropRouter {
     /// Hands a payload to the composer's existing attach paths. Files are
     /// delivered as one list, exactly what the document picker produces;
     /// raw images one by one, like a paste. Anything over the cap is
-    /// dropped and reported once through `overflow`.
+    /// dropped and reported once through `overflow`; dropped packages are
+    /// refused and named once through `packages`.
     static func route(
         _ payload: MacAttachmentDropPayload,
         existingCount: Int,
         cap: Int,
         attachFiles: ([URL]) -> Void,
         attachImage: (PastedImage) -> Void,
-        overflow: (Int) -> Void
+        overflow: (Int) -> Void,
+        packages: ([String]) -> Void = { _ in }
     ) {
         switch payload {
         case .fileURLs(let urls):
             let expansion = MacAttachmentDropPolicy.expand(urls, existingCount: existingCount, cap: cap)
             if !expansion.urls.isEmpty { attachFiles(expansion.urls) }
             if expansion.overflow > 0 { overflow(expansion.overflow) }
+            if !expansion.packages.isEmpty { packages(expansion.packages) }
         case .images(let images):
             let slots = max(0, cap - existingCount)
             images.prefix(slots).forEach(attachImage)
@@ -120,8 +140,14 @@ struct MacAttachmentDropReceiver {
 @MainActor
 final class MacAttachmentDropSink: ObservableObject {
     /// A drag that would be accepted is over the pane; drives the overlay.
-    @Published var isTargeted = false
+    @Published private(set) var isTargeted = false
     var receiver: MacAttachmentDropReceiver?
+
+    /// AppKit calls this on every drag update; `@Published` announces a
+    /// change even for an equal value, so only real changes are published.
+    func setTargeted(_ targeted: Bool) {
+        if isTargeted != targeted { isTargeted = targeted }
+    }
 
     /// `.copy` when the drag carries attachable content and the composer is
     /// unlocked; empty (no-drop cursor) otherwise.
@@ -132,7 +158,7 @@ final class MacAttachmentDropSink: ObservableObject {
     }
 
     func perform(_ pasteboard: NSPasteboard) -> Bool {
-        isTargeted = false
+        setTargeted(false)
         guard !operation(for: pasteboard).isEmpty,
               let receiver,
               let payload = MacAttachmentDropPolicy.payload(from: pasteboard) else { return false }
@@ -165,17 +191,17 @@ private struct MacAttachmentDropDelegate: DropDelegate {
     }
 
     func dropEntered(info: DropInfo) {
-        sink.isTargeted = !sink.operation(for: pasteboard).isEmpty
+        sink.setTargeted(!sink.operation(for: pasteboard).isEmpty)
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
         let allowed = !sink.operation(for: pasteboard).isEmpty
-        sink.isTargeted = allowed
+        sink.setTargeted(allowed)
         return DropProposal(operation: allowed ? .copy : .forbidden)
     }
 
     func dropExited(info: DropInfo) {
-        sink.isTargeted = false
+        sink.setTargeted(false)
     }
 
     func performDrop(info: DropInfo) -> Bool {
