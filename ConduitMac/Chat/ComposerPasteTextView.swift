@@ -30,6 +30,8 @@ struct ComposerPasteTextView: NSViewRepresentable {
     var onUserEdit: (() -> Void)? = nil
     /// Where Cmd-L arrives (`macFocusComposerRequested`); injectable for tests.
     var focusRequestCenter: NotificationCenter = .default
+    /// The chat pane's drop sink, when one wraps this composer.
+    @Environment(\.macAttachmentDropSink) private var dropSink
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -104,6 +106,7 @@ struct ComposerPasteTextView: NSViewRepresentable {
         textView.canSubmitFromReturn = canSubmitFromReturn
         textView.onSubmitFromReturn = onSubmitFromReturn
         textView.onPastedImages = { images in images.forEach(onPastedImage) }
+        textView.dropSink = dropSink
         let focus = $isFocused
         textView.onFocusChange = { focused in
             DispatchQueue.main.async { focus.wrappedValue = focused }
@@ -162,6 +165,10 @@ final class ComposerTextView: NSTextView {
     var canSubmitFromReturn = false
     var onSubmitFromReturn: (() -> Bool)?
     var onPastedImages: (([PastedImage]) -> Void)?
+    /// When set, file and image drags belong to the chat pane's drop path
+    /// (same attach routes as the picker); otherwise the legacy image-only
+    /// drop below applies.
+    weak var dropSink: MacAttachmentDropSink?
     var onFocusChange: ((Bool) -> Void)?
     /// Focus requested before the view had a window; honoured in viewDidMoveToWindow.
     var wantsFocus = false
@@ -306,17 +313,56 @@ final class ComposerTextView: NSTextView {
         return images.isEmpty ? .text : .images(images)
     }
 
-    /// `.copy` when the pasteboard carries an image; empty to defer to NSTextView.
+    /// True when the chat pane's sink owns this drag: it carries something
+    /// attachable and a sink is wired. Such a drag never falls through to
+    /// NSTextView, which would otherwise take a file drag on a locked
+    /// composer and show a copy cursor. Reads pasteboard types only.
+    private func sinkOwnsDrag(_ pasteboard: NSPasteboard) -> Bool {
+        dropSink != nil && MacAttachmentDropPolicy.hasAttachableContent(pasteboard)
+    }
+
+    /// `.copy` when the drag can attach; empty to defer to NSTextView (text
+    /// drags) or, with a pane sink, to refuse (locked composer).
     func dragOperation(for pasteboard: NSPasteboard) -> NSDragOperation {
-        Self.pastedImages(from: pasteboard).isEmpty ? [] : .copy
+        if let dropSink, sinkOwnsDrag(pasteboard) {
+            return dropSink.operation(for: pasteboard)
+        }
+        return Self.pastedImages(from: pasteboard).isEmpty ? [] : .copy
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        let operation = dragOperation(for: sender.draggingPasteboard)
+        let pasteboard = sender.draggingPasteboard
+        if sinkOwnsDrag(pasteboard) {
+            let operation = dragOperation(for: pasteboard)
+            dropSink?.setTargeted(!operation.isEmpty)
+            return operation
+        }
+        let operation = dragOperation(for: pasteboard)
         return operation.isEmpty ? super.draggingEntered(sender) : operation
     }
 
+    /// Runs on every mouse move of a drag: types only, no pasteboard reads.
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let pasteboard = sender.draggingPasteboard
+        guard sinkOwnsDrag(pasteboard) else { return super.draggingUpdated(sender) }
+        let operation = dragOperation(for: pasteboard)
+        // The pane's own target may report its exit after this view's entry.
+        dropSink?.setTargeted(!operation.isEmpty)
+        return operation
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        dropSink?.setTargeted(false)
+        super.draggingExited(sender)
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        dropSink?.setTargeted(false)
+        super.draggingEnded(sender)
+    }
+
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if sinkOwnsDrag(sender.draggingPasteboard) { return !dragOperation(for: sender.draggingPasteboard).isEmpty }
         if !dragOperation(for: sender.draggingPasteboard).isEmpty { return true }
         return super.prepareForDragOperation(sender)
     }
@@ -331,6 +377,9 @@ final class ComposerTextView: NSTextView {
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if let dropSink, sinkOwnsDrag(sender.draggingPasteboard) {
+            return dropSink.perform(sender.draggingPasteboard)
+        }
         let images = Self.pastedImages(from: sender.draggingPasteboard)
         if !images.isEmpty {
             onPastedImages?(images)
