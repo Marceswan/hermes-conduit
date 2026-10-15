@@ -146,15 +146,49 @@ extension SelectableTextView {
         return ceil(layout.usedRect(for: container).height)
     }
 
+    /// Distance from the top of the text to the first line's baseline at
+    /// `width`, as upstream's UITextView exposes through its first-baseline
+    /// alignment. An NSViewRepresentable has no baseline of its own, so a
+    /// `.firstTextBaseline` HStack (list bullets) fell back to the view's
+    /// bottom edge and the marker floated a line above its text.
+    func firstBaseline(width: CGFloat) -> CGFloat {
+        let styled = styledText()
+        guard styled.length > 0 else { return ceil(font.ascender) }
+        let storage = NSTextStorage(attributedString: styled)
+        let container = NSTextContainer(size: NSSize(width: max(1, width), height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        let layout = NSLayoutManager()
+        layout.addTextContainer(container)
+        storage.addLayoutManager(layout)
+        layout.ensureLayout(for: container)
+        let fragment = layout.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil)
+        return fragment.minY + layout.location(forGlyphAt: 0).y
+    }
+
+    /// Publishes `firstBaseline(width:)` as this view's `.firstTextBaseline`.
+    func firstBaselineAligned() -> some View {
+        alignmentGuide(.firstTextBaseline) { dimensions in
+            firstBaseline(width: dimensions.width)
+        }
+    }
+
     func styledText() -> NSAttributedString {
         let styled = NSMutableAttributedString(attributedString: attributedText)
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = lineSpacing
-        paragraph.alignment = textAlignment
-        paragraph.lineBreakMode = wrapsLines ? .byWordWrapping : .byTruncatingTail
         let fullRange = NSRange(location: 0, length: styled.length)
         guard fullRange.length > 0 else { return styled }
-        styled.addAttribute(.paragraphStyle, value: paragraph, range: fullRange)
+        // Paragraph styles the caller set (list hanging indents) are kept;
+        // the view's spacing, alignment and wrapping fill in on top.
+        var paragraphRuns: [(NSRange, NSParagraphStyle?)] = []
+        styled.enumerateAttribute(.paragraphStyle, in: fullRange, options: []) { value, subrange, _ in
+            paragraphRuns.append((subrange, value as? NSParagraphStyle))
+        }
+        for (subrange, existing) in paragraphRuns {
+            let paragraph = (existing?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+            paragraph.lineSpacing = lineSpacing
+            paragraph.alignment = textAlignment
+            paragraph.lineBreakMode = wrapsLines ? .byWordWrapping : .byTruncatingTail
+            styled.addAttribute(.paragraphStyle, value: paragraph, range: subrange)
+        }
         // Same fill as upstream configure(_:): per-run font and color win,
         // the configured defaults fill only what is missing.
         styled.enumerateAttribute(.font, in: fullRange, options: []) { value, subrange, _ in
