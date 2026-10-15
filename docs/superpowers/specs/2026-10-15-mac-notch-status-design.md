@@ -58,6 +58,8 @@ Actions:
 
 Accidental-click guard: after an auto-expand for attention, approval buttons are disabled for 600 ms; no default-key binding; "Always allow" is menu-only.
 
+Position and drag (added after review): the surface is draggable and can sit at any point along any screen edge (top, bottom, left, right) of any display. The default is the notch: wings around it on a notch display, the top-center pill elsewhere. A press that moves under 4 pt is a click; past that the surface follows the pointer and, on release, snaps to the nearest edge of the screen under the pointer, keeping the dropped position along that edge. Nothing expands, collapses, announces or moves mid-drag, and a drag never triggers a row, a button or the click-outside collapse; an attention request that arrives mid-drag expands the panel when the drag ends. The position is remembered per display (display ID, UserDefaults), restored on launch and when displays change, and ignored when that display is gone (the default placement is used again; the saved spot returns with the display). Top and bottom edges: a horizontal capsule that opens vertically inward (down from the top, up from the bottom), rows stacked. Left and right edges: a vertical capsule that opens horizontally inward, rows stacked. The wings shape is the default notch placement only; every docked placement uses the pill style. Go > Reset Agent Status Position, or a double-click on the capsule or the grip, returns to the notch. Built on the shared panel's `isDraggable`, `onPlacementChanged` and `.edgeDocked` placement; persistence and the per-edge layout belong to the notch.
+
 Where it appears: `NSScreen.main` (screen of the key window or focus). If that screen has a notch (`safeAreaInsets.top > 0` with both auxiliary areas non-empty), anchor to the notch; otherwise (external, mirrored, clamshell) the pill at top-center of that screen's `visibleFrame`. Re-evaluated when attention arrives and on `NSApplication.didChangeScreenParameters`.
 
 Menu bar icon: not built in v1. The pill already covers Macs without a notch and external displays, Dock plus Cmd-N cover New Chat, and a second surface doubles the state to keep in sync. Revisit only if the surface is Off by default or hidden in full screen (smoke item). Setting "Notch status" in Mac Settings: Active agents (default) / Only when I'm needed / Off.
@@ -186,7 +188,7 @@ Gaps to confirm or add in `MacFloatingPanel`:
 
 ## Out of scope (v1)
 
-Menu bar icon, other profiles' sessions, group-chat rooms, token and cost meters, answering clarify or secret prompts inline, per-row Kanban task actions, sound, drag to reposition, a Windows or iPad variant.
+Menu bar icon, other profiles' sessions, group-chat rooms, token and cost meters, answering clarify or secret prompts inline, per-row Kanban task actions, sound, a Windows or iPad variant.
 
 ## Effort
 

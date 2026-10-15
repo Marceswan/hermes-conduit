@@ -1,12 +1,12 @@
 # Mac Quick Ask Implementation Plan
 
-> **REQUIRES SHARED BASE MERGED.** This plan does not build `MacFloatingPanel` / `MacFloatingPanelController`, the Mac stream-event tap hub, or connection-state reporting (and the Mac reconnect-while-inactive exemption). They come from `docs/superpowers/plans/2026-10-15-mac-shared-base.md`. Do not start Task 3 or later until that plan's work is on the branch (`grep -rn "MacFloatingPanelController" ConduitMac | head -1` must hit).
+> **REQUIRES SHARED BASE MERGED.** This plan does not build `MacFloatingPanel` / `MacFloatingPanelController`, `MacStreamEventHub` (including the one gated `AppState.handleStreamEvent` publish line; shared base task 5), or the Mac reconnect-while-inactive exemption (shared base task 13). They come from `docs/superpowers/plans/2026-10-15-mac-shared-base.md`; this plan makes no upstream edit and has no stream-tap task of its own. Do not start Task 3 or later until that plan's work is on the branch (`grep -rn "MacFloatingPanelController\|MacStreamEventHub" ConduitMac | head -2` must hit both).
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A global hotkey (Option-Shift-Space) opens a floating panel from any app; the user types one question, the reply streams into the panel, Esc hides it, Cmd-Return promotes the exchange to the main window.
 
-**Architecture:** A pure reducer (`MacQuickAskModel`) turns user actions and `StreamEvent`s for the sessions it owns into panel state. A main-actor controller (`MacQuickAskController`) owns the model, performs `createSession` / `sendPrompt` / `cancel` on the app's shared socket through injected closures, and drives a `MacFloatingPanelController` (shared base). Events reach the model through the shared base's stream tap, which sees every session's events before AppState's active-session filter, so the chat open in the main window is never touched. A Carbon `RegisterEventHotKey` wrapper plus an always-working Chat menu command open the panel.
+**Architecture:** A pure reducer (`MacQuickAskModel`) turns user actions and `StreamEvent`s for the sessions it owns into panel state. A main-actor controller (`MacQuickAskController`) owns the model, performs `createSession` / `sendPrompt` / `cancel` on the app's shared socket through injected closures, and drives a `MacFloatingPanelController` (shared base). Events reach the model through one `MacStreamEventHub.shared.subscribe { event in ... }` subscription held by the controller (shared base), which sees every session's events before AppState's active-session filter, so the chat open in the main window is never touched. A Carbon `RegisterEventHotKey` wrapper plus an always-working Chat menu command open the panel.
 
 **Tech Stack:** Swift 6 / SwiftUI / AppKit / Carbon.HIToolbox on macOS 14+, Combine, XCTest. xcodegen project (`project.yml`), scheme `ConduitMac`.
 
@@ -15,7 +15,7 @@
 ## Global Constraints
 
 - Mac only. New code lives under `ConduitMac/QuickAsk/`; tests under `ConduitMacTests/`. iOS is unchanged.
-- This plan makes NO edit under `Conduit/` or `Shared/` (the stream tap upstream gate belongs to the shared base). Verify at the end: `git diff <base> -- Conduit Shared` is empty for this plan's commits. If an upstream edit turns out to be unavoidable, gate it `#if os(macOS)`, tag it `// MAC:`, add one row to `docs/macos/PORTING_LEDGER.md`.
+- This plan makes NO edit under `Conduit/` or `Shared/` (the single gated `MacStreamEventHub.shared.publish` line in `AppState.handleStreamEvent` belongs to the shared base). Verify at the end: `git diff <base> -- Conduit Shared` is empty for this plan's commits. If an upstream edit turns out to be unavoidable, gate it `#if os(macOS)`, tag it `// MAC:`, add one row to `docs/macos/PORTING_LEDGER.md`.
 - Shared-file Mac edits (`ConduitMac/App/ConduitMacApp.swift`, `ConduitMacAppDelegate.swift`, `ConduitCommands.swift`) are Mac-only files: no ledger row.
 - Hotkey: Carbon `RegisterEventHotKey`, key code 49 (Space), modifiers Option+Shift. No `NSEvent` global monitor, no `CGEventTap` (they need Accessibility / Input Monitoring prompts). Fixed in v1; `MacQuickAskHotKey.default` is a value so a recorder can replace it.
 - macOS 15.0 and 15.1 return `-9868` (`eventInternalErr`) for Option-only / Option-Shift-only hotkeys. Registration failure is a visible, non-fatal state; the Chat menu command "Quick Ask" always works.
@@ -37,21 +37,20 @@
 
 1. Events that arrive before `sendPrompt` returns (fast gateway): the reply must not be lost or reset when the RPC result lands afterwards. Test in Task 1 (`testDeltaBeforePromptAcceptedIsKept`).
 2. A tool-using turn that emits several `messageComplete` segments, or a `messageStart` after a completion: the earlier text must survive and the turn must stay open. Test in Task 1 (`testSecondSegment...`).
-3. Events for another session (the open main-window chat, a Voice job) must never change the panel. Tests in Task 1 (`testForeignSessionEventsAreIgnored`) and Task 4.
-4. Hotkey registration failing (-9868, already taken) must leave the app fully usable with a visible reason and a working menu command. Tests in Tasks 2 and 6.
-5. `session.create` refused with 4090 (max concurrent sessions) must keep the typed prompt, say why in plain words, and offer Open Conduit and Retry. Test in Task 4.
+3. Events for another session (the open main-window chat, a Voice job) must never change the panel. Tests in Task 1 (`testForeignSessionEventsAreIgnored`) and Task 3.
+4. Hotkey registration failing (-9868, already taken) must leave the app fully usable with a visible reason and a working menu command. Tests in Tasks 2 and 5.
+5. `session.create` refused with 4090 (max concurrent sessions) must keep the typed prompt, say why in plain words, and offer Open Conduit and Retry. Test in Task 3.
 
 ## File Map
 
 - Create `ConduitMac/QuickAsk/MacQuickAskModel.swift`: pure reducer (Task 1).
 - Create `ConduitMac/QuickAsk/MacGlobalHotKey.swift`: `MacHotKey`, `MacQuickAskHotKey`, `MacHotKeyRegistering`, `MacCarbonHotKey` (Task 2).
 - Create `ConduitMac/QuickAsk/MacQuickAskHotKeyManager.swift`: enabled/registered/unavailable state (Task 2).
-- Create `ConduitMac/QuickAsk/MacQuickAskStreamTap.swift`: adapter from the shared base hub to the model (Task 3).
-- Create `ConduitMac/QuickAsk/MacQuickAskController.swift`: orchestration, RPCs, promotion, panel lifecycle (Task 4).
-- Create `ConduitMac/QuickAsk/MacQuickAskView.swift`: SwiftUI panel content and `MacQuickAskPanelConfig` (Task 5).
-- Modify `ConduitMac/App/ConduitMacApp.swift`, `ConduitMac/App/ConduitMacAppDelegate.swift`, `ConduitMac/App/ConduitCommands.swift`: wiring and menu (Task 6).
-- Tests: `ConduitMacTests/MacQuickAskModelTests.swift`, `MacQuickAskHotKeyTests.swift`, `MacQuickAskStreamTapTests.swift`, `MacQuickAskControllerTests.swift`, `MacQuickAskViewTests.swift`, `MacQuickAskCommandsTests.swift`; fixture `ConduitMacTests/Fixtures/quickask-tool-turn.jsonl` (Task 1).
-- Docs/strings: `Conduit/Localizable.xcstrings` (via `scripts/l10n.py`), `docs/macos/DECISIONS.md`, `docs/macos/SMOKE_CHECKLIST.md` (Task 7).
+- Create `ConduitMac/QuickAsk/MacQuickAskController.swift`: orchestration, RPCs, promotion, panel lifecycle (Task 3).
+- Create `ConduitMac/QuickAsk/MacQuickAskView.swift`: SwiftUI panel content and `MacQuickAskPanelConfig` (Task 4).
+- Modify `ConduitMac/App/ConduitMacApp.swift`, `ConduitMac/App/ConduitMacAppDelegate.swift`, `ConduitMac/App/ConduitCommands.swift`: wiring and menu (Task 5).
+- Tests: `ConduitMacTests/MacQuickAskModelTests.swift`, `MacQuickAskHotKeyTests.swift`, `MacQuickAskControllerTests.swift`, `MacQuickAskViewTests.swift`, `MacQuickAskCommandsTests.swift`; fixture `ConduitMacTests/Fixtures/quickask-tool-turn.jsonl` (Task 1).
+- Docs/strings: `Conduit/Localizable.xcstrings` (via `scripts/l10n.py`), `docs/macos/DECISIONS.md`, `docs/macos/SMOKE_CHECKLIST.md` (Task 6).
 
 `ConduitMac/` sources and `ConduitMacTests/` are picked up by folder globs in `project.yml`; re-run `xcodegen generate` after adding files. `Fixtures/` needs a resources entry only if the test loads it from the bundle: instead load it with `URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/quickask-tool-turn.jsonl")` so no `project.yml` change is needed.
 
@@ -788,7 +787,7 @@ final class MacQuickAskHotKeyManager: ObservableObject {
         }
     }
 
-    /// Chat-menu text, nil when nothing is wrong. Localized in Task 7.
+    /// Chat-menu text, nil when nothing is wrong. Localized in Task 6.
     var unavailableMessage: String? {
         guard case .unavailable(let error) = state else { return nil }
         switch error {
@@ -819,123 +818,20 @@ git commit -m "macOS: Quick Ask Carbon hotkey wrapper and registration state (D1
 
 ---
 
-### Task 3: Stream tap adapter
-
-**Files:**
-- Create: `ConduitMac/QuickAsk/MacQuickAskStreamTap.swift`
-- Test: `ConduitMacTests/MacQuickAskStreamTapTests.swift`
-
-**Interfaces:**
-- Consumes: the shared base's stream-event hub. Read `docs/superpowers/plans/2026-10-15-mac-shared-base.md` and `grep -rn "StreamTap\|StreamHub\|subscribe" ConduitMac | head` for the real subscribe API and use its names; the Quick Ask spec names only `MacQuickAskStreamTap.shared.observe(_ event:)`. Everything below keeps `observe(_:)` as the one entry point, so only the single subscription line in Step 3 depends on the hub's name.
-- Produces: `@MainActor final class MacQuickAskStreamTap { static let shared; var handler: ((StreamEvent) -> Void)?; func observe(_ event: StreamEvent); func attach() }` (`attach()` subscribes `observe` to the shared hub once; idempotent).
-
-- [ ] **Step 1: Write the failing tests**
-
-```swift
-import XCTest
-@testable import ConduitMac
-
-@MainActor
-final class MacQuickAskStreamTapTests: XCTestCase {
-    func testObserveWithNoHandlerIsANoOp() {
-        let tap = MacQuickAskStreamTap()
-        tap.observe(.messageStart(sessionId: "s"))   // must not crash or retain
-    }
-
-    func testObserveForwardsToHandler() {
-        let tap = MacQuickAskStreamTap()
-        var seen: [String] = []
-        tap.handler = { if case .messageDelta(_, let text) = $0 { seen.append(text) } }
-        tap.observe(.messageDelta(sessionId: "s", text: "a"))
-        tap.observe(.messageStart(sessionId: "s"))
-        XCTAssertEqual(seen, ["a"])
-    }
-
-    func testClearingHandlerStopsForwarding() {
-        let tap = MacQuickAskStreamTap()
-        var count = 0
-        tap.handler = { _ in count += 1 }
-        tap.observe(.messageStart(sessionId: "s"))
-        tap.handler = nil
-        tap.observe(.messageStart(sessionId: "s"))
-        XCTAssertEqual(count, 1)
-    }
-
-    func testAttachIsIdempotent() {
-        let tap = MacQuickAskStreamTap()
-        tap.attach(); tap.attach()
-        XCTAssertEqual(tap.attachCount, 1)
-    }
-}
-```
-
-Add a second test class in the same file after Step 3 if the hub exposes an injectable instance: publish one event through it and assert `handler` sees it exactly once (not twice after `attach()` twice). Use the hub's own test seam; do not reach for the real `AppState`.
-
-- [ ] **Step 2: Run to verify failure**
-
-Run: `xcodegen generate && xcodebuild test -project Conduit.xcodeproj -scheme ConduitMac -destination 'platform=macOS' -derivedDataPath build/dd -only-testing:ConduitMacTests/MacQuickAskStreamTapTests`
-Expected: build failure, `cannot find 'MacQuickAskStreamTap' in scope`.
-
-- [ ] **Step 3: Implement**
-
-```swift
-import Foundation
-
-/// Quick Ask's door into the shared base's stream-event hub (D15). The hub sees
-/// every session's events before AppState's active-session filter, so Quick Ask
-/// can render a reply for a session the main window never opened.
-@MainActor
-final class MacQuickAskStreamTap {
-    static let shared = MacQuickAskStreamTap()
-
-    /// Set by the controller while it owns an exchange; nil keeps the tap free.
-    var handler: ((StreamEvent) -> Void)?
-    private(set) var attachCount = 0
-
-    func observe(_ event: StreamEvent) {
-        handler?(event)
-    }
-
-    /// Subscribes `observe` to the shared hub once.
-    func attach() {
-        guard attachCount == 0 else { return }
-        attachCount = 1
-        // SHARED-BASE: replace this one line with the hub's real subscribe call,
-        // e.g. `MacStreamEventHub.shared.subscribe { [weak self] in self?.observe($0) }`.
-        MacStreamEventHub.shared.subscribe { [weak self] event in self?.observe(event) }
-    }
-}
-```
-
-`MacStreamEventHub.shared.subscribe` is the placeholder name; the build fails until it is the shared base's real API, which is the intended signal. Keep subscriber closures main-actor, matching `AppState.handleStreamEvent` (it runs in `Task { @MainActor }`). If the hub hands events on another actor, hop with `Task { @MainActor in self?.observe(event) }` here.
-
-- [ ] **Step 4: Run to verify pass**
-
-Run: same as Step 2. Expected: all pass.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add ConduitMac/QuickAsk/MacQuickAskStreamTap.swift ConduitMacTests/MacQuickAskStreamTapTests.swift
-git commit -m "macOS: Quick Ask stream tap adapter over the shared hub (D15)"
-```
-
----
-
-### Task 4: Controller (RPCs, promotion, hand-off, connection, 4090)
+### Task 3: Controller (RPCs, promotion, hand-off, connection, 4090)
 
 **Files:**
 - Create: `ConduitMac/QuickAsk/MacQuickAskController.swift`
 - Test: `ConduitMacTests/MacQuickAskControllerTests.swift`
 
 **Interfaces:**
-- Consumes: `MacQuickAskModel` (Task 1); `MacQuickAskStreamTap.shared` (Task 3); `MacQuickAskHotKeyManager` (Task 2); `MacFloatingPanelController` (shared base: `isVisible`, `show()`, `hide()`, `toggle()`, `updateContentHeight(_:)`); `HermesClient.createSession(model:provider:reasoningEffort:fast:cwd:inProfile:)`, `sendPrompt(_:text:surface:voiceTurn:)`, `cancel(_:)`; `RpcError` (`code`, `reason`, `isSessionNotOwned`); `UserFacingError.message(for:)`; `AppState.isConnected`, `isConnecting`, `isProfileSwitching`, `activeProfile`, `client`, `requestOpenSession(_:onFailure:)`, `loadSessions(forceRefresh:)`.
+- Consumes: `MacQuickAskModel` (Task 1); `MacQuickAskHotKeyManager` (Task 2); `MacStreamEventHub` (shared base: `shared`, `subscribe(_:) -> Token`, `unsubscribe(_:)`, handlers are `@MainActor (StreamEvent) -> Void`); `MacFloatingPanelController` (shared base: `isVisible`, `show()`, `hide()`, `toggle()`, `updateContentHeight(_:)`); `HermesClient.createSession(model:provider:reasoningEffort:fast:cwd:inProfile:)`, `sendPrompt(_:text:surface:voiceTurn:)`, `cancel(_:)`; `RpcError` (`code`, `reason`, `isSessionNotOwned`); `UserFacingError.message(for:)`; `AppState.isConnected`, `isConnecting`, `isProfileSwitching`, `activeProfile`, `client`, `requestOpenSession(_:onFailure:)`, `loadSessions(forceRefresh:)`.
 - Produces:
   - `enum MacQuickAskConnection: Equatable { case connected, connecting, disconnected }` (profile switching maps to `.connecting`)
-  - `protocol MacQuickAskPanelHosting: AnyObject { var isVisible: Bool { get }; func show(); func hide(); func toggle() }` with `extension MacFloatingPanelController: MacQuickAskPanelHosting {}`; `var onDismiss` is wired through the panel config in Task 5, so the controller exposes `func panelDidDismiss()`
+  - `protocol MacQuickAskPanelHosting: AnyObject { var isVisible: Bool { get }; func show(); func hide(); func toggle() }` with `extension MacFloatingPanelController: MacQuickAskPanelHosting {}`; `var onDismiss` is wired through the panel config in Task 4, so the controller exposes `func panelDidDismiss()`
   - `struct MacQuickAskEnvironment` with closures `connection: () -> MacQuickAskConnection`, `activeProfile: () -> String`, `createSession: () async throws -> (sessionId: String, storedSessionId: String?, profile: String?)`, `sendPrompt: (String, String) async throws -> PromptSubmissionOutcome`, `cancel: (String) async throws -> Void`, `openSession: (String) -> Void`, `activateMainWindow: () -> Void`, `refreshSessions: () -> Void`, `now: () -> Date` (all with inert defaults for tests)
-  - `@MainActor final class MacQuickAskController: ObservableObject` with `static let shared`, `@Published private(set) var model`, `@Published var draft: String`, `@Published private(set) var connection: MacQuickAskConnection`, `var environment: MacQuickAskEnvironment`, `var panel: MacQuickAskPanelHosting?` (built lazily in Task 5/6 via `makePanel`), `var makePanel: (MacQuickAskController) -> MacQuickAskPanelHosting`
-  - intents: `toggle()`, `show()`, `hide()`, `panelDidDismiss()`, `submit()`, `retry()`, `stop()`, `newConversation()`, `promote()`, `openConduit()`, `bind(to appState: AppState)`
+  - `@MainActor final class MacQuickAskController: ObservableObject` with `static let shared`, `init(hub: MacStreamEventHub = .shared)`, `@Published private(set) var model`, `@Published var draft: String`, `@Published private(set) var connection: MacQuickAskConnection`, `var environment: MacQuickAskEnvironment`, `var panel: MacQuickAskPanelHosting?` (built lazily in Task 4/5 via `makePanel`), `var makePanel: (MacQuickAskController) -> MacQuickAskPanelHosting`
+  - intents: `toggle()`, `show()`, `hide()`, `panelDidDismiss()`, `submit()`, `retry()`, `stop()`, `newConversation()`, `promote()`, `openConduit()`, `bind(to appState: AppState)`; hub: `subscribeToHub()` (idempotent; keeps the `MacStreamEventHub.Token`), `unsubscribeFromHub()`
   - `static func classify(_ error: Error) -> (message: String, kind: MacQuickAskModel.FailureKind)`
 
 Behavior:
@@ -943,11 +839,11 @@ Behavior:
 - Create path: `environment.createSession()`; if the returned `profile` differs from `activeProfile()`, fail with "Hermes created this in <profile>" (localized key with `%@`, same guard as `createAndReconcileSession`); else `model.sessionCreated`, `environment.refreshSessions()`, then `sendPrompt(runtimeID, prompt)`, then `model.promptStarted()`.
 - `retry()` resubmits `model.lastPrompt` (same session when one exists).
 - `classify`: `RpcError` with `code == 4090` and `!isSessionNotOwned` is `.sessionLimit` with the localized "Hermes is already running the most sessions it allows. Finish or close one in Conduit, then try again."; any other error is `.generic` with `UserFacingError.message(for:)`. (4090 on `prompt.submit` with `SESSION_NOT_OWNED` is a different refusal and stays generic.)
-- `promote()`: requires `model.promoteID`; calls `activateMainWindow()` then `openSession(id)` exactly once, then `model.detach()`, clears the tap handler's ownership via the model, and `panel.hide()`. In `needsInput` the view makes this the default action; the controller has no approval/clarify code.
+- `promote()`: requires `model.promoteID`; calls `activateMainWindow()` then `openSession(id)` exactly once, then `model.detach()` (the model then owns no session, so later hub events for it are ignored), and `panel.hide()`. In `needsInput` the view makes this the default action; the controller has no approval/clarify code.
 - `panelDidDismiss()`: `model.panelClosed(now:)`. Hiding never cancels. `show()`: `model.panelOpened(now:)`, then `panel.show()`.
 - `stop()`: `environment.cancel(runtimeID)` when `isTurnRunning`; errors are swallowed into `.failed`.
 - Connection lost mid-turn: when `connection` flips away from `.connected` while `isTurnRunning`, nothing is cancelled; the view reads `connection` to show "Connection lost. The reply may still finish; open it in Conduit." and promote stays enabled.
-- The tap handler is `{ [weak self] in self?.model.apply($0, now: environment.now()) }` installed in `bind`/init so events flow whether or not the panel is visible.
+- The hub subscription is `hub.subscribe { [weak self] event in guard let self else { return }; model.apply(event, now: environment.now()) }`, installed by `bind(to:)` through `subscribeToHub()` so events flow whether or not the panel is visible. The shared base owns the one upstream publish line and the hub's own tests; Quick Ask tests inject their own `MacStreamEventHub()` instance and never touch `AppState`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -975,6 +871,7 @@ final class MacQuickAskControllerTests: XCTestCase {
         var order: [String] = []
     }
 
+    private var hub = MacStreamEventHub()
     private var calls = Calls()
     private var clock = Date(timeIntervalSince1970: 5_000)
     private var panel = FakePanel()
@@ -986,7 +883,8 @@ final class MacQuickAskControllerTests: XCTestCase {
 
     private func controller() -> MacQuickAskController {
         calls = Calls()
-        let c = MacQuickAskController()
+        hub = MacStreamEventHub()
+        let c = MacQuickAskController(hub: hub)
         c.panel = panel
         c.environment = MacQuickAskEnvironment(
             connection: { [unowned self] in connection },
@@ -1037,16 +935,27 @@ final class MacQuickAskControllerTests: XCTestCase {
         XCTAssertEqual(calls.sends.last?.0, "rt")
     }
 
-    func testTapEventsReachTheModel() {
+    func testHubEventsReachTheModel() {
         let c = controller()
-        c.bindTap()
+        c.subscribeToHub()
         c.draft = "q"; c.submit()
         settle(c) { calls.sends.count == 1 }
-        MacQuickAskStreamTap.shared.observe(.messageDelta(sessionId: "rt", text: "Hi"))
+        hub.publish(.messageDelta(sessionId: "rt", text: "Hi"))
         XCTAssertEqual(c.model.text, "Hi")
-        MacQuickAskStreamTap.shared.observe(.messageDelta(sessionId: "other", text: "NO"))
+        hub.publish(.messageDelta(sessionId: "other", text: "NO"))
         XCTAssertEqual(c.model.text, "Hi")
-        MacQuickAskStreamTap.shared.handler = nil
+    }
+
+    func testSubscribeIsIdempotentAndUnsubscribeStopsDelivery() {
+        let c = controller()
+        c.subscribeToHub(); c.subscribeToHub()
+        XCTAssertEqual(hub.subscriberCount, 1)
+        c.draft = "q"; c.submit()
+        settle(c) { calls.sends.count == 1 }
+        c.unsubscribeFromHub()
+        XCTAssertEqual(hub.subscriberCount, 0)
+        hub.publish(.messageDelta(sessionId: "rt", text: "late"))
+        XCTAssertEqual(c.model.text, "")
     }
 
     func testHideKeepsModelAndReopenWithinWindowRestores() {
@@ -1176,7 +1085,7 @@ final class MacQuickAskControllerTests: XCTestCase {
 }
 ```
 
-`RpcError(code:message:)` and `(code:message:reason:)` calls assume the memberwise init (`code: Int?`, `message: String`, `reason: String? = nil`); `RpcError` declares a custom `init(from:)` in an extension, so the memberwise init stays available. If it does not compile, build the error by decoding a JSON literal instead (see `ConduitTests/HermesClientTests.swift` for how existing tests make one). `c.bindTap()` is a small internal method that installs `MacQuickAskStreamTap.shared.handler` (what `bind(to:)` calls); keep it `internal` for the test.
+`RpcError(code:message:)` and `(code:message:reason:)` calls assume the memberwise init (`code: Int?`, `message: String`, `reason: String? = nil`); `RpcError` declares a custom `init(from:)` in an extension, so the memberwise init stays available. If it does not compile, build the error by decoding a JSON literal instead (see `ConduitTests/HermesClientTests.swift` for how existing tests make one). `c.subscribeToHub()` is `internal` (what `bind(to:)` calls) so the test can drive the hub directly; `MacStreamEventHub.subscriberCount` is the shared base's own test seam.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -1229,11 +1138,17 @@ final class MacQuickAskController: ObservableObject {
 
     var environment = MacQuickAskEnvironment()
     var panel: MacQuickAskPanelHosting?
-    /// Builds the real panel on first show (Task 5 supplies the default).
+    /// Builds the real panel on first show (Task 4 supplies the default).
     var makePanel: (MacQuickAskController) -> MacQuickAskPanelHosting = { _ in fatalError("makePanel not set") }
 
+    private let hub: MacStreamEventHub
+    private var hubToken: MacStreamEventHub.Token?
     private var turnTask: Task<Void, Never>?
     private var bindings: Set<AnyCancellable> = []
+
+    init(hub: MacStreamEventHub = .shared) {
+        self.hub = hub
+    }
 
     // MARK: Panel lifecycle
 
@@ -1332,11 +1247,18 @@ final class MacQuickAskController: ObservableObject {
 
     // MARK: Binding
 
-    func bindTap() {
-        MacQuickAskStreamTap.shared.handler = { [weak self] event in
+    func subscribeToHub() {
+        guard hubToken == nil else { return }
+        hubToken = hub.subscribe { [weak self] event in
             guard let self else { return }
             model.apply(event, now: environment.now())
         }
+    }
+
+    func unsubscribeFromHub() {
+        guard let hubToken else { return }
+        hub.unsubscribe(hubToken)
+        self.hubToken = nil
     }
 
     func bind(to appState: AppState) {
@@ -1360,7 +1282,7 @@ final class MacQuickAskController: ObservableObject {
             activateMainWindow: { MacQuickAskController.activateMainWindow() },
             refreshSessions: { [weak appState] in Task { await appState?.loadSessions(forceRefresh: true) } },
             now: { Date() })
-        bindTap()
+        subscribeToHub()
         connection = Self.connection(of: appState)
         Publishers.CombineLatest3(appState.$isConnected, appState.$isConnecting, appState.$isProfileSwitching)
             .receive(on: RunLoop.main)
@@ -1390,7 +1312,7 @@ Checks before building: (1) `appState.$isProfileSwitching` is `@Published privat
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: same as Step 2. Expected: all pass; then run `MacQuickAskModelTests` and `MacQuickAskStreamTapTests` once more.
+Run: same as Step 2. Expected: all pass; then run `MacQuickAskModelTests` once more.
 
 - [ ] **Step 5: Commit**
 
@@ -1401,15 +1323,15 @@ git commit -m "macOS: Quick Ask controller with create/send, promotion and 4090 
 
 ---
 
-### Task 5: Panel view and panel configuration
+### Task 4: Panel view and panel configuration
 
 **Files:**
 - Create: `ConduitMac/QuickAsk/MacQuickAskView.swift`
 - Test: `ConduitMacTests/MacQuickAskViewTests.swift`
 
 **Interfaces:**
-- Consumes: `MacQuickAskController` (Task 4); `MacFloatingPanelController(config:content:)`, `MacFloatingPanelConfig`, `MacFloatingPanelPlacement.screenCenterTop(fromTop:)` (shared base, spec "MacFloatingPanel API"); `MarkdownText(source:isStreaming:)`; `AccessibilityProbe` (`ConduitMacTests/HostedTestSupport.swift`).
-- Produces: `struct MacQuickAskView: View { @ObservedObject var controller: MacQuickAskController; var onHeight: (CGFloat) -> Void }`; `enum MacQuickAskPanelConfig { static func make(screenHeight: CGFloat, onDismiss: @escaping () -> Void) -> MacFloatingPanelConfig }`; `extension MacQuickAskController { func installDefaultPanel() }` setting `makePanel` to build a `MacFloatingPanelController` hosting `MacQuickAskView`.
+- Consumes: `MacQuickAskController` (Task 3); `MacFloatingPanelController(config:environment:content:)` (`environment` defaults to `.live`), `MacFloatingPanelConfig`, `MacFloatingPanelPlacement.screenCenterTopFraction(_:)` (shared base); `MarkdownText(source:isStreaming:)`; `AccessibilityProbe` (`ConduitMacTests/HostedTestSupport.swift`).
+- Produces: `struct MacQuickAskView: View { @ObservedObject var controller: MacQuickAskController; var onHeight: (CGFloat) -> Void }`; `enum MacQuickAskPanelConfig { static func make(onDismiss: @escaping () -> Void) -> MacFloatingPanelConfig }`; `extension MacQuickAskController { func installDefaultPanel() }` setting `makePanel` to build a `MacFloatingPanelController` hosting `MacQuickAskView`.
 
 View content, top to bottom (one glass/material layer; no nested glass, D7):
 1. Disconnected strip when `connection != .connected`: "Not connected" (or "Reconnecting") with an Open Conduit button; the field is disabled.
@@ -1420,7 +1342,7 @@ View content, top to bottom (one glass/material layer; no nested glass, D7):
 6. Failed: the message, Retry button; for `.sessionLimit` also Open Conduit.
 7. Footer buttons: Open in Conduit (Cmd-Return), Stop (Cmd-.) while running. Hidden buttons carry Cmd-N ("New conversation"). Return is the field's `onSubmit`; Esc is the panel's `cancelOperation`.
 
-Panel config: `size` 640 x 72, `maxHeight` 480, `placement .screenCenterTop(fromTop: screenHeight * 0.22)`, `canBecomeKey` true, `dismissOnResignKey` true, `dismissOnEscape` true, `onDismiss` calling `controller.panelDidDismiss()`.
+Panel config: `size` 640 x 72, `maxHeight` 480, `placement .screenCenterTopFraction(0.22)` (shared base; 22 percent of the visible height, so no screen-height parameter), `canBecomeKey` true, `dismissOnResignKey` true, `dismissOnEscape` true, `onDismiss` calling `controller.panelDidDismiss()`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1453,13 +1375,13 @@ final class MacQuickAskViewTests: XCTestCase {
     }
 
     func testConfigMatchesTheSpec() {
-        let config = MacQuickAskPanelConfig.make(screenHeight: 1000, onDismiss: {})
+        let config = MacQuickAskPanelConfig.make(onDismiss: {})
         XCTAssertEqual(config.maxHeight, 480)
         XCTAssertTrue(config.canBecomeKey)
         XCTAssertTrue(config.dismissOnResignKey)
         XCTAssertTrue(config.dismissOnEscape)
-        guard case .screenCenterTop(let fromTop) = config.placement else { return XCTFail() }
-        XCTAssertEqual(fromTop, 220, accuracy: 0.5)
+        guard case .screenCenterTopFraction(let fraction) = config.placement else { return XCTFail() }
+        XCTAssertEqual(fraction, 0.22, accuracy: 0.001)
     }
 
     func testConnectedIdleShowsTheField() {
@@ -1540,7 +1462,7 @@ final class MacQuickAskViewTests: XCTestCase {
 
 `forceStateForTest` / `submitForTest` are `#if DEBUG` internal test seams on the controller and model (`func forceStateForTest(_ state: MacQuickAskModel.State)` sets `model` to a model in that state via a test-only initializer). Add them in the same file as the type, guarded with `#if DEBUG`, tagged `// test seam`, and keep them out of Release. If `MacQuickAskModel` makes `state` `private(set)`, give it a `#if DEBUG init(testState:)`.
 
-The label strings asserted above ("Ask Hermes", "Not connected", "Open Conduit", "Reconnecting", "Hermes needs your input", "Open in Conduit", "Retry") are the English catalog keys; `AppLocalization` falls back to the key when no catalog entry exists yet, so these pass before Task 7.
+The label strings asserted above ("Ask Hermes", "Not connected", "Open Conduit", "Reconnecting", "Hermes needs your input", "Open in Conduit", "Retry") are the English catalog keys; `AppLocalization` falls back to the key when no catalog entry exists yet, so these pass before Task 6.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -1554,11 +1476,11 @@ import AppKit
 import SwiftUI
 
 enum MacQuickAskPanelConfig {
-    static func make(screenHeight: CGFloat, onDismiss: @escaping () -> Void) -> MacFloatingPanelConfig {
+    static func make(onDismiss: @escaping () -> Void) -> MacFloatingPanelConfig {
         MacFloatingPanelConfig(
             size: NSSize(width: 640, height: 72),
             maxHeight: 480,
-            placement: .screenCenterTop(fromTop: screenHeight * 0.22),
+            placement: .screenCenterTopFraction(0.22),
             canBecomeKey: true,
             dismissOnResignKey: true,
             dismissOnEscape: true,
@@ -1677,9 +1599,8 @@ extension MacQuickAskController {
     /// The real panel: shared-base MacFloatingPanelController around MacQuickAskView.
     func installDefaultPanel() {
         makePanel = { controller in
-            let height = NSScreen.main?.visibleFrame.height ?? 900
             var host: MacFloatingPanelController?
-            let config = MacQuickAskPanelConfig.make(screenHeight: height) { [weak controller] in
+            let config = MacQuickAskPanelConfig.make { [weak controller] in
                 controller?.panelDidDismiss()
             }
             host = MacFloatingPanelController(config: config) {
@@ -1691,7 +1612,7 @@ extension MacQuickAskController {
 }
 ```
 
-Replace the `AnyButtonStyle` shorthand with the app's real styling: use `.buttonStyle(.borderedProminent)` when `needsInput`, `.buttonStyle(.bordered)` otherwise, applied through two branches of an `if`, because `buttonStyle` takes a static type. Check `ConduitMac/Views/MacControlMetrics.swift` and D7 for button chrome rules (32 pt compact height, no second glass layer, hover outline shape) and follow them; the panel's own material is the single glass layer. Test the Mac `MacFloatingPanelConfig` init labels against the shared base's real struct (spec lists the fields; defaults exist for `dismissOnEscape`, `level`, `joinsAllSpaces`, `onDismiss`).
+Replace the `AnyButtonStyle` shorthand with the app's real styling: use `.buttonStyle(.borderedProminent)` when `needsInput`, `.buttonStyle(.bordered)` otherwise, applied through two branches of an `if`, because `buttonStyle` takes a static type. Check `ConduitMac/Views/MacControlMetrics.swift` and D7 for button chrome rules (32 pt compact height, no second glass layer, hover outline shape) and follow them; the panel's own material is the single glass layer. The `MacFloatingPanelConfig` memberwise init labels follow the shared base's real struct (required: `size`, `placement`, `canBecomeKey`, `dismissOnResignKey`; defaulted: `maxHeight`, `dismissOnEscape`, `level`, `joinsAllSpaces`, `allowsMenuBarOverlap`, `hasShadow`, `isDraggable`, `dragThreshold`, `onDismiss` and the hover/placement callbacks). Quick Ask leaves `isDraggable` false.
 
 - [ ] **Step 4: Run to verify pass**
 
@@ -1706,7 +1627,7 @@ git commit -m "macOS: Quick Ask panel view and config (D15)"
 
 ---
 
-### Task 6: App wiring, Chat menu command and toggle
+### Task 5: App wiring, Chat menu command and toggle
 
 **Files:**
 - Modify: `ConduitMac/App/ConduitMacApp.swift` (bind next to `.task { MacSessionTabsStore.shared.bind(to: appState) }`, line ~65; pass the hotkey manager to commands)
@@ -1716,7 +1637,7 @@ git commit -m "macOS: Quick Ask panel view and config (D15)"
 - Test: `ConduitMacTests/MacQuickAskCommandsTests.swift`
 
 **Interfaces:**
-- Consumes: `MacQuickAskController.shared` (`bind(to:)`, `installDefaultPanel()`, `toggle()`, `show()`), `MacQuickAskStreamTap.shared.attach()`, `MacQuickAskHotKeyManager.shared` (`refresh()`, `onHotKey`, `state`, `unavailableMessage`, `enabledKey`).
+- Consumes: `MacQuickAskController.shared` (`bind(to:)`, which subscribes to the hub; `installDefaultPanel()`, `toggle()`, `show()`), `MacQuickAskHotKeyManager.shared` (`refresh()`, `onHotKey`, `state`, `unavailableMessage`, `enabledKey`).
 - Produces: `ConduitCommands` gains `@ObservedObject var quickAsk: MacQuickAskHotKeyManager` and `@AppStorage(MacQuickAskHotKeyManager.enabledKey) private var quickAskEnabled = true`; Chat menu items:
   - Button "Quick Ask" (no key equivalent; calls `MacQuickAskController.shared.show()`); never `.disabled`.
   - Toggle "Quick Ask Shortcut" bound to `quickAskEnabled`; `onChange` calls `quickAsk.refresh()`.
@@ -1788,7 +1709,7 @@ Also update `ConduitMacTests/MacKeyboardTests.swift` only if its menu-table test
 - [ ] **Step 2: Run to verify failure**
 
 Run: `xcodegen generate && xcodebuild test -project Conduit.xcodeproj -scheme ConduitMac -destination 'platform=macOS' -derivedDataPath build/dd -only-testing:ConduitMacTests/MacQuickAskCommandsTests`
-Expected: fails on the missing `ConduitCommands` menu line (`testQuickAskMenuItemHasNoGlobalKeyEquivalent`) and, until Step 3, nothing else; the other tests already compile against Tasks 2 to 5.
+Expected: fails on the missing `ConduitCommands` menu line (`testQuickAskMenuItemHasNoGlobalKeyEquivalent`) and, until Step 3, nothing else; the other tests already compile against Tasks 2 to 4.
 
 - [ ] **Step 3: Implement**
 
@@ -1806,8 +1727,7 @@ extension MacQuickAskHotKeyManager {
             .task { MacSessionTabsStore.shared.bind(to: appState) }
             .task {
                 MacQuickAskController.shared.installDefaultPanel()
-                MacQuickAskController.shared.bind(to: appState)
-                MacQuickAskStreamTap.shared.attach()
+                MacQuickAskController.shared.bind(to: appState)   // also subscribes to MacStreamEventHub.shared
             }
 ```
 
@@ -1873,14 +1793,14 @@ git commit -m "macOS: wire Quick Ask hotkey, Chat menu command and toggle (D15)"
 
 ---
 
-### Task 7: Localization, docs, smoke checklist, final verification
+### Task 6: Localization, docs, smoke checklist, final verification
 
 **Files:**
 - Modify: `Conduit/Localizable.xcstrings` (through `scripts/l10n.py` only)
 - Modify: `docs/macos/DECISIONS.md` (new decision), `docs/macos/SMOKE_CHECKLIST.md`
 - Modify: `docs/macos/PORTING_LEDGER.md` ONLY if an upstream edit was unavoidable (see Global Constraints)
 
-**Interfaces:** none produced; consumes every string key from Tasks 2, 4, 5, 6.
+**Interfaces:** none produced; consumes every string key from Tasks 2, 3, 4, 5.
 
 New catalog keys (exact English source strings; every shipped language needs a translation):
 
@@ -1919,12 +1839,12 @@ Expected: passes, no missing or malformed entries. Then run `xcodegen generate` 
 
 - [ ] **Step 4: Docs**
 
-`docs/macos/DECISIONS.md`: check the last heading with `grep -n "^## D" docs/macos/DECISIONS.md | tail -3` (D14 at plan time; other Mac plans written the same day may also claim D15, so take the next free number at execution and update every "D15" in `ConduitMac/QuickAsk/` comments, the commit messages after that point, and the smoke checklist to match). Entry content (one block, same register as D11):
+`docs/macos/DECISIONS.md`: this plan owns **D15** (notch status owns D16, Ask About Window D17, command palette D18, system integration D19, notifications D20; the shared base carries no number). Check `grep -n "^## D" docs/macos/DECISIONS.md | tail -3` shows D14 as the last heading before adding it; if a number below D15 is missing, still write D15. Entry content (one block, same register as D11):
 
 - Spec path `docs/superpowers/specs/2026-10-15-mac-quick-ask-design.md`.
 - Hotkey API: Carbon `RegisterEventHotKey` over `NSEvent` global monitors (observation only, needs Accessibility) and `CGEventTap` (needs Input Monitoring); Apple DTS calls it the best of the three but legacy; no prompt; fixed Option-Shift-Space, `MacQuickAskHotKey.default` is the replacement seam.
 - Sequoia caveat: macOS 15.0 and 15.1 return -9868 for Option / Option-Shift-only hotkeys (Apple engineer, developer.apple.com/forums/thread/763878: intentional, fixed in 15.2 beta 2); failure is a visible non-fatal Chat-menu state, the menu command always works, registration retried on app activation and toggle.
-- Tap over active-session switch: Quick Ask reads every session's events through the shared base stream tap and keeps its own reducer; AppState and the open chat are untouched; approvals, clarify, reasoning cards and attachments are not rebuilt in the panel and hand off through promotion.
+- Hub over active-session switch: Quick Ask subscribes to the shared base `MacStreamEventHub` (fed by the base's single gated line in `AppState.handleStreamEvent`) and keeps its own reducer; AppState and the open chat are untouched; approvals, clarify, reasoning cards and attachments are not rebuilt in the panel and hand off through promotion.
 - New session per invocation with a 120 s restore window counted from the last activity; Cmd-N resets; nothing is created on dismiss without sending.
 - Model: the profile default (`createSession` with no model or provider), not `runtime.model`, which mirrors the open chat's possible override.
 - Esc hides and the turn finishes; Quick Ask sessions are ordinary sidebar sessions; promotion uses `requestOpenSession` with the stored id, activating the main window first.
@@ -1954,7 +1874,7 @@ Run, one at a time (never two xcodebuilds on one checkout):
 2. `xcodebuild test -project Conduit.xcodeproj -scheme ConduitMac -destination 'platform=macOS' -derivedDataPath build/dd` twice. Expected: `** TEST SUCCEEDED **` both times (note the known flaky test if it alone fails).
 3. `xcodebuild build -scheme Conduit -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO` only if any file under `Conduit/` other than the catalog was touched; otherwise skip and say so (macOS-only scope).
 4. `git diff <base> --stat -- Conduit Shared` shows only `Conduit/Localizable.xcstrings`; `git diff <base> -- Conduit Shared | grep '^-' | grep -v '^---'` is empty or limited to catalog lines that `scripts/l10n.py` rewrote.
-5. `grep -rn "TODO\|SHARED-BASE" ConduitMac/QuickAsk` returns nothing.
+5. `grep -rn "TODO\|SHARED-BASE\|MacQuickAskStreamTap" ConduitMac/QuickAsk` returns nothing.
 6. Delete scratch worksheets, probe files and any `build/dd` you do not need.
 
 - [ ] **Step 6: Commit**
@@ -1970,5 +1890,5 @@ git commit -m "macOS: Quick Ask strings, decision record and smoke checklist (D1
 
 ## Self-Review Notes
 
-- Spec coverage: hotkey + Sequoia -9868 + conflict + always-working menu command (Tasks 2, 6); toggle default on (6); reducer incl. 120 s, Cmd-N, needs-input, segments, ids (1); create/send on the shared socket, profile guard, profile-default model (4); tap from shared base (3); streaming render, tool status, cap 480, Return/Esc/Cmd-Return/Cmd-./Cmd-N (5); promotion order and stored id (4); approval/clarify hand-off (1, 4, 5); disconnected/reconnecting and mid-turn loss (4, 5); 4090 (4, 5); localization and docs (7); recorded-trace test (1). Panel/placement/hosted-panel tests belong to the shared base plan, not here.
-- Types: `MacQuickAskModel.State.failed` has three associated values everywhere (kind added to the spec's two); `MacQuickAskConnection` is used by the controller, view and tests; `MacQuickAskPanelHosting` is defined in Task 4 and used in Tasks 5 and 6.
+- Spec coverage: hotkey + Sequoia -9868 + conflict + always-working menu command (Tasks 2, 5); toggle default on (5); reducer incl. 120 s, Cmd-N, needs-input, segments, ids (1); create/send on the shared socket, profile guard, profile-default model (3); hub subscription from the shared base (3); streaming render, tool status, cap 480, Return/Esc/Cmd-Return/Cmd-./Cmd-N (4); promotion order and stored id (3); approval/clarify hand-off (1, 3, 4); disconnected/reconnecting and mid-turn loss (3, 4); 4090 (3, 4); localization and docs (6); recorded-trace test (1). Panel/placement/hosted-panel/hub tests belong to the shared base plan, not here.
+- Types: `MacQuickAskModel.State.failed` has three associated values everywhere (kind added to the spec's two); `MacQuickAskConnection` is used by the controller, view and tests; `MacQuickAskPanelHosting` is defined in Task 3 and used in Tasks 4 and 5. `MacStreamEventHub` / `Token` come from the shared base; there is no Quick Ask tap type.

@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**REQUIRES SHARED BASE MERGED.** `docs/superpowers/plans/2026-10-15-mac-shared-base.md` delivers `AgentActivityFeed` (events `turnStarted`, `turnFinished`, `approvalRequested`, `questionRequested`, `decisionResolved`, `sessionTitleChanged`, each with `eventId`, snapshot on subscribe), the stream-event tap, connection state and the Mac reconnect-while-inactive exemption. This plan does not build any of that. Tasks 1 to 8 and 10 run against a local, feed-neutral event model (`MacNotificationEvent`) and can be built and tested before the shared base lands; Task 9 (the feed adapter) and the smoke run need it merged. Do not start Task 9 until `grep -rn "AgentActivityFeed" ConduitMac` finds the type.
+**REQUIRES SHARED BASE MERGED.** `docs/superpowers/plans/2026-10-15-mac-shared-base.md` delivers `AgentActivityFeed.shared` (published `items`, `availability`, `connection`, `isBaselined`; the `events` publisher of `AgentActivityEvent` with payloads `turnStarted`, `turnFinished(... observedGap)`, `decisionRequested`, `decisionResolved(id:reason:)`, `titleChanged`, each with a monotonic `eventId`; `snapshot()` to read what was already pending once `isBaselined`; `respond(to:choice:) -> AgentActivityRespondResult`), `MacStreamEventHub` with its one gated `AppState` line, and the Mac reconnect-while-inactive exemption. This plan does not build any of that and adds no upstream line for it. Tasks 1 to 8 and 10 run against a local, feed-neutral event model (`MacNotificationEvent`) and can be built and tested before the shared base lands; Task 9 (the feed adapter), the feed-backed Approve/Deny in Task 7's production gateway and the smoke run need it merged. Do not start Task 9 until `grep -rn "final class AgentActivityFeed" ConduitMac` finds the type. Approvals and questions are one feed payload, `decisionRequested(item)`; the adapter splits it into the local `approvalRequested` / `questionRequested` by `item.kind`.
 
 **Goal:** A local macOS notification when a long turn finishes, or the agent blocks on an approval or a clarifying question while the user is not looking, with Approve/Deny and inline Reply from the notification and click-to-open.
 
-**Architecture:** A pure policy (`MacNotificationPolicy`) decides long-running, suppression, dedupe and burst collapse. A main-actor `MacNotificationCoordinator` consumes `MacNotificationEvent`s, applies the policy and preferences, owns the 3 s approval grace timers, and posts through a `MacNotificationCenterClient` protocol (fake in tests). Actions arrive through a thin `UNUserNotificationCenterDelegate` shim, become a tested `MacNotificationAction`, and are performed by `MacNotificationActionHandler` against a `MacNotificationGateway` that calls `HermesClient` directly with explicit session ids (no switching of `AppState`'s active session). A feed adapter maps `AgentActivityFeed` onto the local event model.
+**Architecture:** A pure policy (`MacNotificationPolicy`) decides long-running, suppression, dedupe and burst collapse. A main-actor `MacNotificationCoordinator` consumes `MacNotificationEvent`s, applies the policy and preferences, owns the 3 s approval grace timers, and posts through a `MacNotificationCenterClient` protocol (fake in tests). Actions arrive through a thin `UNUserNotificationCenterDelegate` shim, become a tested `MacNotificationAction`, and are performed by `MacNotificationActionHandler` against a `MacNotificationGateway` that calls `HermesClient` directly with explicit session ids (no switching of `AppState`'s active session). A feed adapter (`MacFeedEventMapper` plus `MacAgentActivityFeedSource`) maps `AgentActivityFeed.shared.events` and `snapshot()` onto the local event model; Approve and Deny go through `AgentActivityFeed.respond(to:choice:)`, Reply goes to `HermesClient` directly with explicit session ids.
 
 **Tech Stack:** Swift 6 / SwiftUI / AppKit on macOS 14+, UserNotifications, Combine, XCTest. xcodegen project (`project.yml`), scheme `ConduitMac`.
 
@@ -15,8 +15,8 @@
 1. Defaults confirmed: 30 s threshold, master toggle on, permission prompt on the first eligible event while Conduit is inactive.
 2. A click on a notification from another dashboard or profile only activates the app.
 3. From a gateway source read: approval choices are exactly `once`, `session`, `always`, `deny`, built per request; a smart-denied request offers only `once` and `deny`. Approve sends `once`, Deny sends `deny`. A notification never offers `always` and never offers `session`. Approve is dropped when `once` is absent; Deny is dropped when `deny` is absent. `allowPermanent` is irrelevant to the mapping.
-4. `HermesClient.respondToApproval(sessionId:requestId:choice:profile:)` and `HermesClient.sendPrompt(_:text:)` take an explicit session id, and `approval.respond` works for any in-process session. Inline Reply therefore does NOT call `requestOpenSession` and does not touch `AppState`'s active session (the spec's "Reply switches the visible session" is dropped, as are its open questions 2 and 3). A question Reply goes through `HermesClient.respondToClarification(requestId:answer:questionId:)`, which is already internal. No shared-file edit is needed for any action.
-5. Events arrive push-based for every session the dashboard socket has attached to. Sessions started by another process (a terminal Hermes, another Mac's app that this socket never attached) never notify. This is documented in D15 and the smoke checklist, not worked around.
+4. Approve and Deny call `AgentActivityFeed.respond(to: "approval:<requestId>", choice:)` (shared base Task 11), which refuses a choice the request does not offer before any RPC and routes through the open card when there is one. `HermesClient.sendPrompt(_:text:)` takes an explicit session id. Inline Reply therefore does NOT call `requestOpenSession` and does not touch `AppState`'s active session (the spec's "Reply switches the visible session" is dropped, as are its open questions 2 and 3). A question Reply goes through `HermesClient.respondToClarification(requestId:answer:questionId:)`, which is already internal. No shared-file edit is needed for any action.
+5. Events arrive push-based for every session the dashboard socket has attached to. Sessions started by another process (a terminal Hermes, another Mac's app that this socket never attached) never notify. This is documented in D20 and the smoke checklist, not worked around.
 
 ## Global Constraints
 
@@ -40,7 +40,7 @@
 ## Review Focus
 
 1. An approval or question that arrives while the user is looking at that session (suppressed) and stays pending after the user switches away or deactivates the app: it must still notify then, once. Test in Task 6 (`testSuppressedDecisionPostsWhenTheUserLeaves`).
-2. Feed replay after reconnect (same events, same or new `eventId`): one notification per turn or request, never a duplicate Done after a resolved approval. Tests in Task 5 and Task 6.
+2. Duplicate delivery (a second `turnFinished` for the same `(sessionKey, turnSeq)` after a turn reopened within the feed's 3 s window, a pending decision seen both in `snapshot()` and live): one notification per turn or request, never a duplicate Done after a resolved approval. A `turnFinished` with `observedGap` (the turn ended while the socket was down) never notifies. Tests in Task 5, Task 6 and Task 9.
 3. The user answers in the app inside the 3 s grace, or on another Mac after delivery: no banner, or the banner is removed. Tests in Task 6.
 4. A notification action fired after the dashboard or profile changed, the gateway disconnected, or the request expired (4009 / `expired`): never a wrong-scope answer, never a silent failure; expired approval counts as success, anything else posts "Couldn't send". Tests in Task 7.
 5. Category replacement: registering Conduit's categories must keep a foreign category (`HERMES_CALL`) and must survive the app-language change. Test in Task 4.
@@ -65,7 +65,7 @@
 - Modify `ConduitMac/App/ConduitMacAppDelegate.swift` (Task 8), `ConduitMac/App/ConduitMacApp.swift` (Task 8, language hook).
 - Modify `Conduit/Views/AuxiliaryViews.swift` (`NotificationsSettingsDetail.body`, about line 2124): gated insert (Task 10).
 - Tests: `ConduitMacTests/MacNotificationFakes.swift` (Task 4), `MacNotificationPolicyTests.swift`, `MacApprovalChoiceMapperTests.swift`, `MacNotificationPreferencesTests.swift`, `MacNotificationContentTests.swift`, `MacNotificationCategoriesTests.swift`, `MacNotificationCoordinatorTests.swift`, `MacNotificationDecisionTests.swift`, `MacNotificationActionTests.swift`, `MacNotificationRouterTests.swift`, `MacNotificationFeedAdapterTests.swift`, `MacNotificationSettingsViewTests.swift`.
-- Docs: `docs/macos/DECISIONS.md` (D15), `docs/macos/PORTING_LEDGER.md`, `docs/macos/SMOKE_CHECKLIST.md`.
+- Docs: `docs/macos/DECISIONS.md` (D20), `docs/macos/PORTING_LEDGER.md`, `docs/macos/SMOKE_CHECKLIST.md`.
 
 `ConduitMac/` sources are picked up by the folder glob in `project.yml`; run `xcodegen generate` after adding files (`grep -n "path: ConduitMac$" project.yml` confirms the glob).
 
@@ -81,7 +81,7 @@
 **Interfaces:**
 - Produces:
   - `struct MacNotificationSession: Equatable, Hashable { var sessionId: String; var sessionKey: String; var alternateIds: [String]; var profile: String; var dashboardID: UUID?; var title: String; var allIDs: Set<String> }`
-  - `struct MacNotificationEvent: Equatable { var eventId: Int; var session: MacNotificationSession; var kind: Kind }` with `enum Kind: Equatable { case turnStarted(turnId: String, at: Date); case turnFinished(turnId: String, at: Date, outcome: Outcome, replyPreview: String?); case approvalRequested(requestId: String, description: String, command: String, choices: [String]?, allowPermanent: Bool); case questionRequested(requestId: String, firstQuestionText: String, openQuestionCount: Int); case decisionResolved(requestId: String, reason: Resolution); case sessionTitleChanged(title: String) }`, `enum Outcome { case completed, failed, interrupted }`, `enum Resolution { case answered, expired, withdrawn, sessionClosed }`
+  - `struct MacNotificationEvent: Equatable { var eventId: Int; var session: MacNotificationSession; var kind: Kind }` with `enum Kind: Equatable { case turnStarted(turnId: String, at: Date); case turnFinished(turnId: String, at: Date, outcome: Outcome, replyPreview: String?, startedAt: Date? = nil, observedGap: Bool = false); case approvalRequested(requestId: String, description: String, command: String, choices: [String]?, allowPermanent: Bool); case questionRequested(requestId: String, firstQuestionText: String, openQuestionCount: Int); case decisionResolved(requestId: String, reason: Resolution); case sessionTitleChanged(title: String) }`, `enum Outcome { case completed, failed, interrupted }`, `enum Resolution { case answered, expired, withdrawn, sessionClosed }`
   - `struct MacNotificationVisibility: Equatable { var appIsActive, mainWindowKeyAndVisible, chatSurfaceShowing, sessionIsActive: Bool; var isAttended: Bool; static let away }`
   - `enum MacNotificationKind: String { case done, failed, approval, question, notice }`
   - `enum MacNotificationPolicy` with `thresholdChoices: [TimeInterval]`, `defaultThreshold`, `approvalGrace`, `burstLimit`, `burstWindow`, `isLongRunning(startedAt:finishedAt:threshold:)`, `shouldSuppress(_:)`, and `enum ID { static func done(_ sessionKey: String), approval(_:), question(_:), thread(_:), notice(_ uuid: UUID); static let doneSummary }`
@@ -176,7 +176,7 @@ Expected: build failure (types missing).
 import Foundation
 
 /// The session an event belongs to, as the notification layer needs it. The
-/// feed adapter (Task 9) fills it; nothing here knows about the feed.
+/// feed adapter (Task 9, `MacFeedEventMapper`) fills it; nothing here knows about the feed.
 struct MacNotificationSession: Equatable, Hashable {
     /// The runtime (live) id the gateway addresses in RPCs.
     var sessionId: String
@@ -191,7 +191,7 @@ struct MacNotificationSession: Equatable, Hashable {
 }
 
 struct MacNotificationEvent: Equatable {
-    /// Monotonic per feed; replays and duplicates are absorbed with it.
+    /// Monotonic per feed (the adapter narrows the feed's `UInt64`). 0 means unsequenced (an item read from `snapshot()`): it is never dropped as stale and the posted-set dedupes it.
     var eventId: Int
     var session: MacNotificationSession
     var kind: Kind
@@ -201,7 +201,8 @@ struct MacNotificationEvent: Equatable {
 
     enum Kind: Equatable {
         case turnStarted(turnId: String, at: Date)
-        case turnFinished(turnId: String, at: Date, outcome: Outcome, replyPreview: String?)
+        /// `startedAt` is the feed's own turn start (authoritative; a turn already running at baseline has no `turnStarted`). `observedGap` means the turn ended while the socket was down: never notify.
+        case turnFinished(turnId: String, at: Date, outcome: Outcome, replyPreview: String?, startedAt: Date? = nil, observedGap: Bool = false)
         case approvalRequested(requestId: String, description: String, command: String, choices: [String]?, allowPermanent: Bool)
         case questionRequested(requestId: String, firstQuestionText: String, openQuestionCount: Int)
         case decisionResolved(requestId: String, reason: Resolution)
@@ -1135,7 +1136,7 @@ git commit -m "macOS notifications: center client, content builders, merged cate
   - `func postNotice(for payload: MacNotificationPayload, reply: Bool)` (used by Task 7)
   - `func languageDidChange()` re-registers categories
 
-Behaviour in this task: `turnStarted` records the start; `turnFinished` with `interrupted` never notifies; `completed`/`failed` post only when long-running (threshold from preferences at finish time); `sessionTitleChanged` updates the title used at post time; events with `eventId` less than or equal to the last seen for the session are dropped; posted-set dedupes per turn id; the Done burst limiter collapses to the summary; authorization is requested lazily, only when the app is inactive; the suppression rule is checked before and after the authorization await; a failing `add` is logged and dropped.
+Behaviour in this task: `turnStarted` records the start; `turnFinished` with `interrupted` never notifies, nor does one with `observedGap`; `completed`/`failed` post only when long-running (threshold from preferences at finish time, measured from the event's own `startedAt` when present, else from the recorded `turnStarted`); `sessionTitleChanged` updates the title used at post time; events with `eventId` greater than 0 and less than or equal to the last seen for the session are dropped (`eventId == 0` is unsequenced and bypasses the rule); posted-set dedupes per turn id; the Done burst limiter collapses to the summary; authorization is requested lazily, only when the app is inactive; the suppression rule is checked before and after the authorization await; a failing `add` is logged and dropped.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1252,6 +1253,32 @@ final class MacNotificationCoordinatorTests: XCTestCase {
         send(.turnFinished(turnId: "t1", at: clock.addingTimeInterval(40), outcome: .completed, replyPreview: "x"), id: 5)
         await coordinator.drain()
         XCTAssertTrue(center.added.isEmpty, "an event at or below the last seen id for the session is a replay")
+    }
+
+    func testFinishCarriesItsOwnStartSoNoStartEventIsNeeded() async {
+        send(.turnFinished(turnId: "t9", at: clock.addingTimeInterval(45), outcome: .completed, replyPreview: "ok", startedAt: clock))
+        await coordinator.drain()
+        XCTAssertEqual(center.identifiers, ["conduit.done.key-1"], "a turn already running at feed baseline still notifies")
+    }
+
+    func testFinishWithAShortOwnStartDoesNotNotify() async {
+        send(.turnStarted(turnId: "t9", at: clock.addingTimeInterval(-600)))
+        send(.turnFinished(turnId: "t9", at: clock.addingTimeInterval(10), outcome: .completed, replyPreview: "ok", startedAt: clock))
+        await coordinator.drain()
+        XCTAssertTrue(center.added.isEmpty, "the event's startedAt wins over a recorded turnStarted")
+    }
+
+    func testObservedGapFinishPostsNothing() async {
+        send(.turnFinished(turnId: "t9", at: clock.addingTimeInterval(45), outcome: .completed, replyPreview: "ok", startedAt: clock, observedGap: true))
+        await coordinator.drain()
+        XCTAssertTrue(center.added.isEmpty, "the user never watched this turn end; no Done for it")
+    }
+
+    func testUnsequencedEventsAreNotDroppedAsStale() async {
+        send(.sessionTitleChanged(title: "A"), id: 10)
+        send(.turnFinished(turnId: "t9", at: clock.addingTimeInterval(45), outcome: .completed, replyPreview: "ok", startedAt: clock), id: 0)
+        await coordinator.drain()
+        XCTAssertEqual(center.added.count, 1, "eventId 0 is a snapshot item, not a replay")
     }
 
     func testNewerFinishReplacesTheOlderDoneByIdentifier() async {
@@ -1478,16 +1505,18 @@ final class MacNotificationCoordinator {
 
     private func process(_ event: MacNotificationEvent) async {
         let key = event.session.sessionKey
-        if let last = lastEventID[key], event.eventId <= last { return }
-        lastEventID[key] = event.eventId
+        if event.eventId > 0 {
+            if let last = lastEventID[key], event.eventId <= last { return }
+            lastEventID[key] = event.eventId
+        }
 
         switch event.kind {
         case .sessionTitleChanged(let title):
             titles[key] = title
         case .turnStarted(let turnId, let at):
             turnStarts[turnKey(event.session, turnId)] = at
-        case .turnFinished(let turnId, let at, let outcome, let preview):
-            await finish(event.session, turnId: turnId, at: at, outcome: outcome, preview: preview)
+        case .turnFinished(let turnId, let at, let outcome, let preview, let startedAt, let observedGap):
+            await finish(event.session, turnId: turnId, at: at, outcome: outcome, preview: preview, startedAt: startedAt, observedGap: observedGap)
         case .approvalRequested, .questionRequested, .decisionResolved:
             processDecision(event)   // Task 6
         }
@@ -1495,10 +1524,10 @@ final class MacNotificationCoordinator {
 
     private func turnKey(_ session: MacNotificationSession, _ turnId: String) -> String { "\(session.sessionKey)|\(turnId)" }
 
-    private func finish(_ session: MacNotificationSession, turnId: String, at finishedAt: Date, outcome: MacNotificationEvent.Outcome, preview: String?) async {
-        let started = turnStarts.removeValue(forKey: turnKey(session, turnId))
+    private func finish(_ session: MacNotificationSession, turnId: String, at finishedAt: Date, outcome: MacNotificationEvent.Outcome, preview: String?, startedAt: Date?, observedGap: Bool) async {
+        let seenStart = turnStarts.removeValue(forKey: turnKey(session, turnId))
         clearOutstanding(for: session)             // Task 6 hook: the turn is over
-        guard outcome != .interrupted, let started else { return }
+        guard outcome != .interrupted, !observedGap, let started = startedAt ?? seenStart else { return }
         guard MacNotificationPolicy.isLongRunning(startedAt: started, finishedAt: finishedAt, threshold: preferences.threshold) else { return }
         guard !toldAlreadyByDecision(session) else { return }        // Task 6 hook
         guard posted.insert(.done, turnId) else { return }
@@ -1904,8 +1933,8 @@ and replace the four stubs:
 Then fix the ordering bug this layout would create in `finish`: `clearOutstanding(for:)` must not run before `toldAlreadyByDecision`. Delete the `clearOutstanding(for: session)` call and its empty method from Task 5's `finish` (the interrupted and short-turn returns must also clear outstanding): replace the top of `finish` with
 
 ```swift
-        let started = turnStarts.removeValue(forKey: turnKey(session, turnId))
-        guard outcome != .interrupted, let started,
+        let seenStart = turnStarts.removeValue(forKey: turnKey(session, turnId))
+        guard outcome != .interrupted, !observedGap, let started = startedAt ?? seenStart,
               MacNotificationPolicy.isLongRunning(startedAt: started, finishedAt: finishedAt, threshold: preferences.threshold) else {
             outstanding[session.sessionKey] = nil
             return
@@ -1936,15 +1965,15 @@ git commit -m "macOS notifications: approvals and questions with grace, supersed
 - Test: `ConduitMacTests/MacNotificationActionTests.swift`
 
 **Interfaces:**
-- Consumes: Task 4 (`MacNotificationPayload`, `MacNotificationCategories` action ids), Task 5 (`MacNotificationCoordinator.postNotice`), `HermesClient.respondToApproval(sessionId:requestId:choice:profile:) async throws -> Bool`, `HermesClient.sendPrompt(_:text:surface:voiceTurn:) async throws -> PromptSubmissionOutcome`, `HermesClient.respondToClarification(requestId:answer:questionId:) async throws -> HermesClient.ClarifyResponseOutcome`, `AppState.isExpiredPromptError(_:)`, `AppState.client`, `AppState.activeProfile`, `AppState.activeDashboardID`, `AppState.isConnected`.
+- Consumes: Task 4 (`MacNotificationPayload`, `MacNotificationCategories` action ids), Task 5 (`MacNotificationCoordinator.postNotice`), `AgentActivityFeed.shared?.respond(to:choice:) async -> AgentActivityRespondResult` and `AgentActivityRespondFailure` (shared base Task 11), `HermesClient.sendPrompt(_:text:surface:voiceTurn:) async throws -> PromptSubmissionOutcome`, `HermesClient.respondToClarification(requestId:answer:questionId:) async throws -> HermesClient.ClarifyResponseOutcome`, `AppState.client`, `AppState.activeProfile`, `AppState.activeDashboardID`, `AppState.isConnected`.
 - Produces:
   - `enum MacNotificationActionID: Equatable { case open, approve, deny, reply }`
   - `struct MacNotificationAction: Equatable { var id: MacNotificationActionID; var userText: String?; var payload: MacNotificationPayload; var notificationIdentifier: String; static func make(actionIdentifier: String, userText: String?, userInfo: [AnyHashable: Any], notificationIdentifier: String) -> MacNotificationAction? }` (`UNNotificationDefaultActionIdentifier` maps to `.open`; the dismiss action and unknown ids return nil)
-  - `@MainActor protocol MacNotificationGateway: AnyObject { var isConnected: Bool { get }; var activeDashboardID: UUID? { get }; var activeProfile: String { get }; func respondToApproval(sessionId: String, requestId: String, choice: String, profile: String?) async throws -> Bool; func sendPrompt(sessionId: String, text: String) async throws; func answerClarify(requestId: String, answer: String) async throws -> Bool; func isExpired(_ error: Error) -> Bool }`
+  - `@MainActor protocol MacNotificationGateway: AnyObject { var isConnected: Bool { get }; var activeDashboardID: UUID? { get }; var activeProfile: String { get }; func respondToApproval(requestId: String, choice: String) async -> AgentActivityRespondResult; func sendPrompt(sessionId: String, text: String) async throws; func answerClarify(requestId: String, answer: String) async throws -> Bool }`
   - `@MainActor final class MacHermesNotificationGateway: MacNotificationGateway` (`init(appState: AppState)`; reads `appState.client` on each call, never retains the client)
   - `@MainActor final class MacNotificationActionHandler` with `init(gateway:coordinator:router:removeDelivered:)` where `router` is `MacNotificationRouting` (`func route(_ payload: MacNotificationPayload)`, defined in Task 8 as a protocol; a one-method protocol is declared here so this task compiles: `@MainActor protocol MacNotificationRouting: AnyObject { func route(_ payload: MacNotificationPayload) }`) and `func perform(_ action: MacNotificationAction) async`
 
-Rules: Approve sends exactly `"once"`, Deny exactly `"deny"`; no other choice string can be sent. A scope mismatch (payload dashboard differs from `gateway.activeDashboardID` when both are set, or payload profile differs from `gateway.activeProfile`) or a disconnected gateway posts the failure notice and sends nothing (no queued replay). An approval RPC that resolves 0 entries, or throws an expired/4009/"no pending" error, is success. A Reply with only whitespace is ignored. A question Reply is allowed only for `questionCount == 1` and sends a request-level answer (`questionId: nil`); `.expired` outcome is a failure notice. After any action the delivered notification is removed.
+Rules: Approve sends exactly `"once"`, Deny exactly `"deny"`; no other choice string can be sent. A scope mismatch (payload dashboard differs from `gateway.activeDashboardID` when both are set, or payload profile differs from `gateway.activeProfile`) or a disconnected gateway posts the failure notice and sends nothing (no queued replay). Approve and Deny call the gateway with the request id only; the production gateway forwards to `AgentActivityFeed.respond(to: "approval:<requestId>", choice:)`, which validates the choice against the request's offered choices before any RPC. `.resolved` and `.alreadyResolved` (resolved elsewhere, 4009 / "no pending") are success and remove the banner; `.failed(_)` (a refusal, a transport error, or a row the feed no longer holds) posts the failure notice and leaves the banner. A Reply with only whitespace is ignored. A question Reply is allowed only for `questionCount == 1` and sends a request-level answer (`questionId: nil`); `.expired` outcome is a failure notice. After any action the delivered notification is removed.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1959,17 +1988,16 @@ final class MacNotificationActionTests: XCTestCase {
         var isConnected = true
         var activeDashboardID: UUID?
         var activeProfile = "default"
-        var approvalResult: Result<Bool, Error> = .success(true)
+        var approvalResult: AgentActivityRespondResult = .resolved
         var promptError: Error?
         var clarifyResult: Result<Bool, Error> = .success(true)
-        var expiredErrors: [String] = ["gone"]
-        private(set) var approvals: [(session: String, request: String, choice: String, profile: String?)] = []
+        private(set) var approvals: [(request: String, choice: String)] = []
         private(set) var prompts: [(session: String, text: String)] = []
         private(set) var clarifies: [(request: String, answer: String)] = []
 
-        func respondToApproval(sessionId: String, requestId: String, choice: String, profile: String?) async throws -> Bool {
-            approvals.append((sessionId, requestId, choice, profile))
-            return try approvalResult.get()
+        func respondToApproval(requestId: String, choice: String) async -> AgentActivityRespondResult {
+            approvals.append((requestId, choice))
+            return approvalResult
         }
         func sendPrompt(sessionId: String, text: String) async throws {
             prompts.append((sessionId, text))
@@ -1979,7 +2007,6 @@ final class MacNotificationActionTests: XCTestCase {
             clarifies.append((requestId, answer))
             return try clarifyResult.get()
         }
-        func isExpired(_ error: Error) -> Bool { expiredErrors.contains("\(error)") }
     }
     final class Router: MacNotificationRouting {
         var routed: [MacNotificationPayload] = []
@@ -2034,13 +2061,11 @@ final class MacNotificationActionTests: XCTestCase {
     }
 
     // MARK: approvals
-    func testApproveSendsOnceExactlyOnceWithTheSessionAndProfile() async {
+    func testApproveSendsOnceExactlyOnceForTheRequest() async {
         await handler.perform(action(.approve, payload(.approval)))
         XCTAssertEqual(gateway.approvals.count, 1)
         XCTAssertEqual(gateway.approvals[0].choice, "once")
-        XCTAssertEqual(gateway.approvals[0].session, "run-1")
         XCTAssertEqual(gateway.approvals[0].request, "r1")
-        XCTAssertEqual(gateway.approvals[0].profile, "default")
         XCTAssertEqual(removed, ["n1"])
         XCTAssertTrue(router.routed.isEmpty, "Approve does not bring the app forward")
     }
@@ -2051,29 +2076,29 @@ final class MacNotificationActionTests: XCTestCase {
         for sent in gateway.approvals { XCTAssertFalse(["always", "session"].contains(sent.choice)) }
     }
 
-    func testApprovalResolvingNothingCountsAsSuccess() async {
-        gateway.approvalResult = .success(false)
+    func testAlreadyResolvedCountsAsSuccess() async {
+        gateway.approvalResult = .alreadyResolved
         await handler.perform(action(.approve, payload(.approval)))
         await coordinator.drain()
-        XCTAssertTrue(center.added.isEmpty, "already handled elsewhere is not a failure")
+        XCTAssertTrue(center.added.isEmpty, "answered elsewhere is not a failure")
         XCTAssertEqual(removed, ["n1"])
     }
 
-    func testExpiredApprovalErrorCountsAsSuccess() async {
-        gateway.approvalResult = .failure(Failure(description: "gone"))
-        await handler.perform(action(.approve, payload(.approval)))
-        await coordinator.drain()
-        XCTAssertTrue(center.added.isEmpty)
-    }
-
-    func testApprovalTransportFailurePostsACouldntSendNotice() async {
-        gateway.approvalResult = .failure(Failure(description: "socket closed"))
+    func testFeedFailurePostsACouldntSendNoticeAndKeepsTheBanner() async {
+        gateway.approvalResult = .failed(AgentActivityRespondFailure.sendFailed)
         await handler.perform(action(.approve, payload(.approval)))
         await coordinator.drain()
         XCTAssertEqual(center.added.count, 1)
         XCTAssertEqual(center.added[0].content.categoryIdentifier, "CONDUIT_OPEN")
         XCTAssertTrue(center.added[0].content.body.contains("Couldn't send"))
         XCTAssertTrue(removed.isEmpty, "the original banner stays: the card is still pending")
+    }
+
+    func testRowTheFeedNoLongerHoldsIsAFailureNotice() async {
+        gateway.approvalResult = .failed(AgentActivityRespondFailure.notAnswerable)
+        await handler.perform(action(.approve, payload(.approval)))
+        await coordinator.drain()
+        XCTAssertEqual(center.added.count, 1)
     }
 
     func testApprovalWithoutARequestIdIsRejectedWithoutACall() async {
@@ -2206,12 +2231,11 @@ protocol MacNotificationGateway: AnyObject {
     var isConnected: Bool { get }
     var activeDashboardID: UUID? { get }
     var activeProfile: String { get }
-    /// True when the gateway resolved a pending approval; false when nothing was pending.
-    func respondToApproval(sessionId: String, requestId: String, choice: String, profile: String?) async throws -> Bool
+    /// Forwards to `AgentActivityFeed.respond(to:choice:)` for the item `approval:<requestId>`.
+    func respondToApproval(requestId: String, choice: String) async -> AgentActivityRespondResult
     func sendPrompt(sessionId: String, text: String) async throws
     /// False when the request had already expired.
     func answerClarify(requestId: String, answer: String) async throws -> Bool
-    func isExpired(_ error: Error) -> Bool
 }
 
 @MainActor
@@ -2228,8 +2252,9 @@ final class MacHermesNotificationGateway: MacNotificationGateway {
         return client
     }
 
-    func respondToApproval(sessionId: String, requestId: String, choice: String, profile: String?) async throws -> Bool {
-        try await client().respondToApproval(sessionId: sessionId, requestId: requestId, choice: choice, profile: profile)
+    func respondToApproval(requestId: String, choice: String) async -> AgentActivityRespondResult {
+        guard let feed = AgentActivityFeed.shared else { return .failed(AgentActivityRespondFailure.notConnected) }
+        return await feed.respond(to: "approval:\(requestId)", choice: choice)
     }
 
     func sendPrompt(sessionId: String, text: String) async throws {
@@ -2241,7 +2266,6 @@ final class MacHermesNotificationGateway: MacNotificationGateway {
         return !outcome.isExpired
     }
 
-    func isExpired(_ error: Error) -> Bool { AppState.isExpiredPromptError(error) }
 }
 
 @MainActor
@@ -2285,12 +2309,10 @@ final class MacNotificationActionHandler {
         precondition(choice == "once" || choice == "deny")
         guard payload.kind == .approval, let requestId = payload.requestId else { return }
         guard canAct(on: payload) else { coordinator.postNotice(for: payload, reply: false); return }
-        do {
-            _ = try await gateway.respondToApproval(sessionId: payload.sessionId, requestId: requestId, choice: choice, profile: payload.profile)
+        switch await gateway.respondToApproval(requestId: requestId, choice: choice) {
+        case .resolved, .alreadyResolved:
             removeDelivered([action.notificationIdentifier])
-        } catch where gateway.isExpired(error) {
-            removeDelivered([action.notificationIdentifier])
-        } catch {
+        case .failed:
             coordinator.postNotice(for: payload, reply: false)
         }
     }
@@ -2321,9 +2343,9 @@ final class MacNotificationActionHandler {
 }
 ```
 
-`HermesError.invalidResponse` is the existing error `respondToApproval` throws (HermesClient.swift:2141); if a more apt case exists (`grep -n "enum HermesError" Conduit`), use it for "not connected".
+`HermesError.invalidResponse` is the existing error used for "not connected" in `client()`; if a more apt case exists (`grep -n "enum HermesError" Conduit`), use it. The `.failed(_)` code from the feed is not shown to the user (stable English codes, not copy); the notice text is this plan's own. Approvals never touch `HermesClient` from this plan: the feed owns the choice rules, the in-flight guard and the row's `answeredHere` / `answeredElsewhere` bookkeeping.
 
-Known limit, document in D15 (Task 11): a Reply goes straight to the gateway, so the sent message appears in the local transcript when the user next opens or refreshes that session; and a Reply works only while the gateway still holds that runtime session (a reply after a gateway restart fails and posts the notice).
+Known limit, document in D20 (Task 11): a Reply goes straight to the gateway, so the sent message appears in the local transcript when the user next opens or refreshes that session; and a Reply works only while the gateway still holds that runtime session (a reply after a gateway restart fails and posts the notice).
 
 - [ ] **Step 4: Run to verify pass**
 
@@ -2709,7 +2731,7 @@ Edit `ConduitMacAppDelegate.applicationDidFinishLaunching`: after `_ = MacUpdate
 
 (the registry's `appState` is the same instance the `@StateObject` in `ConduitMacApp` adopts). Edit `ConduitMacApp.rootContent`'s `.onChange(of: appLanguage.selection)` body: add `MacNotificationRuntime.shared.languageDidChange()` after `appState.appLanguageDidChange()`.
 
-Verify before editing: `grep -n "appState" Conduit/Services/AppStateRuntimeRegistry.swift` (or wherever `AppStateRuntimeRegistry` lives) confirms `shared.appState` is a stable singleton. If it is created lazily with side effects that must wait for the scene, move the `start` call to a `.task` in `rootContent` (where `appState` is in scope) and keep the delegate assignment there too; cold-launch delivery still works because the system holds the response until a delegate is set, but note it in D15.
+Verify before editing: `grep -n "appState" Conduit/Services/AppStateRuntimeRegistry.swift` (or wherever `AppStateRuntimeRegistry` lives) confirms `shared.appState` is a stable singleton. If it is created lazily with side effects that must wait for the scene, move the `start` call to a `.task` in `rootContent` (where `appState` is in scope) and keep the delegate assignment there too; cold-launch delivery still works because the system holds the response until a delegate is set, but note it in D20.
 
 - [ ] **Step 4: Run to verify pass, then build**
 
@@ -2729,57 +2751,355 @@ git commit -m "macOS notifications: router, visibility, delegate shim and runtim
 
 **Files:**
 - Create: `ConduitMac/Notifications/MacNotificationFeedAdapter.swift`
-- Modify: `ConduitMac/Notifications/MacNotificationRuntime.swift` (set `eventSource`)
+- Modify: `ConduitMac/Notifications/MacNotificationRuntime.swift` (default `eventSource`)
 - Test: `ConduitMacTests/MacNotificationFeedAdapterTests.swift`
 
 **Interfaces:**
-- Consumes: the shared base's `AgentActivityFeed` and its event type. This plan does not define them. Step 1 is to read them; the mapping table below is the contract, and only this file may reference feed types.
-- Produces: `@MainActor final class MacAgentActivityFeedSource: MacNotificationEventSource` and `static func map(_ event: <feed event>) -> MacNotificationEvent?` (pure; nil for event kinds this feature ignores).
+- Consumes (shared base Tasks 6, 10, 11; only this file may reference them): `AgentActivityFeed.shared` (optional, set by the base's bootstrap at launch), `feed.events: AnyPublisher<AgentActivityEvent, Never>`, `feed.isBaselined` / `feed.$isBaselined`, `feed.snapshot() -> [AgentActivityItem]`; `AgentActivityEvent` (`eventId: UInt64`, `at`, `payload`) with `Payload` cases `turnStarted(AgentActivityItem)`, `turnFinished(AgentActivityItem, outcome:, replyPreview:, observedGap:)`, `decisionRequested(AgentActivityItem)`, `decisionResolved(id:reason:)`, `titleChanged(sessionKey:title:)`; `AgentActivityItem` (`id`, `kind`, `state`, `sessionId`, `sessionKey`, `profile`, `dashboardID: String`, `title`, `detail`, `startedAt`, `since`, `turnSeq`, `approval`, `openQuestionCount`); `AgentActivityApprovalChoices.allowed(for:)`.
+- Produces:
+  - `struct MacFeedEventMapper { init(alternateIDs: @escaping (_ sessionKey: String) -> [String] = { _ in [] }); mutating func map(_ event: AgentActivityEvent) -> MacNotificationEvent?; mutating func map(snapshotItem: AgentActivityItem) -> MacNotificationEvent? }` (pure; remembers `item.id -> MacNotificationSession` for `decisionResolved`, which carries only an id)
+  - `@MainActor final class MacAgentActivityFeedSource: MacNotificationEventSource` with `init(feed: AgentActivityFeed? = nil, alternateIDs:)` (nil means `AgentActivityFeed.shared` at `start`; with no feed `start` does nothing, which is the XCTest case)
 
-Mapping (spec "Events consumed from AgentActivityFeed"; every feed event carries `sessionId` (runtime), `sessionKey` with `alternateIds`, `profile`, `dashboardID`, `title`, `eventId`):
+Mapping (the feed has no separate approval and question events: both are `decisionRequested`, split here by `item.kind`):
 
-| Feed event | MacNotificationEvent.Kind |
+| Feed payload | MacNotificationEvent.Kind |
 |---|---|
-| `turnStarted(turnId, at)` | `.turnStarted(turnId:at:)` |
-| `turnFinished(turnId, at, outcome, replyPreview)` | `.turnFinished(...)`, outcome `completed`/`failed`/`interrupted` one to one |
-| `approvalRequested(requestId, description, command, choices, allowPermanent)` | `.approvalRequested(...)` one to one |
-| `questionRequested(requestId, firstQuestionText, openQuestionCount)` | `.questionRequested(...)` |
-| `decisionResolved(requestId, reason)` | `.decisionResolved(requestId:reason:)`, reason `answered`/`expired`/`withdrawn`/`sessionClosed` |
-| `sessionTitleChanged(title)` | `.sessionTitleChanged(title:)` |
+| `turnStarted(item)` | `.turnStarted(turnId:at: item.startedAt)` |
+| `turnFinished(item, outcome, replyPreview, observedGap)` | `.turnFinished(turnId:at: item.since, outcome:, replyPreview:, startedAt: item.startedAt, observedGap:)`; outcome `completed` -> `.completed`, `failed(_)` -> `.failed` (message dropped), `interrupted` -> `.interrupted` |
+| `decisionRequested(item)` with `item.kind == .approval` | `.approvalRequested(requestId:, description: item.approval?.description ?? item.detail ?? "", command: item.approval?.command ?? "", choices: item.approval.map(AgentActivityApprovalChoices.allowed(for:)) ?? [], allowPermanent: item.approval?.allowPermanent ?? false)`. A no-content fallback row (`approval:waiting:<runtimeId>`, `item.approval == nil`) therefore offers no Approve or Deny and the notification is Open only |
+| `decisionRequested(item)` with `item.kind == .clarify` | `.questionRequested(requestId:, firstQuestionText: item.detail ?? "", openQuestionCount: item.openQuestionCount)` (0 for the no-content `clarify:waiting:` fallback, so no Reply) |
+| `decisionRequested(item)` with `.inputPrompt`, `.kanban`, `.cron` | `nil`: not notified in v1 (input prompts and the reserved kinds are follow-up) |
+| `decisionResolved(id, reason)` | `.decisionResolved(requestId:, reason:)`; `answeredHere` and `answeredElsewhere` -> `.answered`; `expired`, `withdrawn`, `sessionClosed` one to one |
+| `titleChanged(sessionKey, title)` | `.sessionTitleChanged(title:)` on a minimal session built from the key |
 
-- [ ] **Step 1: Read the shared base**
+Derived fields:
+- `requestId`: the item id without its kind prefix (`approval:`, `clarify:`, `inputPrompt:`), so `approval:q1` -> `q1`, `clarify:waiting:rt` -> `waiting:rt`. Task 7 rebuilds the approval item id as `approval:<requestId>` for `respond(to:choice:)`.
+- `turnId`: `"\(sessionKey):\(turnSeq)"`. The feed's own dedupe key is `(sessionKey, turnSeq)` and the coordinator's posted-set dedupes on `turnId`, so a second `turnFinished` for a reopened turn posts nothing.
+- Session: `sessionId = item.sessionId ?? sessionKey ?? item.id`, `sessionKey = item.sessionKey ?? sessionId`, `alternateIds = alternateIDs(sessionKey)` (the runtime wires a lookup over `appState.sessions`: `SessionSummary.id`, `storedSessionId`, `alternateIds`; the default is empty), `profile = item.profile`, `dashboardID = UUID(uuidString: item.dashboardID)` (nil for `"none"`), `title = item.title`.
+- `eventId`: `Int(clamping: event.eventId)`; a snapshot item maps with `eventId: 0` (unsequenced).
 
-Run: `grep -rn "AgentActivityFeed" ConduitMac Conduit --include='*.swift' -l` and read the type, its event enum, `subscribe` shape (snapshot on subscribe, main-actor delivery, at-least-once) and the test helpers the shared-base plan added for injecting synthetic events. If the type is absent, STOP: the shared base is not merged. If a field in the table above is named differently, adapt the mapping inside this file only; if a field is missing (for example `choices` or `replyPreview`), stop and report it instead of inventing a value.
-
-- [ ] **Step 2: Write the failing tests**
-
-Using the shared base's own test injection (do not build a second fake feed), write `MacNotificationFeedAdapterTests` with one test per table row asserting the mapped `MacNotificationEvent` (session fields, `eventId`, payload fields), plus:
+- [ ] **Step 1: Write the failing mapper tests**
 
 ```swift
-    func testSnapshotEventsAreForwardedLikeLiveOnes()      // subscribe after a pending approval exists: one approvalRequested arrives
-    func testStopUnsubscribes()                             // after stop(), further feed events reach no handler
-    func testTitleOfTheSessionTravelsOnEveryMappedEvent()
-    func testUnknownFeedEventsMapToNil()
+import XCTest
+@testable import ConduitMac
+
+final class MacFeedEventMapperTests: XCTestCase {
+    private typealias S = AgentActivityTestSupport
+    private var mapper = MacFeedEventMapper()
+
+    private func event(_ id: UInt64, _ payload: AgentActivityEvent.Payload) -> AgentActivityEvent {
+        AgentActivityEvent(eventId: id, at: S.origin, payload: payload)
+    }
+
+    private func turnItem(key: String? = "key-1", seq: Int = 2, finishedAfter: TimeInterval? = nil) -> AgentActivityItem {
+        var item = S.item("turn:rt", sessionId: "rt")
+        item.sessionKey = key
+        item.turnSeq = seq
+        item.title = "Billing"
+        if let finishedAfter { item.since = S.origin.addingTimeInterval(finishedAfter) }
+        return item
+    }
+
+    private func approvalItem(smartDenied: Bool = false, withContent: Bool = true) -> AgentActivityItem {
+        var item = S.item("approval:q1", kind: .approval, state: .needsUser, sessionId: "rt")
+        item.sessionKey = "key-1"
+        if withContent { item.approval = S.approval(session: "rt", request: "q1", smartDenied: smartDenied) }
+        return item
+    }
+
+    func testTurnStartedUsesKeyAndSequenceAsTheTurnId() throws {
+        let mapped = try XCTUnwrap(mapper.map(event(7, .turnStarted(turnItem()))))
+        XCTAssertEqual(mapped.eventId, 7)
+        XCTAssertEqual(mapped.session.sessionId, "rt")
+        XCTAssertEqual(mapped.session.sessionKey, "key-1")
+        XCTAssertEqual(mapped.session.title, "Billing")
+        XCTAssertEqual(mapped.kind, .turnStarted(turnId: "key-1:2", at: S.origin))
+    }
+
+    func testTurnFinishedCarriesFinishStartOutcomeAndGap() throws {
+        let item = turnItem(finishedAfter: 65)
+        let mapped = try XCTUnwrap(mapper.map(event(8, .turnFinished(item, outcome: .completed, replyPreview: "All done", observedGap: true))))
+        XCTAssertEqual(mapped.kind, .turnFinished(
+            turnId: "key-1:2", at: S.origin.addingTimeInterval(65), outcome: .completed, replyPreview: "All done",
+            startedAt: S.origin, observedGap: true))
+    }
+
+    func testOutcomesMapOneToOne() throws {
+        let item = turnItem(finishedAfter: 5)
+        func outcome(_ o: AgentActivityItem.Outcome) throws -> MacNotificationEvent.Outcome {
+            let mapped = try XCTUnwrap(mapper.map(event(1, .turnFinished(item, outcome: o, replyPreview: nil, observedGap: false))))
+            guard case .turnFinished(_, _, let out, _, _, _) = mapped.kind else { throw XCTSkip("not a turnFinished") }
+            return out
+        }
+        XCTAssertEqual(try outcome(.completed), .completed)
+        XCTAssertEqual(try outcome(.failed("boom")), .failed)
+        XCTAssertEqual(try outcome(.interrupted), .interrupted)
+    }
+
+    func testApprovalMapsOnlyTheChoicesTheRequestOffers() throws {
+        let full = try XCTUnwrap(mapper.map(event(1, .decisionRequested(approvalItem()))))
+        guard case .approvalRequested(let id, _, let command, let choices, _) = full.kind else { return XCTFail("expected approvalRequested") }
+        XCTAssertEqual(id, "q1")
+        XCTAssertEqual(command, "rm -rf build")
+        XCTAssertEqual(choices, ["once", "session", "always", "deny"])
+        let smart = try XCTUnwrap(mapper.map(event(2, .decisionRequested(approvalItem(smartDenied: true)))))
+        guard case .approvalRequested(_, _, _, let smartChoices, _) = smart.kind else { return XCTFail("expected approvalRequested") }
+        XCTAssertEqual(smartChoices, ["once", "deny"])
+    }
+
+    func testApprovalWithoutContentOffersNoChoices() throws {
+        let mapped = try XCTUnwrap(mapper.map(event(1, .decisionRequested(approvalItem(withContent: false)))))
+        guard case .approvalRequested(_, _, _, let choices, _) = mapped.kind else { return XCTFail("expected approvalRequested") }
+        XCTAssertEqual(choices, [], "Open only")
+    }
+
+    func testClarifyMapsToAQuestionWithItsOpenCount() throws {
+        var item = S.item("clarify:c1", kind: .clarify, state: .needsUser, sessionId: "rt")
+        item.detail = "Which branch?"
+        item.openQuestionCount = 1
+        let mapped = try XCTUnwrap(mapper.map(event(1, .decisionRequested(item))))
+        XCTAssertEqual(mapped.kind, .questionRequested(requestId: "c1", firstQuestionText: "Which branch?", openQuestionCount: 1))
+    }
+
+    func testInputPromptsAndReservedKindsAreIgnored() {
+        for kind in [AgentActivityItem.Kind.inputPrompt, .kanban, .cron] {
+            XCTAssertNil(mapper.map(event(1, .decisionRequested(S.item("x:1", kind: kind, state: .needsUser)))))
+        }
+    }
+
+    func testResolvedUsesTheRememberedSessionAndStripsThePrefix() throws {
+        _ = mapper.map(event(1, .decisionRequested(approvalItem())))
+        let here = try XCTUnwrap(mapper.map(event(2, .decisionResolved(id: "approval:q1", reason: .answeredHere))))
+        XCTAssertEqual(here.session.sessionKey, "key-1")
+        XCTAssertEqual(here.kind, .decisionResolved(requestId: "q1", reason: .answered))
+        let elsewhere = try XCTUnwrap(mapper.map(event(3, .decisionResolved(id: "approval:q1", reason: .answeredElsewhere))))
+        XCTAssertEqual(elsewhere.kind, .decisionResolved(requestId: "q1", reason: .answered))
+        XCTAssertEqual(try XCTUnwrap(mapper.map(event(4, .decisionResolved(id: "approval:q1", reason: .expired)))).kind,
+                       .decisionResolved(requestId: "q1", reason: .expired))
+        XCTAssertEqual(try XCTUnwrap(mapper.map(event(5, .decisionResolved(id: "approval:q1", reason: .sessionClosed)))).kind,
+                       .decisionResolved(requestId: "q1", reason: .sessionClosed))
+    }
+
+    func testResolvedForAnUnseenIdStillClearsByRequestId() throws {
+        let mapped = try XCTUnwrap(mapper.map(event(1, .decisionResolved(id: "clarify:c9", reason: .withdrawn))))
+        XCTAssertEqual(mapped.kind, .decisionResolved(requestId: "c9", reason: .withdrawn))
+    }
+
+    func testTitleChangedBuildsAMinimalSession() throws {
+        let mapped = try XCTUnwrap(mapper.map(event(1, .titleChanged(sessionKey: "key-1", title: "Renamed"))))
+        XCTAssertEqual(mapped.session.sessionKey, "key-1")
+        XCTAssertEqual(mapped.kind, .sessionTitleChanged(title: "Renamed"))
+    }
+
+    func testSnapshotItemsAreUnsequencedAndOnlyPendingDecisions() throws {
+        let pending = try XCTUnwrap(mapper.map(snapshotItem: approvalItem()))
+        XCTAssertEqual(pending.eventId, 0)
+        XCTAssertNil(mapper.map(snapshotItem: turnItem()), "a working turn is not replayed; its finish carries its own start")
+    }
+
+    func testDashboardIDParsesAUUIDElseNil() throws {
+        var item = turnItem()
+        item.dashboardID = "none"
+        XCTAssertNil(try XCTUnwrap(mapper.map(event(1, .turnStarted(item)))).session.dashboardID)
+        let uuid = UUID()
+        item.dashboardID = uuid.uuidString
+        XCTAssertEqual(try XCTUnwrap(mapper.map(event(2, .turnStarted(item)))).session.dashboardID, uuid)
+    }
+
+    func testAlternateIDsComeFromTheInjectedLookup() throws {
+        mapper = MacFeedEventMapper(alternateIDs: { $0 == "key-1" ? ["stored-1"] : [] })
+        let mapped = try XCTUnwrap(mapper.map(event(1, .turnStarted(turnItem()))))
+        XCTAssertEqual(mapped.session.allIDs, ["rt", "key-1", "stored-1"])
+    }
+}
 ```
 
-Write each body against the feed's real injection API found in Step 1 (the assertions are the mapping table; there is nothing to guess about expected values).
+Then the source tests in the same file, on a real `AgentActivityFeed` built like the base's `AgentActivityFeedTests` (`FakeActivitySources`, a `MacStreamEventHub()` instance, `ManualSleeper`, `startOffline` helper, `Support.approval(...)`; these test doubles ship with the shared base, do not build a second fake feed):
 
-- [ ] **Step 3: Run to verify failure**
+```swift
+@MainActor
+final class MacAgentActivityFeedSourceTests: XCTestCase {
+    func testLiveFeedEventsReachTheHandlerInOrder()             // hub .messageStart, then .messageComplete: turnStarted then turnFinished with startedAt set
+    func testSnapshotDecisionsAreDeliveredOnceAfterBaseline()   // a pending approval before start: one approvalRequested with eventId 0 after isBaselined; none before
+    func testSnapshotAndLiveCopyOfTheSameRequestPostOnce()      // same requestId delivered twice: the coordinator posted-set absorbs it (assert at the mapper-to-handler boundary: both arrive, ids 0 and N)
+    func testStartIsIdempotentAndStopUnsubscribes()             // start twice: one handler call per event; stop(): later feed events reach nothing
+    func testNoFeedMeansStartDoesNothing()                      // AgentActivityFeed.shared == nil and feed: nil
+}
+```
 
-Run: `xcodegen generate && xcodebuild test -scheme ConduitMac -destination 'platform=macOS' -derivedDataPath build/dd CODE_SIGNING_ALLOWED=NO -only-testing:ConduitMacTests/MacNotificationFeedAdapterTests`
-Expected: build failure (adapter missing).
+Write the bodies against the base's real helpers (`feed.start()`, `hub.publish(...)`, `waitForCondition`); each assertion is the mapping table above.
 
-- [ ] **Step 4: Implement**
+- [ ] **Step 2: Run to verify failure**
 
-`MacAgentActivityFeedSource.start(_:)` subscribes to the feed once (idempotent), keeps the subscription token, maps each event with `map`, and calls the handler on the main actor in feed order. `stop()` cancels the token. In `MacNotificationRuntime.start(appState:)`, before `eventSource?.start`, set `eventSource = eventSource ?? MacAgentActivityFeedSource(feed: <the shared feed instance>)` (the exact accessor is whatever Step 1 found). The snapshot-on-subscribe means a Mac launched mid-turn posts without having seen the start; `turnStarted.at` for a snapshot turn is the observation time, so the threshold undercounts (accepted, spec).
+Run: `xcodegen generate && xcodebuild test -scheme ConduitMac -destination 'platform=macOS' -derivedDataPath build/dd CODE_SIGNING_ALLOWED=NO -only-testing:ConduitMacTests/MacFeedEventMapperTests -only-testing:ConduitMacTests/MacAgentActivityFeedSourceTests`
+Expected: build failure (`cannot find 'MacFeedEventMapper' in scope`).
 
-- [ ] **Step 5: Run to verify pass, then commit**
+- [ ] **Step 3: Implement**
 
-Run: the Step 3 command. Expected: PASS.
+`ConduitMac/Notifications/MacNotificationFeedAdapter.swift`:
+
+```swift
+import Combine
+import Foundation
+
+struct MacFeedEventMapper {
+    private let alternateIDs: (String) -> [String]
+    private var sessions: [String: MacNotificationSession] = [:]
+
+    init(alternateIDs: @escaping (String) -> [String] = { _ in [] }) {
+        self.alternateIDs = alternateIDs
+    }
+
+    mutating func map(_ event: AgentActivityEvent) -> MacNotificationEvent? {
+        let id = Int(clamping: event.eventId)
+        switch event.payload {
+        case .turnStarted(let item):
+            let session = session(for: item)
+            return MacNotificationEvent(eventId: id, session: session, kind: .turnStarted(turnId: turnId(item), at: item.startedAt))
+        case .turnFinished(let item, let outcome, let preview, let observedGap):
+            let session = session(for: item)
+            let mapped: MacNotificationEvent.Outcome
+            switch outcome {
+            case .completed: mapped = .completed
+            case .failed: mapped = .failed
+            case .interrupted: mapped = .interrupted
+            }
+            return MacNotificationEvent(eventId: id, session: session, kind: .turnFinished(
+                turnId: turnId(item), at: item.since, outcome: mapped, replyPreview: preview,
+                startedAt: item.startedAt, observedGap: observedGap))
+        case .decisionRequested(let item):
+            return decision(item, eventId: id)
+        case .decisionResolved(let itemID, let reason):
+            let session = sessions.removeValue(forKey: itemID)
+                ?? MacNotificationSession(sessionId: "", sessionKey: "", alternateIds: [], profile: "", dashboardID: nil, title: "")
+            let mapped: MacNotificationEvent.Resolution
+            switch reason {
+            case .answeredHere, .answeredElsewhere: mapped = .answered
+            case .expired: mapped = .expired
+            case .withdrawn: mapped = .withdrawn
+            case .sessionClosed: mapped = .sessionClosed
+            }
+            return MacNotificationEvent(eventId: id, session: session, kind: .decisionResolved(requestId: Self.requestID(itemID), reason: mapped))
+        case .titleChanged(let key, let title):
+            let session = MacNotificationSession(sessionId: key, sessionKey: key, alternateIds: alternateIDs(key), profile: "", dashboardID: nil, title: title)
+            return MacNotificationEvent(eventId: id, session: session, kind: .sessionTitleChanged(title: title))
+        }
+    }
+
+    /// A pending decision read from `AgentActivityFeed.snapshot()`: unsequenced (`eventId` 0).
+    mutating func map(snapshotItem item: AgentActivityItem) -> MacNotificationEvent? {
+        guard item.state == .needsUser else { return nil }
+        return decision(item, eventId: 0)
+    }
+
+    private mutating func decision(_ item: AgentActivityItem, eventId: Int) -> MacNotificationEvent? {
+        let session = session(for: item)
+        let requestId = Self.requestID(item.id)
+        switch item.kind {
+        case .approval:
+            sessions[item.id] = session
+            let approval = item.approval
+            return MacNotificationEvent(eventId: eventId, session: session, kind: .approvalRequested(
+                requestId: requestId,
+                description: approval?.description ?? item.detail ?? "",
+                command: approval?.command ?? "",
+                choices: approval.map(AgentActivityApprovalChoices.allowed(for:)) ?? [],
+                allowPermanent: approval?.allowPermanent ?? false))
+        case .clarify:
+            sessions[item.id] = session
+            return MacNotificationEvent(eventId: eventId, session: session, kind: .questionRequested(
+                requestId: requestId, firstQuestionText: item.detail ?? "", openQuestionCount: item.openQuestionCount))
+        case .turn, .inputPrompt, .kanban, .cron:
+            return nil
+        }
+    }
+
+    private func turnId(_ item: AgentActivityItem) -> String {
+        "\(item.sessionKey ?? item.sessionId ?? item.id):\(item.turnSeq)"
+    }
+
+    private func session(for item: AgentActivityItem) -> MacNotificationSession {
+        let sessionId = item.sessionId ?? item.sessionKey ?? item.id
+        let key = item.sessionKey ?? sessionId
+        return MacNotificationSession(
+            sessionId: sessionId, sessionKey: key, alternateIds: alternateIDs(key), profile: item.profile,
+            dashboardID: UUID(uuidString: item.dashboardID), title: item.title)
+    }
+
+    /// `approval:q1` -> `q1`; `clarify:waiting:rt` -> `waiting:rt`.
+    static func requestID(_ itemID: String) -> String {
+        for prefix in ["approval:", "clarify:", "inputPrompt:"] where itemID.hasPrefix(prefix) {
+            return String(itemID.dropFirst(prefix.count))
+        }
+        return itemID
+    }
+}
+
+@MainActor
+final class MacAgentActivityFeedSource: MacNotificationEventSource {
+    private let explicitFeed: AgentActivityFeed?
+    private var mapper: MacFeedEventMapper
+    private var cancellables = Set<AnyCancellable>()
+    private var started = false
+
+    init(feed: AgentActivityFeed? = nil, alternateIDs: @escaping (String) -> [String] = { _ in [] }) {
+        self.explicitFeed = feed
+        self.mapper = MacFeedEventMapper(alternateIDs: alternateIDs)
+    }
+
+    func start(_ handler: @escaping @MainActor (MacNotificationEvent) -> Void) {
+        guard !started, let feed = explicitFeed ?? AgentActivityFeed.shared else { return }
+        started = true
+        feed.events
+            .sink { [weak self] event in
+                guard let self, let mapped = mapper.map(event) else { return }
+                handler(mapped)
+            }
+            .store(in: &cancellables)
+        // What was already pending (an approval raised before this Mac looked)
+        // comes from the snapshot, once the feed's first poll has finished.
+        feed.$isBaselined
+            .filter { $0 }
+            .first()
+            .sink { [weak self, weak feed] _ in
+                guard let self, let feed else { return }
+                for item in feed.snapshot() {
+                    if let mapped = mapper.map(snapshotItem: item) { handler(mapped) }
+                }
+            }
+            .store(in: &cancellables)
+    }
+
+    func stop() {
+        cancellables.removeAll()
+        started = false
+    }
+}
+```
+
+If the compiler rejects a detail (for example `AgentActivityItem.Outcome` case labels, or `@Published` publishers delivering `isBaselined` before the `sink` closure's captured state is ready), fix the detail without changing the tested mapping.
+
+In `MacNotificationRuntime.start(appState:)`, before `eventSource?.start`, set:
+
+```swift
+        eventSource = eventSource ?? MacAgentActivityFeedSource(alternateIDs: { [weak appState] key in
+            guard let appState else { return [] }
+            return appState.sessions
+                .filter { $0.id == key || $0.storedSessionId == key || $0.alternateIds.contains(key) }
+                .flatMap { [$0.id] + ($0.storedSessionId.map { [$0] } ?? []) + $0.alternateIds }
+        })
+```
+
+Under XCTest `AgentActivityFeed.shared` is nil (the base's bootstrap does not run), so the source stays inert. A turn already running when Conduit launched is not replayed; its eventual `turnFinished` carries the feed's own `startedAt`, which for a poll-only session is when the feed first saw it, so such a duration can undercount (accepted, spec).
+
+- [ ] **Step 4: Run to verify pass, then commit**
+
+Run: the Step 2 command. Expected: PASS.
 
 ```bash
 git add ConduitMac/Notifications/MacNotificationFeedAdapter.swift ConduitMac/Notifications/MacNotificationRuntime.swift ConduitMacTests/MacNotificationFeedAdapterTests.swift
-git commit -m "macOS notifications: AgentActivityFeed adapter"
+git commit -m "macOS notifications: AgentActivityFeed adapter (D20)"
 ```
 
 ---
@@ -2796,7 +3116,7 @@ git commit -m "macOS notifications: AgentActivityFeed adapter"
 - Consumes: `MacNotificationPreferences` (Task 3), `UNMacNotificationCenterClient` (Task 4), `ConduitSettingsSection(title:symbol:tint:content:)`, `SettingsMetricRow(label:value:valueColor:)` (see how `NotificationsSettingsDetail` uses them at AuxiliaryViews.swift:2124).
 - Produces: `enum MacNotificationAuthorizationState: Equatable { case notDetermined, denied, allowed; init(_ status: UNAuthorizationStatus); var statusText: String; var needsSystemSettings: Bool }` and `struct MacNotificationSettingsView: View` (no required environment; uses `MacNotificationPreferences.shared` by default through `@ObservedObject var preferences`, injectable).
 
-View content: section "On this Mac" with the master Toggle, three kind Toggles (Done, Approvals, Questions), a threshold `Picker` (10 s, 30 s, 60 s, 2 min displayed with `Duration`/`DateComponentsFormatter` using `AppLocalization.formattingLocale`), a sound Toggle, and a status row from `notificationSettings().authorizationStatus` (refreshed in `.task` and on `NSApplication.didBecomeActiveNotification`). When denied, a button opens System Settings > Notifications; the URL is `x-apple.systempreferences:com.apple.Notifications-Settings.extension`; verify it opens the pane on the build machine's macOS and fall back to `x-apple.systempreferences:com.apple.preference.notifications` if not, recording which one worked in D15. Kind toggles and the threshold picker are `.disabled(!preferences.isEnabled)`.
+View content: section "On this Mac" with the master Toggle, three kind Toggles (Done, Approvals, Questions), a threshold `Picker` (10 s, 30 s, 60 s, 2 min displayed with `Duration`/`DateComponentsFormatter` using `AppLocalization.formattingLocale`), a sound Toggle, and a status row from `notificationSettings().authorizationStatus` (refreshed in `.task` and on `NSApplication.didBecomeActiveNotification`). When denied, a button opens System Settings > Notifications; the URL is `x-apple.systempreferences:com.apple.Notifications-Settings.extension`; verify it opens the pane on the build machine's macOS and fall back to `x-apple.systempreferences:com.apple.preference.notifications` if not, recording which one worked in D20. Kind toggles and the threshold picker are `.disabled(!preferences.isEnabled)`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2952,7 +3272,7 @@ The authorization refresh in the test host reads the real `UNUserNotificationCen
 Gate in `Conduit/Views/AuxiliaryViews.swift`, as the first child inside `SettingsDetailContainer {` in `NotificationsSettingsDetail.body`:
 
 ```swift
-            #if os(macOS) // MAC: local notifications section (D15)
+            #if os(macOS) // MAC: local notifications section (D20)
             MacNotificationSettingsView()
             #endif // MAC:
 ```
@@ -2980,7 +3300,7 @@ git commit -m "macOS notifications: settings section and gated insert"
 ### Task 11: Localization, docs, smoke, full verification
 
 **Files:**
-- Modify: `docs/macos/DECISIONS.md` (D15), `docs/macos/PORTING_LEDGER.md` (two skipped rows), `docs/macos/SMOKE_CHECKLIST.md`
+- Modify: `docs/macos/DECISIONS.md` (D20), `docs/macos/PORTING_LEDGER.md` (two skipped rows), `docs/macos/SMOKE_CHECKLIST.md`
 - Modify (if the checker scans ConduitMac): `Conduit/Localizable.xcstrings` via `scripts/l10n.py` worksheets only
 
 - [ ] **Step 1: Localization**
@@ -2988,23 +3308,23 @@ git commit -m "macOS notifications: settings section and gated insert"
 Collect every new key: `grep -rhn 'AppLocalization.string(' ConduitMac/Notifications ConduitMac/Views/MacNotificationSettingsView.swift`. The keys are: Open, Approve, Deny, Reply, Send, Message, Conduit, Finished, Stopped with an error, `%lld conversations finished` (plural, count only), Couldn't send your reply. Open Conduit., Couldn't send your answer. Open Conduit., On this Mac, Notify me when Conduit needs me, A long reply finishes, Hermes needs an approval, Hermes asks a question, Count a reply as long after, Play a sound, Status, Open System Settings, Allowed, Blocked in System Settings, Conduit will ask the first time it needs to.
 
 Run `python3 scripts/check-l10n-coverage.py --repo-root .` and inspect whether it scans `ConduitMac` (`grep -n "ConduitMac" scripts/check-l10n-coverage.py`; today existing Mac-only strings such as "Close Tab" are not in `Conduit/Localizable.xcstrings`). Two cases:
-- Not scanned and the Mac strings are not catalogued (current behaviour): keep English keys via `AppLocalization.string`, do not edit the catalog, and record in D15 "Mac notification strings are English-only like the other ConduitMac strings; catalog entries pending". Shared keys that already exist in the catalog (Open, Reply, Send, Status, Message, Deny, Approve, Conduit, Allowed) resolve there automatically.
+- Not scanned and the Mac strings are not catalogued (current behaviour): keep English keys via `AppLocalization.string`, do not edit the catalog, and record in D20 "Mac notification strings are English-only like the other ConduitMac strings; catalog entries pending". Shared keys that already exist in the catalog (Open, Reply, Send, Status, Message, Deny, Approve, Conduit, Allowed) resolve there automatically.
 - Scanned or the checker fails on the new keys: write a worksheet per shipped language (`python3 scripts/l10n.py export <lang> -o <scratch>/<lang>.json`), fill each new entry (plural forms for `%lld conversations finished` per the language's CLDR categories, placeholders in order, no `\uXXXX` escapes), `python3 scripts/l10n.py import --create` them together, and re-run the checker to green. Delete the worksheets afterwards.
 
 Stage `Conduit/Localizable.xcstrings` explicitly only in the second case.
 
-- [ ] **Step 2: DECISIONS D15**
+- [ ] **Step 2: DECISIONS D20**
 
-Append to `docs/macos/DECISIONS.md` (check `grep -n '^## D15' docs/macos/DECISIONS.md` first; if another plan already took D15, use the next free number and fix the references in this plan's ledger rows):
+Append to `docs/macos/DECISIONS.md` (this plan owns **D20**; Quick Ask is D15, notch status D16, Ask About Window D17, command palette D18, system integration D19, and the shared base carries no number. Write D20 even if D16 to D19 are not merged yet; check `grep -n '^## D20' docs/macos/DECISIONS.md` finds nothing first):
 
 ```
-## D15: Mac done and approval notifications (2026-10-15)
+## D20: Mac done and approval notifications (2026-10-15)
 Spec: docs/superpowers/specs/2026-10-15-mac-notifications-design.md. Plan: docs/superpowers/plans/2026-10-15-mac-notifications.md. Local notifications only (no relay/APNs; PushNotificationService is not used). Events come from AgentActivityFeed (shared base) through MacAgentActivityFeedSource into a feed-neutral MacNotificationEvent; policy (MacNotificationPolicy), coordinator (MacNotificationCoordinator), content, categories, actions, router, delegate and runtime live in ConduitMac/Notifications.
 Defaults: master on, 30 s threshold (10/30/60/120), permission requested on the first eligible event while Conduit is inactive, never at launch. Interruption level stays active (Focus is respected).
-Approvals: choices are once/session/always/deny, built per request (smart-denied: once+deny). Approve sends once, Deny sends deny; always and session are never offered; Approve is dropped if once is absent. Reply and Approve/Deny call HermesClient with explicit session ids through MacHermesNotificationGateway, so the active session is never switched and no AppState or HermesClient edit exists. 4009/"no pending"/resolved 0 is success; any other failure posts "Couldn't send" (Open only). A disconnected gateway or a different dashboard/profile sends nothing and posts the notice; nothing is queued.
+Approvals: choices are once/session/always/deny, built per request (smart-denied: once+deny). Approve sends once, Deny sends deny; always and session are never offered; Approve is dropped if once is absent. Approve and Deny call AgentActivityFeed.respond(to:choice:) (shared base) through MacHermesNotificationGateway: resolved and alreadyResolved (4009 / "no pending") are success, failed(_) posts "Couldn't send" (Open only). Reply calls HermesClient with an explicit session id, so the active session is never switched and no AppState or HermesClient edit exists. A disconnected gateway or a different dashboard/profile sends nothing and posts the notice; nothing is queued.
 Clicks: activate and raise the main window, open the durable session key; a notification from another dashboard or profile only activates; a cold-launch click is held until connected.
 Categories: setNotificationCategories replaces the whole set and HermesCallNotifications.registerCategory also calls it (skipped on Mac). MacNotificationCategories.register reads the current set, drops only CONDUIT_* and writes the union, at first post and on app-language change. If HermesCallNotifications.registerCategory is ever enabled on Mac it must use the same merge.
-Limits: events arrive push-based only for sessions this dashboard socket has attached to; sessions run by another process (a terminal Hermes, another client's session this socket never attached) never notify. A snapshot turn's start time is the observation time, so its duration undercounts. Reply goes straight to the gateway: the sent message shows in the local transcript when the session is next opened, and a Reply after a gateway restart fails with the notice. A question Reply sends a request-level answer (no question id) and only for one open question; a multi-select question may reject a free-text answer, which posts the notice.
+Limits: events arrive push-based only for sessions this dashboard socket has attached to; sessions run by another process (a terminal Hermes, another client's session this socket never attached) never notify. A poll-only session's start time is when the feed first saw it, so its duration undercounts; a turn that ended while the socket was down (observedGap) never notifies; input prompts are not notified in v1. Reply goes straight to the gateway: the sent message shows in the local transcript when the session is next opened, and a Reply after a gateway restart fails with the notice. A question Reply sends a request-level answer (no question id) and only for one open question; a multi-select question may reject a free-text answer, which posts the notice.
 Held decisions: an approval or question that fires while the user is looking at the session is held and posted when attention leaves (app deactivates, window unkeyed or covered, other pane or session).
 Settings: ConduitMac/Views/MacNotificationSettingsView, inserted first in NotificationsSettingsDetail by one gated edit (ledger row). System Settings URL used: <fill in after the Task 10 check>.
 Strings: <English-only like other ConduitMac strings | catalogued, see Task 11 outcome>.
@@ -3014,12 +3334,12 @@ Fill the two bracketed items with what Tasks 10 and 11 found.
 
 - [ ] **Step 3: Ledger and smoke checklist**
 
-In `docs/macos/PORTING_LEDGER.md`, rows 40 and 42 (the two "skipped" notification rows): change the Mac-side column from `none (Plan 2)` / `none` to `local notifications: ConduitMac/Notifications (D15); relay push still skipped` for the `notificationRouteKey` row and `ConduitMac/Notifications/MacNotificationCategories.swift (merged registration, re-run on language change)` for the `registerCategory` row. Leave the `PushNotificationService.shared.refresh()` row untouched.
+In `docs/macos/PORTING_LEDGER.md`, rows 40 and 42 (the two "skipped" notification rows): change the Mac-side column from `none (Plan 2)` / `none` to `local notifications: ConduitMac/Notifications (D20); relay push still skipped` for the `notificationRouteKey` row and `ConduitMac/Notifications/MacNotificationCategories.swift (merged registration, re-run on language change)` for the `registerCategory` row. Leave the `PushNotificationService.shared.refresh()` row untouched.
 
-Append a "Notifications (D15)" section to `docs/macos/SMOKE_CHECKLIST.md`:
+Append a "Notifications (D20)" section to `docs/macos/SMOKE_CHECKLIST.md`:
 
 ```
-## Notifications (D15)
+## Notifications (D20)
 
 - [ ] Fresh defaults: no permission prompt at launch. Background the app, run a 40 s turn: the prompt appears once, then a Done banner with Reply and Open
 - [ ] Type a reply inline in the banner (banner and alert styles): it is sent to that session; open the session and the message is there
@@ -3034,6 +3354,8 @@ Append a "Notifications (D15)" section to `docs/macos/SMOKE_CHECKLIST.md`:
 - [ ] Interrupt a long turn with Stop: no notification. Five quick long turns across sessions: three banners and one "5 conversations finished"
 - [ ] Settings > Notifications > On this Mac: toggles and threshold apply immediately; with notifications blocked in System Settings the status says so and the button opens the pane
 - [ ] Limit check: a session started from a terminal Hermes (not attached to this socket) does not notify
+- [ ] Turn off Wi-Fi mid-turn, let the turn finish on the gateway, turn Wi-Fi on: no Done banner for that turn (the feed marks it observedGap)
+- [ ] Quit Conduit while an approval is pending, relaunch with another app frontmost: one Approve/Deny banner arrives (read from the feed snapshot)
 ```
 
 - [ ] **Step 4: Run everything**
@@ -3047,7 +3369,7 @@ Run the smoke list above on a Mac that is not the user's running instance, or as
 
 ```bash
 git add docs/macos/DECISIONS.md docs/macos/PORTING_LEDGER.md docs/macos/SMOKE_CHECKLIST.md
-git commit -m "macOS notifications: D15, ledger rows, smoke checklist"
+git commit -m "macOS notifications: D20, ledger rows, smoke checklist"
 ```
 
 (Add `Conduit/Localizable.xcstrings` to the `git add` only in the catalogued case.)
