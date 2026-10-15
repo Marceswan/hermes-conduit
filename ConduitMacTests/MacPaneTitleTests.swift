@@ -93,7 +93,7 @@ final class MacPaneTitleTests: XCTestCase {
     /// string (Window menu, Mission Control, accessibility) but the toolbar does
     /// not display it, since the pane's own header does. Chat shows no title.
     func testPaneNameIsNotShownInTheToolbarOnBotsCronAndKanban() throws {
-        try XCTSkipUnless(MacPaneTitle.canHideKeepingTitle, "macOS 14 blanks the title instead")
+        try XCTSkipUnless(MacPaneTitle.isHidingTitle, "hidden on macOS 26 and later only")
         for tab in [SidebarTab.bots, .cron, .kanban] {
             let window = try appWindow(tab: tab)
             XCTAssertEqual(window.title, tab.displayName, "\(tab): the title string stays")
@@ -104,7 +104,6 @@ final class MacPaneTitleTests: XCTestCase {
         XCTAssertEqual(chat.titleVisibility, .visible, "chat keeps the toolbar it had")
     }
 
-    /// Switching panes in a live window flips the title in and out of the toolbar.
     /// The window search item's platter (the rightmost one: the toolbar holds
     /// the sidebar toggle and, on the chat route, the strip and Refresh to its
     /// left), in window coordinates.
@@ -116,7 +115,7 @@ final class MacPaneTitleTests: XCTestCase {
     /// stay where it sits on the chat route, at the trailing edge (it follows
     /// the title slot otherwise and jumps to the leading edge).
     func testSearchItemStaysTrailingOnBotsCronAndKanban() throws {
-        try XCTSkipUnless(MacPaneTitle.canHideKeepingTitle)
+        try XCTSkipUnless(MacPaneTitle.isHidingTitle)
         for tab in [SidebarTab.bots, .cron, .kanban, .sessions] {
             let window = try appWindow(tab: tab)
             var frame: CGRect?
@@ -135,7 +134,7 @@ final class MacPaneTitleTests: XCTestCase {
 
     /// The search item stays trailing while the route changes in a live window.
     func testSearchItemStaysTrailingAcrossRouteChanges() throws {
-        try XCTSkipUnless(MacPaneTitle.canHideKeepingTitle)
+        try XCTSkipUnless(MacPaneTitle.isHidingTitle)
         let window = try appWindow(tab: .kanban)
         for tab in [SidebarTab.sessions, .bots, .sessions, .cron, .kanban] {
             suite.defaults.set(tab.rawValue, forKey: MacSidebarState.tabDefaultsKey)
@@ -147,8 +146,9 @@ final class MacPaneTitleTests: XCTestCase {
         }
     }
 
+    /// Switching panes in a live window flips the title in and out of the toolbar.
     func testTitleFollowsTheRoute() throws {
-        try XCTSkipUnless(MacPaneTitle.canHideKeepingTitle)
+        try XCTSkipUnless(MacPaneTitle.isHidingTitle)
         let window = try appWindow(tab: .kanban)
         XCTAssertEqual(window.titleVisibility, .hidden)
         suite.defaults.set(SidebarTab.sessions.rawValue, forKey: MacSidebarState.tabDefaultsKey)
@@ -157,9 +157,7 @@ final class MacPaneTitleTests: XCTestCase {
         XCTAssertTrue(HostedTestSupport.waitUntil { window.titleVisibility == .hidden && window.title == SidebarTab.cron.displayName })
     }
 
-    func testTitleStringPolicy() {
-        XCTAssertEqual(MacPaneTitle.windowTitle(forPane: "Kanban", canHideKeepingTitle: true), "Kanban")
-        XCTAssertEqual(MacPaneTitle.windowTitle(forPane: "Kanban", canHideKeepingTitle: false), "", "macOS 14 blanks it")
+    func testRouteDecidesWhenTheToolbarTitleIsHidden() {
         XCTAssertTrue(MacChatRoute.hidesToolbarTitle(tabRaw: SidebarTab.kanban.rawValue))
         XCTAssertTrue(MacChatRoute.hidesToolbarTitle(tabRaw: SidebarTab.bots.rawValue))
         XCTAssertTrue(MacChatRoute.hidesToolbarTitle(tabRaw: SidebarTab.cron.rawValue))
@@ -167,8 +165,20 @@ final class MacPaneTitleTests: XCTestCase {
         XCTAssertFalse(MacChatRoute.hidesToolbarTitle(tabRaw: nil))
     }
 
-    /// RootView is the one upstream site that applies the removal; the stand-in
-    /// above mirrors it, so pin the real call.
+    /// Before macOS 26 nothing changes from 0.1.3: the pane title shows and there
+    /// is no filler. (Skipped on a host that hides the title; it runs on 14 to 25.)
+    func testBefore26KeepsThePaneTitleInTheToolbar() throws {
+        try XCTSkipIf(MacPaneTitle.isHidingTitle, "runs on macOS before 26")
+        for tab in [SidebarTab.bots, .cron, .kanban] {
+            let window = try appWindow(tab: tab)
+            XCTAssertEqual(window.title, tab.displayName)
+            XCTAssertEqual(window.titleVisibility, .visible, "\(tab): the pane title shows, as in 0.1.3")
+        }
+    }
+
+    /// RootView is the one upstream site that applies the removal and the filler. The
+    /// stand-in above mirrors its structure (not the real chat items or status dot),
+    /// so pin the real calls (whitespace-sensitive on purpose: a reformat is a prompt to re-check).
     func testRootViewAppliesTheRemovalToTheChatStack() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Conduit/Views/RootView.swift")

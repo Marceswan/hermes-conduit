@@ -218,8 +218,8 @@ struct KanbanTaskComposerView: View {
             }
         }
         .accessibilityHint("Opens the per-task model, provider, and reasoning override picker")
-        #if os(macOS) // MAC: plain full-width row, not a bordered accent slab
-        .macFormNavigationRow()
+        #if os(macOS) // MAC: plain full-width row (whole row clickable), not a bordered accent slab
+        .buttonStyle(.macFormNavigationRow)
         #endif // MAC:
     }
 
@@ -240,8 +240,8 @@ struct KanbanTaskComposerView: View {
             }
         }
         .accessibilityHint("Opens the task skill picker")
-        #if os(macOS) // MAC: plain full-width row, not a bordered accent slab
-        .macFormNavigationRow()
+        #if os(macOS) // MAC: plain full-width row (whole row clickable), not a bordered accent slab
+        .buttonStyle(.macFormNavigationRow)
         #endif // MAC:
     }
 
@@ -286,8 +286,8 @@ struct KanbanTaskComposerView: View {
                             .foregroundStyle(.tertiary)
                     }
                 }
-                #if os(macOS) // MAC: plain full-width row, not a bordered accent slab
-                .macFormNavigationRow()
+                #if os(macOS) // MAC: plain full-width row (whole row clickable), not a bordered accent slab
+                .buttonStyle(.macFormNavigationRow)
                 #endif // MAC:
             } else {
                 ForEach(draft.parents, id: \.self) { parentID in

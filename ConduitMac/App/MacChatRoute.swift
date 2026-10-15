@@ -18,13 +18,12 @@ enum MacChatRoute {
     }
 
     /// Window title the chat's NavigationStack applies. Empty while chat is
-    /// shown (the session tab strip is the title); the pane name otherwise (a
-    /// string for the Window menu: the toolbar does not display it, see
-    /// `MacPaneTitle`), so the hidden stack cannot override the router's title.
-    static func navigationTitle(tabRaw: String?, canHideKeepingTitle: Bool = MacPaneTitle.canHideKeepingTitle) -> String {
-        isChatActive(tabRaw: tabRaw)
-            ? ""
-            : MacPaneTitle.windowTitle(forPane: SidebarTab.migrated(rawValue: tabRaw).displayName, canHideKeepingTitle: canHideKeepingTitle)
+    /// shown (the session tab strip is the title); the pane name otherwise, so
+    /// the hidden stack cannot override the router's title. On macOS 26 and
+    /// later the toolbar does not display it (`MacPaneTitle`); the window keeps it
+    /// for the Window menu.
+    static func navigationTitle(tabRaw: String?) -> String {
+        isChatActive(tabRaw: tabRaw) ? "" : SidebarTab.migrated(rawValue: tabRaw).displayName
     }
 
     /// True while a pane other than chat is shown: the toolbar hides the title.

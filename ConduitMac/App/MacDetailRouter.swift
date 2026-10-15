@@ -66,9 +66,9 @@ struct MacDetailRouter<Chat: View>: View {
                         .padding(.horizontal, 20)
                         .padding(.top, 12)
                 }
-                // The pane's own header names it: the toolbar does not show this title
-                // (the chat stack removes it, RootView), the Window menu still does.
-                .navigationTitle(MacPaneTitle.windowTitle(forPane: tab.displayName))
+                // The pane's own header names it: on macOS 26+ the toolbar does not show this
+                // title (the chat stack removes it, RootView); the Window menu still does.
+                .navigationTitle(tab.displayName)
             }
         }
         .onChange(of: destination) { _, new in

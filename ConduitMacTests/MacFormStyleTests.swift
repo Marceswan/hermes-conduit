@@ -100,6 +100,14 @@ final class MacFormStyleTests: XCTestCase {
         XCTAssertTrue(isGrouped(target(of: host(Presenter(content: AppForm(), nested: true)), depth: 2)))
     }
 
+    /// An explicit `.formStyle(...)` on a shared Form wins over the shim's grouped default.
+    func testAnExplicitFormStyleOnTheShimWins() {
+        let window = host(ConduitMac.Form {
+            Section { Toggle("Alpha row", isOn: .constant(true)) } header: { Text("Alpha header") }
+        }.formStyle(.columns))
+        XCTAssertFalse(isGrouped(target(of: window, depth: 0)), "the outer .columns style is applied, not the grouped default")
+    }
+
     /// The finding behind D14: `.formStyle(.grouped)` set at the presenter, at
     /// any level above `.sheet`, does not reach the sheet's Form. If this goes
     /// red on a newer macOS, one root `.formStyle(.grouped)` works there and the
@@ -158,5 +166,87 @@ final class MacComposerSheetTests: XCTestCase {
         for node in nodes where node.frame.width > 1 {
             XCTAssertLessThanOrEqual(node.frame.maxX, width + 1, "nothing clipped at the right edge: \(node.role) \(node.label ?? "")")
         }
+    }
+
+    // MARK: Row clicks and the description prompt
+
+    private func openComposer() throws -> (parent: NSWindow, sheet: NSWindow, suite: (defaults: UserDefaults, name: String)) {
+        let suite = HostedTestSupport.makeSuite()
+        let parent = HostedTestSupport.host(Presenter(store: KanbanStore(defaults: suite.defaults)), size: NSSize(width: 900, height: 1000))
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 8) { parent.attachedSheet != nil })
+        let sheet = try XCTUnwrap(parent.attachedSheet)
+        HostedTestSupport.settle(0.8)
+        AccessibilityTreeBoost.set(true)
+        HostedTestSupport.settle(0.6)
+        return (parent, sheet, suite)
+    }
+
+    /// A left click at `point` (in the content view's top-left coordinates), through the window's event path.
+    private func click(at point: CGPoint, in window: NSWindow) throws {
+        let host = try XCTUnwrap(window.contentView)
+        let location = host.convert(NSPoint(x: point.x, y: point.y), to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                                                         timestamp: ProcessInfo.processInfo.systemUptime,
+                                                         windowNumber: window.windowNumber, context: nil,
+                                                         eventNumber: 0, clickCount: 1, pressure: 1))
+            window.sendEvent(event)
+            HostedTestSupport.settle(0.05)
+        }
+    }
+
+    /// The whole row is the button: a click in the Spacer zone (45% across, between
+    /// the title and the value) opens the picker sheet, as the old bordered slab did.
+    /// Red against `.buttonStyle(.plain).contentShape(Rectangle())` applied outside the Button.
+    func testClickingTheSpacerOfTheModelSkillsAndDependsRowsOpensThePicker() throws {
+        try XCTSkipUnless(AccessibilityTreeBoost.isAvailable)
+        defer { AccessibilityTreeBoost.set(false) }
+        for prefix in ["Model,", "Skills,", "Depends on,"] {
+            let (parent, sheet, suite) = try openComposer()
+            defer { HostedTestSupport.tearDown(parent); HostedTestSupport.dropSuite(suite) }
+            let row = try XCTUnwrap(AccessibilityProbe.nodes(in: sheet).first { ($0.label ?? "").hasPrefix(prefix) }, "\(prefix) row")
+            XCTAssertNil(sheet.attachedSheet)
+            try click(at: CGPoint(x: row.frame.minX + row.frame.width * 0.45, y: row.frame.midY), in: sheet)
+            XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 4) { sheet.attachedSheet != nil },
+                          "\(prefix) a click 45% across the row opens its picker (row \(row.frame))")
+        }
+    }
+
+    /// The "Description" prompt shows while the draft is empty and goes once there is text.
+    func testDescriptionPromptShowsWhileEmptyAndGoesAfterTyping() throws {
+        try XCTSkipUnless(AccessibilityTreeBoost.isAvailable)
+        defer { AccessibilityTreeBoost.set(false) }
+        let (parent, sheet, suite) = try openComposer()
+        defer { HostedTestSupport.tearDown(parent); HostedTestSupport.dropSuite(suite) }
+        func promptShown() -> Bool {
+            var found = false
+            func walk(_ element: NSObject, depth: Int) {
+                let role: String? = element.axValue("accessibilityRole")
+                let value: String? = element.axValue("accessibilityValue")
+                let label: String? = element.axValue("accessibilityLabel")
+                if role == NSAccessibility.Role.staticText.rawValue, value == "Description" || label == "Description" { found = true }
+                let kids: [Any]? = element.axValue("accessibilityChildren")
+                if depth < 12 { for kid in kids ?? [] { if let o = kid as? NSObject { walk(o, depth: depth + 1) } } }
+            }
+            for kid in sheet.contentView?.accessibilityChildren() ?? [] { if let o = kid as? NSObject { walk(o, depth: 0) } }
+            return found
+        }
+        XCTAssertTrue(promptShown(), "the Description prompt shows while the draft is empty")
+        var textView: NSTextView?
+        func find(_ view: NSView) {
+            // Not a text field's field editor (the Title field's): the TextEditor's own view.
+            if textView == nil, let tv = view as? NSTextView, tv.isEditable, !(tv.delegate is NSTextField) { textView = tv; return }
+            view.subviews.forEach(find)
+        }
+        if let root = sheet.contentView { find(root) }
+        let editor = try XCTUnwrap(textView, "the description editor")
+        XCTAssertTrue(sheet.makeFirstResponder(editor))
+        editor.insertText("Write the docs", replacementRange: NSRange(location: 0, length: 0))
+        HostedTestSupport.settle(0.6)
+        XCTAssertFalse(promptShown(), "the prompt goes once there is text")
+        editor.selectAll(nil)
+        editor.insertText("", replacementRange: editor.selectedRange())
+        HostedTestSupport.settle(0.6)
+        XCTAssertTrue(promptShown(), "and comes back when the text is cleared")
     }
 }
