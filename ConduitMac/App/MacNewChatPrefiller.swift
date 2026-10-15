@@ -10,11 +10,16 @@ struct MacNewChatPrefiller {
     var activeSessionId: () -> String?
     var createNewSession: () async -> Void
     var prefill: (String) -> Void
+    /// False when the chat that is open now already holds a draft. The create
+    /// awaits the gateway, so the user may have opened another chat meanwhile;
+    /// a prefill replaces the composer text and must never eat their draft.
+    var activeDraftIsEmpty: () -> Bool = { true }
 
     func run(_ text: String) async -> Bool {
         let before = activeSessionId()
         await createNewSession()
         guard let after = activeSessionId(), after != before else { return false }
+        guard activeDraftIsEmpty() else { return false }
         prefill(text)
         return true
     }
@@ -23,9 +28,30 @@ struct MacNewChatPrefiller {
         MacNewChatPrefiller(
             activeSessionId: { [weak appState] in appState?.activeSessionId },
             createNewSession: { [weak appState] in await appState?.createNewSession() },
-            prefill: { [weak appState] in appState?.prefillComposer($0) }
+            prefill: { [weak appState] in appState?.prefillComposer($0) },
+            activeDraftIsEmpty: { [weak appState] in
+                guard let appState else { return false }
+                let key = ComposerBar.composerDraftKey(for: appState.activeSessionId, profile: appState.activeProfile)
+                return appState.composerDraftStore.draft(for: key).text.isEmpty
+            }
         )
     }
+}
+
+extension AppState {
+    /// `createNewSession` refuses while connecting or switching workspace, so
+    /// a parked Service or Shortcuts request waits for both, not just
+    /// `isConnected`: a refused create would consume the request for nothing.
+    var macCanApplyParkedRequest: Bool {
+        Self.macCanApplyParkedRequest(isConnected: isConnected, isConnecting: isConnecting, isProfileSwitching: isProfileSwitching)
+    }
+
+    static func macCanApplyParkedRequest(isConnected: Bool, isConnecting: Bool, isProfileSwitching: Bool) -> Bool {
+        isConnected && !isConnecting && !isProfileSwitching
+    }
+
+    /// Task id for the routing modifiers: changes when readiness does.
+    var macParkedRequestReadinessKey: String { "\(isConnected):\(isConnecting):\(isProfileSwitching)" }
 }
 
 /// Brings the primary Conduit window forward. Shared by Services and the

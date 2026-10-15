@@ -14,8 +14,8 @@ struct MacIntentRouting: ViewModifier {
     func body(content: Content) -> some View {
         content
             .task { MacIntentDataSource.shared.bind(to: appState) }
-            .task(id: "\(inbox.revision):\(appState.isConnected)") {
-                guard appState.isConnected, let request = inbox.take() else { return }
+            .task(id: "\(inbox.revision):\(appState.macParkedRequestReadinessKey)") {
+                guard appState.macCanApplyParkedRequest, let request = inbox.take() else { return }
                 MacWindowActivation.bringConduitForward()
                 await MacIntentRouting.apply(request, appState: appState)
             }

@@ -27,6 +27,27 @@ final class MacNewChatPrefillerTests: XCTestCase {
         XCTAssertTrue(prefilled.isEmpty, "the open chat's draft must not be overwritten")
     }
 
+    func testChatOpenedMeanwhileWithADraftIsNeverOverwritten() async {
+        // The create awaits the gateway; the user opened another chat that has a draft.
+        let p = MacNewChatPrefiller(
+            activeSessionId: { [unowned self] in self.active },
+            createNewSession: { [unowned self] in self.active = "other-with-draft" },
+            prefill: { [unowned self] in self.prefilled.append($0) },
+            activeDraftIsEmpty: { false }
+        )
+        let ok = await p.run("hello")
+        XCTAssertFalse(ok)
+        XCTAssertTrue(prefilled.isEmpty)
+    }
+
+    func testParkedRequestWaitsForConnectedSettledAndNotSwitching() {
+        XCTAssertTrue(AppState.macCanApplyParkedRequest(isConnected: true, isConnecting: false, isProfileSwitching: false))
+        XCTAssertFalse(AppState.macCanApplyParkedRequest(isConnected: false, isConnecting: false, isProfileSwitching: false))
+        XCTAssertFalse(AppState.macCanApplyParkedRequest(isConnected: true, isConnecting: true, isProfileSwitching: false))
+        XCTAssertFalse(AppState.macCanApplyParkedRequest(isConnected: true, isConnecting: false, isProfileSwitching: true),
+                       "createNewSession refuses during a switch; the request must wait, not be consumed")
+    }
+
     func testPrefillSeesTheNewSessionNotTheOldOne() async {
         var seen: String?
         let p = MacNewChatPrefiller(

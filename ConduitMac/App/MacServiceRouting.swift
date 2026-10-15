@@ -20,8 +20,8 @@ struct MacServiceRouting: ViewModifier {
                     MacServiceInbox.scope(dashboardID: state?.activeDashboardID, profile: state?.activeProfile ?? "")
                 })
             }
-            .task(id: "\(inbox.revision):\(appState.isConnected)") {
-                guard appState.isConnected, let text = inbox.take() else { return }
+            .task(id: "\(inbox.revision):\(appState.macParkedRequestReadinessKey)") {
+                guard appState.macCanApplyParkedRequest, let text = inbox.take() else { return }
                 MacWindowActivation.bringConduitForward()
                 _ = await MacNewChatPrefiller.live(appState).run(text)
             }

@@ -59,6 +59,8 @@ Rule R18: agents never send clicks or key events to the running app. Launch smok
 - [ ] Select text in TextEdit and Safari, run the Service with Conduit closed: Conduit opens, new chat, text in the composer, not sent
 - [ ] Same with Conduit connected and mid-turn: the running chat is untouched, the text is in a new chat
 - [ ] Select text in a Mail message and an image-only selection: Service is absent or reports "No text selected"; nothing breaks
+- [ ] Run the Service with Conduit running in the background, disconnected (Hermes unreachable), and with its window closed (red close button): Conduit comes forward at once; the text lands in a new chat when Hermes connects
+- [ ] Select a very large block of text (several MB) and run the Service: Conduit stays responsive and the composer holds the first 20,000 characters plus "[truncated]"
 - [ ] Switch profile before the cold launch connects: the parked text is not applied to the other profile
 - [ ] With a non-English system language, the Services menu item shows the translated title
 

@@ -8,7 +8,10 @@ enum MacServiceText {
 
     static func normalize(_ raw: String?) -> String? {
         guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
-        guard trimmed.count > limit else { return trimmed }
-        return String(trimmed.prefix(limit)) + "\n" + truncationNote
+        // Walk at most `limit` characters: a multi-megabyte selection must not
+        // cost a full grapheme count on the main thread.
+        guard let cut = trimmed.index(trimmed.startIndex, offsetBy: limit, limitedBy: trimmed.endIndex),
+              cut != trimmed.endIndex else { return trimmed }
+        return String(trimmed[..<cut]) + "\n" + truncationNote
     }
 }
