@@ -12,6 +12,8 @@ protocol NotchPanelHosting: AnyObject {
     func hide()
     func setFrame(_ frame: CGRect, animated: Bool)
     func setDock(_ dock: MacEdgeDock, size: CGSize)
+    /// `nil` hands light or dark back to the Mac (the glass style); darkAqua pins a dark surface.
+    func setPanelAppearance(_ appearance: NSAppearance?)
 }
 
 enum NotchHitShape {
@@ -100,6 +102,11 @@ final class NotchPanelHost: NotchPanelHosting {
         applied = .dock(dock, size)
         controller.setPlacement(.edgeDocked(edge: dock.edge, offset: dock.offset, screenID: dock.screenID))
         controller.updateContentSize(size)
+    }
+
+    func setPanelAppearance(_ appearance: NSAppearance?) {
+        guard controller.panel.appearance?.name != appearance?.name else { return }
+        controller.panel.appearance = appearance
     }
 
     private func handlePointer(_ inside: Bool) { onPointerChange?(inside) }

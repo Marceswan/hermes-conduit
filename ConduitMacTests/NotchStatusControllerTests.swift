@@ -35,7 +35,11 @@ final class FakeNotchHost: NotchPanelHosting {
     var inwardSide: NotchInwardSide = .bottom
     var frames: [CGRect] = []
     var docks: [(dock: MacEdgeDock, size: CGSize)] = []
+    var appearances: [NSAppearance?] = []
     var showCount = 0, hideCount = 0
+    func setPanelAppearance(_ appearance: NSAppearance?) { appearances.append(appearance) }
+    /// The newest appearance handed over was `nil`: the panel follows the Mac.
+    var lastAppearanceIsSystem: Bool { if case .some(.none) = appearances.last { return true } else { return false } }
     func show() { isVisible = true; showCount += 1 }
     func hide() { isVisible = false; hideCount += 1 }
     func setFrame(_ frame: CGRect, animated: Bool) { frames.append(frame) }
@@ -86,6 +90,8 @@ final class NotchStatusControllerTests: XCTestCase {
         var now: Box<Date>
         let dockStore: NotchDockStore
         let connectedIDs: Box<Set<UInt32>>
+        let settings: NotchStatusSettings
+        let reduceTransparency: Box<Bool>
     }
     final class Box<T> { var value: T; init(_ v: T) { value = v } }
 
@@ -97,9 +103,12 @@ final class NotchStatusControllerTests: XCTestCase {
         frame: CGRect(x: 0, y: 0, width: 2560, height: 1440), visibleFrame: CGRect(x: 0, y: 0, width: 2560, height: 1415),
         safeAreaTop: 0, auxiliaryTopLeft: .zero, auxiliaryTopRight: .zero, id: 2)
 
-    private func makeRig(mode: NotchMode = .activeAgents, feedBaselined: Bool = true) -> Rig {
+    private func makeRig(mode: NotchMode = .activeAgents, feedBaselined: Bool = true,
+                         style: NotchSurfaceStyle? = nil, glassAvailable: Bool = true) -> Rig {
         let suite = HostedTestSupport.makeSuite()
         suite.defaults.set(mode.rawValue, forKey: NotchStatusSettings.key)
+        if let style { suite.defaults.set(style.rawValue, forKey: NotchStatusSettings.surfaceStyleKey) }
+        let settings = NotchStatusSettings(defaults: suite.defaults), reduceTransparency = Box(false)
         let source = FakeNotchSource(), host = FakeNotchHost(), scheduler = FakeNotchScheduler(), monitor = FakeMonitor()
         let opened = Box<[String]>([]), panes = Box<[SidebarTab]>([]), newChats = Box(0)
         let screen = Box<NotchScreenMetrics?>(notchScreen), enabled = Box(true), now = Box(F.t0)
@@ -108,15 +117,16 @@ final class NotchStatusControllerTests: XCTestCase {
             openSession: { opened.value.append($0) }, openPane: { panes.value.append($0) },
             newChat: { newChats.value += 1 }, newChatEnabled: { enabled.value }, openConduit: {})
         let controller = NotchStatusController(
-            settings: NotchStatusSettings(defaults: suite.defaults), actions: actions,
+            settings: settings, actions: actions,
             makeHost: { host }, screen: { screen.value }, scheduler: scheduler, monitor: monitor, now: { now.value },
             dockStore: dockStore, connectedScreenIDs: { connectedIDs.value },
-            screenForID: { [notchScreen, externalScreen] id in id == 1 ? notchScreen : (id == 2 ? externalScreen : nil) })
+            screenForID: { [notchScreen, externalScreen] id in id == 1 ? notchScreen : (id == 2 ? externalScreen : nil) },
+            glassAvailable: glassAvailable, reduceTransparency: { reduceTransparency.value })
         source.isBaselinedSubject.send(feedBaselined)   // the real feed starts false and turns true after its first poll
         controller.bind(source: source, actions: actions)
         return Rig(controller: controller, source: source, host: host, scheduler: scheduler, monitor: monitor,
                    opened: opened, panes: panes, newChats: newChats, screen: screen, newChatEnabled: enabled, suite: suite, now: now,
-                   dockStore: dockStore, connectedIDs: connectedIDs)
+                   dockStore: dockStore, connectedIDs: connectedIDs, settings: settings, reduceTransparency: reduceTransparency)
     }
 
     private func finish(_ r: Rig) { HostedTestSupport.dropSuite(r.suite) }
@@ -129,6 +139,73 @@ final class NotchStatusControllerTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(10))
         }
         return true
+    }
+
+    // MARK: surface style
+
+    func testGlassStyleLeavesThePanelAppearanceToTheSystem() {
+        let r = makeRig(style: .glass); defer { finish(r) }
+        r.source.itemsSubject.send([F.item("turn:a")])
+        XCTAssertEqual(r.host.appearances.count, 1)
+        XCTAssertTrue(r.host.lastAppearanceIsSystem, "nil: the panel inherits light or dark from the Mac")
+        XCTAssertEqual(r.controller.viewModel.surfaceStyle, .glass)
+    }
+
+    func testEveryDarkStylePinsDarkAquaWhenThePanelIsMade() {
+        for style in [NotchSurfaceStyle.darkGlass, .solid, .dock] {
+            let r = makeRig(style: style); defer { finish(r) }
+            r.source.itemsSubject.send([F.item("turn:a")])
+            XCTAssertEqual(r.host.appearances.last??.name, .darkAqua, style.rawValue)
+        }
+    }
+
+    func testChangingTheStyleRepinsTheLivePanel() {
+        let r = makeRig(style: .glass); defer { finish(r) }
+        r.source.itemsSubject.send([F.item("turn:a")])
+        r.settings.surfaceStyle = .solid
+        XCTAssertEqual(r.controller.viewModel.surfaceStyle, .solid)
+        XCTAssertEqual(r.host.appearances.last??.name, .darkAqua)
+        r.settings.surfaceStyle = .glass
+        XCTAssertTrue(r.host.lastAppearanceIsSystem)
+        XCTAssertEqual(r.host.appearances.count, 3)
+    }
+
+    func testStyleChangeWhileHiddenIsAppliedWhenThePanelIsFirstMade() {
+        let r = makeRig(style: .glass); defer { finish(r) }
+        r.settings.surfaceStyle = .darkGlass
+        XCTAssertTrue(r.host.appearances.isEmpty, "no panel yet")
+        r.source.itemsSubject.send([F.item("turn:a")])
+        XCTAssertEqual(r.host.appearances.last??.name, .darkAqua)
+    }
+
+    func testReduceTransparencyPinsDarkAquaAndIsFollowedLive() {
+        let r = makeRig(style: .glass); defer { finish(r) }
+        r.source.itemsSubject.send([F.item("turn:a")])
+        r.reduceTransparency.value = true
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+        XCTAssertTrue(r.controller.viewModel.reduceTransparency)
+        XCTAssertEqual(r.host.appearances.last??.name, .darkAqua)
+        r.reduceTransparency.value = false
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+        XCTAssertFalse(r.controller.viewModel.reduceTransparency)
+        XCTAssertTrue(r.host.lastAppearanceIsSystem)
+    }
+
+    func testWithoutGlassTheChosenGlassStyleDrawsSolidAndPinsDarkAqua() {
+        let r = makeRig(style: .glass, glassAvailable: false); defer { finish(r) }
+        r.source.itemsSubject.send([F.item("turn:a")])
+        XCTAssertEqual(r.host.appearances.last??.name, .darkAqua)
+        XCTAssertEqual(r.controller.viewModel.drawnSurfaceStyle, .solid)
+        XCTAssertEqual(r.controller.viewModel.surfaceStyle, .glass, "the choice itself is kept for a Mac that has glass")
+    }
+
+    func testDockStyleDrawsAsDarkGlassAtTheNotchAndAsDockOnAnEdge() {
+        let r = makeRig(style: .dock); defer { finish(r) }
+        r.source.itemsSubject.send([F.item("turn:a")])
+        XCTAssertEqual(r.controller.viewModel.drawnSurfaceStyle, .darkGlass)
+        r.host.simulateDragBegan()
+        r.host.simulateRelease(MacEdgeDock(edge: .maxX, offset: 0.4, screenID: 1))
+        XCTAssertEqual(r.controller.viewModel.drawnSurfaceStyle, .dock)
     }
 
     func testIdleStaysHiddenAndNeverShowsThePanel() {

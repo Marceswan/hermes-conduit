@@ -19,6 +19,8 @@ final class NotchStatusController: ObservableObject {
     private let dockStore: NotchDockStore
     private let connectedScreenIDs: () -> Set<UInt32>
     private let screenForID: (UInt32) -> NotchScreenMetrics?
+    private let glassAvailable: Bool
+    private let reduceTransparency: () -> Bool
 
     private var state: NotchStatusState
     private var host: NotchPanelHosting?
@@ -38,6 +40,8 @@ final class NotchStatusController: ObservableObject {
     /// `NSScreen.main`) while that display is connected and still has a saved dock.
     private var homeDisplayID: UInt32?
     private var lastNextExpiry: Date?
+    /// What the panel was last told, so an unchanged style or setting does not touch the window.
+    private var appliedFollowsSystem: Bool?
 
     init(
         settings: NotchStatusSettings = .shared,
@@ -49,7 +53,9 @@ final class NotchStatusController: ObservableObject {
         now: @escaping () -> Date = Date.init,
         dockStore: NotchDockStore = NotchDockStore(),
         connectedScreenIDs: @escaping () -> Set<UInt32> = { Set(MacFloatingPanelEnvironment.live.screens().compactMap(\.id)) },
-        screenForID: ((UInt32) -> NotchScreenMetrics?)? = nil
+        screenForID: ((UInt32) -> NotchScreenMetrics?)? = nil,
+        glassAvailable: Bool = NotchSurfaceStyle.glassAvailable,
+        reduceTransparency: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency }
     ) {
         self.settings = settings
         self.actions = actions
@@ -60,6 +66,8 @@ final class NotchStatusController: ObservableObject {
         self.dockStore = dockStore
         self.connectedScreenIDs = connectedScreenIDs
         self.screenForID = screenForID ?? { NotchScreenMetrics.display(id: $0) }
+        self.glassAvailable = glassAvailable
+        self.reduceTransparency = reduceTransparency
         self.state = NotchStatusState(mode: settings.mode)
         let vm = viewModel
         self.makeHost = makeHost ?? { NotchPanelHost(content: NotchStatusView(model: vm)) }
@@ -88,6 +96,13 @@ final class NotchStatusController: ObservableObject {
             self?.send(.mode($0))
             self?.refreshExpiryTimer()
         }.store(in: &cancellables)
+        // @Published emits before the property changes: pass the emitted style along, never re-read `settings`.
+        settings.$surfaceStyle.removeDuplicates().sink { [weak self] in self?.surfaceStyleChanged($0) }.store(in: &cancellables)
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.surfaceStyleChanged(self.viewModel.surfaceStyle)
+            }.store(in: &cancellables)
         viewModel.$contentHeight.removeDuplicates().sink { [weak self] _ in self?.render() }.store(in: &cancellables)
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
             .sink { [weak self] _ in self?.screenParametersChanged() }.store(in: &cancellables)
@@ -102,6 +117,26 @@ final class NotchStatusController: ObservableObject {
     }
 
     func screenParametersChanged() { render() }
+
+    // MARK: surface style
+
+    /// Chosen style or Reduce Transparency changed: update what the view draws and what the panel's
+    /// appearance is, now if the panel exists, else when it is made.
+    private func surfaceStyleChanged(_ style: NotchSurfaceStyle) {
+        let reduce = reduceTransparency()
+        if viewModel.surfaceStyle != style { viewModel.surfaceStyle = style }
+        if viewModel.reduceTransparency != reduce { viewModel.reduceTransparency = reduce }
+        if viewModel.glassAvailable != glassAvailable { viewModel.glassAvailable = glassAvailable }
+        applyPanelAppearance()
+    }
+
+    private func applyPanelAppearance(force: Bool = false) {
+        guard let host else { return }
+        let follows = viewModel.followsSystemAppearance
+        guard force || appliedFollowsSystem != follows else { return }
+        appliedFollowsSystem = follows
+        host.setPanelAppearance(follows ? nil : NSAppearance(named: .darkAqua))
+    }
 
     /// Go > Reset Agent Status Position, and the double-click on the capsule or grip.
     func resetPosition() {
@@ -253,6 +288,7 @@ final class NotchStatusController: ObservableObject {
     private func makeWiredHost() -> NotchPanelHosting {
         let host = makeHost()
         self.host = host
+        applyPanelAppearance(force: true)
         host.onPointerChange = { [weak self] in self?.send($0 ? .hoverEntered : .hoverExited) }
         host.onDockChanged = { [weak self] in self?.dockChanged($0) }
         host.onDragStateChange = { [weak self] in self?.dragStateChanged($0) }
