@@ -5,6 +5,7 @@ import CoreGraphics
 /// platter, which is also the height of the Kanban pane-header buttons and
 /// `MacPaneHeader`'s row.
 enum MacControlHeight {
+    static let compact: CGFloat = 32
     /// Pane-header action buttons and window-toolbar items.
     static let regular: CGFloat = 36
     /// Sidebar rows (Workspace + Settings, New Chat + voice + more + folder).
@@ -45,4 +46,10 @@ enum MacTabStripMetrics {
         segmentFrame(index: index, count: count, containerWidth: containerWidth)
             .insetBy(dx: inset, dy: inset)
     }
+}
+
+enum MacSidebarMetrics {
+    static let rowGap: CGFloat = 6
+    static let chipHeight: CGFloat = 24
+    static let sessionRowPitch: CGFloat = 44
 }
