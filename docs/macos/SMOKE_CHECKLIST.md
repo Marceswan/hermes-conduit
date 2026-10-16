@@ -234,4 +234,12 @@ Human pass at release time (agents never click or type into the running app, R18
 - [ ] Cmd-W in the window closes the window, not a main tab. Cmd-L focuses the window's composer and leaves main on its pane.
 - [ ] Quit with a window open and relaunch: no session window comes back.
 - [ ] Cmd-, and Cmd-Shift-D with a session window key: the main window comes forward and opens Settings / the Saved Dashboards sheet there (D22); the session window never shows the sheet.
+- [ ] Close the main window with a session window open, then click the Dock icon: the main window comes back (and a second click does not open another). With the main window closed, Cmd-N, Cmd-, and Cmd-Shift-D from the session window bring it back.
+- [ ] Bot Chat tab: right-click shows "Open in New Window" disabled, and Option-Command-N does nothing for it.
+- [ ] The same session open in main and in a window: sending in one does not break the other; both show the reply after the turn.
+- [ ] Assistant rows in the window show only the Copy button: no Quote, Branch, react or read-aloud controls. Copy puts the reply on the clipboard.
+- [ ] Scroll a window up while its chat streams: the transcript stays where you scrolled; scroll to the end and it follows again; sending always jumps to the end.
+- [ ] With a session window key: Ctrl-Cmd-1..4, Hide Sidebar and Cmd-F leave the main window as it was; Cmd-N brings main forward with a new chat.
+- [ ] With a session window open, open a `conduit://` link from another app (Terminal: `open conduit://session/<id>`): the main window handles it; no extra empty session window appears.
+- [ ] Disconnect mid-turn so the settle read fails: the window shows the error with Retry, Stop is gone, and Retry re-reads. Leave a chat idle for a long while (the gateway reaps its runtime), then send from the window: it sends after one transparent resume.
 - [ ] Open a `conduit://session/...` or other in-app link from a chat inside the window: it follows the same link policy as main (an app link opens in main, other schemes go to the system or are dropped).

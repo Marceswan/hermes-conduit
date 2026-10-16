@@ -175,6 +175,7 @@ final class MacSessionWindowsTests: XCTestCase {
 
     private func mainWindow() -> NSWindow {
         let w = NSWindow()
+        w.isReleasedWhenClosed = false
         w.identifier = NSUserInterfaceItemIdentifier("conduit-primary-AppWindow-1")
         return w
     }
@@ -183,7 +184,7 @@ final class MacSessionWindowsTests: XCTestCase {
         let (store, suite) = tabsStore()
         defer { HostedTestSupport.dropSuite(suite) }
         var opened: [String] = []
-        MacSessionTabsActions.popOutActive(store: store, window: mainWindow()) { opened.append($0); return true }
+        MacSessionTabsActions.popOutActive(store: store, window: mainWindow(), canPopOut: { _ in true }) { opened.append($0); return true }
         XCTAssertEqual(opened, ["b"])
         XCTAssertEqual(store.model.tabs.map(\.id), ["a"])
     }
@@ -197,9 +198,9 @@ final class MacSessionWindowsTests: XCTestCase {
         session.identifier = NSUserInterfaceItemIdentifier("conduit-session-AppWindow-1")
         var opened = 0
         for window in [other, session] {
-            MacSessionTabsActions.popOutActive(store: store, window: window) { _ in opened += 1; return true }
+            MacSessionTabsActions.popOutActive(store: store, window: window, canPopOut: { _ in true }) { _ in opened += 1; return true }
         }
-        MacSessionTabsActions.popOutActive(store: store, window: nil) { _ in opened += 1; return true }
+        MacSessionTabsActions.popOutActive(store: store, window: nil, canPopOut: { _ in true }) { _ in opened += 1; return true }
         XCTAssertEqual(opened, 0)
         XCTAssertEqual(store.model.tabs.count, 2)
     }
@@ -209,8 +210,174 @@ final class MacSessionWindowsTests: XCTestCase {
         defer { HostedTestSupport.dropSuite(suite) }
         store.openFailed("b")
         var opened = 0
-        MacSessionTabsActions.popOutActive(store: store, window: mainWindow()) { _ in opened += 1; return true }
+        MacSessionTabsActions.popOutActive(store: store, window: mainWindow(), canPopOut: { _ in true }) { _ in opened += 1; return true }
         XCTAssertEqual(opened, 0)
         XCTAssertEqual(store.model.tabs.map(\.id), ["a", "b"])
+    }
+
+    // MARK: Final review fixes (D21)
+
+    private func summary(_ id: String, stored: String? = nil) -> SessionSummary {
+        SessionSummary(id: id, storedSessionId: stored, alternateIds: [], title: id, model: "", updatedLabel: "",
+                       profile: "default", source: .chat, isActive: false, isArchived: false, lineageRootId: nil)
+    }
+
+    private func sessionWindow() -> NSWindow {
+        let w = NSWindow()
+        w.isReleasedWhenClosed = false
+        w.identifier = NSUserInterfaceItemIdentifier("conduit-session-AppWindow-1")
+        return w
+    }
+
+    func testOnlyCatalogSessionsCanPopOut() {
+        let catalog = [summary("a"), summary("row", stored: "stored")]
+        XCTAssertTrue(MacSessionWindows.canPopOut("a", catalog: catalog))
+        XCTAssertTrue(MacSessionWindows.canPopOut("stored", catalog: catalog), "any id of the row")
+        XCTAssertFalse(MacSessionWindows.canPopOut("bot-chat", catalog: catalog), "a Bot Chat has no workspace catalog row")
+        XCTAssertFalse(MacSessionWindows.canPopOut("a", catalog: []))
+    }
+
+    func testTabContextMenuPopOutIsDisabledForABotChatTab() {
+        let catalog = [summary("a")]
+        XCTAssertTrue(MacSessionTabStrip.popOutEnabled(tab: MacSessionTab(id: "a", title: "A"), catalog: catalog, windowsFull: false))
+        XCTAssertFalse(MacSessionTabStrip.popOutEnabled(tab: MacSessionTab(id: "bot", title: "Bot"), catalog: catalog, windowsFull: false))
+        XCTAssertFalse(MacSessionTabStrip.popOutEnabled(tab: MacSessionTab(id: "a", title: "A"), catalog: catalog, windowsFull: true))
+        XCTAssertFalse(MacSessionTabStrip.popOutEnabled(tab: MacSessionTab(id: "a", title: "A", unavailable: true), catalog: catalog, windowsFull: false))
+    }
+
+    func testPopOutActiveIgnoresATabTheCatalogDoesNotList() {
+        let (store, suite) = tabsStore()
+        defer { HostedTestSupport.dropSuite(suite) }
+        var opened = 0
+        MacSessionTabsActions.popOutActive(store: store, window: mainWindow(), canPopOut: { _ in false }) { _ in opened += 1; return true }
+        XCTAssertEqual(opened, 0)
+        XCTAssertEqual(store.model.tabs.map(\.id), ["a", "b"], "the tab stays where it is")
+        MacSessionTabsActions.popOutActive(store: store, window: mainWindow(),
+                                           canPopOut: { MacSessionWindows.canPopOut($0, catalog: [self.summary("b")]) }) { _ in opened += 1; return true }
+        XCTAssertEqual(opened, 1)
+    }
+
+    // MARK: Main-window commands from a session window
+
+    func testTabShortcutsDoNothingFromASessionWindow() {
+        let suite = HostedTestSupport.makeSuite()
+        defer { HostedTestSupport.dropSuite(suite) }
+        suite.defaults.set(SidebarTab.sessions.rawValue, forKey: MacSidebarState.tabDefaultsKey)
+        MacKeyboardActions.selectTab(.kanban, window: sessionWindow(), defaults: suite.defaults)
+        XCTAssertEqual(suite.defaults.string(forKey: MacSidebarState.tabDefaultsKey), SidebarTab.sessions.rawValue)
+        MacKeyboardActions.selectTab(.kanban, window: mainWindow(), defaults: suite.defaults)
+        XCTAssertEqual(suite.defaults.string(forKey: MacSidebarState.tabDefaultsKey), SidebarTab.kanban.rawValue)
+    }
+
+    func testSidebarToggleDoesNothingFromASessionWindow() {
+        var toggles = 0
+        MacKeyboardActions.toggleSidebar(window: sessionWindow()) { toggles += 1 }
+        XCTAssertEqual(toggles, 0)
+        MacKeyboardActions.toggleSidebar(window: mainWindow()) { toggles += 1 }
+        XCTAssertEqual(toggles, 1)
+    }
+
+    func testSearchSessionsDoesNotFocusTheMainSearchFromASessionWindow() {
+        let suite = HostedTestSupport.makeSuite()
+        defer { HostedTestSupport.dropSuite(suite) }
+        suite.defaults.set(false, forKey: MacSidebarState.defaultsKey)
+        let requests = MacFocusRequests()
+        let before = requests.searchToken
+        XCTAssertNil(MacKeyboardActions.findOrSearchSessions(window: sessionWindow(), defaults: suite.defaults, requests: requests))
+        XCTAssertEqual(suite.defaults.bool(forKey: MacSidebarState.defaultsKey), false, "the sidebar stays hidden")
+        XCTAssertEqual(requests.searchToken, before)
+        XCTAssertEqual(MacKeyboardActions.findOrSearchSessions(window: mainWindow(), defaults: suite.defaults, requests: requests), .searchSessions)
+        XCTAssertGreaterThan(requests.searchToken, before)
+    }
+
+    func testSessionNeighbourShortcutsDoNothingFromASessionWindow() {
+        var opened: [String] = []
+        MacKeyboardActions.openNeighbor(.next, order: ["a", "b"], activeID: "a", window: sessionWindow()) { opened.append($0) }
+        XCTAssertTrue(opened.isEmpty)
+        MacKeyboardActions.openNeighbor(.next, order: ["a", "b"], activeID: "a", window: mainWindow()) { opened.append($0) }
+        XCTAssertEqual(opened, ["b"])
+    }
+
+    func testAskAboutWindowDoesNotRunFromASessionWindow() {
+        XCTAssertFalse(MacAskAboutWindow.mayRun(from: sessionWindow()))
+        XCTAssertTrue(MacAskAboutWindow.mayRun(from: mainWindow()))
+    }
+
+    func testNewChatFromASessionWindowBringsMainForwardThenCreates() {
+        let main = mainWindow(), side = sessionWindow()
+        var created = 0, reopened = 0
+        MacAppActions.newChat(window: side, windows: [side, main], openMainWindow: { reopened += 1 }) { created += 1 }
+        XCTAssertEqual(created, 1)
+        XCTAssertEqual(reopened, 0)
+        XCTAssertTrue(main.isVisible, "the new chat is shown in the main window")
+        main.close()
+    }
+
+    func testNewChatFromASessionWindowReopensAClosedMainWindow() {
+        let side = sessionWindow()
+        var created = 0, reopened = 0
+        MacAppActions.newChat(window: side, windows: [side], openMainWindow: { reopened += 1 }) { created += 1 }
+        XCTAssertEqual(reopened, 1)
+        XCTAssertEqual(created, 1)
+    }
+
+    func testNewChatFromTheMainWindowJustCreates() {
+        let main = mainWindow()
+        var created = 0, reopened = 0
+        MacAppActions.newChat(window: main, windows: [main], openMainWindow: { reopened += 1 }) { created += 1 }
+        XCTAssertEqual(created, 1)
+        XCTAssertEqual(reopened, 0)
+    }
+
+    func testSettingsAndSwitchDashboardFromASessionWindowReopenAClosedMainWindow() {
+        let side = sessionWindow()
+        let suite = HostedTestSupport.makeSuite()
+        defer { HostedTestSupport.dropSuite(suite) }
+        let palette = MacPaletteStore(defaults: suite.defaults)
+        var reopened = 0
+        XCTAssertFalse(MacAppActions.openSettings(window: side, windows: [side], palette: palette, center: NotificationCenter(),
+                                                  openMainWindow: { reopened += 1 }))
+        XCTAssertFalse(MacAppActions.switchDashboard(window: side, windows: [side], palette: palette,
+                                                     switcher: MacDashboardSwitcherStore(), openMainWindow: { reopened += 1 }))
+        XCTAssertEqual(reopened, 2)
+        // From a window that is neither main nor session, nothing reopens.
+        let other = NSWindow()
+        XCTAssertFalse(MacAppActions.openSettings(window: other, windows: [], palette: palette, center: NotificationCenter(),
+                                                  openMainWindow: { reopened += 1 }))
+        XCTAssertEqual(reopened, 2)
+    }
+
+    // MARK: Dock reopen with the main window closed
+
+    func testReopenOpensTheMainWindowWhenOnlyASessionWindowIsVisible() {
+        let side = sessionWindow()
+        side.orderFront(nil)
+        defer { side.close() }
+        XCTAssertEqual(MacPrimaryWindow.reopenAction(hasVisibleWindows: true, windows: [side]), .openPrimary)
+    }
+
+    func testReopenDoesNothingWithNoWindowsLeftForTheSystemToHandle() {
+        XCTAssertEqual(MacPrimaryWindow.reopenAction(hasVisibleWindows: false, windows: []), .none)
+        XCTAssertEqual(MacPrimaryWindow.reopenAction(hasVisibleWindows: false, windows: [sessionWindow()]), .none)
+    }
+
+    func testReopenShowsAHiddenPrimaryAndLeavesAVisibleOneAlone() {
+        let main = mainWindow()
+        XCTAssertEqual(MacPrimaryWindow.reopenAction(hasVisibleWindows: false, windows: [main]), .showPrimary(main))
+        main.orderFront(nil)
+        defer { main.close() }
+        XCTAssertEqual(MacPrimaryWindow.reopenAction(hasVisibleWindows: true, windows: [main]), .none)
+    }
+
+    func testHandleReopenOpensThroughTheRegisteredOpener() {
+        let side = sessionWindow()
+        let opener = MacPrimaryWindowOpener()
+        XCTAssertFalse(opener.open(), "nothing registered: a clean no-op")
+        var opened = 0
+        opener.register { opened += 1 }
+        MacPrimaryWindow.handleReopen(hasVisibleWindows: true, windows: [side], opener: opener)
+        XCTAssertEqual(opened, 1)
+        MacPrimaryWindow.handleReopen(hasVisibleWindows: false, windows: [], opener: opener)
+        XCTAssertEqual(opened, 1)
     }
 }

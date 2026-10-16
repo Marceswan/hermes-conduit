@@ -42,7 +42,7 @@ struct MacSessionTabStrip: View {
                             onRename: onRename,
                             onDelete: onDelete,
                             onPopOut: { popOut(tab.id) },
-                            canPopOut: !windows.isFull
+                            canPopOut: Self.popOutEnabled(tab: tab, catalog: appState.sessions, windowsFull: windows.isFull)
                         )
                         .id(tab.id)
                     }
@@ -60,6 +60,12 @@ struct MacSessionTabStrip: View {
                idealWidth: max(MacSessionTabMetrics.minWidth, slotWidth), maxWidth: .infinity)
         .frame(height: MacSessionTabMetrics.height)
         .background(MacToolbarSlotReader { slotWidth = $0 })
+    }
+
+    /// The context menu's "Open in New Window". A Bot Chat (or any session the workspace catalog does
+    /// not list) cannot resume in a window, an unavailable tab has nothing to open, and the cap is 4.
+    static func popOutEnabled(tab: MacSessionTab, catalog: [SessionSummary], windowsFull: Bool) -> Bool {
+        !windowsFull && !tab.unavailable && MacSessionWindows.canPopOut(tab.id, catalog: catalog)
     }
 
     private func popOut(_ id: String) {
@@ -140,7 +146,7 @@ private struct MacSessionTabButton: View {
                 SessionActionMenuItems(session: session, onRename: { onRename(session) }, onDelete: { onDelete(session) })
             }
             Button(AppLocalization.string("Open in New Window"), action: onPopOut)
-                .disabled(!canPopOut || tab.unavailable)
+                .disabled(!canPopOut)
             Button(AppLocalization.string("Close Tab"), action: onClose)
         }
         .accessibilityElement(children: .combine)

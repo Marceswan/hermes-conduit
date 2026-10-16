@@ -72,6 +72,7 @@ struct ConduitMacApp: App {
         WindowGroup("Conduit", id: "conduit-primary") {
             rootContent
                 .frame(minWidth: MacSidebarState.windowMinWidth, minHeight: 560)
+                .modifier(MacRegisterPrimaryWindowOpener())
         }
         .defaultSize(width: 1180, height: 780)
         .commands { ConduitCommands(appState: appState, tabs: .shared, notch: .shared, palette: .shared, updater: .shared, quickAsk: .shared) }
@@ -80,6 +81,9 @@ struct ConduitMacApp: App {
             MacSessionWindowScene(token: token)
         }
         .defaultSize(width: 640, height: 760)
+        // A conduit:// open (D25) must never create a token-less session window: the main window
+        // claims external events (`rootContent`), this scene claims none.
+        .handlesExternalEvents(matching: [])
     }
 
     // Ported from ConduitApp.swift; keep in sync. Skipped: see docs/macos/PORTING_LEDGER.md.

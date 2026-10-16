@@ -41,13 +41,17 @@ struct ConduitCommands: Commands {
                 if MacQuickAskController.shared.isPanelKey {
                     MacQuickAskController.shared.newConversation()
                 } else {
-                    Task { await appState.createNewSession() }
+                    // From a session window the new chat is the main window's: it comes forward first.
+                    MacAppActions.newChat(window: NSApp.keyWindow) { Task { await appState.createNewSession() } }
                 }
             }
             .keyboardShortcut("n", modifiers: .command)
             // A popped-out session (D21): the main window's active tab moves to its own window.
             Button("Open Session in New Window") {
-                MacSessionTabsActions.popOutActive(store: tabs, window: NSApp.keyWindow) { sessionID in
+                MacSessionTabsActions.popOutActive(
+                    store: tabs, window: NSApp.keyWindow,
+                    canPopOut: { MacSessionWindows.canPopOut($0, catalog: appState.sessions) }
+                ) { sessionID in
                     MacSessionWindows.open(sessionID, appState: appState) { openWindow(value: $0) }
                 }
             }
@@ -151,7 +155,7 @@ struct ConduitCommands: Commands {
                 .keyboardShortcut("l", modifiers: .command)
         }
         CommandGroup(after: .sidebar) {
-            Button(sidebarVisible ? "Hide Sidebar" : "Show Sidebar") { MacSidebarState.toggleVisible() }
+            Button(sidebarVisible ? "Hide Sidebar" : "Show Sidebar") { MacKeyboardActions.toggleSidebar(window: NSApp.keyWindow) }
                 .keyboardShortcut("s", modifiers: [.command, .control])
             Toggle("Highlight Controls on Hover", isOn: $hoverHighlight)
         }

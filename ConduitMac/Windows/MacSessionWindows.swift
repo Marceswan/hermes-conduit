@@ -12,6 +12,13 @@ enum MacSessionWindows {
         window?.identifier?.rawValue.hasPrefix(sceneID) ?? false
     }
 
+    /// Whether a tab's session can be popped out. The window resumes with the workspace profile, so
+    /// only a session in the workspace catalog works: a Bot Chat (another profile's store, which the
+    /// window's resume does not address) or anything else without a catalog row stays in the main window.
+    static func canPopOut(_ sessionID: String, catalog: [SessionSummary]) -> Bool {
+        catalog.contains { $0.macMatches(sessionID) }
+    }
+
     static func token(for sessionID: String, appState: AppState) -> MacSessionWindowToken {
         MacSessionWindowToken(dashboardID: appState.activeDashboardID, profile: appState.activeProfile,
                               sessionID: MacQuickAskController.openableID(sessionID, in: appState.sessions))
@@ -135,6 +142,7 @@ struct MacSessionWindowScene: View {
             holder.window = window
             holder.syncStopRoute()
         })
+        .modifier(MacRegisterPrimaryWindowOpener())
         .onAppear(perform: appear)
         .onDisappear(perform: disappear)
     }

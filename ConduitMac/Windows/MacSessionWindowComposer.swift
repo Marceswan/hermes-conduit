@@ -19,10 +19,17 @@ struct MacSessionWindowComposer: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             if let error = controller.lastError, !error.isEmpty {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
+                HStack(spacing: 8) {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                    // A failed settle read: the transcript is stale, Retry re-reads it.
+                    if controller.canRetryRead {
+                        Button(AppLocalization.string("Retry")) { controller.retry() }
+                            .controlSize(.small)
+                    }
+                }
             }
             HStack(alignment: .bottom, spacing: 8) {
                 field

@@ -208,3 +208,40 @@ extension ApprovalActivity {
                          choices: nil, allowPermanent: false, smartDenied: false, status: .pending, choice: nil, error: nil)
     }
 }
+
+final class MacSessionTranscriptFixesTests: XCTestCase {
+    private let ts = "2026-10-16T00:00:00Z"
+
+    func testUserSentReturnsTheLocalIdAndRemoveMessageDropsIt() {
+        var t = MacSessionTranscript(sessionID: "s")
+        let id = t.userSent("hi", timestamp: ts)
+        XCTAssertEqual(t.messages.map(\.id), [id])
+        XCTAssertEqual(t.turn, .running)
+        t.removeMessage(id: id)
+        XCTAssertTrue(t.messages.isEmpty)
+    }
+
+    func testSettleTurnAfterFailedReadIdlesOrWaitsForInput() {
+        var t = MacSessionTranscript(sessionID: "s")
+        t.apply(.messageStart(sessionId: "s"), timestamp: ts)
+        t.apply(.messageComplete(sessionId: "s", messageId: "m", content: "x", reasoning: nil), timestamp: ts)
+        XCTAssertEqual(t.turn, .running)
+        t.settleTurnAfterFailedRead()
+        XCTAssertEqual(t.turn, .idle)
+        t.apply(.approval(sessionId: "s", activity: .macTest(requestId: "r")), timestamp: ts)
+        t.apply(.messageDelta(sessionId: "s", text: "y"), timestamp: ts)
+        t.settleTurnAfterFailedRead()
+        XCTAssertEqual(t.turn, .needsInput)
+    }
+
+    func testAdoptRuntimeKeepsRowsAndTakesTheNewIds() {
+        var t = MacSessionTranscript(sessionID: "row")
+        t.userSent("hi", timestamp: ts)
+        t.adoptRuntime(SessionResumeResult(sessionId: "rt-2", storedSessionId: "st", messages: [ChatMessage(id: "x", role: .assistant, content: "old", timestamp: "")],
+                                           snapshot: .macTestSnapshot(running: false)))
+        XCTAssertEqual(t.runtimeID, "rt-2")
+        XCTAssertTrue(t.isRelevant(.messageDelta(sessionId: "rt-2", text: "a")))
+        XCTAssertEqual(t.messages.count, 1, "the optimistic row stays; rows are not replaced")
+        XCTAssertEqual(t.messages.first?.role, .user)
+    }
+}

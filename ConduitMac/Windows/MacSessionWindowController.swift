@@ -35,6 +35,8 @@ final class MacSessionWindowController: ObservableObject {
     @Published private(set) var phase: Phase = .loading
     @Published var draft = ""
     @Published private(set) var lastError: String?
+    /// True while `lastError` is a failed settle read (the composer then offers Retry, which re-reads).
+    @Published private(set) var canRetryRead = false
 
     let token: MacSessionWindowToken
     private let environment: MacSessionWindowEnvironment
@@ -106,19 +108,25 @@ final class MacSessionWindowController: ObservableObject {
     // MARK: Events
 
     func handle(_ event: StreamEvent) {
-        if resumeInFlight, transcript.runtimeID == nil {
-            // The first resume has not told us the runtime id yet, so relevance is not decidable:
-            // hold every event (replay filters through `isRelevant`), within the cap.
+        if resumeInFlight {
+            // Relevance is not decidable until the read answers: the first resume has not told us the
+            // runtime id, and a resume after the gateway reaped the runtime mints a new one. Hold every
+            // event (replay filters through `isRelevant`), within the cap.
             buffer(event)
             return
         }
         guard transcript.isRelevant(event) else { return }
-        if resumeInFlight { buffer(event); return }
         apply(event)
     }
 
     private func buffer(_ event: StreamEvent) {
-        if buffered.count < Self.maxBufferedEvents { buffered.append(event) } else { bufferOverflowed = true }
+        if buffered.count < Self.maxBufferedEvents {
+            buffered.append(event)
+        } else if transcript.runtimeID == nil || transcript.isRelevant(event) {
+            // Only a dropped event that may be this window's asks for a re-read; another chat's
+            // streaming must not keep a window re-reading.
+            bufferOverflowed = true
+        }
     }
 
     private func apply(_ event: StreamEvent) {
@@ -133,21 +141,26 @@ final class MacSessionWindowController: ObservableObject {
     private func scheduleSettle() {
         settleTask?.cancel()
         let delay = settleDelay
+        let scheduledAt = revision
         settleTask = Task { [weak self] in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
-            self?.resume()
+            self?.resume(settleScheduledAt: scheduledAt)
         }
     }
 
     // MARK: Resume
 
-    private func resume() {
+    /// `settleScheduledAt` is the `revision` when the settle was scheduled: if the read fails and no
+    /// event arrived since, the turn that ended is over (see `settleTurnAfterFailedRead`).
+    private func resume(settleScheduledAt: Int? = nil) {
         guard scopeMatches, phase != .deleted else { return }
         let probeBusy = probeOnNextResume
         resumeTask?.cancel()
         resumeInFlight = true
-        let id = transcript.runtimeID ?? token.sessionID
+        // Always the stored/row id, never the runtime id: the gateway reaps a runtime that went quiet,
+        // and only the stored id can mint a new one. The runtime id serves send, cancel and approvals.
+        let id = token.sessionID
         resumeTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -160,6 +173,7 @@ final class MacSessionWindowController: ObservableObject {
                 bufferOverflowed = false
                 resumeInFlight = false
                 lastError = nil
+                canRetryRead = false
                 replay.filter { transcript.isRelevant($0) }.forEach(apply)
                 phase = phaseForScope() ?? .ready
                 // The flag stays set until the gateway answered (or the answer no longer matters).
@@ -168,11 +182,20 @@ final class MacSessionWindowController: ObservableObject {
             } catch {
                 guard !Task.isCancelled else { return }
                 resumeInFlight = false
+                let replay = buffered
                 buffered = []
                 bufferOverflowed = false
                 let message = MacUntrustedText.sanitize(UserFacingError.message(for: error), maxGraphemes: 300)
                 // A failed settle must not blank a window that already shows the turn.
-                if phase == .ready { lastError = message } else { phase = .failed(message) }
+                if phase == .ready {
+                    lastError = message
+                    canRetryRead = true
+                    // What arrived during the read still happened.
+                    replay.filter { transcript.isRelevant($0) }.forEach(apply)
+                    if let settleScheduledAt, settleScheduledAt == revision { transcript.settleTurnAfterFailedRead() }
+                } else {
+                    phase = .failed(message)
+                }
             }
         }
     }
@@ -198,10 +221,19 @@ final class MacSessionWindowController: ObservableObject {
         return true
     }
 
-    /// Re-reads a window whose first read failed (the Retry button). Respects the scope.
+    /// Re-reads a window whose read failed (the Retry button): the first read (`.failed`) or a
+    /// settle read (`canRetryRead`, the transcript stays visible). Respects the scope.
     func retry() {
-        guard case .failed = phase else { return }
-        refreshPhaseForScope()
+        switch phase {
+        case .failed:
+            refreshPhaseForScope()
+        case .ready where canRetryRead && !resumeInFlight:
+            lastError = nil
+            canRetryRead = false
+            resume()
+        default:
+            break
+        }
     }
 
     // MARK: Changes from AppState
@@ -275,19 +307,39 @@ final class MacSessionWindowController: ObservableObject {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         draft = ""
         lastError = nil
+        canRetryRead = false
         settleTask?.cancel()
         revision += 1
-        transcript.userSent(text, timestamp: timestamp())
+        let rowID = transcript.userSent(text, timestamp: timestamp())
         let id = transcript.runtimeID ?? token.sessionID
         sendTask = Task { [weak self] in
             guard let self else { return }
             do {
-                _ = try await environment.sendPrompt(id, text)
+                try await submit(text, to: id)
             } catch {
-                draft = text
+                // The prompt never went out: drop its optimistic row, and give the text back only
+                // when nothing newer has been typed meanwhile.
+                transcript.removeMessage(id: rowID)
                 transcript.setTurn(.idle)
+                if draft.isEmpty { draft = text }
                 lastError = MacUntrustedText.sanitize(UserFacingError.message(for: error), maxGraphemes: 300)
             }
+        }
+    }
+
+    /// Sends to the runtime id. If the gateway answers "session not found" (it reaped the runtime),
+    /// resumes once by the stored id, adopts the new runtime id and sends again, once.
+    private func submit(_ text: String, to id: String) async throws {
+        do {
+            _ = try await environment.sendPrompt(id, text)
+        } catch {
+            let original = error
+            guard HermesClient.isSessionNotFoundError(original), scopeMatches else { throw original }
+            let resumed: SessionResumeResult
+            do { resumed = try await environment.resume(token.sessionID) } catch { throw original }
+            guard !Task.isCancelled, scopeMatches else { throw original }
+            transcript.adoptRuntime(resumed)
+            _ = try await environment.sendPrompt(resumed.sessionId, text)
         }
     }
 

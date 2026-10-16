@@ -122,7 +122,7 @@ final class MacAppActionsTests: XCTestCase {
     func testSettingsFromASessionWindowWithNoPrimaryWindowDoesNothing() {
         let store = MacPaletteStore(defaults: suite.defaults)
         let side = session()
-        XCTAssertFalse(MacAppActions.openSettings(window: side, windows: [side], palette: store, center: center))
+        XCTAssertFalse(MacAppActions.openSettings(window: side, windows: [side], palette: store, center: center, openMainWindow: {}))
         XCTAssertEqual(counter.count, 0)
     }
 
@@ -186,7 +186,7 @@ final class MacAppActionsTests: XCTestCase {
         XCTAssertTrue(switcher.isPresented)
         XCTAssertTrue(main.isVisible)
         let lone = MacDashboardSwitcherStore()
-        XCTAssertFalse(MacAppActions.switchDashboard(window: side, windows: [side], palette: palette, switcher: lone))
+        XCTAssertFalse(MacAppActions.switchDashboard(window: side, windows: [side], palette: palette, switcher: lone, openMainWindow: {}))
         XCTAssertFalse(lone.isPresented, "no primary window: no orphan sheet")
     }
 

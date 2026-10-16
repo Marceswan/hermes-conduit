@@ -87,12 +87,32 @@ struct MacSessionTranscript: Equatable {
         else { turn = hasPendingCard ? .needsInput : .idle }
     }
 
-    mutating func userSent(_ text: String, timestamp: String) {
-        messages.append(ChatMessage(id: nextLocalID("user"), role: .user, content: text, timestamp: timestamp))
+    /// Appends the optimistic user row and returns its local id (a failed send removes it by that id).
+    @discardableResult
+    mutating func userSent(_ text: String, timestamp: String) -> String {
+        let id = nextLocalID("user")
+        messages.append(ChatMessage(id: id, role: .user, content: text, timestamp: timestamp))
         turn = .running
+        return id
     }
 
+    mutating func removeMessage(id: String) { messages.removeAll { $0.id == id } }
+
     mutating func setTurn(_ newTurn: Turn) { turn = newTurn }
+
+    /// Takes the runtime id a recovery resume minted, without replacing the rows
+    /// (the optimistic user row is not persisted yet).
+    mutating func adoptRuntime(_ result: SessionResumeResult) {
+        runtimeID = result.sessionId
+        adopt([result.sessionId, result.storedSessionId].compactMap { $0 })
+    }
+
+    /// The settle read failed and nothing arrived since: a turn that only ended (`messageComplete`
+    /// leaves it running until the re-read) is over. needsInput when a card is still pending.
+    mutating func settleTurnAfterFailedRead() {
+        guard turn == .running else { return }
+        turn = hasPendingCard ? .needsInput : .idle
+    }
 
     mutating func updateMessage(id: String, _ change: (inout ChatMessage) -> Void) {
         guard let index = messages.firstIndex(where: { $0.id == id }) else { return }

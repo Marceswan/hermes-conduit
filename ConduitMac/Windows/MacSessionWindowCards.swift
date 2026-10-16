@@ -72,6 +72,14 @@ struct MacWindowApprovalCard: View {
 
     private var canRespond: Bool { activity.status == .pending || activity.status == .error }
 
+    /// An approval's error text can be the gateway's withdrawal reason (`approvalWithdrawn`), so it is
+    /// sanitized like every other gateway string in the window's chrome. Nil when there is nothing to show.
+    static func displayError(_ raw: String?) -> String? {
+        guard let raw, !raw.isEmpty else { return nil }
+        let clean = MacUntrustedText.sanitize(raw, maxGraphemes: 300)
+        return clean.isEmpty ? nil : clean
+    }
+
     var body: some View {
         MacWindowCardSurface(tint: statusColor) {
             MacWindowCardHeader(icon: "checkmark.shield", title: statusTitle, tint: statusColor,
@@ -97,14 +105,14 @@ struct MacWindowApprovalCard: View {
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(statusColor)
             case .expired:
-                Text(activity.error.flatMap { $0.isEmpty ? nil : $0 }
+                Text(Self.displayError(activity.error)
                      ?? AppLocalization.string("This approval is no longer active — Hermes timed it out and continued."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             case .pending, .submitting, .error:
                 buttons
             }
-            if activity.status != .expired, let error = activity.error, !error.isEmpty {
+            if activity.status != .expired, let error = Self.displayError(activity.error) {
                 MacWindowCardError(text: error)
             }
         }

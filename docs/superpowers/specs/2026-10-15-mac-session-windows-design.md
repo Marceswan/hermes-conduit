@@ -119,7 +119,7 @@ New folder `ConduitMac/Windows/` (all Mac-only, no gates):
 
 ## Open questions (answered, v1)
 
-1. S1: YES. The gateway keeps no per-socket "current session"; one shared `HermesClient` serves main and every window (evidence in D21, docs/macos/DECISIONS.md). The own-client fallback was not built.
+1. S1: YES, answered from the gateway source (evidence in D21, docs/macos/DECISIONS.md); the live two-session probe is a smoke item (docs/macos/SMOKE_CHECKLIST.md, Session windows). The gateway keeps no per-socket "current session"; one shared `HermesClient` serves main and every window. The own-client fallback was not built.
 2. The v1 fidelity cut stands (no slash commands, mentions, voice, attachments, or steer/queue while busy; a pasted image shows a notice). Attachments remain a follow-up.
 3. Same session in main and a window: allowed. Pop-out detaches the tab, but opening the chat in main again is not blocked; opening the same window token twice focuses the existing window. A card answered in one place gives the other an error (first answer wins).
 4. Closing a window does not re-add its tab. Windows are not restored at relaunch (the registry closes any session window it did not request in this run).

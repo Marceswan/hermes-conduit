@@ -14,6 +14,7 @@ final class MacSessionWindowControllerTests: XCTestCase {
     private var live: [LiveSessionStatus] = []
     private var liveCalls = 0
     private var failSend = false
+    private var sendErrors: [Error] = []
     private var failResume = false
     private var liveFailures = 0
     private var liveGate: CheckedContinuation<Void, Never>?
@@ -27,7 +28,7 @@ final class MacSessionWindowControllerTests: XCTestCase {
         resumeResult = SessionResumeResult(sessionId: "rt-1", storedSessionId: "st-1", messages: [],
                                            snapshot: .macTestSnapshot(running: false))
         resumes = []; sends = []; live = []; liveCalls = 0; holdResume = false; failSend = false
-        failResume = false; approvals = []; inputAnswers = []
+        failResume = false; approvals = []; inputAnswers = []; sendErrors = []
         liveFailures = 0; liveGate = nil; holdLive = false; failInputAnswers = 0
     }
 
@@ -37,12 +38,13 @@ final class MacSessionWindowControllerTests: XCTestCase {
         env.clientID = { [unowned self] in clientID }
         env.resume = { [unowned self] id in
             resumes.append(id)
-            if failResume { throw HermesError.notConnected }
             if holdResume { await withCheckedContinuation { resumeGate = $0 } }
+            if failResume { throw HermesError.notConnected }
             return resumeResult
         }
         env.sendPrompt = { [unowned self] id, text in
             if failSend { throw HermesError.notConnected }
+            if !sendErrors.isEmpty { throw sendErrors.removeFirst() }
             sends.append((id, text)); return .accepted
         }
         env.activeSessions = { [unowned self] in
@@ -422,5 +424,194 @@ final class MacSessionWindowControllerTests: XCTestCase {
         XCTAssertEqual(calls, 1)
         XCTAssertEqual(c.transcript.messages.last?.clarify?.questions.first?.status, .answered)
         XCTAssertEqual(c.transcript.turn, .running)
+    }
+
+    // MARK: Final review fixes (D21)
+
+    /// Bounded wait that suspends (never spins the run loop inside an async main-actor test).
+    private func eventually(timeout: Duration = .seconds(3), _ predicate: () -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while !predicate() {
+            if ContinuousClock.now >= deadline { return false }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return true
+    }
+
+    func testFailedSettleReadAfterMessageCompleteReturnsTheTurnToIdle() async {
+        let c = makeController()
+        c.start(); await settle()
+        failResume = true
+        hub.publish(.messageStart(sessionId: "rt-1"))
+        hub.publish(.messageComplete(sessionId: "rt-1", messageId: "m1", content: "done", reasoning: nil))
+        XCTAssertEqual(c.transcript.turn, .running, "messageComplete leaves the turn to the re-read")
+        await c.awaitInFlightWork(); await settle()
+        XCTAssertNotNil(c.lastError)
+        XCTAssertTrue(c.canRetryRead)
+        XCTAssertEqual(c.transcript.turn, .idle)
+        c.draft = "Next"
+        XCTAssertTrue(c.canSend, "the window must not stay stuck on Stop")
+    }
+
+    func testFailedSettleReadWithAPendingCardIsNeedsInput() async {
+        let c = makeController()
+        c.start(); await settle()
+        hub.publish(.approval(sessionId: "rt-1", activity: .macTest(requestId: "r1")))
+        hub.publish(.messageDelta(sessionId: "rt-1", text: "x"))
+        XCTAssertEqual(c.transcript.turn, .running)
+        failResume = true
+        hub.publish(.messageComplete(sessionId: "rt-1", messageId: "m1", content: "x", reasoning: nil))
+        await c.awaitInFlightWork(); await settle()
+        XCTAssertEqual(c.transcript.turn, .needsInput)
+    }
+
+    func testFailedSettleReadKeepsTheTurnWhenAnEventArrivedMeanwhile() async {
+        let c = makeController()
+        c.start(); await settle()
+        holdResume = true
+        failResume = true
+        hub.publish(.messageComplete(sessionId: "rt-1", messageId: "m1", content: "a", reasoning: nil))
+        let inFlight = await eventually { resumeGate != nil }
+        XCTAssertTrue(inFlight)
+        holdResume = false
+        hub.publish(.messageStart(sessionId: "rt-1"))     // the next step of a tool turn, during the read
+        hub.publish(.messageDelta(sessionId: "rt-1", text: "more"))
+        resumeGate?.resume(); resumeGate = nil
+        await c.awaitInFlightWork()
+        XCTAssertEqual(c.transcript.turn, .running, "the live events are newer than the failed read")
+        XCTAssertEqual(c.transcript.streamingText, "more", "what arrived during the failed read is applied")
+        c.stop()
+    }
+
+    func testRetryRereadsAfterAFailedSettle() async {
+        let c = makeController()
+        c.start(); await settle()
+        failResume = true
+        hub.publish(.messageComplete(sessionId: "rt-1", messageId: "m1", content: "done", reasoning: nil))
+        await c.awaitInFlightWork(); await settle()
+        XCTAssertTrue(c.canRetryRead)
+        failResume = false
+        resumeResult = SessionResumeResult(sessionId: "rt-1", storedSessionId: "st-1",
+                                           messages: [ChatMessage(id: "m1", role: .assistant, content: "done", timestamp: "")],
+                                           snapshot: .macTestSnapshot(running: false))
+        c.retry()
+        await c.awaitInFlightWork(); await settle()
+        XCTAssertNil(c.lastError)
+        XCTAssertFalse(c.canRetryRead)
+        XCTAssertEqual(c.phase, .ready)
+    }
+
+    func testSettleResumesByTheStoredIdNotTheRuntimeId() async {
+        let c = makeController()
+        c.start(); await settle()
+        XCTAssertEqual(c.transcript.runtimeID, "rt-1")
+        hub.publish(.messageComplete(sessionId: "rt-1", messageId: "m1", content: "done", reasoning: nil))
+        await c.awaitInFlightWork(); await settle()
+        XCTAssertEqual(resumes, ["row-1", "row-1"], "a reaped runtime id would fail; the stored id always works")
+    }
+
+    func testSendToAReapedRuntimeResumesOnceAndRetries() async {
+        let c = makeController()
+        c.start(); await settle()
+        sendErrors = [RpcError(code: 4001, message: "session not found")]
+        resumeResult = SessionResumeResult(sessionId: "rt-2", storedSessionId: "st-1", messages: [],
+                                           snapshot: .macTestSnapshot(running: false))
+        c.draft = "Hello"
+        c.send(); await c.awaitInFlightWork(); await settle()
+        XCTAssertEqual(resumes, ["row-1", "row-1"])
+        XCTAssertEqual(sends.map(\.0), ["rt-2"])
+        XCTAssertEqual(sends.map(\.1), ["Hello"])
+        XCTAssertEqual(c.transcript.runtimeID, "rt-2")
+        XCTAssertNil(c.lastError)
+        XCTAssertEqual(c.draft, "")
+        XCTAssertEqual(c.transcript.messages.filter { $0.role == .user }.map(\.content), ["Hello"])
+        XCTAssertEqual(c.transcript.turn, .running)
+    }
+
+    func testSendRecoveryHappensOnceOnly() async {
+        let c = makeController()
+        c.start(); await settle()
+        sendErrors = [RpcError(code: 4001, message: "session not found"), RpcError(code: 4001, message: "session not found")]
+        c.draft = "Hello"
+        c.send(); await c.awaitInFlightWork(); await settle()
+        XCTAssertEqual(resumes.count, 2, "one start, one recovery")
+        XCTAssertTrue(sends.isEmpty)
+        XCTAssertNotNil(c.lastError)
+        XCTAssertEqual(c.draft, "Hello")
+        XCTAssertFalse(c.transcript.messages.contains { $0.role == .user })
+    }
+
+    func testOtherSendErrorsDoNotResume() async {
+        let c = makeController()
+        c.start(); await settle()
+        sendErrors = [RpcError(code: 4009, message: "session busy")]
+        c.draft = "Hello"
+        c.send(); await c.awaitInFlightWork(); await settle()
+        XCTAssertEqual(resumes.count, 1)
+        XCTAssertNotNil(c.lastError)
+    }
+
+    func testFailedSendRemovesTheOptimisticRow() async {
+        let c = makeController()
+        c.start(); await settle()
+        failSend = true
+        c.draft = "Hello"
+        c.send()
+        XCTAssertEqual(c.transcript.messages.filter { $0.role == .user }.count, 1, "optimistic while in flight")
+        await c.awaitInFlightWork(); await settle()
+        XCTAssertFalse(c.transcript.messages.contains { $0.role == .user })
+        XCTAssertEqual(c.draft, "Hello")
+        XCTAssertEqual(c.transcript.turn, .idle)
+    }
+
+    func testFailedSendDoesNotOverwriteANewerDraft() async {
+        let c = makeController()
+        c.start(); await settle()
+        failSend = true
+        c.draft = "Hello"
+        c.send()
+        c.draft = "Something newer"        // typed while the send was out
+        await c.awaitInFlightWork(); await settle()
+        XCTAssertEqual(c.draft, "Something newer")
+        XCTAssertFalse(c.transcript.messages.contains { $0.role == .user })
+        XCTAssertNotNil(c.lastError)
+    }
+
+    func testEventsForANewRuntimeIdAreBufferedDuringAResumeEvenWithAKnownRuntimeId() async {
+        let c = makeController()
+        c.start(); await settle()
+        XCTAssertEqual(c.transcript.runtimeID, "rt-1")
+        holdResume = true
+        resumeResult = SessionResumeResult(sessionId: "rt-2", storedSessionId: "st-1", messages: [],
+                                           snapshot: .macTestSnapshot(running: false))
+        clientID = ObjectIdentifier(NSObject())
+        c.clientChanged()
+        let inFlight = await eventually { resumeGate != nil }
+        XCTAssertTrue(inFlight)
+        holdResume = false
+        hub.publish(.messageDelta(sessionId: "rt-2", text: "early"))   // the minted runtime, not known yet
+        resumeGate?.resume(); resumeGate = nil
+        await c.awaitInFlightWork(); await settle()
+        XCTAssertEqual(c.transcript.runtimeID, "rt-2")
+        XCTAssertEqual(c.transcript.streamingText, "early")
+        c.stop()
+    }
+
+    func testAnotherChatsStreamingDuringAResumeDoesNotTriggerAnExtraRead() async {
+        let c = makeController()
+        c.start(); await settle()
+        holdResume = true
+        clientID = ObjectIdentifier(NSObject())
+        c.clientChanged()
+        let inFlight = await eventually { resumeGate != nil }
+        XCTAssertTrue(inFlight)
+        holdResume = false
+        for _ in 0..<(MacSessionWindowController.maxBufferedEvents + 50) {
+            hub.publish(.messageDelta(sessionId: "main-chat", text: "x"))
+        }
+        resumeGate?.resume(); resumeGate = nil
+        await c.awaitInFlightWork(); await settle()
+        XCTAssertEqual(resumes.count, 2, "start + client change; foreign overflow must not schedule a settle")
+        c.stop()
     }
 }

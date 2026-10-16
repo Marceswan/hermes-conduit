@@ -1,12 +1,17 @@
 import SwiftUI
 
 /// A popped-out session (D21): banner, transcript, composer. AppState is in the
-/// environment only for MessageBubble (profile names, media); the session state
-/// is the controller's.
+/// environment only for the reused upstream views (MessageBubble for non-assistant rows,
+/// the settled assistant content: profile names, media); the session state is the
+/// controller's. Assistant rows get a Mac-owned Copy-only action row (`MacWindowAssistantRow`),
+/// because upstream's Quote, Branch, React and Read aloud act on the main window's AppState.
 struct MacSessionWindowView: View {
     @ObservedObject var controller: MacSessionWindowController
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismissWindow) private var dismissWindow
+    @State private var follow = MacTranscriptFollowPolicy()
+
+    private static let bottomAnchorID = "bottom-anchor"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -35,11 +40,21 @@ struct MacSessionWindowView: View {
                     if !controller.transcript.streamingText.isEmpty {
                         StreamingBubble(text: controller.transcript.streamingText, active: true).id("streaming")
                     }
+                    // The follow sentinel: in view means the reader is at the end.
+                    Color.clear.frame(height: 1)
+                        .id(Self.bottomAnchorID)
+                        .onAppear { follow.bottomVisibilityChanged(true) }
+                        .onDisappear { follow.bottomVisibilityChanged(false) }
                 }
                 .padding(16)
             }
-            .onChange(of: controller.transcript.messages.count) { _, _ in scrollToEnd(proxy) }
-            .onChange(of: controller.transcript.streamingText) { _, _ in scrollToEnd(proxy) }
+            .onChange(of: controller.transcript.messages.count) { old, new in
+                let sent = new > old && controller.transcript.messages.last?.role == .user
+                if follow.shouldFollow(userJustSent: sent) { scrollToEnd(proxy) }
+            }
+            .onChange(of: controller.transcript.streamingText) { _, _ in
+                if follow.shouldFollow(userJustSent: false) { scrollToEnd(proxy) }
+            }
             .onAppear { scrollToEnd(proxy) }
         }
     }
@@ -61,15 +76,23 @@ struct MacSessionWindowView: View {
             if let activity = message.inputPrompt {
                 MacWindowInputPromptCard(activity: activity) { controller.answerInputPrompt(messageID: message.id, value: $0) }
             }
+        case .assistant:
+            MacWindowAssistantRow(message: message, profile: controller.token.profile,
+                                  gatewayResolver: appState.gatewayMediaResolver)
+        case .system where Self.isVoiceCallMarker(message):
+            // MessageBubble's marker card opens the call transcript in the main window.
+            SystemBubble(message: message)
         default:
             MessageBubble(message: message, gatewayResolver: appState.gatewayMediaResolver)
         }
     }
 
+    static func isVoiceCallMarker(_ message: ChatMessage) -> Bool {
+        message.displayKind == VoiceCallChatLink.displayKind || message.displayKind == VoiceCallChatLink.originDisplayKind
+    }
+
     private func scrollToEnd(_ proxy: ScrollViewProxy) {
-        let target: String? = controller.transcript.streamingText.isEmpty ? controller.transcript.messages.last?.id : "streaming"
-        guard let target else { return }
-        proxy.scrollTo(target, anchor: .bottom)
+        proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
     }
 
     /// The banner's Retry for `.failed`: re-reads the session (not `scopeChanged()`).
