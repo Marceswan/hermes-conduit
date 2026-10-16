@@ -1,6 +1,6 @@
 # Mac chat find (Cmd-F across the whole transcript): design
 
-Date: 2026-10-16. Status: draft for review. Decision number: D23. Target: the macOS app only (`ConduitMac`). iOS is unchanged.
+Date: 2026-10-16. Status: implemented (D23). Decision number: D23. Target: the macOS app only (`ConduitMac`). iOS is unchanged.
 
 ## Goal
 
@@ -102,6 +102,8 @@ B3 + C3 + D2 + E2 with the A2 model:
 - **Cost on large transcripts.** Projection is cached per message (key: role, content, code) and filled in chunks of 40 with a `Task.yield` when the bar opens; a query pass over the cache is a linear `NSString.range(of:)` scan. Hits are capped at 5,000. The projection of a 500 KB message is the slowest single step and runs once.
 - **Real key events.** Hosted tests send synthetic events to the field and call `doCommandBy` directly; real hardware Return, Shift-Return and IME are only verifiable by hand (smoke checklist), as D10 already notes for its keys.
 - **Native Find items.** `TextEditingCommands` also adds Find Next / Find Previous with Cmd-G / Cmd-Shift-G. Ours sit earlier in Edit and are never disabled, so they win; a test pins "first item with this key is ours" for all three keys.
+- **Unsearched blocks.** Image alt text, math blocks, collapsed thinking and collapsed tool text are not searched (they are not drawn as selectable message text); system rows and the live streaming tail are also out of scope.
+- **No-resolver MEDIA: tag.** With no gateway media resolver the views draw a raw `MEDIA:` tag as text but the projection does not emit it, so the count can miss such a tag (rare).
 - **D21 overlap.** The session-window check is written as a local helper against the literal prefix `conduit-session`. When D21 lands, swap it for `MacSessionWindows.isSessionWindow` (one call site, noted in the plan).
 
 ## Architecture and file paths
