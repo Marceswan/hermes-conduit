@@ -94,15 +94,54 @@ enum MacChatFindScroll {
         return abs(clamped - offset) < 0.5 ? nil : clamped
     }
 
-    /// Scrolls the transcript's `NSScrollView` so `range` of `view` is visible.
+    /// The transcript's scroll view for `view`: the OUTERMOST `NSScrollView`
+    /// above it. Code blocks and table cells sit in their own horizontal
+    /// `ScrollView`, so `enclosingScrollView` would name that inner one and the
+    /// vertical transcript would never move.
+    @MainActor
+    static func transcriptScrollView(containing view: NSView) -> NSScrollView? {
+        scrollViews(above: view).last
+    }
+
+    /// Every `NSScrollView` above `view`, innermost first.
+    @MainActor
+    private static func scrollViews(above view: NSView) -> [NSScrollView] {
+        var out: [NSScrollView] = []
+        var node = view.superview
+        while let current = node {
+            if let scroll = current as? NSScrollView { out.append(scroll) }
+            node = current.superview
+        }
+        return out
+    }
+
+    /// The clip-view x origin that brings `rect` (document coordinates) fully
+    /// into a clip of `viewportWidth`, or nil when it is already visible.
+    static func targetOffsetX(
+        rect: CGRect,
+        offset: CGFloat,
+        viewportWidth: CGFloat,
+        documentWidth: CGFloat
+    ) -> CGFloat? {
+        if rect.minX >= offset, rect.maxX <= offset + viewportWidth { return nil }
+        let maxOffset = max(0, documentWidth - viewportWidth)
+        let desired = rect.minX < offset ? rect.minX - 16 : rect.maxX - viewportWidth + 16
+        let clamped = min(max(0, desired), maxOffset)
+        return abs(clamped - offset) < 0.5 ? nil : clamped
+    }
+
+    /// Scrolls the transcript's `NSScrollView` so `range` of `view` is visible,
+    /// and any inner horizontal scroll view (code block, table) so the hit is
+    /// horizontally visible too.
     /// A bounds change the scroll surface did not write is read as the reader
     /// browsing (ChatScrollSurfaceLocator.classifyScroll), so the engine does
     /// not snap back to the latest message.
     @MainActor
     static func reveal(_ range: NSRange, in view: NSTextView) {
         guard view.textLayoutManager == nil, let layout = view.layoutManager,
-              let container = view.textContainer,
-              let scroll = view.enclosingScrollView, let document = scroll.documentView else { return }
+              let container = view.textContainer else { return }
+        let scrollers = scrollViews(above: view)
+        guard let scroll = scrollers.last, let document = scroll.documentView else { return }
         // An out-of-range character range raises NSRangeException in AppKit.
         let range = NSIntersectionRange(range, NSRange(location: 0, length: (view.string as NSString).length))
         guard range.length > 0 else { return }
@@ -110,6 +149,22 @@ enum MacChatFindScroll {
         var rect = layout.boundingRect(forGlyphRange: glyphs, in: container)
         rect.origin.x += view.textContainerOrigin.x
         rect.origin.y += view.textContainerOrigin.y
+        // Inner scroll views first (innermost to outermost, excluding the
+        // transcript): moving them changes only x, so the vertical math below
+        // is unaffected.
+        for inner in scrollers.dropLast() {
+            guard let innerDocument = inner.documentView else { continue }
+            let clip = inner.contentView
+            let inInner = innerDocument.convert(rect, from: view)
+            guard let x = targetOffsetX(
+                rect: inInner,
+                offset: clip.bounds.origin.x,
+                viewportWidth: clip.bounds.width,
+                documentWidth: innerDocument.frame.width
+            ) else { continue }
+            clip.setBoundsOrigin(NSPoint(x: x, y: clip.bounds.origin.y))
+            inner.reflectScrolledClipView(clip)
+        }
         let inDocument = document.convert(rect, from: view)
         let clip = scroll.contentView
         guard let y = targetOffset(
@@ -177,9 +232,15 @@ final class MacChatFindRegistry {
             .sorted(by: Self.readingOrder)
     }
 
-    /// The first live view's scroll view: the transcript.
+    /// The transcript: the outermost scroll view above the topmost live view
+    /// (reading order, not dictionary order), so routing is deterministic.
     var transcriptScrollView: NSScrollView? {
-        liveEntries().lazy.compactMap { $0.view?.enclosingScrollView }.first
+        liveEntries()
+            .compactMap(\.view)
+            .sorted(by: Self.readingOrder)
+            .lazy
+            .compactMap { MacChatFindScroll.transcriptScrollView(containing: $0) }
+            .first
     }
 
     /// True for a message view and for anything inside the transcript scroll view.
@@ -191,6 +252,8 @@ final class MacChatFindRegistry {
     }
 
     func setContext(_ context: Context?) {
+        // `register` refreshes a new or re-registered view itself.
+        guard context != self.context else { return }
         self.context = context
         for id in Set(liveEntries().map(\.messageID)) { refresh(messageID: id) }
     }

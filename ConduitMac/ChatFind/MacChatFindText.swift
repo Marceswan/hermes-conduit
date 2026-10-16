@@ -113,6 +113,10 @@ final class MacChatFindTextCache {
 
     private var storage: [String: (key: Key, text: String?)] = [:]
 
+    var count: Int { storage.count }
+
+    func reset() { storage = [:] }
+
     private static func key(of message: ChatMessage) -> Key {
         Key(role: message.role, content: message.content, code: message.code)
     }

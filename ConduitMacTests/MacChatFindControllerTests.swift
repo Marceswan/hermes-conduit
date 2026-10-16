@@ -322,10 +322,8 @@ final class MacChatFindControllerTests: XCTestCase {
         _ = mounted(controller, "m1", "nothing drawn here")
         controller.open()
         await search(controller, "needle")
-        let reached = await eventually { self.revealed.count == 3 }
-        XCTAssertTrue(reached)
-        try? await Task.sleep(for: .milliseconds(150))
-        XCTAssertEqual(revealed.count, 3)
+        try? await Task.sleep(for: .milliseconds(200))   // the 3 retries at 15 ms are long over
+        XCTAssertEqual(revealed, ["m1"], "a mounted row that lacks the hit is requested once, not re-yanked per retry")
         XCTAssertEqual(controller.state.count, 1)
         XCTAssertEqual(controller.state.current?.messageID, "m1")
         XCTAssertEqual(scrolled.count, 1, "the message is brought into view once, no loop")
@@ -465,6 +463,39 @@ final class MacChatFindControllerTests: XCTestCase {
         XCTAssertEqual(secondRestores, 0)
         controller.close()
         XCTAssertEqual(firstRestores, 1, "closing twice restores once")
+    }
+
+    func testCloseReleasesTheProjectionCacheAndThePreviousIDs() async {
+        let transcript = Transcript([message("m1", "beta"), message("m2", "beta"), message("m3", "gamma")])
+        let controller = makeController(transcript)
+        controller.open()
+        await search(controller, "beta")
+        XCTAssertEqual(controller.projectionCacheCount, 3)
+        XCTAssertEqual(controller.previousIDs, ["m1", "m2", "m3"])
+        controller.close()
+        XCTAssertEqual(controller.projectionCacheCount, 0, "projected text of the transcript is dropped on close")
+        XCTAssertTrue(controller.previousIDs.isEmpty)
+        controller.open()
+        await controller.settled()
+        XCTAssertEqual(controller.state.count, 2, "reopening primes and searches again")
+        XCTAssertEqual(controller.projectionCacheCount, 3)
+    }
+
+    func testASessionSwitchReplacesTheCacheAndThePreviousIDs() async {
+        let transcript = Transcript([message("m1", "beta"), message("m2", "beta")])
+        let controller = makeController(transcript)
+        controller.open()
+        await search(controller, "beta")
+        transcript.messages = [message("x1", "beta")]
+        controller.transcriptDidChange()
+        await controller.settled()
+        XCTAssertEqual(controller.projectionCacheCount, 1, "the old session's text is gone")
+        XCTAssertEqual(controller.previousIDs, ["x1"])
+        transcript.messages = []
+        controller.transcriptDidChange()
+        await controller.settled()
+        XCTAssertEqual(controller.projectionCacheCount, 0)
+        XCTAssertTrue(controller.previousIDs.isEmpty)
     }
 
     func testReopeningKeepsTheQueryAndSearchesAgain() async {

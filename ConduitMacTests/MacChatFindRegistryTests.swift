@@ -122,6 +122,120 @@ final class MacChatFindRegistryTests: XCTestCase {
         XCTAssertTrue(visible.intersects(rectInDocument), "the hit is inside the visible rect")
     }
 
+    // MARK: nested scroll views (final review)
+
+    /// An outer vertical transcript scroll view holding an inner horizontal one
+    /// (a code block / table cell) whose text view draws a long unwrapped line.
+    private struct Nested {
+        let outer: NSScrollView
+        let inner: NSScrollView
+        let document: FlippedDocument
+        let view: NSTextView
+        let window: NSWindow
+        let range: NSRange
+    }
+
+    private func nested() -> Nested {
+        let outer = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+        let document = FlippedDocument(frame: NSRect(x: 0, y: 0, width: 300, height: 3000))
+        let inner = NSScrollView(frame: NSRect(x: 0, y: 1000, width: 300, height: 1900))
+        inner.hasHorizontalScroller = true
+        inner.hasVerticalScroller = false
+        let view = SelectableTextView.makeTextView()
+        view.isHorizontallyResizable = true
+        view.textContainer?.widthTracksTextView = false
+        view.textContainer?.containerSize = NSSize(width: 100_000, height: 100_000)
+        let line = String(repeating: "x", count: 200) + " the needle is here"
+        view.string = String(repeating: "filler line\n", count: 120) + line
+        view.frame = NSRect(x: 0, y: 0, width: 3000, height: 1900)
+        inner.documentView = view
+        document.addSubview(inner)
+        outer.documentView = document
+        let window = NSWindow(contentRect: outer.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = outer
+        view.layoutManager?.ensureLayout(for: view.textContainer!)
+        let range = (view.string as NSString).range(of: "needle")
+        return Nested(outer: outer, inner: inner, document: document, view: view, window: window, range: range)
+    }
+
+    func testRevealInsideAnInnerHorizontalScrollViewMovesTheOuterTranscript() {
+        let n = nested()
+        defer { n.window.close() }
+        XCTAssertTrue(n.view.enclosingScrollView === n.inner, "AppKit names the INNER scroll view")
+        XCTAssertTrue(MacChatFindScroll.transcriptScrollView(containing: n.view) === n.outer)
+        XCTAssertEqual(n.outer.contentView.bounds.origin.y, 0)
+        XCTAssertEqual(n.inner.contentView.bounds.origin.x, 0)
+        MacChatFindScroll.reveal(n.range, in: n.view)
+        XCTAssertGreaterThan(n.outer.contentView.bounds.origin.y, 1000, "the OUTER clip view scrolled down to the hit")
+        XCTAssertGreaterThan(n.inner.contentView.bounds.origin.x, 0, "the inner scroll view scrolled to the hit horizontally")
+        let layout = n.view.layoutManager!
+        let local = layout.boundingRect(
+            forGlyphRange: layout.glyphRange(forCharacterRange: n.range, actualCharacterRange: nil),
+            in: n.view.textContainer!
+        )
+        let inOuter = n.document.convert(local, from: n.view)
+        XCTAssertTrue(n.outer.contentView.bounds.intersects(inOuter), "the hit is inside the outer visible rect")
+        XCTAssertGreaterThanOrEqual(inOuter.minX, 0)
+        XCTAssertLessThanOrEqual(inOuter.maxX, 300 + 0.5, "horizontally inside the viewport")
+    }
+
+    func testTargetOffsetXBringsAHitIntoTheClip() {
+        let hidden = CGRect(x: 1000, y: 0, width: 40, height: 14)
+        let x = MacChatFindScroll.targetOffsetX(rect: hidden, offset: 0, viewportWidth: 300, documentWidth: 3000)
+        XCTAssertEqual(x ?? -1, 1000 + 40 - 300 + 16, accuracy: 0.5)
+        XCTAssertNil(MacChatFindScroll.targetOffsetX(rect: CGRect(x: 20, y: 0, width: 40, height: 14), offset: 0, viewportWidth: 300, documentWidth: 3000))
+        let left = MacChatFindScroll.targetOffsetX(rect: CGRect(x: 100, y: 0, width: 40, height: 14), offset: 500, viewportWidth: 300, documentWidth: 3000)
+        XCTAssertEqual(left ?? -1, 84, accuracy: 0.5)
+        let clamped = MacChatFindScroll.targetOffsetX(rect: CGRect(x: 2990, y: 0, width: 40, height: 14), offset: 0, viewportWidth: 300, documentWidth: 3000)
+        XCTAssertEqual(clamped, 2700)
+    }
+
+    func testTranscriptScrollViewAndContainsAreDeterministicWithNestedScrollViews() {
+        let n = nested()
+        defer { n.window.close() }
+        // A second message view sits directly in the outer document, next to
+        // the nested one; whichever the dictionary yields first, the transcript
+        // is the same outer scroll view.
+        let plain = textView("plain", hosted: false)
+        plain.frame = NSRect(x: 0, y: 10, width: 300, height: 40)
+        n.document.addSubview(plain)
+        let registry = MacChatFindRegistry()
+        registry.register(n.view, messageID: "code")
+        registry.register(plain, messageID: "text")
+        for _ in 0..<50 {
+            XCTAssertTrue(registry.transcriptScrollView === n.outer)
+            XCTAssertTrue(registry.contains(n.document), "anything inside the transcript, not just the inner scroll view")
+            XCTAssertTrue(registry.contains(n.inner))
+        }
+        XCTAssertFalse(registry.contains(NSView()))
+        // Registering only the nested view resolves the same way.
+        let only = MacChatFindRegistry()
+        only.register(n.view, messageID: "code")
+        XCTAssertTrue(only.transcriptScrollView === n.outer)
+        XCTAssertTrue(only.contains(plain))
+    }
+
+    // MARK: unchanged context
+
+    func testAnUnchangedContextDoesNotReapplyAttributes() {
+        let registry = MacChatFindRegistry()
+        let view = textView("beta beta")
+        registry.register(view, messageID: "m")
+        let context = MacChatFindRegistry.Context(query: "beta", current: nil, searchable: ["m"])
+        registry.setContext(context)
+        XCTAssertNotNil(background(view, at: 0))
+        view.layoutManager?.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: 9))
+        XCTAssertNil(background(view, at: 0))
+        registry.setContext(context)
+        XCTAssertNil(background(view, at: 0), "an equal context is a no-op")
+        registry.setContext(.init(query: "beta", current: MacChatFindMatch(messageID: "m", ordinal: 1, range: NSRange(location: 5, length: 4)), searchable: ["m"]))
+        XCTAssertEqual(background(view, at: 5), MacChatFindColors.current, "a changed context applies")
+        let late = textView("a beta")
+        registry.register(late, messageID: "m")
+        XCTAssertNotNil(background(late, at: 2), "a newly registered view is refreshed by register itself")
+    }
+
     // MARK: reading order
 
     func testViewsOfAMessageComeBackInReadingOrder() {

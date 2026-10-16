@@ -63,7 +63,7 @@ final class MacChatFindController: ObservableObject {
     private var placing: MacChatFindMatch?
     /// Searchable ids of the previous search, oldest position first. Lets the
     /// cursor keep a position for a message that has left the transcript.
-    private var previousIDs: [String] = []
+    private(set) var previousIDs: [String] = []
     private var restoreFocus: (() -> Void)?
     private var cancellables = Set<AnyCancellable>()
     private var isBound = false
@@ -174,6 +174,11 @@ final class MacChatFindController: ObservableObject {
         state = MacChatFindState()
         registry.setContext(nil)
         lastAnnouncement = nil
+        // Nothing searches while the bar is closed: drop the projected text of
+        // the whole transcript and the old ids. Opening primes the cache again.
+        cache.reset()
+        previousIDs = []
+        searchable = []
         // A hidden field must not keep first responder (it would swallow typing).
         if let window = field?.window, ownsResponder(window.firstResponder), !(window.firstResponder is ComposerTextView) {
             window.makeFirstResponder(nil)
@@ -311,7 +316,14 @@ final class MacChatFindController: ObservableObject {
     }
 
     private func requestReveal(for match: MacChatFindMatch, attempt: Int) {
-        reveal(match.messageID)
+        // Ask the engine once per match. Re-asking is only worth it while no
+        // view of the row is mounted (an estimated-height scroll can land
+        // short); once a view is there but lacks the hit (an undrawn part of a
+        // bounded message), re-yanking the row each retry would only fight the
+        // reader.
+        if attempt == 0 || registry.views(for: match.messageID).isEmpty {
+            reveal(match.messageID)
+        }
         let delay = timing.revealRetry
         revealTask = Task { [weak self] in
             // Weak across the sleep: a pending retry must not keep the controller alive.
@@ -411,6 +423,9 @@ final class MacChatFindController: ObservableObject {
            (editor.delegate as AnyObject?) === field { return true }
         return registry.contains(responder)
     }
+
+    /// Cached projections, for tests.
+    var projectionCacheCount: Int { cache.count }
 
     /// Waits for the queued search, cache fill and placement. For tests.
     func settled() async {
