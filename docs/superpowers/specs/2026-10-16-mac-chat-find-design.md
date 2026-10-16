@@ -6,7 +6,7 @@ Date: 2026-10-16. Status: implemented (D23). Decision number: D23. Target: the m
 
 A transcript-wide find in the main chat window, Safari/Xcode style: a find bar with a query field, a match count ("3 of 12"), next / previous (Return / Shift-Return, Cmd-G / Cmd-Shift-G), Esc closes. Every match in a mounted message is highlighted; next / previous scrolls to the message holding the match even when its row is not yet built by the `LazyVStack`. Searches the loaded transcript only (`AppState.messages`). Closes the ledger row "Menu: Find in Chat (Cmd-F) | deferred" (`docs/macos/PORTING_LEDGER.md:48`).
 
-Scope, stated plainly: the main chat window only (identifier prefix `conduit-primary`). The session windows of D21 (scene id `conduit-session`, own transcript, not `ChatView`) get no whole-chat Find in v1, and Cmd-F / Cmd-G / Cmd-Shift-G do nothing in them. Group-chat rooms (`GroupChatView`) are out of scope too.
+Scope, stated plainly: the main chat window only (identifier prefix `conduit-primary`). The session windows of D21 (scene id `conduit-session`, own transcript, not `ChatView`) get no whole-chat Find in v1; there Cmd-F / Cmd-G / Cmd-Shift-G fall back to the focused message's per-message find bar (Find, Next, Previous), and do nothing when no message view is focused (Task 7 ruling). Group-chat rooms (`GroupChatView`) are out of scope too.
 
 ## Constraints
 
@@ -131,7 +131,7 @@ Upstream edit (one gate, one ledger row): `Conduit/Views/ChatView.swift`, `.macC
 - Row hook: a `SelectableTextView` under `.macChatFindRow` with a controller in the environment registers under the row id; without a controller nothing registers.
 - Parity: `MarkdownText` samples hosted; per-message hit counts from projection equal the sum over mounted views.
 - Bar: hosted bar renders in light and dark; `doCommandBy` mapping (Return, Shift-Return, Esc, IME marked text); focus token focuses and selects; accessibility labels.
-- Commands: menu table (`/Edit/Find in Chat`, `/Edit/Find Next`, `/Edit/Find Previous` win their keys), routing (composer, message view, sidebar-like responder, nothing focused, hidden chat, room, sheet, session window, Quick Ask panel), existing `testCmdF*` cases unchanged and green because a window without a controller keeps D10's behavior.
+- Commands: menu table (`/Edit/Find in Chat`, `/Edit/Find Next`, `/Edit/Find Previous` win their keys), routing (composer, message view, sidebar-like responder, nothing focused, hidden chat, room, sheet, session window with its per-message fallback, Quick Ask panel), existing `testCmdF*` cases unchanged and green because a window without a controller keeps D10's behavior.
 - Full Mac suite twice; `git diff -- Conduit Shared` removes zero lines and adds exactly one gated region in `ChatView.swift`.
 
 ## Open questions (default chosen)

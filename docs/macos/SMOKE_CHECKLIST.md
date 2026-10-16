@@ -10,6 +10,8 @@ Run against a real Hermes dashboard before every release build.
 - [ ] Cmd-F in a long chat opens the find bar over the transcript; typing a word shows "N of M", highlights it in every visible message (current hit orange), and jumps to the newest hit
 - [ ] Find: Return / Cmd-G next, Shift-Return / Cmd-Shift-G previous, wrapping at both ends; a hit in a message far above scrolls it into view; Esc or Done closes, clears the highlights and returns focus to where it was
 - [ ] Find: Japanese IME in the field, Return confirms the composition and does not step; the bar says "Loaded messages only" while older pages exist; a link's destination text is not a hit
+- [ ] Cmd-G / Cmd-Shift-G with the bar closed or focus outside the bar (composer, a message) open or step the chat find hits
+- [ ] Session window (needs D21 merged): Cmd-F / Cmd-G / Cmd-Shift-G drive the focused message's own find bar; nothing happens with no message focused
 - [ ] Cmd-F with the sidebar list focused still focuses Search sessions; under Bots / Cron / Kanban it does too; with a sheet open nothing happens; in a session window Cmd-F opens the focused message's own find bar
 - [ ] Paste a screenshot (Cmd-Shift-Ctrl-4 then Cmd-V): attaches as image
 - [ ] Copy a PNG in Finder, paste: attaches as image; drag an image file onto composer: attaches as image (non-image drops are not supported, same as upstream)
@@ -140,7 +142,7 @@ Human pass at release time (agents never click or type into the running app, R18
 - Keyboard checks (D10), user (hosted tests send synthetic events only; none of these has run against real hardware keys):
   - [ ] Ctrl-Cmd-1 to Ctrl-Cmd-4 switch Sessions / Bots / Cron / Kanban from the composer and from the sidebar search field.
   - [ ] Cmd-[ and Cmd-] (and Opt-Cmd-Up / Down) open the previous / next session in the order shown, including with a search filter; greyed at the ends; Cmd-[ in the composer does not type or indent.
-  - [ ] Cmd-F focuses "Search sessions" (also with the sidebar hidden and from the composer); with focus in the chat it opens the whole-chat find bar instead (D23); Edit > Find > Find... shows no Cmd-F.
+  - [ ] Cmd-F focuses "Search sessions" from the sidebar list or search field (also with the sidebar hidden / chat not shown); from the composer or a message it opens the whole-chat find bar (D23); Edit > Find > Find... shows no Cmd-F.
   - [ ] Cmd-F then Cmd-L (or a click in the composer) quickly: the keyboard ends in the composer, not pulled back to the search field. Ctrl-Cmd-1..4, Cmd-1..9, Cmd-]/[, Cmd-W and Cmd-F do nothing while a sheet (model picker, Settings) is open.
   - [ ] Composer: the macOS inline-prediction Tab accept (if enabled) versus Tab leaving the composer.
   - [ ] Cmd-L from Kanban returns to chat and focuses the composer.
