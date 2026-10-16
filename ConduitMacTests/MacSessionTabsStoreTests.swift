@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import ConduitMac
 
@@ -198,6 +199,38 @@ final class MacSessionTabsStoreTests: XCTestCase {
         store.catalogChanged([real])
         XCTAssertEqual(store.model.tabs.map(\.id), ["real"])
         XCTAssertEqual(store.model.tabs[0].title, "Estimate")
+    }
+
+    func testPopOutDetachesAndOpensNeighbour() {
+        ["a", "b"].forEach { store.activeSessionChanged($0, title: $0) }
+        var windows: [String] = []
+        store.popOut("b") { windows.append($0); return true }
+        XCTAssertEqual(windows, ["b"])
+        XCTAssertEqual(store.model.tabs.map(\.id), ["a"])
+        XCTAssertEqual(opened, ["a"], "main activates the neighbour")
+    }
+
+    func testPopOutLastTabStartsNewChat() {
+        store.activeSessionChanged("a", title: "A")
+        store.popOut("a") { _ in true }
+        XCTAssertTrue(store.model.tabs.isEmpty)
+        XCTAssertEqual(newChats, 1)
+    }
+
+    func testPopOutRefusedKeepsTheTab() {
+        store.activeSessionChanged("a", title: "A")
+        store.popOut("a") { _ in false }
+        XCTAssertEqual(store.model.tabs.map(\.id), ["a"])
+        XCTAssertEqual(newChats, 0)
+    }
+
+    func testSessionDeletedIsPublished() {
+        store.activeSessionChanged("a", title: "A")
+        var deleted: [String] = []
+        let sink = store.sessionDeletions.sink { deleted.append($0) }
+        store.sessionDeleted("a")
+        XCTAssertEqual(deleted, ["a"])
+        sink.cancel()
     }
 }
 

@@ -15,6 +15,17 @@
     <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>LSFileQuarantineEnabled</key><true/>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>CFBundleURLName</key><string>$(PRODUCT_BUNDLE_IDENTIFIER).chat-link</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>conduit</string>
+            </array>
+        </dict>
+    </array>
     <key>SUFeedURL</key><string>https://github.com/Marceswan/hermes-conduit/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key><string>wa1VnqgoM+ekG9UqFi6r78wInTGSFso0KmwMzlwsIL4=</string>
     <key>SUEnableAutomaticChecks</key><true/>

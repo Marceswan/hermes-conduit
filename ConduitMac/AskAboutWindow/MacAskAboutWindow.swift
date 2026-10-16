@@ -16,8 +16,11 @@ enum MacAskAboutWindowMessage {
 /// current chat as the pending screenshot.
 @MainActor
 enum MacAskAboutWindow {
+    /// The screenshot goes to the main window's current chat, so a session window (D21) does not run it.
+    static func mayRun(from window: NSWindow?) -> Bool { MacKeyboardActions.actsOnMainWindowState(window) }
+
     static func run(appState: AppState, window: NSWindow?, service: MacWindowCaptureService = .shared) async {
-        guard !MacKeyboardActions.commandsBlocked(by: window) else { return }
+        guard mayRun(from: window) else { return }
         let megabytes = AttachmentSizeLimit.clampedMegabytes(
             UserDefaults.standard.integer(forKey: AttachmentSizeLimit.preferenceKey)
         )

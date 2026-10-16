@@ -15,6 +15,7 @@ struct ConduitCommands: Commands {
     let palette: MacPaletteStore
     @ObservedObject var updater: MacUpdater
     @ObservedObject var quickAsk: MacQuickAskHotKeyManager
+    @Environment(\.openWindow) private var openWindow
     @AppStorage(MacQuickAskHotKeyManager.enabledKey) private var quickAskEnabled = true
     @AppStorage(ConduitCommands.sidebarVisibleKey) private var sidebarVisible = true
     @AppStorage(HoverAccessibilityEngine.highlightDefaultsKey) private var hoverHighlight = true
@@ -26,6 +27,13 @@ struct ConduitCommands: Commands {
             Button("Check for Updates\u{2026}") { updater.checkForUpdates() }
                 .disabled(!updater.canCheckForUpdates)
         }
+        // There is no `Settings` scene (Settings is MainView's sheet, which needs
+        // RootView-owned closures), so the app menu has no "Settings..." until
+        // this adds it. The D18 observer in RootView does the presenting (D22).
+        CommandGroup(replacing: .appSettings) {
+            Button("Settings\u{2026}") { MacAppActions.openSettings(window: NSApp.keyWindow) }
+                .keyboardShortcut(",", modifiers: .command)
+        }
         CommandGroup(replacing: .newItem) {
             // With the Quick Ask panel key, Cmd-N is the panel's "new conversation",
             // never a new chat in the main window (see `MacQuickAskController.isPanelKey`).
@@ -33,10 +41,21 @@ struct ConduitCommands: Commands {
                 if MacQuickAskController.shared.isPanelKey {
                     MacQuickAskController.shared.newConversation()
                 } else {
-                    Task { await appState.createNewSession() }
+                    // From a session window the new chat is the main window's: it comes forward first.
+                    MacAppActions.newChat(window: NSApp.keyWindow) { Task { await appState.createNewSession() } }
                 }
             }
             .keyboardShortcut("n", modifiers: .command)
+            // A popped-out session (D21): the main window's active tab moves to its own window.
+            Button("Open Session in New Window") {
+                MacSessionTabsActions.popOutActive(
+                    store: tabs, window: NSApp.keyWindow,
+                    canPopOut: { MacSessionWindows.canPopOut($0, catalog: appState.sessions) }
+                ) { sessionID in
+                    MacSessionWindows.open(sessionID, appState: appState) { openWindow(value: $0) }
+                }
+            }
+            .keyboardShortcut("n", modifiers: [.option, .command])
             // Close Tab owns Cmd-W ahead of File > Close; in any other window
             // it performs that window's ordinary close (D11).
             Button("Close Tab") { MacSessionTabsActions.closeTab(store: tabs, window: NSApp.keyWindow) }
@@ -72,7 +91,10 @@ struct ConduitCommands: Commands {
                 if MacQuickAskController.shared.isPanelKey {
                     MacQuickAskController.shared.stop()
                 } else {
-                    Task { await appState.cancelCurrent() }
+                    // From a session window the stop belongs to that window's turn (D21).
+                    MacSessionWindows.stopResponse(window: NSApp.keyWindow) {
+                        Task { await appState.cancelCurrent() }
+                    }
                 }
             }
             .keyboardShortcut(".", modifiers: .command)
@@ -95,6 +117,10 @@ struct ConduitCommands: Commands {
             // the comment above). The action checks the window and any sheet.
             Button("Command Palette") { MacPaletteActions.toggle(store: palette, window: NSApp.keyWindow) }
                 .keyboardShortcut("k", modifiers: .command)
+            // Opens the saved-dashboards sheet hosted in ConduitMacApp (D22). Never
+            // `.disabled`: the action checks the window and any sheet.
+            Button("Switch Dashboard\u{2026}") { MacAppActions.switchDashboard(window: NSApp.keyWindow) }
+                .keyboardShortcut("d", modifiers: [.shift, .command])
             Divider()
             ForEach(1...8, id: \.self) { n in
                 Button("Tab \(n)") { MacSessionTabsActions.selectShortcut(n, store: tabs, window: NSApp.keyWindow) }
@@ -138,7 +164,7 @@ struct ConduitCommands: Commands {
                 .keyboardShortcut("l", modifiers: .command)
         }
         CommandGroup(after: .sidebar) {
-            Button(sidebarVisible ? "Hide Sidebar" : "Show Sidebar") { MacSidebarState.toggleVisible() }
+            Button(sidebarVisible ? "Hide Sidebar" : "Show Sidebar") { MacKeyboardActions.toggleSidebar(window: NSApp.keyWindow) }
                 .keyboardShortcut("s", modifiers: [.command, .control])
             Toggle("Highlight Controls on Hover", isOn: $hoverHighlight)
         }

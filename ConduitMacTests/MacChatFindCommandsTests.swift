@@ -152,9 +152,9 @@ final class MacChatFindCommandsTests: XCTestCase {
         MacKeyboardActions.searchSessions(window: r.window, defaults: suite.defaults, requests: requests)
         XCTAssertFalse(r.controller.isOpen)
         XCTAssertFalse(requests.searchPending)
-        XCTAssertTrue(MacChatFindActions.isSessionWindow(r.window))
-        XCTAssertFalse(MacChatFindActions.isSessionWindow(rig().window))
-        XCTAssertFalse(MacChatFindActions.isSessionWindow(nil))
+        XCTAssertTrue(MacSessionWindows.isSessionWindow(r.window))
+        XCTAssertFalse(MacSessionWindows.isSessionWindow(rig().window))
+        XCTAssertFalse(MacSessionWindows.isSessionWindow(nil))
     }
 
     /// Controller ruling: a session window keeps the pre-D23 behaviour, the

@@ -77,6 +77,15 @@ struct MacSessionTabsModel: Codable, Equatable {
         return .activate(next)
     }
 
+    /// Pop-out (D21): like `close`, but the tab does not go on the closed
+    /// stack, because the session lives on in its own window.
+    mutating func detach(_ id: String) -> CloseResult {
+        let closedBefore = closed
+        let result = close(id)
+        closed = closedBefore
+        return result
+    }
+
     /// Reopens the most recent closed tab that is not open again, at its old
     /// index (clamped), and makes it active. Entries already open are dropped.
     mutating func reopen() -> String? {

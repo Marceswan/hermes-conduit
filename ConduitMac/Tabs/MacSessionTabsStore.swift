@@ -35,6 +35,8 @@ final class MacSessionTabsStore: ObservableObject {
     static let shared = MacSessionTabsStore()
 
     @Published private(set) var model = MacSessionTabsModel()
+    /// Sessions deleted while tabs were bound (D21: an open session window shows "deleted").
+    let sessionDeletions = PassthroughSubject<String, Never>()
 
     var openSession: (String) -> Void = { _ in }
     var startNewChat: () -> Void = {}
@@ -120,9 +122,23 @@ final class MacSessionTabsStore: ObservableObject {
         openSession(id)
     }
 
+    /// Moves a tab into its own window (D21). `openWindow` returns false at the
+    /// window cap; the tab then stays. Main activates the neighbour, or starts
+    /// a new chat when the popped tab was the last.
+    func popOut(_ id: String, openWindow: (String) -> Bool) {
+        guard model.index(of: id) != nil, openWindow(id) else { return }
+        switch model.detach(id) {
+        case .activate(let next): openSession(next)
+        case .closedLast: startNewChat()
+        case .closedInactive, .notFound: break
+        }
+        save()
+    }
+
     func sessionDeleted(_ id: String) {
         model.remove(id)
         save()
+        sessionDeletions.send(id)
     }
 
     func openFailed(_ id: String) {

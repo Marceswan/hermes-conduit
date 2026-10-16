@@ -174,13 +174,25 @@ enum MacKeyboardActions {
         window is MacFloatingPanel || window?.attachedSheet != nil || window?.sheetParent != nil
     }
 
+    /// The sidebar tab, sidebar and session-search commands change the MAIN window's state. From a
+    /// session window (D21) they do nothing: they must not silently change a window the user is not in.
+    static func actsOnMainWindowState(_ window: NSWindow?) -> Bool {
+        !commandsBlocked(by: window) && !MacSessionWindows.isSessionWindow(window)
+    }
+
     static func selectTab(
         _ tab: SidebarTab,
         window: NSWindow? = nil,
         defaults: UserDefaults = .standard
     ) {
-        guard !commandsBlocked(by: window) else { return }
+        guard actsOnMainWindowState(window) else { return }
         defaults.set(tab.rawValue, forKey: MacSidebarState.tabDefaultsKey)
+    }
+
+    /// Hide / Show Sidebar (Control-Command-S): the main window's sidebar; nothing from a session window.
+    static func toggleSidebar(window: NSWindow?, toggle: () -> Void = { MacSidebarState.toggleVisible() }) {
+        guard !MacSessionWindows.isSessionWindow(window) else { return }
+        toggle()
     }
 
     enum FindOutcome: Equatable {
@@ -217,7 +229,9 @@ enum MacKeyboardActions {
         requests: MacFocusRequests? = nil
     ) -> FindOutcome? {
         guard !commandsBlocked(by: window) else { return nil }
-        if MacChatFindActions.isSessionWindow(window) {
+        // A session window (D21) has no whole-chat find: it keeps the focused message view's own find bar
+        // (never the main window's search). Its chat is always shown; the main window's pane does not decide.
+        if MacSessionWindows.isSessionWindow(window) {
             return MacChatFindActions.sessionWindowFind(.showFindInterface, window: window) ? .messageFind : nil
         }
         let chatActive = MacChatRoute.isChatActive(tabRaw: defaults.string(forKey: MacSidebarState.tabDefaultsKey))
@@ -254,7 +268,7 @@ enum MacKeyboardActions {
         defaults: UserDefaults = .standard,
         requests: MacFocusRequests? = nil
     ) {
-        guard !commandsBlocked(by: window), !MacChatFindActions.isSessionWindow(window) else { return }
+        guard !commandsBlocked(by: window), !MacSessionWindows.isSessionWindow(window) else { return }
         focusSessionSearch(defaults: defaults, requests: requests)
     }
 
@@ -270,7 +284,8 @@ enum MacKeyboardActions {
     ) {
         guard let window, !commandsBlocked(by: window) else { return }
         (requests ?? .shared).cancelSearch()
-        selectTab(.sessions, defaults: defaults)
+        // A session window has its own composer; the main pane stays as it is (D21).
+        if !MacSessionWindows.isSessionWindow(window) { selectTab(.sessions, defaults: defaults) }
         center.post(name: .macFocusComposerRequested, object: window)
     }
 
@@ -282,7 +297,7 @@ enum MacKeyboardActions {
         window: NSWindow? = nil,
         open: (String) -> Void
     ) {
-        guard !commandsBlocked(by: window),
+        guard actsOnMainWindowState(window),
               let order, let id = MacSessionNavigation.neighbor(of: activeID, in: order, direction: direction) else { return }
         open(id)
     }
@@ -305,6 +320,19 @@ enum MacSessionTabsActions {
         guard let window, !MacKeyboardActions.commandsBlocked(by: window) else { return }
         guard isMainChatWindow(window) else { window.performClose(nil); return }
         (store ?? .shared).close(nil)
+    }
+
+    /// Option-Command-N: the active tab of the chat window moves to its own window.
+    /// `open` returns false at the window cap. An unavailable tab stays where it is.
+    /// `canPopOut` is the same test the tab context menu uses (`MacSessionWindows.canPopOut`): a Bot Chat
+    /// tab, or any session the workspace catalog does not list, stays in the main window.
+    static func popOutActive(store: MacSessionTabsStore? = nil, window: NSWindow?,
+                             canPopOut: (String) -> Bool, open: (String) -> Bool) {
+        guard isMainChatWindow(window), !MacKeyboardActions.commandsBlocked(by: window) else { return }
+        let store = store ?? .shared
+        guard let id = store.model.activeID, let index = store.model.index(of: id),
+              !store.model.tabs[index].unavailable, canPopOut(id) else { return }
+        store.popOut(id, openWindow: open)
     }
 
     static func reopen(store: MacSessionTabsStore? = nil, window: NSWindow?) {
@@ -364,16 +392,6 @@ enum MacPaletteActions {
 /// actions check the same guards as every D10 command.
 @MainActor
 enum MacChatFindActions {
-    /// D21 session windows (scene id `conduit-session`) have their own
-    /// transcript and no whole-chat find in v1. When D21 lands, call
-    /// `MacSessionWindows.isSessionWindow` here instead (this is the only place
-    /// that knows the prefix).
-    static let sessionWindowPrefix = "conduit-session"
-
-    static func isSessionWindow(_ window: NSWindow?) -> Bool {
-        window?.identifier?.rawValue.hasPrefix(sessionWindowPrefix) ?? false
-    }
-
     /// Focus in the chat (nothing, the window, the composer, a message view, the
     /// transcript, the find field) opens chat find; focus anywhere else (the
     /// sidebar list, the session search field) keeps D10's Search Sessions.
@@ -411,7 +429,7 @@ enum MacChatFindActions {
     }
 
     private static func controller(for window: NSWindow?, defaults: UserDefaults) -> MacChatFindController? {
-        guard let window, !MacKeyboardActions.commandsBlocked(by: window), !isSessionWindow(window),
+        guard let window, !MacKeyboardActions.commandsBlocked(by: window), !MacSessionWindows.isSessionWindow(window),
               MacChatRoute.isChatActive(tabRaw: defaults.string(forKey: MacSidebarState.tabDefaultsKey)),
               let controller = MacChatFindControllers.controller(for: window), controller.isAvailable else { return nil }
         return controller
@@ -420,15 +438,118 @@ enum MacChatFindActions {
     /// Cmd-G. With the bar closed it opens the bar (there is no hidden "repeat
     /// the last search").
     static func next(window: NSWindow?, defaults: UserDefaults = .standard) {
-        if isSessionWindow(window) { sessionWindowFind(.nextMatch, window: window); return }
+        if MacSessionWindows.isSessionWindow(window) { sessionWindowFind(.nextMatch, window: window); return }
         guard let controller = controller(for: window, defaults: defaults) else { return }
         if controller.isOpen { controller.next() } else { controller.open(restoreFocus: MacPaletteActions.focusRestorer(in: window)) }
     }
 
     /// Cmd-Shift-G.
     static func previous(window: NSWindow?, defaults: UserDefaults = .standard) {
-        if isSessionWindow(window) { sessionWindowFind(.previousMatch, window: window); return }
+        if MacSessionWindows.isSessionWindow(window) { sessionWindowFind(.previousMatch, window: window); return }
         guard let controller = controller(for: window, defaults: defaults) else { return }
         if controller.isOpen { controller.previous() } else { controller.open(restoreFocus: MacPaletteActions.focusRestorer(in: window)) }
+    }
+}
+
+/// App-level menu commands (D22): Settings (Cmd-,) and Switch Dashboard
+/// (Cmd-Shift-D). Both surfaces live in the primary chat window only (the
+/// Settings sheet is `MainView`'s, the dashboard sheet hangs on `rootContent`),
+/// so a D21 session window forwards to it instead of acting on itself.
+@MainActor
+enum MacAppActions {
+    /// One definition of "session window" (D21): the scene id prefix lives in `MacSessionWindows`.
+    static func isSessionWindow(_ window: NSWindow?) -> Bool {
+        MacSessionWindows.isSessionWindow(window)
+    }
+
+    /// The window the command acts in: the key window when it is the chat
+    /// window, the chat window when the key window is a session window, else
+    /// nil (a sheet, the Settings window, a Sparkle dialog, a panel, no window).
+    /// `windows` is injectable; the parameter is optional because an `NSApp`
+    /// default argument trips Swift 6 isolation.
+    static func chatWindow(for window: NSWindow?, windows: [NSWindow]? = nil) -> NSWindow? {
+        if MacSessionTabsActions.isMainChatWindow(window) { return window }
+        guard isSessionWindow(window) else { return nil }
+        return (windows ?? NSApp.windows).first { MacSessionTabsActions.isMainChatWindow($0) }
+    }
+
+    /// True when the caller may act. Does nothing under a sheet (the guard runs
+    /// here, never as `.disabled` on the item: D10). Closes the palette so its
+    /// overlay does not stay up under the new sheet, and brings the chat
+    /// window forward when the command came from a session window.
+    static func prepare(
+        window: NSWindow?,
+        windows: [NSWindow]? = nil,
+        palette: MacPaletteStore? = nil,
+        openMainWindow: (() -> Void)? = nil
+    ) -> Bool {
+        guard let chat = chatWindow(for: window, windows: windows) else {
+            // Forwarded from a session window whose main window was closed: bring the main window
+            // back. The command itself is not carried over (the new window has not mounted the
+            // observer or sheet host yet), so the user repeats it.
+            if isSessionWindow(window) { (openMainWindow ?? { MacPrimaryWindowOpener.shared.open() })() }
+            return false
+        }
+        guard !MacKeyboardActions.commandsBlocked(by: chat) else { return false }
+        (palette ?? .shared).dismiss()
+        bringForward(chat, from: window)
+        return true
+    }
+
+    private static func bringForward(_ chat: NSWindow, from window: NSWindow?) {
+        if chat !== window {
+            if chat.isMiniaturized { chat.deminiaturize(nil) }
+            chat.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    /// Cmd-N. From a session window the new chat belongs to the main window: it comes forward (or is
+    /// reopened when closed) and then the chat is created. Anywhere else it just creates the chat.
+    /// Nothing happens when the main window shows a sheet.
+    static func newChat(
+        window: NSWindow?,
+        windows: [NSWindow]? = nil,
+        openMainWindow: (() -> Void)? = nil,
+        create: () -> Void
+    ) {
+        if isSessionWindow(window) {
+            if let chat = chatWindow(for: window, windows: windows) {
+                guard !MacKeyboardActions.commandsBlocked(by: chat) else { return }
+                bringForward(chat, from: window)
+            } else {
+                (openMainWindow ?? { MacPrimaryWindowOpener.shared.open() })()
+            }
+        }
+        create()
+    }
+
+    /// Cmd-,: the D18 observer in `RootView` presents Settings (it keeps its own
+    /// "already presenting" guard). With the login screen showing there is no
+    /// `MainView`, nobody observes, and nothing happens, as in the sidebar.
+    @discardableResult
+    static func openSettings(
+        window: NSWindow?,
+        windows: [NSWindow]? = nil,
+        palette: MacPaletteStore? = nil,
+        center: NotificationCenter = .default,
+        openMainWindow: (() -> Void)? = nil
+    ) -> Bool {
+        guard prepare(window: window, windows: windows, palette: palette, openMainWindow: openMainWindow) else { return false }
+        center.post(name: .macOpenSettingsRequested, object: nil)
+        return true
+    }
+
+    /// Cmd-Shift-D: the saved-dashboards sheet, over the chat or the login screen.
+    @discardableResult
+    static func switchDashboard(
+        window: NSWindow?,
+        windows: [NSWindow]? = nil,
+        palette: MacPaletteStore? = nil,
+        switcher: MacDashboardSwitcherStore? = nil,
+        openMainWindow: (() -> Void)? = nil
+    ) -> Bool {
+        guard prepare(window: window, windows: windows, palette: palette, openMainWindow: openMainWindow) else { return false }
+        (switcher ?? .shared).present()
+        return true
     }
 }
