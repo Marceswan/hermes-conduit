@@ -99,6 +99,8 @@ struct ConduitMacApp: App {
             }
             .preferredColorScheme(appState.themePreference.colorScheme)
             .tint(.conduitAccent)
+            // Cmd-Shift-D saved-dashboards sheet (D22): after the environment and tint it inherits.
+            .macDashboardSwitcher(appState: appState)
             // Links Conduit writes into chats (a voice call's job link)
             // open inside the app; every other link goes to the system.
             .macLinkPolicy(appState: appState)
