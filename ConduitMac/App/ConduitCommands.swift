@@ -93,6 +93,10 @@ struct ConduitCommands: Commands {
             // the comment above). The action checks the window and any sheet.
             Button("Command Palette") { MacPaletteActions.toggle(store: palette, window: NSApp.keyWindow) }
                 .keyboardShortcut("k", modifiers: .command)
+            // Opens the saved-dashboards sheet hosted in ConduitMacApp (D22). Never
+            // `.disabled`: the action checks the window and any sheet.
+            Button("Switch Dashboard\u{2026}") { MacAppActions.switchDashboard(window: NSApp.keyWindow) }
+                .keyboardShortcut("d", modifiers: [.shift, .command])
             Divider()
             ForEach(1...8, id: \.self) { n in
                 Button("Tab \(n)") { MacSessionTabsActions.selectShortcut(n, store: tabs, window: NSApp.keyWindow) }

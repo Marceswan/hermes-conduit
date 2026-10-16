@@ -389,4 +389,17 @@ enum MacAppActions {
         center.post(name: .macOpenSettingsRequested, object: nil)
         return true
     }
+
+    /// Cmd-Shift-D: the saved-dashboards sheet, over the chat or the login screen.
+    @discardableResult
+    static func switchDashboard(
+        window: NSWindow?,
+        windows: [NSWindow]? = nil,
+        palette: MacPaletteStore? = nil,
+        switcher: MacDashboardSwitcherStore? = nil
+    ) -> Bool {
+        guard prepare(window: window, windows: windows, palette: palette) else { return false }
+        (switcher ?? .shared).present()
+        return true
+    }
 }

@@ -135,4 +135,58 @@ final class MacAppActionsTests: XCTestCase {
         XCTAssertFalse(MacAppActions.openSettings(window: main, palette: store, center: center))
         XCTAssertTrue(store.isPresented)
     }
+
+    // MARK: Switch Dashboard
+
+    func testSwitchDashboardPresentsFromThePrimaryWindow() {
+        let palette = MacPaletteStore(defaults: suite.defaults)
+        let switcher = MacDashboardSwitcherStore()
+        XCTAssertTrue(MacAppActions.switchDashboard(window: primary(), palette: palette, switcher: switcher))
+        XCTAssertTrue(switcher.isPresented)
+        XCTAssertTrue(MacAppActions.switchDashboard(window: primary(), palette: palette, switcher: switcher))
+        XCTAssertTrue(switcher.isPresented, "a second press keeps one presentation")
+    }
+
+    func testSwitchDashboardDoesNothingFromNonChatWindows() {
+        let palette = MacPaletteStore(defaults: suite.defaults)
+        let switcher = MacDashboardSwitcherStore()
+        let main = primary()
+        for w in [window("com_apple_SwiftUI_Settings_window"), window(nil), nil] as [NSWindow?] {
+            XCTAssertFalse(MacAppActions.switchDashboard(window: w, windows: [main], palette: palette, switcher: switcher))
+        }
+        XCTAssertFalse(switcher.isPresented)
+    }
+
+    func testSwitchDashboardDoesNothingUnderASheetOrFromTheSheetItself() {
+        let palette = MacPaletteStore(defaults: suite.defaults)
+        let switcher = MacDashboardSwitcherStore()
+        let main = primary()
+        main.orderFront(nil)
+        let sheet = attachSheet(to: main)
+        defer { main.endSheet(sheet) }
+        XCTAssertFalse(MacAppActions.switchDashboard(window: main, palette: palette, switcher: switcher))
+        XCTAssertFalse(MacAppActions.switchDashboard(window: sheet, windows: [main], palette: palette, switcher: switcher))
+        XCTAssertFalse(switcher.isPresented)
+    }
+
+    func testSwitchDashboardFromASessionWindowBringsThePrimaryForward() {
+        let palette = MacPaletteStore(defaults: suite.defaults)
+        let switcher = MacDashboardSwitcherStore()
+        let main = primary(), side = session()
+        XCTAssertTrue(MacAppActions.switchDashboard(window: side, windows: [side, main], palette: palette, switcher: switcher))
+        XCTAssertTrue(switcher.isPresented)
+        XCTAssertTrue(main.isVisible)
+        let lone = MacDashboardSwitcherStore()
+        XCTAssertFalse(MacAppActions.switchDashboard(window: side, windows: [side], palette: palette, switcher: lone))
+        XCTAssertFalse(lone.isPresented, "no primary window: no orphan sheet")
+    }
+
+    func testSwitchDashboardClosesAnOpenPaletteFirst() {
+        let palette = MacPaletteStore(defaults: suite.defaults)
+        palette.present()
+        let switcher = MacDashboardSwitcherStore()
+        XCTAssertTrue(MacAppActions.switchDashboard(window: primary(), palette: palette, switcher: switcher))
+        XCTAssertFalse(palette.isPresented)
+        XCTAssertTrue(switcher.isPresented)
+    }
 }
