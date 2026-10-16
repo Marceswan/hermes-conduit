@@ -99,6 +99,7 @@ struct ConduitMacApp: App {
             .environment(\.locale, appLanguage.resolvedLocale)
             .onChange(of: appLanguage.selection) { _, _ in
                 appState.appLanguageDidChange()
+                appState.publishWidgetLanguage()   // D25: ported from ConduitApp.swift
                 MacNotificationRuntime.shared.languageDidChange()
             }
             .preferredColorScheme(appState.themePreference.colorScheme)

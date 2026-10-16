@@ -298,6 +298,45 @@ targets:
       - target: AppIntentsUIKitOverlay
       - package: WebRTC
       - package: Sparkle
+      # Widgets (D25): embedded as Conduit.app/Contents/PlugIns/ConduitMacWidgets.appex.
+      - target: ConduitMacWidgets
+        embed: true
+        codeSign: true
+  # Mac desktop widgets (D25, docs/superpowers/specs/2026-10-16-mac-widgets-design.md).
+  # The iOS widget sources, shared by path (nothing is copied). Sandboxed, as a
+  # macOS widget extension must be; the team-prefixed group needs no profile.
+  ConduitMacWidgets:
+    type: app-extension
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: ConduitWidgets
+        excludes:
+          - "Info.plist"
+          - "ConduitWidgets.entitlements"
+          - "Resources/**"
+      - path: ConduitWidgets/Resources/Assets.xcassets
+        buildPhase: resources
+      - path: Shared/Widgets
+      - path: Conduit/Localizable.xcstrings
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.meswan.hermes.mac.widgets
+        PRODUCT_NAME: ConduitMacWidgets
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: ConduitMacWidgets/Info.plist
+        CODE_SIGN_ENTITLEMENTS: ConduitMacWidgets/ConduitMacWidgets.entitlements
+        # Keep equal to ConduitMac; scripts/mac-release.sh overrides both for every target.
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        DEVELOPMENT_TEAM: 58XKRG9VMA
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "Developer ID Application"
+        PROVISIONING_PROFILE_SPECIFIER: ""
+        ENABLE_HARDENED_RUNTIME: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
   ConduitMacTests:
     type: bundle.unit-test
     platform: macOS

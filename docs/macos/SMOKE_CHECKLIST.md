@@ -28,6 +28,8 @@ Run against a real Hermes dashboard before every release build.
 - [ ] Close the window mid-stream, wait 30 s, click the Dock icon: reply completed
 - [ ] The `.windowToolbar`-hidden sheets (e.g. SidebarView drawer root) don't break the main window toolbar
 - [ ] Notarized DMG installed on a second Mac with no Gatekeeper prompt
+- [ ] Widgets: the notarized app from the DMG, installed in /Applications and launched once, lists `ConduitMacWidgets` in `pluginkit -mAvvv -p com.apple.widgetkit-extension`, and adding a Conduit widget shows no consent prompt
+- [ ] Launch the exported/notarized build once; `pluginkit -mAvvv -p com.apple.widgetkit-extension` lists ConduitMacWidgets (the export step itself was verified by signature only, never launched)
 
 ## Agent pre-checks (2026-10-13)
 
@@ -243,3 +245,22 @@ Human pass at release time (agents never click or type into the running app, R18
 - [ ] With a session window open, open a `conduit://` link from another app (Terminal: `open conduit://session/<id>`): the main window handles it; no extra empty session window appears.
 - [ ] Disconnect mid-turn so the settle read fails: the window shows the error with Retry, Stop is gone, and Retry re-reads. Leave a chat idle for a long while (the gateway reaps its runtime), then send from the window: it sends after one transparent resume.
 - [ ] Open a `conduit://session/...` or other in-app link from a chat inside the window: it follows the same link policy as main (an app link opens in main, other schemes go to the system or are dropped).
+
+## Widgets (D25)
+
+Install the exported app in /Applications (quit the running Conduit first), launch it, connect to a dashboard.
+
+Before the widget pass, quit and remove every other Conduit.app copy (Debug builds, Xcode DerivedData, build/ archives or exports). Each one registers the `conduit://` scheme too and can steal a widget tap from the installed app.
+
+- [ ] Edit Widgets lists Conduit with Native and Conduit-chan, medium only; add one of each to the desktop and one to Notification Center
+- [ ] Before connecting (or signed out) the widget reads "Open Conduit"; after the app connects and loads sessions, the dashboard and profile labels and the last chat title appear within a few seconds
+- [ ] Edit Widget: the Workspace and Conversation pickers list your dashboards and chats; picking a chat changes the title; Hide conversation title shows "Resume chat"
+- [ ] Tap the title: the chat opens. Tap New Chat: a new chat opens. Tap Talk: a voice call starts (microphone prompt only the first time). Each from: Conduit frontmost, Conduit in the background, all windows closed (Cmd-W), and Conduit quit
+- [ ] A tap while signed out or with the dashboard unreachable ends with a visible failure message, not a hang (30 s limit)
+- [ ] Switch App Language in Settings: the widget copy follows
+- [ ] Sign out / remove the dashboard: the widget falls back to "Open Conduit" or "Open Conduit to refresh"
+- [ ] Update through Sparkle from the previous build: the widgets keep working without re-adding
+- [ ] macOS 15 desktop with a tinted widget style: the mark and character render accented; on macOS 14 they render full colour
+- [ ] With D21 session windows, a widget tap opens one chat once (not once per window)
+- [ ] D21 interplay: with all primary windows closed and one session window open, a widget tap still routes once and opens the chat (a primary window is restored or the chat opens in the session window; no dead tap)
+- [ ] D21 interplay: with the main window behind a session window, a widget tap brings the target chat to the front once
