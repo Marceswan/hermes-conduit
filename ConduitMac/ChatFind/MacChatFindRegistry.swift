@@ -103,6 +103,9 @@ enum MacChatFindScroll {
         guard view.textLayoutManager == nil, let layout = view.layoutManager,
               let container = view.textContainer,
               let scroll = view.enclosingScrollView, let document = scroll.documentView else { return }
+        // An out-of-range character range raises NSRangeException in AppKit.
+        let range = NSIntersectionRange(range, NSRange(location: 0, length: (view.string as NSString).length))
+        guard range.length > 0 else { return }
         let glyphs = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
         var rect = layout.boundingRect(forGlyphRange: glyphs, in: container)
         rect.origin.x += view.textContainerOrigin.x
@@ -197,13 +200,29 @@ final class MacChatFindRegistry {
         return Array(entries.values)
     }
 
-    /// Re-highlights every view of one message: ranges per view, then the
-    /// current hit mapped to (view, local index) by reading order.
-    private func refresh(messageID: String) {
-        let group = liveEntries()
+    /// The mounted view and view-local range of hit number `ordinal` of
+    /// `messageID` for `query`, from the same per-view matching `refresh`
+    /// paints with. nil when the query is not searchable, the message has no
+    /// mounted view, or the ordinal is past what the views draw.
+    func target(messageID: String, ordinal: Int, query: String) -> (view: NSTextView, range: NSRange)? {
+        guard MacChatFindMatcher.isSearchable(query) else { return nil }
+        let views = group(messageID).map(\.view)
+        let ranges = views.map { MacChatFindMatcher.ranges(of: query, in: $0.string) }
+        guard let spot = Self.locate(ordinal: ordinal, counts: ranges.map(\.count)) else { return nil }
+        return (views[spot.view], ranges[spot.view][spot.local])
+    }
+
+    private func group(_ messageID: String) -> [(entry: Entry, view: NSTextView)] {
+        liveEntries()
             .filter { $0.messageID == messageID }
             .compactMap { entry in entry.view.map { (entry: entry, view: $0) } }
             .sorted { Self.readingOrder($0.view, $1.view) }
+    }
+
+    /// Re-highlights every view of one message: ranges per view, then the
+    /// current hit mapped to (view, local index) by reading order.
+    private func refresh(messageID: String) {
+        let group = self.group(messageID)
         guard let context, MacChatFindMatcher.isSearchable(context.query),
               context.searchable.contains(messageID) else {
             for item in group {

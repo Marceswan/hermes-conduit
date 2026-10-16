@@ -43,6 +43,24 @@ final class MacChatFindTextTests: XCTestCase {
         XCTAssertFalse(text.contains("- one"))
     }
 
+    func testFlowListsDrawTheirMarkersInTheProjection() {
+        let text = MacChatFindText.plain(fromMarkdown: "1. first\n2. second\n\n- a\n- b\n\n- [ ] todo\n- [x] done\n")
+        XCTAssertEqual(text, "1. first\n2. second\n\u{2022} a\n\u{2022} b\n\u{2610} todo\n\u{2611} done")
+    }
+
+    func testFlowQuotesDrawTheirBarsInTheProjection() {
+        let text = MacChatFindText.plain(fromMarkdown: "> one\n> > two\n")
+        XCTAssertEqual(text, "\u{2502} one\n\u{2502} \u{2502} two")
+    }
+
+    func testRichMessagesKeepMarkersOutOfTheProjectionButStripTaskPrefixes() {
+        // A table moves the message to per-block views; their markers are
+        // separate Text views, not text-view characters.
+        let text = MacChatFindText.plain(fromMarkdown: "- [x] done\n- plain\n\n| h1 | h2 |\n|---|---|\n| c1 | c2 |\n")
+        XCTAssertTrue(text.hasPrefix("done\nplain\n"), text)
+        XCTAssertFalse(text.contains("\u{2022}"))
+    }
+
     func testOnlyUserAssistantAndPartialRowsAreSearchable() {
         XCTAssertNotNil(MacChatFindText.searchableText(for: message("u", .user, "hi there")))
         XCTAssertNotNil(MacChatFindText.searchableText(for: message("a", .assistant, "hello")))

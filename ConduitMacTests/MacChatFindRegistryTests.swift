@@ -271,6 +271,62 @@ final class MacChatFindRegistryTests: XCTestCase {
         XCTAssertNil(background(second, at: 0))
     }
 
+    // MARK: fix round 1
+
+    func testRevealWithARangeOutsideTheTextDoesNotCrash() {
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+        let document = FlippedDocument(frame: NSRect(x: 0, y: 0, width: 300, height: 600))
+        let view = textView("short")
+        document.addSubview(view)
+        scroll.documentView = document
+        MacChatFindScroll.reveal(NSRange(location: 40, length: 4), in: view)
+        MacChatFindScroll.reveal(NSRange(location: 2, length: 400), in: view)
+        MacChatFindScroll.reveal(NSRange(location: NSNotFound, length: 0), in: view)
+        XCTAssertEqual(scroll.contentView.bounds.origin.y, 0)
+    }
+
+    func testTargetReturnsTheViewAndLocalRangeAcrossTwoViews() {
+        let registry = MacChatFindRegistry()
+        let first = textView("beta one")
+        let second = textView("two beta beta")
+        registry.register(first, messageID: "m")
+        registry.register(second, messageID: "m")
+        let zero = registry.target(messageID: "m", ordinal: 0, query: "beta")
+        XCTAssertTrue(zero?.view === first)
+        XCTAssertEqual(zero?.range, NSRange(location: 0, length: 4))
+        let two = registry.target(messageID: "m", ordinal: 2, query: "beta")
+        XCTAssertTrue(two?.view === second)
+        XCTAssertEqual(two?.range, NSRange(location: 9, length: 4))
+        XCTAssertNil(registry.target(messageID: "m", ordinal: 3, query: "beta"), "phantom ordinal")
+        XCTAssertNil(registry.target(messageID: "m", ordinal: -1, query: "beta"))
+        XCTAssertNil(registry.target(messageID: "other", ordinal: 0, query: "beta"))
+        XCTAssertNil(registry.target(messageID: "m", ordinal: 0, query: "  "))
+    }
+
+    func testProjectionCountsEqualWhatAHostedListViewDraws() throws {
+        let source = "1. first item\n2. second item\n\n- alpha item\n- beta item\n\n- [ ] 1 todo\n- [x] 2. done\n\n> quote item\n"
+        let document = MarkdownParser.parseDocument(source)
+        let drawn = try XCTUnwrap(MarkdownSelectionFormatter.attributedText(
+            for: document.blocks,
+            references: document.references,
+            foregroundStyle: .primary,
+            usesAccentSurface: false,
+            newestCharacterOpacities: [],
+            chatTextSize: .default
+        ))
+        let view = textView("")
+        view.textStorage?.setAttributedString(drawn)
+        let projection = MacChatFindText.plain(fromMarkdown: source)
+        for query in ["1", "2.", "\u{2022}", "item", "\u{2502}", "\u{2611}", "\u{2610}"] {
+            XCTAssertEqual(
+                MacChatFindMatcher.ranges(of: query, in: projection).count,
+                MacChatFindMatcher.ranges(of: query, in: view.string).count,
+                "query \(query)"
+            )
+        }
+        XCTAssertGreaterThan(MacChatFindMatcher.ranges(of: "\u{2022}", in: view.string).count, 0)
+    }
+
     // MARK: lifetime and membership
 
     func testTheRegistryDoesNotKeepViewsAlive() {

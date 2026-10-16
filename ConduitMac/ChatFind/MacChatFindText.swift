@@ -35,6 +35,13 @@ enum MacChatFindText {
         func inline(_ text: String) -> String {
             String(InlineMarkdownContent.attributed(source: text, references: references).characters)
         }
+        // A message made only of headings, paragraphs, quotes and lists draws
+        // as ONE attributed string (MarkdownSelectionFormatter) whose list and
+        // quote markers are real characters. Any other block moves the message
+        // to per-block views (MarkdownList / MarkdownQuote), where the markers
+        // are separate Text / Capsule views and not text-view characters.
+        // Task items lose their "[ ]" / "[x]" prefix in both paths.
+        let drawsMarkers = !document.blocks.isEmpty && document.blocks.allSatisfy(\.isSelectableFlowBlock)
         var lines: [String] = []
         for block in document.blocks {
             switch block {
@@ -43,9 +50,15 @@ enum MacChatFindText {
             case .callout(_, let text):
                 lines.append(inline(text))
             case .quote(let quoteLines):
-                lines.append(contentsOf: quoteLines.map { inline($0.text) })
-            case .unorderedList(let items), .orderedList(let items):
-                lines.append(contentsOf: items.map { inline($0) })
+                // The flow path joins quote lines with "\n" after "│ " x depth.
+                lines.append(contentsOf: quoteLines.map { line in
+                    let marker = drawsMarkers ? String(repeating: "│ ", count: max(line.depth, 1)) : ""
+                    return marker + inline(line.text)
+                })
+            case .unorderedList(let items):
+                lines.append(contentsOf: listLines(items, ordered: false, drawsMarkers: drawsMarkers, inline: inline))
+            case .orderedList(let items):
+                lines.append(contentsOf: listLines(items, ordered: true, drawsMarkers: drawsMarkers, inline: inline))
             case .table(let headers, _, let rows):
                 lines.append(contentsOf: ([headers] + rows).flatMap { row in row.map { inline($0) } })
             case .columns(let columns):
@@ -58,6 +71,28 @@ enum MacChatFindText {
             }
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// One line per item: the marker the flow path draws ("1. ", "• ", "☑ ",
+    /// "☐ ") when `drawsMarkers`, then the item text without a task prefix.
+    private static func listLines(
+        _ items: [String],
+        ordered: Bool,
+        drawsMarkers: Bool,
+        inline: (String) -> String
+    ) -> [String] {
+        items.enumerated().map { index, item in
+            let task = MarkdownParser.taskItem(item)
+            var marker = ""
+            if drawsMarkers {
+                if let task {
+                    marker = task.complete ? "\u{2611} " : "\u{2610} "
+                } else {
+                    marker = ordered ? "\(index + 1). " : "\u{2022} "
+                }
+            }
+            return marker + inline(task?.text ?? item)
+        }
     }
 }
 
