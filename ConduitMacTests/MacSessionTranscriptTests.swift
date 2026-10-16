@@ -109,6 +109,83 @@ final class MacSessionTranscriptTests: XCTestCase {
         XCTAssertEqual(t.messages.last?.approval?.requestId, "r9")
     }
 
+    func testReplayedApprovalDoesNotDuplicate() {
+        var t = MacSessionTranscript(sessionID: "s")
+        t.apply(.approval(sessionId: "s", activity: .macTest(requestId: "r1")), timestamp: ts)
+        t.apply(.approval(sessionId: "s", activity: .macTest(requestId: "r1")), timestamp: ts)
+        XCTAssertEqual(t.messages.count, 1)
+        XCTAssertEqual(Set(t.messages.map(\.id)).count, t.messages.count)
+        XCTAssertEqual(t.turn, .needsInput)
+    }
+
+    func testReplayedApprovalKeepsSubmitting() {
+        var t = MacSessionTranscript(sessionID: "s")
+        t.apply(.approval(sessionId: "s", activity: .macTest(requestId: "r1")), timestamp: ts)
+        t.updateMessage(id: "approval-r1") { $0.approval?.status = .submitting }
+        t.apply(.approval(sessionId: "s", activity: .macTest(requestId: "r1")), timestamp: ts)
+        XCTAssertEqual(t.messages.count, 1)
+        XCTAssertEqual(t.messages.last?.approval?.status, .submitting)
+    }
+
+    func testRepeatedToolStartSameIDKeepsOneRow() {
+        var t = MacSessionTranscript(sessionID: "s")
+        t.apply(.toolStart(sessionId: "s", toolName: "terminal", toolInput: "ls", toolID: "t1"), timestamp: ts)
+        t.apply(.toolStart(sessionId: "s", toolName: "terminal", toolInput: "ls -la", toolID: "t1"), timestamp: ts)
+        XCTAssertEqual(t.messages.count, 1)
+        XCTAssertEqual(t.messages.last?.tool?.input, "ls -la")
+    }
+
+    func testRepeatedMessageCompleteSameIDKeepsOneRow() {
+        var t = MacSessionTranscript(sessionID: "s")
+        t.apply(.messageComplete(sessionId: "s", messageId: "m1", content: "a", reasoning: nil), timestamp: ts)
+        t.apply(.messageComplete(sessionId: "s", messageId: "m1", content: "b", reasoning: nil), timestamp: ts)
+        XCTAssertEqual(t.messages.count, 1)
+        XCTAssertEqual(t.messages.last?.content, "b")
+    }
+
+    func testExpiringOnlyPendingApprovalReturnsToIdle() {
+        var t = MacSessionTranscript(sessionID: "s")
+        t.apply(.approval(sessionId: "s", activity: .macTest(requestId: "r1")), timestamp: ts)
+        XCTAssertEqual(t.turn, .needsInput)
+        t.apply(.approvalWithdrawn(sessionId: "s", requestId: "r1", reason: "timeout"), timestamp: ts)
+        XCTAssertEqual(t.turn, .idle)
+    }
+
+    func testClarifyExpiryReturnsToIdle() {
+        var t = MacSessionTranscript(sessionID: "s")
+        let q = ClarifyQuestion(id: "q1", question: "Which?", choices: [], multiSelect: false, status: .pending,
+                                answer: nil, error: nil, isSyntheticID: false)
+        t.apply(.clarify(sessionId: "s", activity: ClarifyActivity(requestId: "c1", questions: [q])), timestamp: ts)
+        XCTAssertEqual(t.turn, .needsInput)
+        t.apply(.clarifyExpire(sessionId: "s", requestId: "c1", reason: nil), timestamp: ts)
+        XCTAssertEqual(t.turn, .idle)
+    }
+
+    func testMessageStartFlushesExistingText() {
+        var t = MacSessionTranscript(sessionID: "s")
+        t.apply(.messageDelta(sessionId: "s", text: "before"), timestamp: ts)
+        t.apply(.messageStart(sessionId: "s"), timestamp: ts)
+        XCTAssertEqual(t.messages.map(\.role), [.assistant])
+        XCTAssertEqual(t.messages.last?.content, "before")
+        XCTAssertEqual(t.streamingText, "")
+    }
+
+    func testBusyFalseWithoutCardIsIdle() {
+        var t = MacSessionTranscript(sessionID: "s")
+        t.apply(.sessionBusy(sessionId: "s", busy: true), timestamp: ts)
+        XCTAssertEqual(t.apply(.sessionBusy(sessionId: "s", busy: false), timestamp: ts), .turnEnded)
+        XCTAssertEqual(t.turn, .idle)
+    }
+
+    func testToolCompleteMatchesByIDWhenNamesShared() {
+        var t = MacSessionTranscript(sessionID: "s")
+        t.apply(.toolStart(sessionId: "s", toolName: "web", toolInput: nil, toolID: "a"), timestamp: ts)
+        t.apply(.toolStart(sessionId: "s", toolName: "web", toolInput: nil, toolID: "b"), timestamp: ts)
+        t.apply(.toolComplete(sessionId: "s", toolName: "web", toolOutput: "A", toolID: "a"), timestamp: ts)
+        XCTAssertEqual(t.messages.map { $0.tool?.status }, [.complete, .running])
+        XCTAssertEqual(t.messages.first?.tool?.output, "A")
+    }
+
     func testUserSentAppendsAndRuns() {
         var t = MacSessionTranscript(sessionID: "s")
         t.userSent("Hi", timestamp: ts)

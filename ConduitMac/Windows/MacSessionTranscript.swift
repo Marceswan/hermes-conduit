@@ -115,8 +115,13 @@ struct MacSessionTranscript: Equatable {
         case .messageComplete(_, let messageID, let content, let reasoning):
             let text = content ?? streamingText
             streamingText = ""
-            messages.append(ChatMessage(id: messageID ?? nextLocalID("assistant"), role: .assistant,
-                                        content: text, timestamp: timestamp, reasoning: reasoning))
+            let row = ChatMessage(id: messageID ?? nextLocalID("assistant"), role: .assistant,
+                                  content: text, timestamp: timestamp, reasoning: reasoning)
+            if let index = messages.firstIndex(where: { $0.id == row.id }) {
+                messages[index] = row
+            } else {
+                messages.append(row)
+            }
             return .turnEnded
         case .messageInterrupted:
             flush(timestamp)
@@ -135,8 +140,13 @@ struct MacSessionTranscript: Equatable {
             return .turnEnded
         case .toolStart(_, let name, let input, let toolID):
             flush(timestamp)
-            messages.append(ChatMessage(id: "tool-\(toolID ?? nextLocalID("t"))", role: .tool, content: "", timestamp: timestamp,
-                                        tool: ToolActivity(id: toolID, name: name, input: input, output: nil, status: .running)))
+            let row = ChatMessage(id: "tool-\(toolID ?? nextLocalID("t"))", role: .tool, content: "", timestamp: timestamp,
+                                  tool: ToolActivity(id: toolID, name: name, input: input, output: nil, status: .running))
+            if let index = messages.firstIndex(where: { $0.id == row.id }) {
+                if messages[index].tool?.status == .running { messages[index] = row }
+            } else {
+                messages.append(row)
+            }
         case .toolComplete(_, let name, let output, let toolID):
             let index = messages.lastIndex { row in
                 guard let tool = row.tool, tool.status == .running else { return false }
@@ -148,32 +158,32 @@ struct MacSessionTranscript: Equatable {
             }
         case .approval(_, let activity):
             flush(timestamp)
-            messages.append(ChatMessage(id: "approval-\(activity.requestId ?? nextLocalID("a"))", role: .approval,
-                                        content: activity.description, timestamp: timestamp, approval: activity))
-            turn = .needsInput
+            upsertCard(ChatMessage(id: "approval-\(activity.requestId ?? nextLocalID("a"))", role: .approval,
+                                   content: activity.description, timestamp: timestamp, approval: activity))
         case .clarify(_, let activity):
             flush(timestamp)
-            messages.append(ChatMessage(id: "clarify-\(activity.requestId)", role: .clarify, content: "",
-                                        timestamp: timestamp, clarify: activity))
-            turn = .needsInput
+            upsertCard(ChatMessage(id: "clarify-\(activity.requestId)", role: .clarify, content: "",
+                                   timestamp: timestamp, clarify: activity))
         case .inputPrompt(_, let activity):
             flush(timestamp)
-            messages.append(ChatMessage(id: "input-\(activity.requestId)", role: .inputPrompt, content: activity.prompt,
-                                        timestamp: timestamp, inputPrompt: activity))
-            turn = .needsInput
+            upsertCard(ChatMessage(id: "input-\(activity.requestId)", role: .inputPrompt, content: activity.prompt,
+                                   timestamp: timestamp, inputPrompt: activity))
         case .approvalWithdrawn(_, let requestID, let reason):
             if let index = messages.lastIndex(where: { $0.approval?.requestId == requestID }) {
                 messages[index].approval?.status = .expired
                 messages[index].approval?.error = reason
             }
+            settleTurnAfterExpiry()
         case .clarifyExpire(_, let requestID, _):
             if let index = messages.lastIndex(where: { $0.clarify?.requestId == requestID }) {
                 messages[index].clarify?.isExpired = true
             }
+            settleTurnAfterExpiry()
         case .inputPromptExpire(_, let requestID, _):
             if let index = messages.lastIndex(where: { $0.inputPrompt?.requestId == requestID }) {
                 messages[index].inputPrompt?.status = .expired
             }
+            settleTurnAfterExpiry()
         default:
             break
         }
@@ -182,13 +192,30 @@ struct MacSessionTranscript: Equatable {
 
     // MARK: Private
 
-    private var hasPendingCard: Bool {
-        messages.contains { row in
-            if row.approval?.status == .pending { return true }
-            if let clarify = row.clarify, !clarify.isExpired, clarify.questions.contains(where: { $0.status == .pending }) { return true }
-            if row.inputPrompt?.status == .pending { return true }
-            return false
+    private var hasPendingCard: Bool { messages.contains { Self.isPending($0) } }
+
+    private static func isPending(_ row: ChatMessage) -> Bool {
+        if row.approval?.status == .pending { return true }
+        if let clarify = row.clarify, !clarify.isExpired, clarify.questions.contains(where: { $0.status == .pending }) { return true }
+        if row.inputPrompt?.status == .pending { return true }
+        return false
+    }
+
+    /// Gateway replays (session.resume) re-send open requests as live events:
+    /// an existing row is refreshed only while still pending, so a locally
+    /// submitting/answered/expired card is never reset.
+    private mutating func upsertCard(_ row: ChatMessage) {
+        if let index = messages.firstIndex(where: { $0.id == row.id }) {
+            guard Self.isPending(messages[index]) else { return }
+            messages[index] = row
+        } else {
+            messages.append(row)
         }
+        if Self.isPending(row) { turn = .needsInput }
+    }
+
+    private mutating func settleTurnAfterExpiry() {
+        if turn == .needsInput, !hasPendingCard { turn = .idle }
     }
 
     private mutating func flush(_ timestamp: String) {
