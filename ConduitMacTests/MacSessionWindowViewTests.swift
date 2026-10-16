@@ -120,4 +120,66 @@ final class MacSessionWindowViewTests: XCTestCase {
         XCTAssertEqual(MacSessionWindowComposer.primaryAction(for: c), .stop)
         XCTAssertGreaterThan(host.fittingSize.height, 0)
     }
+
+    func testClarifyErrorQuestionIsStillAnswerable() {
+        func question(_ status: ClarifyQuestion.Status) -> ClarifyQuestion {
+            ClarifyQuestion(id: "q", question: "Why?", choices: [], status: status, error: status == .error ? "nope" : nil)
+        }
+        for status in [ClarifyQuestion.Status.pending, .error] {
+            XCTAssertTrue(MacWindowClarifyQuestionRow.isAnswerable(question(status), requestExpired: false), "\(status)")
+            XCTAssertFalse(MacWindowClarifyQuestionRow.isAnswerable(question(status), requestExpired: true), "\(status)")
+        }
+        for status in [ClarifyQuestion.Status.submitting, .answered, .expired] {
+            XCTAssertFalse(MacWindowClarifyQuestionRow.isAnswerable(question(status), requestExpired: false), "\(status)")
+        }
+        XCTAssertEqual(MacWindowClarifyQuestionRow.freeTextAnswer("  yes \n"), "yes")
+        XCTAssertNil(MacWindowClarifyQuestionRow.freeTextAnswer("  "))
+        // A card whose question and activity both carry an error renders.
+        let activity = ClarifyActivity(requestId: "c", questions: [question(.error)], error: "Could not send")
+        let host = NSHostingView(rootView: MacWindowClarifyCard(activity: activity, onAnswer: { _, _ in }).frame(width: 560))
+        host.frame = NSRect(x: 0, y: 0, width: 560, height: 400)
+        host.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(host.fittingSize.height, 0)
+    }
+
+    func testControllerLeavesAFailedClarifyAnswerRetryable() async {
+        let c = controller { env in
+            env.resume = { _ in SessionResumeResult(sessionId: "rt", storedSessionId: nil, messages: [],
+                snapshot: .macTestSnapshot(running: false)) }
+            env.respondToClarification = { _, _, _ in throw HermesError.notConnected }
+        }
+        c.start()
+        for _ in 0..<20 { await Task.yield() }
+        c.handle(.clarify(sessionId: "rt", activity: ClarifyActivity(requestId: "c", question: "Why?", choices: [])))
+        let id = "clarify-c"
+        c.answerClarify(messageID: id, questionID: "q0", answer: "because")
+        for _ in 0..<20 { await Task.yield() }
+        let activity = c.transcript.messages.first { $0.id == id }?.clarify
+        XCTAssertTrue(activity?.questions.first.map { MacWindowClarifyQuestionRow.isAnswerable($0, requestExpired: activity?.isExpired ?? false) } ?? false)
+        XCTAssertNotNil(activity?.error)
+    }
+
+    func testBannerRetryRecoversAFailedWindow() async {
+        var fail = true
+        let c = controller { env in
+            env.resume = { _ in
+                if fail { throw HermesError.notConnected }
+                return SessionResumeResult(sessionId: "rt", storedSessionId: nil, messages: [],
+                                           snapshot: .macTestSnapshot(running: false))
+            }
+        }
+        c.start()
+        await c.awaitInFlightWork()
+        guard case .failed = c.phase else { return XCTFail("expected .failed, got \(c.phase)") }
+        fail = false
+        MacSessionWindowView.retry(c)
+        await c.awaitInFlightWork()
+        XCTAssertEqual(c.phase, .ready)
+    }
+
+    func testWindowComposerIgnoresTheMainRoute() {
+        XCTAssertFalse(ComposerPasteTextView.mayTakeFocus(followsMainRoute: true, routeTabRaw: SidebarTab.bots.rawValue))
+        XCTAssertTrue(ComposerPasteTextView.mayTakeFocus(followsMainRoute: true, routeTabRaw: SidebarTab.sessions.rawValue))
+        XCTAssertTrue(ComposerPasteTextView.mayTakeFocus(followsMainRoute: false, routeTabRaw: SidebarTab.bots.rawValue))
+    }
 }

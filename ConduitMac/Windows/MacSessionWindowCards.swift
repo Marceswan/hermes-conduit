@@ -206,14 +206,26 @@ struct MacWindowClarifyCard: View {
     }
 }
 
-private struct MacWindowClarifyQuestionRow: View {
+struct MacWindowClarifyQuestionRow: View {
     let question: ClarifyQuestion
     let requestExpired: Bool
     let onAnswer: (String) -> Void
     @State private var text = ""
     @State private var selection: Set<String> = []
 
-    private var answerable: Bool { question.status == .pending && !requestExpired }
+    /// Upstream's rule (`ClarifyQuestion.isAnswerable`: pending or error, so a failed answer can be retried),
+    /// unless the whole request expired.
+    static func isAnswerable(_ question: ClarifyQuestion, requestExpired: Bool) -> Bool {
+        question.isAnswerable && !requestExpired
+    }
+
+    /// What a free-text answer sends: trimmed, nil when blank.
+    static func freeTextAnswer(_ text: String) -> String? {
+        let answer = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return answer.isEmpty ? nil : answer
+    }
+
+    private var answerable: Bool { Self.isAnswerable(question, requestExpired: requestExpired) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -240,7 +252,10 @@ private struct MacWindowClarifyQuestionRow: View {
             }
         case .submitting:
             ProgressView().controlSize(.small)
-        default:
+        case .expired:
+            Text(AppLocalization.string("EXPIRED")).font(.caption).foregroundStyle(.secondary)
+        case .pending, .error:
+            // Only reachable when the whole request expired.
             Text(AppLocalization.string("EXPIRED")).font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -253,7 +268,7 @@ private struct MacWindowClarifyQuestionRow: View {
             Button(AppLocalization.string("Send"), action: submitText)
                 .buttonStyle(.borderedProminent)
                 .tint(.conduitAccent)
-                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(Self.freeTextAnswer(text) == nil)
         }
     }
 
@@ -284,8 +299,7 @@ private struct MacWindowClarifyQuestionRow: View {
     }
 
     private func submitText() {
-        let answer = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !answer.isEmpty else { return }
+        guard let answer = Self.freeTextAnswer(text) else { return }
         onAnswer(answer)
     }
 }

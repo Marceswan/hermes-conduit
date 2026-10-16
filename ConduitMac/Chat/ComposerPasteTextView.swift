@@ -36,6 +36,11 @@ struct ComposerPasteTextView: NSViewRepresentable {
     /// The chat pane's drop sink, when one wraps this composer.
     @Environment(\.macAttachmentDropSink) private var dropSink
 
+    /// Whether the composer may hold focus: a composer outside the main window ignores the main route.
+    static func mayTakeFocus(followsMainRoute: Bool, routeTabRaw: String?) -> Bool {
+        !followsMainRoute || MacChatRoute.isChatActive(tabRaw: routeTabRaw)
+    }
+
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -78,7 +83,7 @@ struct ComposerPasteTextView: NSViewRepresentable {
         // A chat hidden under Bots / Cron / Kanban must not take or keep focus.
         // Focus lost to the route is held (isFocused stays true) and restored
         // on return, unless something else owns the keyboard by then.
-        let chatActive = !followsMainRoute || MacChatRoute.isChatActive(tabRaw: routeTabRaw)
+        let chatActive = Self.mayTakeFocus(followsMainRoute: followsMainRoute, routeTabRaw: routeTabRaw)
         if isFocused && chatActive {
             if let window = textView.window {
                 textView.wantsFocus = false

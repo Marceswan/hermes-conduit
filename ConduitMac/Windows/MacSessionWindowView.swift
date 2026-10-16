@@ -12,7 +12,7 @@ struct MacSessionWindowView: View {
         VStack(spacing: 0) {
             if let banner = Self.bannerText(for: controller.phase, profileName: { appState.profileDisplayName($0) }) {
                 MacSessionWindowBanner(text: banner, phase: controller.phase,
-                                       onRetry: { controller.retry() },
+                                       onRetry: { Self.retry(controller) },
                                        onClose: { dismissWindow() })
             }
             transcript
@@ -71,6 +71,9 @@ struct MacSessionWindowView: View {
         guard let target else { return }
         proxy.scrollTo(target, anchor: .bottom)
     }
+
+    /// The banner's Retry for `.failed`: re-reads the session (not `scopeChanged()`).
+    static func retry(_ controller: MacSessionWindowController) { controller.retry() }
 
     static func bannerText(for phase: MacSessionWindowController.Phase, profileName: (String) -> String) -> String? {
         switch phase {
