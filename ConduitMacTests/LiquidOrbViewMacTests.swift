@@ -87,27 +87,35 @@ final class LiquidOrbViewMacTests: XCTestCase {
         XCTAssertFalse(MacLiquidOrbLevelView.shouldMeter(animates: false, windowVisible: true))
     }
 
+    /// The orb follows its window's occlusion through the real notification.
+    /// A real window's occlusion depends on the window server (other Conduit
+    /// test hosts overlap it and change it at any time), so the window's
+    /// answer is scripted: the view reads the state and gets the notification
+    /// exactly as in the app, and nothing else can flip it.
     func testHiddenWindowStopsTheMeterAndShowingResumesIt() throws {
         let pipeline = try requirePipeline()
         let feed = LiveVoiceLevelFeed()
         let meter = LiveVoiceLevelMeter(feed: feed)
         let look = LiveVoiceOrb.LiquidLook(state: .listening, speech: 0)
-        let window = HostedTestSupport.host(
+        let window = ScriptedOcclusionWindow(contentRect: NSRect(x: 0, y: 0, width: 160, height: 160))
+        window.contentView = NSHostingView(rootView:
             MacLiquidOrbLevelView(pipeline: pipeline, look: look, phase: .listening, animates: true, lowPowerMode: false, meter: meter)
-                .frame(width: 160, height: 160),
-            size: NSSize(width: 160, height: 160))
+                .frame(width: 160, height: 160))
+        window.orderFront(nil)
         defer { HostedTestSupport.tearDown(window) }
         func orbView() -> LiquidOrbMTKView? { Self.find(LiquidOrbMTKView.self, in: window.contentView) }
-        XCTAssertTrue(HostedTestSupport.waitUntil { orbView() != nil })
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 15) { orbView() != nil })
         let view = try XCTUnwrap(orbView())
-        // Occluded or minimised: no timer, no watcher (so no provider polling).
-        view.setWindowVisible(false)
-        XCTAssertTrue(HostedTestSupport.waitUntil { !meter.isRunning && !feed.wantsSamples })
-        view.setWindowVisible(true)
-        XCTAssertTrue(HostedTestSupport.waitUntil { meter.isRunning && feed.wantsSamples })
+        // Showing: the window reports visible, so the meter runs and watches.
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 15) { meter.isRunning && feed.wantsSamples })
         XCTAssertEqual(meter.source, .microphone)
-        view.setWindowVisible(false)
-        XCTAssertTrue(HostedTestSupport.waitUntil { !meter.isRunning && !feed.wantsSamples })
+        // Occluded or minimised: no timer, no watcher (so no provider polling).
+        window.setOcclusion([])
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 15) { !view.isWindowVisible && !meter.isRunning && !feed.wantsSamples })
+        window.setOcclusion(.visible)
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 15) { meter.isRunning && feed.wantsSamples })
+        window.setOcclusion([])
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 15) { !meter.isRunning && !feed.wantsSamples })
         XCTAssertEqual(meter.level, 0)
     }
 
@@ -134,6 +142,24 @@ final class LiquidOrbViewMacTests: XCTestCase {
         if let match = view as? T { return match }
         for sub in view.subviews { if let match = find(type, in: sub) { return match } }
         return nil
+    }
+}
+
+/// A window whose occlusion state the test sets. Real occlusion notifications
+/// from the window server read the same scripted value, so they cannot
+/// disagree with it.
+private final class ScriptedOcclusionWindow: NSWindow {
+    private var scripted: NSWindow.OcclusionState = .visible
+    override var occlusionState: NSWindow.OcclusionState { scripted }
+
+    convenience init(contentRect: NSRect) {
+        self.init(contentRect: contentRect, styleMask: [.titled], backing: .buffered, defer: false)
+        isReleasedWhenClosed = false
+    }
+
+    func setOcclusion(_ state: NSWindow.OcclusionState) {
+        scripted = state
+        NotificationCenter.default.post(name: NSWindow.didChangeOcclusionStateNotification, object: self)
     }
 }
 
