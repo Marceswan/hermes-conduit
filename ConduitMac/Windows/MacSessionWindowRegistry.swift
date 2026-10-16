@@ -29,6 +29,13 @@ final class MacSessionWindowRegistry: ObservableObject {
         return true
     }
 
+    /// Forgets a request whose window never appeared (an `openWindow` that produced
+    /// nothing), so the slot is not held until relaunch. A window that is open stays.
+    func releaseIfUnappeared(_ token: MacSessionWindowToken) {
+        guard !open.contains(token) else { return }
+        requested.remove(token)
+    }
+
     func disappeared(_ token: MacSessionWindowToken) {
         open.remove(token)
         requested.remove(token)

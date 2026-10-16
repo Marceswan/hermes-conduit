@@ -467,6 +467,7 @@ final class MacKeyboardMenuTests: XCTestCase {
             ("/Go/Show Previous Tab", "\t", [.control, .shift]),
             ("/File/Close Tab", "w", .command),
             ("/File/Reopen Closed Tab", "t", [.shift, .command]),
+            ("/File/Open Session in New Window", "n", [.option, .command]),
             ("/Chat/Ask About Window\u{2026}", "w", [.shift, .command]),
         ]
         table += [

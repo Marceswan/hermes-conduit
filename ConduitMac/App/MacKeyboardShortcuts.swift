@@ -245,7 +245,8 @@ enum MacKeyboardActions {
     ) {
         guard let window, !commandsBlocked(by: window) else { return }
         (requests ?? .shared).cancelSearch()
-        selectTab(.sessions, defaults: defaults)
+        // A session window has its own composer; the main pane stays as it is (D21).
+        if !MacSessionWindows.isSessionWindow(window) { selectTab(.sessions, defaults: defaults) }
         center.post(name: .macFocusComposerRequested, object: window)
     }
 

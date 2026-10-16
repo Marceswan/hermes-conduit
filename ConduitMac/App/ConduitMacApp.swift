@@ -56,6 +56,11 @@ struct ConduitMacApp: App {
         }
         .defaultSize(width: 1180, height: 780)
         .commands { ConduitCommands(appState: appState, tabs: .shared, notch: .shared, palette: .shared, updater: .shared, quickAsk: .shared) }
+        // A popped-out session (D21). Not `.commands`: the menu bar is the main scene's.
+        WindowGroup("Conduit Chat", id: MacSessionWindows.sceneID, for: MacSessionWindowToken.self) { $token in
+            MacSessionWindowScene(token: token)
+        }
+        .defaultSize(width: 640, height: 760)
     }
 
     // Ported from ConduitApp.swift; keep in sync. Skipped: see docs/macos/PORTING_LEDGER.md.

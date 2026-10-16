@@ -15,6 +15,7 @@ struct ConduitCommands: Commands {
     let palette: MacPaletteStore
     @ObservedObject var updater: MacUpdater
     @ObservedObject var quickAsk: MacQuickAskHotKeyManager
+    @Environment(\.openWindow) private var openWindow
     @AppStorage(MacQuickAskHotKeyManager.enabledKey) private var quickAskEnabled = true
     @AppStorage(ConduitCommands.sidebarVisibleKey) private var sidebarVisible = true
     @AppStorage(HoverAccessibilityEngine.highlightDefaultsKey) private var hoverHighlight = true
@@ -37,6 +38,15 @@ struct ConduitCommands: Commands {
                 }
             }
             .keyboardShortcut("n", modifiers: .command)
+            // A popped-out session (D21): the main window's active tab moves to its own window.
+            Button("Open Session in New Window") {
+                guard !MacKeyboardActions.commandsBlocked(by: NSApp.keyWindow), !MacSessionWindows.isSessionWindow(NSApp.keyWindow),
+                      let id = tabs.model.activeID else { return }
+                tabs.popOut(id) { sessionID in
+                    MacSessionWindows.open(sessionID, appState: appState) { openWindow(value: $0) }
+                }
+            }
+            .keyboardShortcut("n", modifiers: [.option, .command])
             // Close Tab owns Cmd-W ahead of File > Close; in any other window
             // it performs that window's ordinary close (D11).
             Button("Close Tab") { MacSessionTabsActions.closeTab(store: tabs, window: NSApp.keyWindow) }
