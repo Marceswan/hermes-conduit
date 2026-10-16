@@ -51,6 +51,8 @@ struct MacHomeCronJob: Equatable, Identifiable {
     var name: String
     /// Enabled and not finished.
     var isActive: Bool
+    /// A completed one-shot: neither active nor paused.
+    var isFinished = false
     /// The last run reported an error.
     var hasError: Bool
     var nextRun: Date?
@@ -208,14 +210,19 @@ struct MacHomeSnapshot: Equatable {
         let needsYou = rows.filter(\.needsUser)
         let working = rows.filter { !$0.needsUser }
         let days = dayBuckets(input.sessions, now: input.now, calendar: calendar)
+        let waiting = input.feed == .offline ? [] : input.live.filter(\.needsUser)
+        let approvals = waiting.filter { $0.kind == .approval }.count
+        let questions = waiting.filter { $0.kind == .clarify || $0.kind == .inputPrompt }.count
 
         let tiles = MacHomeTiles(
             sessions: input.sessions.count,
             activeToday: days.last?.count ?? 0,
             unread: input.sessions.filter(\.isUnread).count,
-            needsYou: needsYou.count,
-            approvals: needsYou.filter { $0.kind == .approval }.count,
-            questions: needsYou.filter { $0.kind == .clarify || $0.kind == .inputPrompt }.count,
+            // From the un-deduplicated items: a session with three pending approvals
+            // is three things waiting on the user, though it is one row.
+            needsYou: approvals + questions,
+            approvals: approvals,
+            questions: questions,
             working: working.count,
             subAgents: max(input.subAgents, 0)
         )
@@ -329,7 +336,7 @@ struct MacHomeSnapshot: Equatable {
         }
         return MacHomeCronSummary(
             active: active.count,
-            paused: jobs.count - active.count,
+            paused: jobs.filter { !$0.isActive && !$0.isFinished }.count,
             failing: jobs.filter(\.hasError).count,
             next: upcoming.map { MacHomeCronNext(name: clean($0.job.name, Limit.cronName), date: $0.date) }
         )
@@ -411,6 +418,11 @@ enum MacHomeDates {
         local.locale = Locale(identifier: "en_US_POSIX")
         local.timeZone = .current
         local.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
-        return local.date(from: text)
+        // Python's naive isoformat() can carry microseconds: drop the fraction (seconds are enough here).
+        var wholeSeconds = text
+        if let dot = text.firstIndex(of: "."), text[text.index(after: dot)...].allSatisfy(\.isNumber) {
+            wholeSeconds = String(text[..<dot])
+        }
+        return local.date(from: wholeSeconds)
     }
 }

@@ -245,4 +245,42 @@ final class MacHomeSnapshotTests: XCTestCase {
         let parts = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: parsed)
         XCTAssertEqual([parts.year, parts.month, parts.day, parts.hour, parts.minute], [2026, 10, 17, 9, 30])
     }
+
+    // MARK: Task 3 additions (tile counts, finished cron, cron date formats)
+
+    func testTilesCountEveryWaitingItemNotJustOnePerSession() {
+        let items = [
+            MacHomeLiveItem.fixture("a1", session: "a", kind: .approval, needsUser: true),
+            MacHomeLiveItem.fixture("a2", session: "a", kind: .approval, needsUser: true),
+            MacHomeLiveItem.fixture("c1", session: "a", kind: .clarify, needsUser: true),
+            MacHomeLiveItem.fixture("t1", session: "a"),
+        ]
+        let snap = make(.fixture(live: items))
+        XCTAssertEqual(snap.needsYou.count, 1, "one row per session")
+        XCTAssertEqual(snap.tiles.approvals, 2)
+        XCTAssertEqual(snap.tiles.questions, 1)
+        XCTAssertEqual(snap.tiles.needsYou, 3)
+        XCTAssertEqual(make(.fixture(live: items, feed: .offline)).tiles.needsYou, 0, "offline shows no live items")
+    }
+
+    func testAFinishedCronJobIsNeitherActiveNorPaused() {
+        let jobs = [
+            MacHomeCronJob(id: "a", name: "A", isActive: true, hasError: false, nextRun: nil),
+            MacHomeCronJob(id: "b", name: "B", isActive: false, hasError: false, nextRun: nil),
+            MacHomeCronJob(id: "c", name: "C", isActive: false, isFinished: true, hasError: false, nextRun: nil),
+        ]
+        let cron = make(.fixture(cron: jobs)).cron
+        XCTAssertEqual(cron?.active, 1)
+        XCTAssertEqual(cron?.paused, 1)
+    }
+
+    func testParseAcceptsPythonStyleIsoWithMicroseconds() throws {
+        let expected = MacHomeTestCalendar.date("2026-10-17T13:00:00Z")
+        XCTAssertEqual(MacHomeDates.parse("2026-10-17T13:00:00+00:00"), expected)
+        let micro = try XCTUnwrap(MacHomeDates.parse("2026-10-17T13:00:00.123456+00:00"))
+        XCTAssertEqual(micro.timeIntervalSince(expected), 0.123456, accuracy: 0.001)
+        let naive = try XCTUnwrap(MacHomeDates.parse("2026-10-17T09:30:00.123456"))
+        let parts = Calendar.current.dateComponents([.hour, .minute], from: naive)
+        XCTAssertEqual([parts.hour, parts.minute], [9, 30])
+    }
 }
