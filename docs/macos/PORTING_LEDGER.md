@@ -136,3 +136,4 @@ list after each `git merge upstream/main`.
      - Delete stale allowlist entries; the test fails on them.
 6. **Smoke and push.** Run `docs/macos/SMOKE_CHECKLIST.md`, then run `git push origin macos`.
 7. **Release (only when cutting one).** Run `CONDUIT_NOTARY_PROFILE=conduit-notary scripts/mac-release.sh`. It needs the notarytool keychain profile.
+| Conduit/Localizable.xcstrings | additive | Mac Home strings (D24), all 13 shipped languages; no gate, data only, no key removed or changed | none needed |

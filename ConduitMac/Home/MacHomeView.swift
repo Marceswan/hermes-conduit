@@ -120,19 +120,19 @@ struct MacHomeView: View {
                          spacing: MacHomeStyle.sectionGap) {
             MacHomeTile(
                 value: "\(t.sessions)", label: AppLocalization.string("Sessions"),
-                detail: String(format: AppLocalization.string("Today %lld"), t.activeToday),
+                detail: String(format: AppLocalization.string("Today %@"), String(t.activeToday)),
                 // Counts are over the loaded catalog, not the server's total.
                 spokenValue: MacHomeText.spoken([
-                    String(format: AppLocalization.string("%lld in loaded chats"), t.sessions),
-                    String(format: AppLocalization.string("Today %lld"), t.activeToday),
+                    String(format: AppLocalization.string("%@ in loaded chats"), String(t.sessions)),
+                    String(format: AppLocalization.string("Today %@"), String(t.activeToday)),
                 ]))
             MacHomeTile(value: "\(t.unread)", label: AppLocalization.string("Unread"))
             MacHomeTile(
                 value: "\(t.needsYou)", label: AppLocalization.string("Waiting on you"),
-                detail: t.needsYou == 0 ? nil : String(format: AppLocalization.string("Approvals %lld, questions %lld"), t.approvals, t.questions))
+                detail: t.needsYou == 0 ? nil : String(format: AppLocalization.string("Approvals %1$@, questions %2$@"), String(t.approvals), String(t.questions)))
             MacHomeTile(
                 value: "\(t.working)", label: AppLocalization.string("Working"),
-                detail: t.subAgents == 0 ? nil : String(format: AppLocalization.string("Sub-agents %lld"), t.subAgents))
+                detail: t.subAgents == 0 ? nil : String(format: AppLocalization.string("Sub-agents %@"), String(t.subAgents)))
         }
     }
 
