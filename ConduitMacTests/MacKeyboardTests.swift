@@ -475,7 +475,9 @@ final class MacKeyboardMenuTests: XCTestCase {
             ("/Go/Session Above", up, [.option, .command]),
             ("/Go/Session Below", down, [.option, .command]),
             ("/Go/Message Field", "l", .command),
-            ("/Edit/Search Sessions", "f", .command),
+            ("/Edit/Find in Chat", "f", .command),
+            ("/Edit/Find Next", "g", .command),
+            ("/Edit/Find Previous", "g", [.shift, .command]),
             ("/Go/Command Palette", "k", .command),
         ]
         return table
@@ -494,7 +496,7 @@ final class MacKeyboardMenuTests: XCTestCase {
     func testOurShortcutsAreUnique() throws {
         let main = try XCTUnwrap(NSApp.mainMenu)
         let all = entries(main)
-        for expected in shortcuts() where expected.key != "f" {
+        for expected in shortcuts() where expected.key != "f" && expected.key != "g" {
             let found = all.filter { matches($0, key: expected.key, mask: expected.mask) }
             XCTAssertEqual(found.map(\.path), [expected.path], "no other item may share \(expected.path)'s shortcut")
         }
@@ -507,8 +509,10 @@ final class MacKeyboardMenuTests: XCTestCase {
         let all = entries(main)
         let find = try XCTUnwrap(all.first { $0.path == "/Edit/Find/Find\u{2026}" }, "per-message find stays reachable from the menu")
         let cmdF = all.filter { matches($0, key: "f", mask: .command) }.map(\.path)
-        XCTAssertEqual(cmdF.first, "/Edit/Search Sessions")
+        XCTAssertEqual(cmdF.first, "/Edit/Find in Chat")
         XCTAssertEqual(cmdF.count, 1, "Cmd-F belongs to one item (Find is '\(find.item.keyEquivalent)'): \(cmdF)")
+        let search = try XCTUnwrap(all.first { $0.path == "/Edit/Search Sessions" }, "Search Sessions stays in the menu")
+        XCTAssertEqual(search.item.keyEquivalent, "", "and has no key equivalent of its own")
     }
 
     func testSidebarToggleShortcutIsUntouched() throws {

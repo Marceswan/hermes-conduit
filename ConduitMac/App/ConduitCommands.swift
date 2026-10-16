@@ -48,13 +48,22 @@ struct ConduitCommands: Commands {
         // sheet opens or closes, so a stale disabled item would swallow its key
         // (AppKit stops at the first match). The actions check for a sheet
         // when they run instead (`MacKeyboardActions.commandsBlocked`).
-        // One contextual Cmd-F: the find bar of a focused message view, else
-        // Search Sessions. It sits ahead of Edit > Find on purpose: AppKit stops
-        // at the first menu item with a matching key equivalent even when it
-        // is disabled, and Find is disabled unless a message view is focused.
+        // One contextual Cmd-F (D10, D23): the whole-chat find bar when focus is
+        // in the chat, Search Sessions when focus is in the sidebar. Cmd-G and
+        // Cmd-Shift-G step through the hits. All three sit ahead of Edit > Find
+        // on purpose: AppKit stops at the first menu item with a matching key
+        // equivalent even when it is disabled, and the system Find items are
+        // disabled unless a find-capable text view is focused. In a session
+        // window (D21) they fall back to the focused message view's own find bar.
         CommandGroup(after: .pasteboard) {
-            Button("Search Sessions") { MacKeyboardActions.findOrSearchSessions(window: NSApp.keyWindow) }
+            Button("Find in Chat") { MacKeyboardActions.findOrSearchSessions(window: NSApp.keyWindow) }
                 .keyboardShortcut("f", modifiers: .command)
+            Button("Find Next") { MacChatFindActions.next(window: NSApp.keyWindow) }
+                .keyboardShortcut("g", modifiers: .command)
+            Button("Find Previous") { MacChatFindActions.previous(window: NSApp.keyWindow) }
+                .keyboardShortcut("g", modifiers: [.shift, .command])
+            // No key equivalent: the way in when Cmd-F lands on the chat.
+            Button("Search Sessions") { MacKeyboardActions.searchSessions(window: NSApp.keyWindow) }
             Divider()
         }
         CommandMenu("Chat") {
