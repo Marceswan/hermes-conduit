@@ -73,7 +73,7 @@ private struct LauncherWidgetView: View {
 
     @ViewBuilder
     private var nativeMark: some View {
-        if #available(iOS 18.0, *), renderingMode == .accented {
+        if #available(iOS 18.0, macOS 15.0, *), renderingMode == .accented { // MAC: widgetAccentedRenderingMode is macOS 15 (R4-widen)
             Image("WidgetMark")
                 .resizable()
                 .widgetAccentedRenderingMode(.accentedDesaturated)
@@ -135,7 +135,7 @@ private struct LauncherWidgetView: View {
 
     @ViewBuilder
     private var characterArtwork: some View {
-        if #available(iOS 18.0, *), renderingMode == .accented {
+        if #available(iOS 18.0, macOS 15.0, *), renderingMode == .accented { // MAC: widgetAccentedRenderingMode is macOS 15 (R4-widen)
             Image("WidgetCharacter")
                 .resizable()
                 .widgetAccentedRenderingMode(.accentedDesaturated)
