@@ -35,6 +35,29 @@ final class MacControlMetricsTests: XCTestCase {
         XCTAssertEqual(MacTabStripMetrics.segmentHeight, 26)
         XCTAssertGreaterThanOrEqual(MacTabStripMetrics.segmentHeight, 24, "hit target")
         XCTAssertEqual(MacTabStripMetrics.containerHeight, MacControlHeight.compact, "the strip is as tall as a sidebar row")
+        XCTAssertEqual(MacTabStripMetrics.homeSegmentWidth, 32 + 2 * MacTabStripMetrics.inset, "an icon-only segment: a 32 pt glyph square plus the inset")
+    }
+
+    func testLadderStepsFollowWidthAlone() {
+        // Segment widths in tab order, Home last: the widest of five is 70.
+        let widths: [CGFloat] = [70, 60, 50, 66, 62]
+        let ladder = { (width: CGFloat) in MacTabStripMetrics.ladder(availableWidth: width, nameSegmentWidths: widths) }
+        XCTAssertEqual(ladder(5 * 70), .names)
+        XCTAssertEqual(ladder(5 * 70 - 0.5), .homeCompact, "five equal segments need the widest times five")
+        let compact = 4 * 70 + MacTabStripMetrics.homeSegmentWidth
+        XCTAssertEqual(ladder(compact), .homeCompact)
+        XCTAssertEqual(ladder(compact - 0.5), .icons)
+        XCTAssertEqual(ladder(0), .icons)
+        XCTAssertEqual(ladder(2000), .names)
+        // Home's own name never sets the compact step: it is an icon there.
+        let longHome: [CGFloat] = [70, 60, 50, 66, 120]
+        XCTAssertEqual(MacTabStripMetrics.ladder(availableWidth: 4 * 70 + MacTabStripMetrics.homeSegmentWidth,
+                                                 nameSegmentWidths: longHome), .homeCompact)
+        XCTAssertEqual(MacTabStripMetrics.ladder(availableWidth: 5 * 120 - 0.5, nameSegmentWidths: longHome), .homeCompact,
+                       "but it widens the all-names step")
+        XCTAssertEqual(MacTabStripMetrics.ladder(availableWidth: 1000, nameSegmentWidths: [70]), .icons, "one tab has nothing to step")
+        XCTAssertEqual(MacTabStripMetrics.nameSegmentWidth(iconWidth: 12, textWidth: 40),
+                       12 + MacTabStripMetrics.nameGap + 40 + 2 * MacTabStripMetrics.nameMargin + 2 * MacTabStripMetrics.inset)
     }
 
     func testSegmentsAreEqualWidthAndTileTheContainer() {

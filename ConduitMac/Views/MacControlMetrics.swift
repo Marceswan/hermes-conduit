@@ -57,6 +57,46 @@ enum MacTabStripMetrics {
     static let containerRadius: CGFloat = MacSidebarMetrics.controlRadius
     static var indicatorRadius: CGFloat { concentricRadius(outer: containerRadius, inset: inset) }
 
+    /// A fixed icon-only segment (Home, when five names do not fit): a 32 pt
+    /// glyph square plus the indicator inset on both sides.
+    static let homeSegmentWidth: CGFloat = 32 + 2 * inset
+
+    /// Gap between a segment's icon and its name, and the margin either side
+    /// of that pair (inside the indicator).
+    static let nameGap: CGFloat = 4
+    static let nameMargin: CGFloat = 3
+
+    /// The strip's three layouts, widest first (D24).
+    enum Ladder: Equatable {
+        /// Every tab shows icon and name, in equal segments.
+        case names
+        /// The tabs before the last keep icon and name in equal segments; the
+        /// last (Home) is an icon-only segment of `homeSegmentWidth`.
+        case homeCompact
+        /// Every tab is an icon in an equal segment.
+        case icons
+    }
+
+    /// Width one segment needs to show its icon and name: glyph, gap, text,
+    /// the margin on both sides and the indicator inset on both sides.
+    static func nameSegmentWidth(iconWidth: CGFloat, textWidth: CGFloat) -> CGFloat {
+        iconWidth + nameGap + textWidth + 2 * nameMargin + 2 * inset
+    }
+
+    /// Which layout fits `availableWidth` (the strip's own width, container
+    /// included). `nameSegmentWidths` are the tabs' `nameSegmentWidth`s in
+    /// tab order, Home last. Equal segments are as wide as the widest in
+    /// their group, so a group needs `count * widest`. A pure function of its
+    /// arguments: the strip's steps do not depend on view hosting.
+    static func ladder(availableWidth: CGFloat, nameSegmentWidths: [CGFloat]) -> Ladder {
+        guard let last = nameSegmentWidths.last, nameSegmentWidths.count > 1 else { return .icons }
+        let leading = nameSegmentWidths.dropLast()
+        let allNames = CGFloat(nameSegmentWidths.count) * max(last, leading.max() ?? 0)
+        if availableWidth >= allNames { return .names }
+        let compact = CGFloat(leading.count) * (leading.max() ?? 0) + homeSegmentWidth
+        return availableWidth >= compact ? .homeCompact : .icons
+    }
+
     /// Radius of a shape inset by `inset` inside one of radius `outer`, so the
     /// two corners share a centre. Never negative.
     static func concentricRadius(outer: CGFloat, inset: CGFloat) -> CGFloat {

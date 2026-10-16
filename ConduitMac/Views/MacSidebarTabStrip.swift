@@ -1,6 +1,7 @@
+import AppKit
 import SwiftUI
 
-/// Mac sidebar tab strip (Sessions | Bots | Cron | Kanban). A glass container
+/// Mac sidebar tab strip (Sessions | Bots | Cron | Kanban | Home). A glass container
 /// holds equal-width segments; the selected one carries an accent indicator
 /// inset uniformly inside the container, with a radius concentric to the
 /// container's (`MacTabStripMetrics`). Icon and label are centred in each
@@ -11,23 +12,54 @@ struct MacSidebarTabStrip: View {
 
     private var selected: SidebarTab { SidebarTab.migrated(rawValue: selectedRaw) }
 
+    /// Chosen from the strip's own width by `MacTabStripMetrics.ladder` (pure,
+    /// so tests pin the steps without hosting): five names; the four existing
+    /// names with Home as a compact icon; icons only.
     var body: some View {
-        // Every tab drops to its icon together once the names no longer fit
-        // their segments (large text), as upstream does.
-        ViewThatFits(in: .horizontal) {
-            strip(iconOnly: false)
-            strip(iconOnly: true)
+        GeometryReader { proxy in
+            content(MacTabStripMetrics.ladder(availableWidth: proxy.size.width,
+                                              nameSegmentWidths: Self.nameSegmentWidths))
+                .frame(width: proxy.size.width, height: MacTabStripMetrics.containerHeight)
+                .conduitGlassSurface(cornerRadius: MacTabStripMetrics.containerRadius, tint: .conduitAccent.opacity(0.05))
+        }
+        .frame(height: MacTabStripMetrics.containerHeight)
+    }
+
+    /// Width each tab's icon-and-name segment needs, in tab order, measured
+    /// with the segment's own font (caption, semibold; small-scale glyph) so
+    /// a longer localized name moves the steps.
+    static var nameSegmentWidths: [CGFloat] {
+        let size = NSFont.preferredFont(forTextStyle: .caption1).pointSize
+        let font = NSFont.systemFont(ofSize: size, weight: .semibold)
+        let glyph = NSImage.SymbolConfiguration(pointSize: size, weight: .semibold, scale: .small)
+        return SidebarTab.allCases.map { tab in
+            let text = (tab.displayName as NSString).size(withAttributes: [.font: font]).width
+            let icon = NSImage(systemSymbolName: tab.icon, accessibilityDescription: nil)?
+                .withSymbolConfiguration(glyph)?.size.width ?? size
+            return MacTabStripMetrics.nameSegmentWidth(iconWidth: icon.rounded(.up), textWidth: text.rounded(.up))
         }
     }
 
-    private func strip(iconOnly: Bool) -> some View {
-        EqualWidthHStack(spacing: 0) {
-            ForEach(SidebarTab.allCases, id: \.self) { tab in
-                segment(tab, iconOnly: iconOnly)
+    @ViewBuilder
+    func content(_ ladder: MacTabStripMetrics.Ladder) -> some View {
+        switch ladder {
+        case .names:
+            EqualWidthHStack(spacing: 0) {
+                ForEach(SidebarTab.allCases, id: \.self) { segment($0, iconOnly: false) }
+            }
+        case .icons:
+            EqualWidthHStack(spacing: 0) {
+                ForEach(SidebarTab.allCases, id: \.self) { segment($0, iconOnly: true) }
+            }
+        case .homeCompact:
+            HStack(spacing: 0) {
+                EqualWidthHStack(spacing: 0) {
+                    ForEach(SidebarTab.allCases.filter { $0 != .home }, id: \.self) { segment($0, iconOnly: false) }
+                }
+                segment(.home, iconOnly: true)
+                    .frame(width: MacTabStripMetrics.homeSegmentWidth)
             }
         }
-        .frame(height: MacTabStripMetrics.containerHeight)
-        .conduitGlassSurface(cornerRadius: MacTabStripMetrics.containerRadius, tint: .conduitAccent.opacity(0.05))
     }
 
     private func segment(_ tab: SidebarTab, iconOnly: Bool) -> some View {
@@ -46,16 +78,16 @@ struct MacSidebarTabStrip: View {
                         .conduitFixedGlyph()
                 } else {
                     // A tight icon-to-name gap and a 3 pt side margin keep the
-                    // names at the default 340 pt column; the strip falls back
-                    // to icons only once they no longer fit.
-                    HStack(spacing: 4) {
+                    // names at the default 340 pt column (`nameGap`,
+                    // `nameMargin`); the strip steps down once they no longer fit.
+                    HStack(spacing: MacTabStripMetrics.nameGap) {
                         // The name is on screen, so a tooltip repeating it is
                         // noise. The hint goes on the glyph because a SwiftUI
                         // button takes its identifier from its image.
                         Image(systemName: tab.icon).imageScale(.small).macVisibleLabelHint()
                         Text(tab.displayName).lineLimit(1)
                     }
-                    .padding(.horizontal, 3)
+                    .padding(.horizontal, MacTabStripMetrics.nameMargin)
                 }
             }
             .font(.caption.weight(.semibold))
