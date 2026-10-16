@@ -64,6 +64,8 @@ struct ConduitMacApp: App {
             // Cmd-K palette (D18): over the whole root view, so a sheet covers it.
             .overlay { MacPaletteView() }
             .environmentObject(appState)
+            // Whole-chat find (D23): this window's controller, in the environment.
+            .macChatFind(appState: appState)
             .task { MacSessionTabsStore.shared.bind(to: appState) }
             .task(id: appState.isConnected) { NotchStatusController.shared.bind(to: appState) }   // no-op once bound; the feed is created by the shared base's bootstrap
             .macSpotlightBinding(appState: appState, openLink: { pendingExternalLink = $0 })

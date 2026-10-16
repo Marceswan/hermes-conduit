@@ -56,6 +56,7 @@ struct MacDetailRouter<Chat: View>: View {
         let destination = Self.destination(for: tab)
         ZStack {
             chat
+                .overlay(alignment: .top) { MacChatFindSlot() }   // D23: whole-chat find bar
                 .opacity(destination == .chat ? 1 : 0)
                 .allowsHitTesting(destination == .chat)
                 .accessibilityHidden(destination != .chat)
