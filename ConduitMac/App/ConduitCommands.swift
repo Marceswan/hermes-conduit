@@ -26,6 +26,13 @@ struct ConduitCommands: Commands {
             Button("Check for Updates\u{2026}") { updater.checkForUpdates() }
                 .disabled(!updater.canCheckForUpdates)
         }
+        // There is no `Settings` scene (Settings is MainView's sheet, which needs
+        // RootView-owned closures), so the app menu has no "Settings..." until
+        // this adds it. The D18 observer in RootView does the presenting (D22).
+        CommandGroup(replacing: .appSettings) {
+            Button("Settings\u{2026}") { MacAppActions.openSettings(window: NSApp.keyWindow) }
+                .keyboardShortcut(",", modifiers: .command)
+        }
         CommandGroup(replacing: .newItem) {
             // With the Quick Ask panel key, Cmd-N is the panel's "new conversation",
             // never a new chat in the main window (see `MacQuickAskController.isPanelKey`).

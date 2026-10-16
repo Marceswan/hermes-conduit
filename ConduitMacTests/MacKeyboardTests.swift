@@ -500,6 +500,19 @@ final class MacKeyboardMenuTests: XCTestCase {
         }
     }
 
+    func testSettingsIsInTheAppMenuOnCmdCommaAndNothingElseOwnsIt() throws {
+        let main = try XCTUnwrap(NSApp.mainMenu)
+        let appMenu = try XCTUnwrap(main.items.first?.submenu)
+        let titles = appMenu.items.map(\.title)
+        let settings = try XCTUnwrap(appMenu.items.first { $0.title == "Settings\u{2026}" }, "\(titles)")
+        XCTAssertEqual(settings.keyEquivalent, ",")
+        XCTAssertEqual(settings.keyEquivalentModifierMask.intersection(.deviceIndependentFlagsMask), .command)
+        let about = try XCTUnwrap(titles.firstIndex { $0.hasPrefix("About") }, "\(titles)")
+        XCTAssertGreaterThan(try XCTUnwrap(appMenu.items.firstIndex(of: settings)), about)
+        let comma = entries(main).filter { matches($0, key: ",", mask: .command) }.map(\.path)
+        XCTAssertEqual(comma.count, 1, "Cmd-, belongs to one item: \(comma)")
+    }
+
     func testFindItemStaysInTheMenuWithoutCmdF() throws {
         // Edit > Find > Find... would otherwise claim Cmd-F too. Print the
         // state so a SwiftUI change in how it resolves the clash is visible.
