@@ -2,8 +2,11 @@ import Combine
 import Foundation
 
 extension SessionSummary {
-    /// Tabs match a session by its id or any of its alternate ids.
-    func macMatches(_ id: String) -> Bool { self.id == id || alternateIds.contains(id) }
+    /// Every id a tab can carry for this session: its id, stored id and alternate ids.
+    var macTabIDs: [String] { [id] + [storedSessionId].compactMap { $0 }.filter { !$0.isEmpty } + alternateIds }
+
+    /// Tabs match a session by any of its ids.
+    func macMatches(_ id: String) -> Bool { macTabIDs.contains(id) }
 }
 
 /// Spots a deletion without AppState edits: a session mutation (rename,
@@ -73,8 +76,9 @@ final class MacSessionTabsStore: ObservableObject {
         }
     }
 
-    func activeSessionChanged(_ id: String?, title: String?) {
-        if let id { model.open(id, title: title ?? model.tabs.first { $0.id == id }?.title ?? "") }
+    /// `aliases` are the session's other ids; a tab under one of them is reused.
+    func activeSessionChanged(_ id: String?, title: String?, aliases: [String] = []) {
+        if let id { model.open(id, title: title ?? model.tabs.first { $0.id == id }?.title ?? "", aliases: aliases) }
         else { model.clearActive() }
         save()
     }
@@ -178,7 +182,9 @@ final class MacSessionTabsStore: ObservableObject {
                     // Outside the loaded catalog displayedChatTitle is the previous chat's: keep a known tab's title.
                     let knownTab = id.map { self.model.index(of: $0) != nil } ?? false
                     let title = summary?.title ?? (id == nil || knownTab ? nil : appState.displayedChatTitle)
-                    self.activeSessionChanged(summary?.id ?? id, title: title)
+                    // The active id can be the runtime or stored id, not the row's: reuse a tab under any of them.
+                    let aliases = (summary?.macTabIDs ?? []) + [id].compactMap { $0 }
+                    self.activeSessionChanged(summary?.id ?? id, title: title, aliases: aliases)
                 }
             }
             .store(in: &bindings)

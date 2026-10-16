@@ -133,6 +133,21 @@ final class MacSessionTabsModelTests: XCTestCase {
         XCTAssertEqual(dup.activeID, "real")
     }
 
+    func testOpenMergesTabsKeyedByTheSessionsOtherIds() {
+        var m = model(["runtime", "b", "stored"], active: "b")
+        m.open("real", title: "Real", aliases: ["runtime", "stored", "real"])
+        XCTAssertEqual(m.tabs.map(\.id), ["real", "b"], "one tab per session, where its first tab was")
+        XCTAssertEqual(m.activeID, "real")
+        XCTAssertEqual(m.tabs[0].title, "Real")
+    }
+
+    func testOpenDropsClosedEntriesUnderTheSessionsOtherIds() {
+        var m = model(["runtime", "b"], active: "b")
+        _ = m.close("runtime")
+        m.open("real", title: "Real", aliases: ["runtime"])
+        XCTAssertNil(m.reopen(), "reopen must not bring the session back as a second tab")
+    }
+
     func testCodableRoundTripDropsClosedStack() throws {
         var m = model(["a", "b"], active: "a")
         m.markUnavailable("b")

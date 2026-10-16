@@ -38,7 +38,18 @@ struct MacSessionTabsModel: Codable, Equatable {
     func index(of id: String) -> Int? { tabs.firstIndex { $0.id == id } }
 
     /// Opening a session selects its tab, adding it at the end when missing.
-    mutating func open(_ id: String, title: String) {
+    /// `aliases` are the session's other ids (runtime, stored, alternate): a
+    /// tab under any of them becomes this tab, so one session has one tab.
+    mutating func open(_ id: String, title: String, aliases: [String] = []) {
+        let others = Set(aliases).subtracting([id])
+        if !others.isEmpty {
+            let ids = others.union([id])
+            if let first = tabs.firstIndex(where: { ids.contains($0.id) }) {
+                tabs[first].id = id
+                tabs = tabs.enumerated().filter { $0.offset == first || !ids.contains($0.element.id) }.map(\.element)
+            }
+            closed.removeAll { others.contains($0.tab.id) }
+        }
         if let index = index(of: id) {
             tabs[index].title = title
             tabs[index].unavailable = false
