@@ -28,6 +28,9 @@ struct ComposerPasteTextView: NSViewRepresentable {
     var canSubmitFromReturn: Bool = false
     var onSubmitFromReturn: (() -> Bool)? = nil
     var onUserEdit: (() -> Void)? = nil
+    /// False for a composer outside the main window (a session window, D21): the main
+    /// window's sidebar route then neither blocks nor releases its focus.
+    var followsMainRoute = true
     /// Where Cmd-L arrives (`macFocusComposerRequested`); injectable for tests.
     var focusRequestCenter: NotificationCenter = .default
     /// The chat pane's drop sink, when one wraps this composer.
@@ -75,7 +78,8 @@ struct ComposerPasteTextView: NSViewRepresentable {
         // A chat hidden under Bots / Cron / Kanban must not take or keep focus.
         // Focus lost to the route is held (isFocused stays true) and restored
         // on return, unless something else owns the keyboard by then.
-        if isFocused && MacChatRoute.isChatActive(tabRaw: routeTabRaw) {
+        let chatActive = !followsMainRoute || MacChatRoute.isChatActive(tabRaw: routeTabRaw)
+        if isFocused && chatActive {
             if let window = textView.window {
                 textView.wantsFocus = false
                 if textView.heldFocusForRoute {
@@ -90,7 +94,7 @@ struct ComposerPasteTextView: NSViewRepresentable {
         } else {
             textView.wantsFocus = false
             if textView.window?.firstResponder === textView {
-                if MacChatRoute.isChatActive(tabRaw: routeTabRaw) {
+                if chatActive {
                     textView.window?.makeFirstResponder(nil)
                 } else {
                     textView.resignForRoute()
