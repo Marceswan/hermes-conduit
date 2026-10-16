@@ -149,12 +149,6 @@ struct MacChatFindBar: View {
             .overlay(alignment: .bottom) { Divider() }
             .accessibilityElement(children: .contain)
             .accessibilityLabel(Text("Find in chat"))
-            // Focus stays in the field while Return steps through hits, so VoiceOver
-            // would say nothing: speak the new count ("3 of 12", "No matches").
-            .onChange(of: countLabel) { _, label in
-                guard !label.isEmpty else { return }
-                AccessibilityNotification.Announcement(label).post()
-            }
         }
     }
 }

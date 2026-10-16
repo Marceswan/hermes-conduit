@@ -20,6 +20,9 @@ final class MacChatFindController: ObservableObject {
         var hasEarlierMessages: () -> Bool
         /// False while a group-chat room replaces the transcript.
         var isTranscriptShown: () -> Bool
+        /// False while Bots / Cron / Kanban is the shown sidebar destination:
+        /// `MacDetailRouter` keeps the chat (and this bar) mounted but hidden.
+        var isChatRouteActive: () -> Bool = { true }
 
         static let empty = Environment(messages: { [] }, hasEarlierMessages: { false }, isTranscriptShown: { false })
     }
@@ -38,6 +41,9 @@ final class MacChatFindController: ObservableObject {
     var reveal: (String) -> Void = { _ in }
     /// The bar's search field, so a first responder can be recognised as ours.
     weak var field: NSSearchField?
+    /// Speaks a settled result to VoiceOver; replaced in tests.
+    var announce: (String) -> Void = { AccessibilityNotification.Announcement($0).post() }
+    private var lastAnnouncement: String?
 
     private var environment: Environment
     private let timing: Timing
@@ -74,24 +80,43 @@ final class MacChatFindController: ObservableObject {
         registry.didRegister = { [weak self] id in self?.viewsChanged(messageID: id) }
     }
 
-    var isAvailable: Bool { environment.isTranscriptShown() }
+    var isAvailable: Bool { environment.isTranscriptShown() && environment.isChatRouteActive() }
 
     // MARK: wiring
 
-    func bind(to appState: AppState) {
+    func bind(to appState: AppState, defaults: UserDefaults = .standard) {
         guard !isBound else { return }
         isBound = true
         environment = Environment(
             messages: { [weak appState] in appState?.messages ?? [] },
             hasEarlierMessages: { [weak appState] in appState?.canLoadEarlierMessagesForActiveConversation ?? false },
-            isTranscriptShown: { [weak appState] in appState.map { $0.activeRoomSurface == nil } ?? false }
+            isTranscriptShown: { [weak appState] in appState.map { $0.activeRoomSurface == nil } ?? false },
+            isChatRouteActive: { Self.isChatRouteActive(defaults: defaults) }
         )
+        observe(Self.routeChanges(defaults: defaults))
         observe(
             appState.$messages.dropFirst().map { _ in () }
                 .merge(with: appState.$activeSessionId.dropFirst().map { _ in () })
                 .merge(with: appState.$activeRoomSurface.dropFirst().map { _ in () })
                 .eraseToAnyPublisher()
         )
+    }
+
+    static func isChatRouteActive(defaults: UserDefaults) -> Bool {
+        MacChatRoute.isChatActive(tabRaw: defaults.string(forKey: MacSidebarState.tabDefaultsKey))
+    }
+
+    /// Fires when the sidebar destination key changes (and only then, not on
+    /// every defaults write), so a tab switch closes the hidden bar.
+    static func routeChanges(defaults: UserDefaults) -> AnyPublisher<Void, Never> {
+        NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification, object: defaults)
+            .map { _ in defaults.string(forKey: MacSidebarState.tabDefaultsKey) }
+            .prepend(defaults.string(forKey: MacSidebarState.tabDefaultsKey))
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .map { _ in () }
+            .eraseToAnyPublisher()
     }
 
     /// Subscribes to transcript change signals. `@Published` emits in willSet,
@@ -137,7 +162,9 @@ final class MacChatFindController: ObservableObject {
         focusToken &+= 1
     }
 
-    func close() {
+    /// `restoringFocus: false` for a close the user did not ask for (the chat
+    /// became unavailable or hidden): focus must not jump back into a hidden composer.
+    func close(restoringFocus: Bool = true) {
         guard isOpen else { return }
         isOpen = false
         searchTask?.cancel()
@@ -146,9 +173,14 @@ final class MacChatFindController: ObservableObject {
         cancelNavigation()
         state = MacChatFindState()
         registry.setContext(nil)
+        lastAnnouncement = nil
+        // A hidden field must not keep first responder (it would swallow typing).
+        if let window = field?.window, ownsResponder(window.firstResponder), !(window.firstResponder is ComposerTextView) {
+            window.makeFirstResponder(nil)
+        }
         let restore = restoreFocus
         restoreFocus = nil
-        restore?()
+        if restoringFocus { restore?() }
     }
 
     // MARK: navigation
@@ -173,6 +205,18 @@ final class MacChatFindController: ObservableObject {
         move(&state)
         applyHighlights()
         goToCurrent()
+        announceSettled()
+    }
+
+    /// Speaks the count once a result has settled (typed query applied, or a
+    /// step), never for intermediate keystrokes, and never twice in a row.
+    private func announceSettled() {
+        let label = MacChatFindLabel.text(query: query, state: state)
+        guard !label.isEmpty else { lastAnnouncement = nil; return }
+        let key = query + "\u{0}" + label
+        guard key != lastAnnouncement else { return }
+        lastAnnouncement = key
+        announce(label)
     }
 
     // MARK: search
@@ -187,7 +231,7 @@ final class MacChatFindController: ObservableObject {
     /// Transcript changed (a message settled, an older page, a session switch).
     func transcriptDidChange() {
         guard isOpen else { return }
-        if !isAvailable { close(); return }
+        if !isAvailable { close(restoringFocus: false); return }
         showsLoadedOnlyNote = environment.hasEarlierMessages()
         // A search already queued reads the latest transcript when it runs;
         // restarting it on every change would starve it while a reply streams.
@@ -227,6 +271,7 @@ final class MacChatFindController: ObservableObject {
         applyHighlights()
         if scroll { goToCurrent() }
         if state.current == nil { cancelNavigation() }
+        if scroll { announceSettled() }
     }
 
     private func applyHighlights() {
