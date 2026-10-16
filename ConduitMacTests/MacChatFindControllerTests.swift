@@ -37,6 +37,8 @@ final class MacChatFindControllerTests: XCTestCase {
             scroller: { [unowned self] view, range in self.scrolled.append((view.string, range)) }
         )
         controller.reveal = { [unowned self] id in self.revealed.append(id) }
+        // Close first (cancels pending reveal and search tasks), then let go of the test.
+        addTeardownBlock { @MainActor [weak controller] in controller?.close() }
         return controller
     }
 
@@ -329,15 +331,114 @@ final class MacChatFindControllerTests: XCTestCase {
         XCTAssertEqual(scrolled.count, 1, "the message is brought into view once, no loop")
     }
 
-    func testRepeatedRegistrationsOfThePendingRowPlaceOnce() async {
+    func testRepeatedRegistrationsOfThePendingRowDoNotRestartPlacement() async {
         let transcript = Transcript([message("m1", "find the needle here")])
-        let controller = makeController(transcript)
+        let timing = MacChatFindController.Timing(
+            debounce: .zero, refresh: .zero, placement: [.milliseconds(30), .milliseconds(30)], revealRetry: .seconds(60), maxRevealRetries: 3
+        )
+        let controller = makeController(transcript, timing: timing)
         controller.open()
         await search(controller, "needle")
         let view = mounted(controller, "m1", "find the needle here")
-        for _ in 0..<5 { controller.registry.register(view, messageID: "m1") }
+        let first = await eventually { self.scrolled.count == 1 }
+        XCTAssertTrue(first, "the first placement pass ran")
+        // updateNSView re-registers the row on every update, mid-placement.
+        for _ in 0..<3 { controller.registry.register(view, messageID: "m1") }
         await controller.settled()
-        XCTAssertEqual(scrolled.count, 1)
+        XCTAssertEqual(scrolled.count, 2, "exactly the two configured passes, no restarted placement")
+    }
+
+    func testNextStepsFromTheCurrentHitWhileARefreshIsQueued() async {
+        let transcript = Transcript([message("m1", "beta"), message("m2", "beta"), message("m3", "beta")])
+        let controller = makeController(transcript)
+        controller.open()
+        await search(controller, "beta")
+        controller.previous()                         // m2
+        controller.transcriptDidChange()              // refresh queued, not yet run
+        controller.next()
+        XCTAssertEqual(controller.state.current?.messageID, "m3", "stepped once from m2")
+        controller.transcriptDidChange()
+        controller.previous()
+        XCTAssertEqual(controller.state.current?.messageID, "m2")
+        await controller.settled()
+        XCTAssertEqual(controller.state.current?.messageID, "m2")
+    }
+
+    func testATypedQueryStillAppliesBeforeAStepInsideTheDebounce() async {
+        let transcript = Transcript([message("m1", "beta"), message("m2", "beta"), message("m3", "alpha")])
+        let controller = makeController(transcript)
+        controller.open()
+        controller.query = "beta"                     // queued, not yet run
+        controller.next()
+        XCTAssertEqual(controller.state.count, 2)
+        XCTAssertEqual(controller.state.current?.messageID, "m2", "landed on the typed query's selection")
+    }
+
+    // MARK: real publishers (willSet timing)
+
+    /// Publishes in willSet exactly like AppState's @Published members.
+    final class Flags: ObservableObject {
+        @Published var shown = true
+        @Published var hasEarlier = false
+    }
+
+    func testChangesAreReadAfterTheWriteNotInWillSet() async {
+        let flags = Flags()
+        let controller = MacChatFindController(
+            environment: .init(
+                messages: { [] },
+                hasEarlierMessages: { flags.hasEarlier },
+                isTranscriptShown: { flags.shown }
+            ),
+            timing: Self.quiet,
+            scroller: { _, _ in }
+        )
+        addTeardownBlock { @MainActor [weak controller] in controller?.close() }
+        controller.observe(
+            flags.$shown.dropFirst().map { _ in () }
+                .merge(with: flags.$hasEarlier.dropFirst().map { _ in () })
+                .eraseToAnyPublisher()
+        )
+        controller.open()
+        XCTAssertFalse(controller.showsLoadedOnlyNote)
+        flags.hasEarlier = true
+        await controller.settled()
+        XCTAssertTrue(controller.showsLoadedOnlyNote, "the note reads the new value")
+        flags.shown = false
+        await controller.settled()
+        XCTAssertFalse(controller.isOpen, "the bar closes when the transcript is replaced")
+    }
+
+    func testBoundToARealAppStateAMessageChangeRefreshesTheHits() async {
+        let suite = HostedTestSupport.makeSuite()
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacChatFindControllerTests.\(UUID().uuidString)", isDirectory: true)
+        let appState = AppState(
+            defaults: suite.defaults,
+            loadSavedConnection: false,
+            dashboardRegistry: SavedDashboardRegistry(),
+            clearSessionPresentationCache: {},
+            sessionPresentationCache: SessionPresentationCache(defaults: suite.defaults),
+            profileAppearanceStore: ProfileAppearanceStore(
+                defaults: suite.defaults,
+                avatarsRoot: scratch.appendingPathComponent("appearance", isDirectory: true),
+                legacyAvatarDirectories: []
+            )
+        )
+        addTeardownBlock {
+            HostedTestSupport.dropSuite(suite)
+            try? FileManager.default.removeItem(at: scratch)
+        }
+        let controller = MacChatFindController(timing: Self.quiet, scroller: { _, _ in })
+        addTeardownBlock { @MainActor [weak controller] in controller?.close() }
+        controller.bind(to: appState)
+        appState.messages = [message("m1", "beta")]
+        controller.open()
+        await search(controller, "beta")
+        XCTAssertEqual(controller.state.count, 1)
+        appState.messages = [message("m1", "beta"), message("m2", "beta")]
+        await controller.settled()
+        XCTAssertEqual(controller.state.count, 2, "the refresh saw the written messages")
     }
 
     // MARK: open and close

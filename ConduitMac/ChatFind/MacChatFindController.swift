@@ -45,6 +45,9 @@ final class MacChatFindController: ObservableObject {
     private let cache = MacChatFindTextCache()
     private var searchable: Set<String> = []
     private var searchTask: Task<Void, Never>?
+    private var changeTask: Task<Void, Never>?
+    /// Kind of the queued search: a typed query (true) or a transcript refresh.
+    private var queuedSearchIsTyped = false
     private var primeTask: Task<Void, Never>?
     private var placementTask: Task<Void, Never>?
     private var revealTask: Task<Void, Never>?
@@ -83,13 +86,32 @@ final class MacChatFindController: ObservableObject {
             hasEarlierMessages: { [weak appState] in appState?.canLoadEarlierMessagesForActiveConversation ?? false },
             isTranscriptShown: { [weak appState] in appState.map { $0.activeRoomSurface == nil } ?? false }
         )
-        // @Published fires in willSet: the refresh runs in a Task, after the write.
-        let changes = appState.$messages.dropFirst().map { _ in () }
-            .merge(with: appState.$activeSessionId.dropFirst().map { _ in () })
-            .merge(with: appState.$activeRoomSurface.dropFirst().map { _ in () })
+        observe(
+            appState.$messages.dropFirst().map { _ in () }
+                .merge(with: appState.$activeSessionId.dropFirst().map { _ in () })
+                .merge(with: appState.$activeRoomSurface.dropFirst().map { _ in () })
+                .eraseToAnyPublisher()
+        )
+    }
+
+    /// Subscribes to transcript change signals. `@Published` emits in willSet,
+    /// before the new value is stored, so the refresh hops to the next
+    /// main-actor turn and only then reads the environment (availability, the
+    /// loaded-only note, the messages). Bursts coalesce into one hop.
+    func observe(_ changes: AnyPublisher<Void, Never>) {
         changes
-            .sink { [weak self] in self?.transcriptDidChange() }
+            .sink { [weak self] in self?.scheduleTranscriptRefresh() }
             .store(in: &cancellables)
+    }
+
+    private func scheduleTranscriptRefresh() {
+        guard changeTask == nil else { return }
+        changeTask = Task { [weak self] in
+            await Task.yield()
+            guard let self else { return }
+            self.changeTask = nil
+            self.transcriptDidChange()
+        }
     }
 
     /// Called by every row on appear (cheap): the engine that scrolls rows.
@@ -137,11 +159,15 @@ final class MacChatFindController: ObservableObject {
     private func step(_ move: (inout MacChatFindState) -> Void) {
         guard isOpen else { return }
         if searchIsPending {
-            // Typed and pressed Return inside the debounce: apply the typed
-            // query first and land on its selection instead of stepping.
             searchTask?.cancel()
-            runSearch(keepIdentity: false, scroll: true)
-            return
+            if queuedSearchIsTyped {
+                // Typed and pressed Return inside the debounce: apply the typed
+                // query first and land on its selection instead of stepping.
+                runSearch(keepIdentity: false, scroll: true)
+                return
+            }
+            // A queued transcript refresh: apply it (same hit, no scroll), then step.
+            runSearch(keepIdentity: true, scroll: false)
         }
         guard state.current != nil else { return }
         move(&state)
@@ -172,6 +198,7 @@ final class MacChatFindController: ObservableObject {
     private func scheduleSearch(after delay: Duration, keepIdentity: Bool, scroll: Bool) {
         searchTask?.cancel()
         searchIsPending = true
+        queuedSearchIsTyped = !keepIdentity
         searchTask = Task { [weak self] in
             await Task.yield()
             if delay > .zero { try? await Task.sleep(for: delay) }
@@ -240,10 +267,15 @@ final class MacChatFindController: ObservableObject {
 
     private func requestReveal(for match: MacChatFindMatch, attempt: Int) {
         reveal(match.messageID)
+        let delay = timing.revealRetry
         revealTask = Task { [weak self] in
-            guard let self else { return }
-            try? await Task.sleep(for: self.timing.revealRetry)
-            guard !Task.isCancelled, self.pending == match else { return }
+            // Weak across the sleep: a pending retry must not keep the controller alive.
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            guard self.pending == match, self.state.current == match else {
+                self.finish(match)
+                return
+            }
             // A registration may have been missed between retries.
             if self.place(match) {
                 self.pending = nil
@@ -270,12 +302,21 @@ final class MacChatFindController: ObservableObject {
             guard let self else { return }
             for delay in self.timing.placement {
                 if delay > .zero { try? await Task.sleep(for: delay) } else { await Task.yield() }
-                guard !Task.isCancelled, self.state.current == match else { return }
+                guard !Task.isCancelled else { return }
+                guard self.state.current == match else {
+                    self.finish(match)
+                    return
+                }
                 self.place(match)
             }
-            if self.pending == match { self.pending = nil }
-            if self.placing == match { self.placing = nil }
+            self.finish(match)
         }
+    }
+
+    /// Navigation to `match` is over (placed, exhausted or superseded).
+    private func finish(_ match: MacChatFindMatch) {
+        if pending == match { pending = nil }
+        if placing == match { placing = nil }
     }
 
     /// Scrolls to the hit inside its mounted view. False when no mounted view
@@ -328,6 +369,7 @@ final class MacChatFindController: ObservableObject {
 
     /// Waits for the queued search, cache fill and placement. For tests.
     func settled() async {
+        await changeTask?.value
         await searchTask?.value
         await primeTask?.value
         await placementTask?.value
