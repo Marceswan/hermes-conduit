@@ -40,9 +40,7 @@ struct ConduitCommands: Commands {
             .keyboardShortcut("n", modifiers: .command)
             // A popped-out session (D21): the main window's active tab moves to its own window.
             Button("Open Session in New Window") {
-                guard !MacKeyboardActions.commandsBlocked(by: NSApp.keyWindow), !MacSessionWindows.isSessionWindow(NSApp.keyWindow),
-                      let id = tabs.model.activeID else { return }
-                tabs.popOut(id) { sessionID in
+                MacSessionTabsActions.popOutActive(store: tabs, window: NSApp.keyWindow) { sessionID in
                     MacSessionWindows.open(sessionID, appState: appState) { openWindow(value: $0) }
                 }
             }
@@ -73,7 +71,10 @@ struct ConduitCommands: Commands {
                 if MacQuickAskController.shared.isPanelKey {
                     MacQuickAskController.shared.stop()
                 } else {
-                    Task { await appState.cancelCurrent() }
+                    // From a session window the stop belongs to that window's turn (D21).
+                    MacSessionWindows.stopResponse(window: NSApp.keyWindow) {
+                        Task { await appState.cancelCurrent() }
+                    }
                 }
             }
             .keyboardShortcut(".", modifiers: .command)

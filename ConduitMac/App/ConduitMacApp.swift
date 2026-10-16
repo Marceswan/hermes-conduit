@@ -34,6 +34,25 @@ enum MacOpenURLPolicy {
     }
 }
 
+extension View {
+    /// The one link policy of every Conduit scene (R11): in-app links route to the
+    /// app, everything else passes the scheme allowlist. A scene without it would
+    /// hand gateway-controlled markdown links to SwiftUI's default action.
+    @MainActor
+    func macLinkPolicy(routeWidgetLaunch: @escaping (URL) -> Bool,
+                       openAppLink: @escaping @MainActor (ConduitAppLink) -> Void) -> some View {
+        environment(\.openURL, OpenURLAction { url in
+            MacOpenURLPolicy.decision(for: url, routeWidgetLaunch: routeWidgetLaunch, openAppLink: openAppLink).result
+        })
+    }
+
+    @MainActor
+    func macLinkPolicy(appState: AppState) -> some View {
+        macLinkPolicy(routeWidgetLaunch: { appState.routeWidgetLaunchURL($0) },
+                      openAppLink: { appState.openAppLink($0) })
+    }
+}
+
 @main
 struct ConduitMacApp: App {
     @NSApplicationDelegateAdaptor(ConduitMacAppDelegate.self) private var appDelegate
@@ -82,13 +101,7 @@ struct ConduitMacApp: App {
             .tint(.conduitAccent)
             // Links Conduit writes into chats (a voice call's job link)
             // open inside the app; every other link goes to the system.
-            .environment(\.openURL, OpenURLAction { url in
-                MacOpenURLPolicy.decision(
-                    for: url,
-                    routeWidgetLaunch: { appState.routeWidgetLaunchURL($0) },
-                    openAppLink: { appState.openAppLink($0) }
-                ).result
-            })
+            .macLinkPolicy(appState: appState)
             .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
             // Another app opening a chat: only session links, opened through
             // the same route as an in-app link once Hermes is connected.

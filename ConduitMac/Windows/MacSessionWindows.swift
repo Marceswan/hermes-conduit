@@ -36,6 +36,59 @@ enum MacSessionWindows {
         }
         return true
     }
+
+    /// Cmd-. (Chat > Stop Response). A session window stops its own turn; it never
+    /// cancels the main window's. Any other window stops the main turn.
+    static func stopResponse(window: NSWindow?, router: MacSessionWindowStopRouter? = nil, stopMain: () -> Void) {
+        guard isSessionWindow(window) else { stopMain(); return }
+        _ = (router ?? .shared).stop(in: window)
+    }
+}
+
+/// Which window's Stop belongs to which session window controller (D21).
+@MainActor
+final class MacSessionWindowStopRouter {
+    static let shared = MacSessionWindowStopRouter()
+    private struct Entry { weak var window: NSWindow?; let stop: () -> Void }
+    private var entries: [Entry] = []
+
+    func register(window: NSWindow, stop: @escaping () -> Void) {
+        unregister(window: window)
+        entries.append(Entry(window: window, stop: stop))
+    }
+
+    func unregister(window: NSWindow) {
+        entries.removeAll { $0.window == nil || $0.window === window }
+    }
+
+    /// True when a controller for the window took the request.
+    @discardableResult
+    func stop(in window: NSWindow?) -> Bool {
+        guard let window, let entry = entries.first(where: { $0.window === window }) else { return false }
+        entry.stop()
+        return true
+    }
+}
+
+/// Reports the hosting window to the scene (a weak reference; set on attach and detach).
+private struct MacSessionWindowReader: NSViewRepresentable {
+    let onWindow: (NSWindow?) -> Void
+
+    final class Reader: NSView {
+        var onWindow: ((NSWindow?) -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            onWindow?(window)
+        }
+    }
+
+    func makeNSView(context: Context) -> Reader {
+        let view = Reader()
+        view.onWindow = onWindow
+        return view
+    }
+
+    func updateNSView(_ view: Reader, context: Context) { view.onWindow = onWindow }
 }
 
 /// The `WindowGroup(for:)` content. Shares the main window's look (locale,
@@ -49,7 +102,20 @@ struct MacSessionWindowScene: View {
     @Environment(\.dismissWindow) private var dismissWindow
 
     @MainActor
-    final class Holder: ObservableObject { @Published var controller: MacSessionWindowController? }
+    final class Holder: ObservableObject {
+        @Published var controller: MacSessionWindowController?
+        weak var window: NSWindow?
+
+        /// Keeps Cmd-. pointed at this window's controller while both exist.
+        func syncStopRoute() {
+            guard let window else { return }
+            if let controller {
+                MacSessionWindowStopRouter.shared.register(window: window) { [weak controller] in controller?.stopTurn() }
+            } else {
+                MacSessionWindowStopRouter.shared.unregister(window: window)
+            }
+        }
+    }
 
     var body: some View {
         Group {
@@ -63,6 +129,12 @@ struct MacSessionWindowScene: View {
         .environment(\.locale, appLanguage.resolvedLocale)
         .preferredColorScheme(appState.themePreference.colorScheme)
         .tint(.conduitAccent)
+        // The same link policy as the main window (R11).
+        .macLinkPolicy(appState: appState)
+        .background(MacSessionWindowReader { window in
+            holder.window = window
+            holder.syncStopRoute()
+        })
         .onAppear(perform: appear)
         .onDisappear(perform: disappear)
     }
@@ -78,11 +150,13 @@ struct MacSessionWindowScene: View {
         controller.bind(to: appState, tabs: .shared)
         controller.start()
         holder.controller = controller
+        holder.syncStopRoute()
     }
 
     private func disappear() {
         holder.controller?.stop()
         holder.controller = nil
+        holder.syncStopRoute()
         if let token { MacSessionWindowRegistry.shared.disappeared(token) }
     }
 }

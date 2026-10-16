@@ -283,6 +283,16 @@ enum MacSessionTabsActions {
         (store ?? .shared).close(nil)
     }
 
+    /// Option-Command-N: the active tab of the chat window moves to its own window.
+    /// `open` returns false at the window cap. An unavailable tab stays where it is.
+    static func popOutActive(store: MacSessionTabsStore? = nil, window: NSWindow?, open: (String) -> Bool) {
+        guard isMainChatWindow(window), !MacKeyboardActions.commandsBlocked(by: window) else { return }
+        let store = store ?? .shared
+        guard let id = store.model.activeID, let index = store.model.index(of: id),
+              !store.model.tabs[index].unavailable else { return }
+        store.popOut(id, openWindow: open)
+    }
+
     static func reopen(store: MacSessionTabsStore? = nil, window: NSWindow?) {
         guard isMainChatWindow(window), !MacKeyboardActions.commandsBlocked(by: window) else { return }
         (store ?? .shared).reopen()
