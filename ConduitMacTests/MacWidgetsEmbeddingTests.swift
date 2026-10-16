@@ -44,7 +44,9 @@ final class MacWidgetsEmbeddingTests: XCTestCase {
 
     func testExtensionIsBuiltFromSharedIOSSourcesNotCopies() throws {
         let folder = repoRoot.appendingPathComponent("ConduitMacWidgets")
-        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted()
+        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+            .filter { !$0.hasPrefix(".") }
+            .sorted()
         XCTAssertEqual(names, ["ConduitMacWidgets.entitlements", "Info.plist"])
         let project = try String(contentsOf: repoRoot.appendingPathComponent("project.yml"), encoding: .utf8)
         let block = try XCTUnwrap(project.range(of: "  ConduitMacWidgets:\n"))

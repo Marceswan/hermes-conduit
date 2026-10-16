@@ -38,6 +38,13 @@ cat > "$TMP/Info.plist" <<'EOF'
 <key>NSExtension</key><dict><key>NSExtensionPointIdentifier</key><string>com.apple.widgetkit-extension</string></dict>
 </dict></plist>
 EOF
+cat > "$TMP/debug.ent" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>com.apple.security.get-task-allow</key><true/>
+</dict></plist>
+EOF
 printf 'not a plist' > "$TMP/broken.ent"
 
 eq "$(mac_plist_value "$TMP/ext.ent" com.apple.security.app-sandbox)" "true" "sandbox true"
@@ -60,6 +67,23 @@ expect_fail "no runtime flag" mac_cs_has_runtime $'CodeDirectory v=20400 size=64
 expect_fail "unsigned sample has no team" test -n "$(mac_cs_field $'Signature=adhoc\nTeamIdentifier=not set' TeamIdentifier | grep -E '^[A-Z0-9]{10}$' || true)"
 expect_ok   "starts_with" mac_starts_with "Developer ID Application: X" "Developer ID Application:"
 expect_fail "starts_with no" mac_starts_with "Apple Development: X" "Developer ID Application:"
+
+expect_ok   "release entitlements have no get-task-allow" mac_no_get_task_allow "$TMP/app.ent"
+expect_ok   "no entitlements at all is fine" mac_no_get_task_allow "$TMP/nope.ent"
+expect_fail "debug entitlements carry get-task-allow" mac_no_get_task_allow "$TMP/debug.ent"
+expect_fail "apple development authority is not Developer ID" mac_starts_with "$(mac_cs_field $'Authority=Apple Development: X (ABC)\nAuthority=Apple Worldwide Developer Relations Certification Authority' Authority)" "Developer ID Application:"
+
+# verifier-local helpers: non-empty equality and check's failure output
+eval "$(sed -n '/^nonempty_equal()/p' scripts/mac-verify-bundle.sh)"
+expect_ok   "equal non-empty values" nonempty_equal "0.1.4" "0.1.4"
+expect_fail "both empty must not pass" nonempty_equal "" ""
+expect_fail "differing values" nonempty_equal "0.1.4" "0.1.5"
+CHECK_SRC="$(sed -n '/^check() {/,/^}/p' scripts/mac-verify-bundle.sh)"
+OUT="$(bash -c "FAILS=0; $CHECK_SRC; check demo bash -c 'echo detail-line; exit 1'" 2>&1 || true)"
+case "$OUT" in
+  *"FAIL: demo"*"        detail-line"*) ;;
+  *) echo "FAIL: check prints the failing command output indented: $OUT"; FAILS=$((FAILS + 1)) ;;
+esac
 
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS failure(s)"; exit 1; fi
 echo "mac-bundle: all passed"

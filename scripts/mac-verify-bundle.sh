@@ -36,8 +36,17 @@ done
 FAILS=0
 check() { # check "description" command args...
   local desc="$1"; shift
-  if "$@" >/dev/null 2>&1; then echo "ok:   $desc" >&2; else echo "FAIL: $desc" >&2; FAILS=$((FAILS + 1)); fi
+  local out
+  if out="$("$@" 2>&1)"; then
+    echo "ok:   $desc" >&2
+  else
+    echo "FAIL: $desc" >&2
+    if [ -n "$out" ]; then printf '%s\n' "$out" | sed 's/^/        /' >&2; fi
+    FAILS=$((FAILS + 1))
+  fi
 }
+# nonempty_equal A B: both values are non-empty and identical.
+nonempty_equal() { [ -n "$1" ] && [ "$1" = "$2" ]; }
 
 verify_app() {
   local app="$1" appex="$1/Contents/PlugIns/$APPEX_NAME" work
@@ -46,11 +55,16 @@ verify_app() {
   check "codesign --verify --deep --strict (app)" codesign --verify --deep --strict --verbose=2 "$app"
   check "Sparkle.framework is embedded and signed" codesign --verify --strict "$app/Contents/Frameworks/Sparkle.framework"
   check "extension embedded at Contents/PlugIns/$APPEX_NAME" test -d "$appex"
+  local app_info
+  app_info="$(codesign -dvv "$app" 2>&1 || true)"
+  check "app signed by a Developer ID Application certificate" mac_starts_with "$(mac_cs_field "$app_info" Authority)" "Developer ID Application:"
+  check "app has the hardened runtime flag" mac_cs_has_runtime "$app_info"
+  codesign -d --entitlements :- "$app" >"$work/app.ent" 2>/dev/null || true
+  check "app has no get-task-allow entitlement" mac_no_get_task_allow "$work/app.ent"
   if [ -d "$appex" ]; then
     check "codesign --verify --strict (extension)" codesign --verify --strict --verbose=2 "$appex"
-    local ext_info app_info
+    local ext_info
     ext_info="$(codesign -dvv "$appex" 2>&1 || true)"
-    app_info="$(codesign -dvv "$app" 2>&1 || true)"
     check "extension TeamIdentifier is $TEAM" test "$(mac_cs_field "$ext_info" TeamIdentifier)" = "$TEAM"
     check "extension signed by a Developer ID Application certificate" mac_starts_with "$(mac_cs_field "$ext_info" Authority)" "Developer ID Application:"
     check "extension has the hardened runtime flag" mac_cs_has_runtime "$ext_info"
@@ -61,16 +75,16 @@ verify_app() {
     fi
 
     codesign -d --entitlements :- "$appex" >"$work/ext.ent" 2>/dev/null || true
-    codesign -d --entitlements :- "$app" >"$work/app.ent" 2>/dev/null || true
     check "extension is sandboxed" test "$(mac_plist_value "$work/ext.ent" com.apple.security.app-sandbox)" = "true"
+    check "extension has no get-task-allow entitlement" mac_no_get_task_allow "$work/ext.ent"
     check "extension has the team app group $GROUP" mac_plist_has_line "$work/ext.ent" com.apple.security.application-groups "$GROUP"
     check "app has the team app group $GROUP" mac_plist_has_line "$work/app.ent" com.apple.security.application-groups "$GROUP"
     check "app is not sandboxed" test -z "$(mac_plist_value "$work/app.ent" com.apple.security.app-sandbox)"
 
     check "extension bundle id is $APPEX_ID" test "$(mac_plist_value "$appex/Contents/Info.plist" CFBundleIdentifier)" = "$APPEX_ID"
     check "extension point is $EXTENSION_POINT" test "$(mac_extension_point "$appex/Contents/Info.plist")" = "$EXTENSION_POINT"
-    check "extension CFBundleShortVersionString equals the app's" test "$(mac_plist_value "$appex/Contents/Info.plist" CFBundleShortVersionString)" = "$(mac_plist_value "$app/Contents/Info.plist" CFBundleShortVersionString)"
-    check "extension CFBundleVersion equals the app's" test "$(mac_plist_value "$appex/Contents/Info.plist" CFBundleVersion)" = "$(mac_plist_value "$app/Contents/Info.plist" CFBundleVersion)"
+    check "extension CFBundleShortVersionString equals the app's (non-empty)" nonempty_equal "$(mac_plist_value "$app/Contents/Info.plist" CFBundleShortVersionString)" "$(mac_plist_value "$appex/Contents/Info.plist" CFBundleShortVersionString)"
+    check "extension CFBundleVersion equals the app's (non-empty)" nonempty_equal "$(mac_plist_value "$app/Contents/Info.plist" CFBundleVersion)" "$(mac_plist_value "$appex/Contents/Info.plist" CFBundleVersion)"
   fi
   check "app registers the conduit URL scheme" test "$(mac_url_schemes "$app/Contents/Info.plist")" = "conduit"
   rm -rf "$work"

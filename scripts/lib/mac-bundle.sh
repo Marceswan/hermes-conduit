@@ -70,3 +70,8 @@ mac_cs_has_runtime() {
 mac_starts_with() {
   [[ "$1" == "$2"* ]]
 }
+
+# mac_no_get_task_allow ENT_FILE: com.apple.security.get-task-allow is absent (or false).
+mac_no_get_task_allow() {
+  [ "$(mac_plist_value "$1" com.apple.security.get-task-allow)" != "true" ]
+}
