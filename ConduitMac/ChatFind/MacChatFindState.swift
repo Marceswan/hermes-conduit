@@ -65,8 +65,19 @@ enum MacChatFindLabel {
         guard MacChatFindMatcher.isSearchable(query) else { return "" }
         guard let position = state.position else { return AppLocalization.string("No matches") }
         if state.isTruncated {
-            return String(format: AppLocalization.string("%d of %d+"), position, state.count)
+            return String(
+                format: AppLocalization.string("%1$@ of %2$@+"),
+                locale: Locale.current, number(position), number(state.count)
+            )
         }
-        return String(format: AppLocalization.string("%d of %d"), position, state.count)
+        return String(
+            format: AppLocalization.string("%1$@ of %2$@"),
+            locale: Locale.current, number(position), number(state.count)
+        )
+    }
+
+    /// Locale-aware digits and grouping ("1,234", "1.234", Arabic-Indic).
+    private static func number(_ value: Int) -> String {
+        value.formatted(.number.locale(Locale.current))
     }
 }

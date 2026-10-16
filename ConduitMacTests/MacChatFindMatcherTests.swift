@@ -80,4 +80,37 @@ final class MacChatFindMatcherTests: XCTestCase {
         XCTAssertEqual(result.matches.count, MacChatFindMatcher.defaultLimit)
         XCTAssertTrue(result.truncated)
     }
+
+    // MARK: Unicode equivalence (ranges are in the haystack's UTF-16 units)
+
+    func testDecomposedHaystackMatchesComposedQueryWithHaystackLength() {
+        let haystack = "x cafe\u{301} y"  // "e" + combining acute: 2 UTF-16 units
+        let found = MacChatFindMatcher.ranges(of: "caf\u{E9}", in: haystack)
+        XCTAssertEqual(found, [NSRange(location: 2, length: 5)], "length is the haystack's, not the query's")
+    }
+
+    func testComposedHaystackMatchesDecomposedQueryWithHaystackLength() {
+        let haystack = "x caf\u{E9} y"
+        let found = MacChatFindMatcher.ranges(of: "cafe\u{301}", in: haystack)
+        XCTAssertEqual(found, [NSRange(location: 2, length: 4)])
+    }
+
+    func testRangesAfterAnAstralCharacterAreUTF16Offsets() {
+        let haystack = "\u{1F600} needle"  // the emoji is 2 UTF-16 units
+        XCTAssertEqual(MacChatFindMatcher.ranges(of: "needle", in: haystack), [NSRange(location: 3, length: 6)])
+    }
+
+    func testSharpSAgainstDoubleS() {
+        // Whichever way each pair goes, ranges lie inside the haystack.
+        let strasse = "Stra\u{DF}e"
+        let upper = MacChatFindMatcher.ranges(of: "STRASSE", in: strasse)
+        let lower = MacChatFindMatcher.ranges(of: "strasse", in: strasse)
+        let reverse = MacChatFindMatcher.ranges(of: "stra\u{DF}e", in: "STRASSE")
+        for range in upper + lower + reverse {
+            XCTAssertLessThanOrEqual(range.location + range.length, max(strasse.utf16.count, "STRASSE".utf16.count))
+        }
+        // Pinned current behaviour so a platform change is noticed.
+        XCTAssertEqual(lower, upper, "case of the query does not change the result")
+        XCTAssertEqual(MacChatFindMatcher.ranges(of: "stra\u{DF}e", in: strasse), [NSRange(location: 0, length: 6)])
+    }
 }

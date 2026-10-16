@@ -30,7 +30,11 @@ enum MacChatFindText {
     }
 
     static func plain(fromMarkdown source: String) -> String {
-        let document = MarkdownParser.parseDocument(source)
+        // The chat passes a gateway media resolver to MarkdownText whenever a
+        // gateway is connected, which turns MEDIA: tags into media cards. When
+        // no resolver exists the raw tag is drawn as text and this projection
+        // under-counts it; a documented, rare difference.
+        let document = MarkdownParser.parseDocument(source, recognizesGatewayMedia: true)
         let references = document.references
         func inline(_ text: String) -> String {
             String(InlineMarkdownContent.attributed(source: text, references: references).characters)
