@@ -74,11 +74,11 @@ final class ConduitMacAppDelegate: NSObject, NSApplicationDelegate {
     /// Closing the window keeps Conduit (and its dashboard socket) running.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
-    /// Clicking the Dock icon with no window open shows the main window again.
+    /// Clicking the Dock icon brings the main window back: when it is minimised or hidden, and also
+    /// when it was closed while a session window (D21) is still open, which `hasVisibleWindows`
+    /// alone would never report. With nothing visible at all, the system's own reopen creates it.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag {
-            sender.windows.first { $0.canBecomeMain }?.makeKeyAndOrderFront(nil)
-        }
+        MacPrimaryWindow.handleReopen(hasVisibleWindows: flag, windows: sender.windows)
         return true
     }
 }

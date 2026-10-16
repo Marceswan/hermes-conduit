@@ -34,6 +34,25 @@ enum MacOpenURLPolicy {
     }
 }
 
+extension View {
+    /// The one link policy of every Conduit scene (R11): in-app links route to the
+    /// app, everything else passes the scheme allowlist. A scene without it would
+    /// hand gateway-controlled markdown links to SwiftUI's default action.
+    @MainActor
+    func macLinkPolicy(routeWidgetLaunch: @escaping (URL) -> Bool,
+                       openAppLink: @escaping @MainActor (ConduitAppLink) -> Void) -> some View {
+        environment(\.openURL, OpenURLAction { url in
+            MacOpenURLPolicy.decision(for: url, routeWidgetLaunch: routeWidgetLaunch, openAppLink: openAppLink).result
+        })
+    }
+
+    @MainActor
+    func macLinkPolicy(appState: AppState) -> some View {
+        macLinkPolicy(routeWidgetLaunch: { appState.routeWidgetLaunchURL($0) },
+                      openAppLink: { appState.openAppLink($0) })
+    }
+}
+
 @main
 struct ConduitMacApp: App {
     @NSApplicationDelegateAdaptor(ConduitMacAppDelegate.self) private var appDelegate
@@ -53,9 +72,18 @@ struct ConduitMacApp: App {
         WindowGroup("Conduit", id: "conduit-primary") {
             rootContent
                 .frame(minWidth: MacSidebarState.windowMinWidth, minHeight: 560)
+                .modifier(MacRegisterPrimaryWindowOpener())
         }
         .defaultSize(width: 1180, height: 780)
         .commands { ConduitCommands(appState: appState, tabs: .shared, notch: .shared, palette: .shared, updater: .shared, quickAsk: .shared) }
+        // A popped-out session (D21). Not `.commands`: the menu bar is the main scene's.
+        WindowGroup("Conduit Chat", id: MacSessionWindows.sceneID, for: MacSessionWindowToken.self) { $token in
+            MacSessionWindowScene(token: token)
+        }
+        .defaultSize(width: 640, height: 760)
+        // A conduit:// open (D25) must never create a token-less session window: the main window
+        // claims external events (`rootContent`), this scene claims none.
+        .handlesExternalEvents(matching: [])
     }
 
     // Ported from ConduitApp.swift; keep in sync. Skipped: see docs/macos/PORTING_LEDGER.md.
@@ -71,19 +99,16 @@ struct ConduitMacApp: App {
             .environment(\.locale, appLanguage.resolvedLocale)
             .onChange(of: appLanguage.selection) { _, _ in
                 appState.appLanguageDidChange()
+                appState.publishWidgetLanguage()   // D25: ported from ConduitApp.swift
                 MacNotificationRuntime.shared.languageDidChange()
             }
             .preferredColorScheme(appState.themePreference.colorScheme)
             .tint(.conduitAccent)
+            // Cmd-Shift-D saved-dashboards sheet (D22): after the environment and tint it inherits.
+            .macDashboardSwitcher(appState: appState)
             // Links Conduit writes into chats (a voice call's job link)
             // open inside the app; every other link goes to the system.
-            .environment(\.openURL, OpenURLAction { url in
-                MacOpenURLPolicy.decision(
-                    for: url,
-                    routeWidgetLaunch: { appState.routeWidgetLaunchURL($0) },
-                    openAppLink: { appState.openAppLink($0) }
-                ).result
-            })
+            .macLinkPolicy(appState: appState)
             .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
             // Another app opening a chat: only session links, opened through
             // the same route as an in-app link once Hermes is connected.

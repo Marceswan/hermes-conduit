@@ -468,6 +468,7 @@ final class MacKeyboardMenuTests: XCTestCase {
             ("/Go/Show Previous Tab", "\t", [.control, .shift]),
             ("/File/Close Tab", "w", .command),
             ("/File/Reopen Closed Tab", "t", [.shift, .command]),
+            ("/File/Open Session in New Window", "n", [.option, .command]),
             ("/Chat/Ask About Window\u{2026}", "w", [.shift, .command]),
         ]
         table += [
@@ -478,6 +479,7 @@ final class MacKeyboardMenuTests: XCTestCase {
             ("/Go/Message Field", "l", .command),
             ("/Edit/Search Sessions", "f", .command),
             ("/Go/Command Palette", "k", .command),
+            ("/Go/Switch Dashboard\u{2026}", "d", [.shift, .command]),
         ]
         return table
     }
@@ -499,6 +501,19 @@ final class MacKeyboardMenuTests: XCTestCase {
             let found = all.filter { matches($0, key: expected.key, mask: expected.mask) }
             XCTAssertEqual(found.map(\.path), [expected.path], "no other item may share \(expected.path)'s shortcut")
         }
+    }
+
+    func testSettingsIsInTheAppMenuOnCmdCommaAndNothingElseOwnsIt() throws {
+        let main = try XCTUnwrap(NSApp.mainMenu)
+        let appMenu = try XCTUnwrap(main.items.first?.submenu)
+        let titles = appMenu.items.map(\.title)
+        let settings = try XCTUnwrap(appMenu.items.first { $0.title == "Settings\u{2026}" }, "\(titles)")
+        XCTAssertEqual(settings.keyEquivalent, ",")
+        XCTAssertEqual(settings.keyEquivalentModifierMask.intersection(.deviceIndependentFlagsMask), .command)
+        let about = try XCTUnwrap(titles.firstIndex { $0.hasPrefix("About") }, "\(titles)")
+        XCTAssertGreaterThan(try XCTUnwrap(appMenu.items.firstIndex(of: settings)), about)
+        let comma = entries(main).filter { matches($0, key: ",", mask: .command) }.map(\.path)
+        XCTAssertEqual(comma.count, 1, "Cmd-, belongs to one item: \(comma)")
     }
 
     func testFindItemStaysInTheMenuWithoutCmdF() throws {

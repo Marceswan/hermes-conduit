@@ -60,8 +60,10 @@ enum MacWindowActivation {
     @MainActor
     static func bringConduitForward() {
         NSApp.activate(ignoringOtherApps: true)
-        let window = NSApp.windows.first { $0.identifier?.rawValue.hasPrefix("conduit-primary") ?? false }
-        if window?.isMiniaturized == true { window?.deminiaturize(nil) }
-        window?.makeKeyAndOrderFront(nil)
+        let window = NSApp.windows.first { MacPrimaryWindow.isPrimary($0) }
+        // Closed while a session window (D21) stayed open: the request is waiting for a main window.
+        guard let window else { MacPrimaryWindowOpener.shared.open(); return }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
     }
 }

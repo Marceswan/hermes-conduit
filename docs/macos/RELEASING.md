@@ -16,6 +16,10 @@ The script computes the next version from the newest `mac-v*` tag (the first rel
 
 Requirements: `gh` logged in, notary profile `conduit-notary` (override with `CONDUIT_NOTARY_PROFILE`), and the Sparkle EdDSA private key in the login keychain matching `SUPublicEDKey` in `ConduitMac/Resources/Info.plist`. Sparkle's tools are downloaded to `build/sparkle-2.10.0/bin` on first run.
 
+## Widget extension
+
+Conduit.app embeds `Contents/PlugIns/ConduitMacWidgets.appex` (D25). `scripts/mac-release.sh` runs `scripts/mac-verify-bundle.sh --app <exported app> --require-timestamp` after export and before notarization; a failure stops the release. After notarization and stapling the app, the script runs `spctl --assess --type execute -vv` on it; a rejection there aborts the release after the notarization spend (the verifier is what keeps that unlikely, so run `--archive` first). To check a release build without exporting, notarizing or publishing anything, run `scripts/mac-verify-bundle.sh --archive` (builds a signed Release archive in `build/mac-verify`, verifies it, deletes it; `--keep` leaves it). The extension version must equal the app's: the release script's `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` overrides apply to every target, and `project.yml` pins the same defaults on both. If the verifier reports the app group missing or `xcodebuild` asks for a provisioning profile, see the fallback in D25.
+
 ## Back up the signing key
 
 Losing the private key means installed copies cannot verify new updates; recovery is a manual reinstall of a build with a new key.

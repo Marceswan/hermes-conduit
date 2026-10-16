@@ -28,6 +28,8 @@ Run against a real Hermes dashboard before every release build.
 - [ ] Close the window mid-stream, wait 30 s, click the Dock icon: reply completed
 - [ ] The `.windowToolbar`-hidden sheets (e.g. SidebarView drawer root) don't break the main window toolbar
 - [ ] Notarized DMG installed on a second Mac with no Gatekeeper prompt
+- [ ] Widgets: the notarized app from the DMG, installed in /Applications and launched once, lists `ConduitMacWidgets` in `pluginkit -mAvvv -p com.apple.widgetkit-extension`, and adding a Conduit widget shows no consent prompt
+- [ ] Launch the exported/notarized build once; `pluginkit -mAvvv -p com.apple.widgetkit-extension` lists ConduitMacWidgets (the export step itself was verified by signature only, never launched)
 
 ## Agent pre-checks (2026-10-13)
 
@@ -146,6 +148,9 @@ Human pass at release time (agents never click or type into the running app, R18
   - [ ] Palette: Switch Model... opens the model picker; Settings opens Settings; New Chat, Hide Sidebar, Check for Updates run; the active profile row shows a check and does nothing; Stop Response appears only while a reply streams.
   - [ ] Palette confirmations: Stop Response (while a reply streams), `/undo`, `/compress`, `/yolo` and any skill command replace the list with a question; Return confirms, Esc or typing goes back and nothing runs; switching profile while a reply streams asks too, and switching while idle does not. VoiceOver reads the question when it appears and reads each row as the arrows move.
   - [ ] Palette focus: open it from the session list or the search field, press Esc: the list or field has focus again (not only the composer). Light and dark: subtitles and the selected row's subtitle are legible; an unread row shows its dot on the selected row too.
+  - [ ] Settings (D22): Cmd-, and Conduit > Settings... open Settings from the composer, the sidebar and Bots / Cron / Kanban; with Settings or the model picker already open, Cmd-, does nothing; on the login screen it does nothing. With a session window key (D21) it brings the main window forward and opens Settings there.
+  - [ ] Switch Dashboard (D22): Cmd-Shift-D (Go > Switch Dashboard...) opens the Saved Dashboards sheet over the chat and over the login screen; Switch to another saved dashboard works and closes the sheet when it ends at sign-in; Add Dashboard closes the sheet and shows login; Esc and the X close it; with another sheet up it does nothing; with the palette open the palette closes first.
+  - [ ] With the Switch Dashboard sheet open, open a `conduit://settings/...` link: note whether Settings stacks over the sheet.
   - [ ] Palette with a sheet open (Settings, model picker): Cmd-K does nothing. Japanese IME in the search field: Return confirms the composition and does not run the row.
   - [ ] Tab from the composer goes to the sidebar list, then the search field, then back to the composer (Shift-Tab reverses); the list shows an accent ring in light and dark; Up / Down / Home / End move it, Return opens it.
   - [ ] System Settings > Keyboard > Keyboard navigation off and on: Tab still reaches list, search field and composer; buttons join the loop only when it is on.
@@ -217,3 +222,45 @@ Human pass at release time (agents never click or type into the running app, R18
 - [ ] Approval row in every style over a white window and over a dark one: the command, the secondary lines and the "Couldn't send" line read clearly, and the Allow (amber) and Deny (pink) buttons show as filled shapes with legible labels, in light and dark Mac appearance.
 - [ ] Reduce Transparency on (System Settings > Accessibility > Display), toggled while the panel is open: every style draws solid black with white text; off restores the chosen style.
 - [ ] On macOS 14 or 15 (if available): the picker shows the note that glass needs macOS 26 and the notch is drawn Solid black.
+
+## Session windows (D21)
+- [ ] Right-click a tab > Open in New Window: a window opens with that chat; the main window shows the neighbour tab.
+- [ ] Option-Command-N with a chat active does the same; with a sheet open it does nothing.
+- [ ] Send in the window while main streams another chat: both stream at once; neither shows the other's text.
+- [ ] Stop in the window stops only that turn. Cmd-. with the window key stops only the window's turn.
+- [ ] An approval in the window: Allow works; the main window is unaffected.
+- [ ] Turn Wi-Fi off and on: the window says "Not connected", then catches up; no Stop button left over.
+- [ ] Switch profile in main: the window says "Belongs to <profile>" and its composer is disabled; switch back: it resumes.
+- [ ] Delete the chat from the sidebar: the window says "This conversation was deleted." and Close works.
+- [ ] Open 4 windows; a fifth: beep, nothing opens; the tab menu item is disabled.
+- [ ] Cmd-W in the window closes the window, not a main tab. Cmd-L focuses the window's composer and leaves main on its pane.
+- [ ] Quit with a window open and relaunch: no session window comes back.
+- [ ] Cmd-, and Cmd-Shift-D with a session window key: the main window comes forward and opens Settings / the Saved Dashboards sheet there (D22); the session window never shows the sheet.
+- [ ] Close the main window with a session window open, then click the Dock icon: the main window comes back (and a second click does not open another). With the main window closed, Cmd-N, Cmd-, and Cmd-Shift-D from the session window bring it back.
+- [ ] Bot Chat tab: right-click shows "Open in New Window" disabled, and Option-Command-N does nothing for it.
+- [ ] The same session open in main and in a window: sending in one does not break the other; both show the reply after the turn.
+- [ ] Assistant rows in the window show only the Copy button: no Quote, Branch, react or read-aloud controls. Copy puts the reply on the clipboard.
+- [ ] Scroll a window up while its chat streams: the transcript stays where you scrolled; scroll to the end and it follows again; sending always jumps to the end.
+- [ ] With a session window key: Ctrl-Cmd-1..4, Hide Sidebar and Cmd-F leave the main window as it was; Cmd-N brings main forward with a new chat.
+- [ ] With a session window open, open a `conduit://` link from another app (Terminal: `open conduit://session/<id>`): the main window handles it; no extra empty session window appears.
+- [ ] Disconnect mid-turn so the settle read fails: the window shows the error with Retry, Stop is gone, and Retry re-reads. Leave a chat idle for a long while (the gateway reaps its runtime), then send from the window: it sends after one transparent resume.
+- [ ] Open a `conduit://session/...` or other in-app link from a chat inside the window: it follows the same link policy as main (an app link opens in main, other schemes go to the system or are dropped).
+
+## Widgets (D25)
+
+Install the exported app in /Applications (quit the running Conduit first), launch it, connect to a dashboard.
+
+Before the widget pass, quit and remove every other Conduit.app copy (Debug builds, Xcode DerivedData, build/ archives or exports). Each one registers the `conduit://` scheme too and can steal a widget tap from the installed app.
+
+- [ ] Edit Widgets lists Conduit with Native and Conduit-chan, medium only; add one of each to the desktop and one to Notification Center
+- [ ] Before connecting (or signed out) the widget reads "Open Conduit"; after the app connects and loads sessions, the dashboard and profile labels and the last chat title appear within a few seconds
+- [ ] Edit Widget: the Workspace and Conversation pickers list your dashboards and chats; picking a chat changes the title; Hide conversation title shows "Resume chat"
+- [ ] Tap the title: the chat opens. Tap New Chat: a new chat opens. Tap Talk: a voice call starts (microphone prompt only the first time). Each from: Conduit frontmost, Conduit in the background, all windows closed (Cmd-W), and Conduit quit
+- [ ] A tap while signed out or with the dashboard unreachable ends with a visible failure message, not a hang (30 s limit)
+- [ ] Switch App Language in Settings: the widget copy follows
+- [ ] Sign out / remove the dashboard: the widget falls back to "Open Conduit" or "Open Conduit to refresh"
+- [ ] Update through Sparkle from the previous build: the widgets keep working without re-adding
+- [ ] macOS 15 desktop with a tinted widget style: the mark and character render accented; on macOS 14 they render full colour
+- [ ] With D21 session windows, a widget tap opens one chat once (not once per window)
+- [ ] D21 interplay: with all primary windows closed and one session window open, a widget tap still routes once and opens the chat (a primary window is restored or the chat opens in the session window; no dead tap)
+- [ ] D21 interplay: with the main window behind a session window, a widget tap brings the target chat to the front once
