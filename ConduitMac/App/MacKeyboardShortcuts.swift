@@ -334,3 +334,72 @@ enum MacPaletteActions {
         }
     }
 }
+
+/// App-level menu commands (D22): Settings (Cmd-,) and Switch Dashboard
+/// (Cmd-Shift-D). Both surfaces live in the primary chat window only (the
+/// Settings sheet is `MainView`'s, the dashboard sheet hangs on `rootContent`),
+/// so a D21 session window forwards to it instead of acting on itself.
+@MainActor
+enum MacAppActions {
+    /// The D21 session window scene id (`WindowGroup(id: "conduit-session")`).
+    /// Once the session-windows branch merges, use `MacSessionWindows.sceneID`.
+    static let sessionWindowPrefix = "conduit-session"
+
+    static func isSessionWindow(_ window: NSWindow?) -> Bool {
+        window?.identifier?.rawValue.hasPrefix(sessionWindowPrefix) ?? false
+    }
+
+    /// The window the command acts in: the key window when it is the chat
+    /// window, the chat window when the key window is a session window, else
+    /// nil (a sheet, the Settings window, a Sparkle dialog, a panel, no window).
+    /// `windows` is injectable; the parameter is optional because an `NSApp`
+    /// default argument trips Swift 6 isolation.
+    static func chatWindow(for window: NSWindow?, windows: [NSWindow]? = nil) -> NSWindow? {
+        if MacSessionTabsActions.isMainChatWindow(window) { return window }
+        guard isSessionWindow(window) else { return nil }
+        return (windows ?? NSApp.windows).first { MacSessionTabsActions.isMainChatWindow($0) }
+    }
+
+    /// True when the caller may act. Does nothing under a sheet (the guard runs
+    /// here, never as `.disabled` on the item: D10). Closes the palette so its
+    /// overlay does not stay up under the new sheet, and brings the chat
+    /// window forward when the command came from a session window.
+    static func prepare(window: NSWindow?, windows: [NSWindow]? = nil, palette: MacPaletteStore? = nil) -> Bool {
+        guard let chat = chatWindow(for: window, windows: windows),
+              !MacKeyboardActions.commandsBlocked(by: chat) else { return false }
+        (palette ?? .shared).dismiss()
+        if chat !== window {
+            if chat.isMiniaturized { chat.deminiaturize(nil) }
+            chat.makeKeyAndOrderFront(nil)
+        }
+        return true
+    }
+
+    /// Cmd-,: the D18 observer in `RootView` presents Settings (it keeps its own
+    /// "already presenting" guard). With the login screen showing there is no
+    /// `MainView`, nobody observes, and nothing happens, as in the sidebar.
+    @discardableResult
+    static func openSettings(
+        window: NSWindow?,
+        windows: [NSWindow]? = nil,
+        palette: MacPaletteStore? = nil,
+        center: NotificationCenter = .default
+    ) -> Bool {
+        guard prepare(window: window, windows: windows, palette: palette) else { return false }
+        center.post(name: .macOpenSettingsRequested, object: nil)
+        return true
+    }
+
+    /// Cmd-Shift-D: the saved-dashboards sheet, over the chat or the login screen.
+    @discardableResult
+    static func switchDashboard(
+        window: NSWindow?,
+        windows: [NSWindow]? = nil,
+        palette: MacPaletteStore? = nil,
+        switcher: MacDashboardSwitcherStore? = nil
+    ) -> Bool {
+        guard prepare(window: window, windows: windows, palette: palette) else { return false }
+        (switcher ?? .shared).present()
+        return true
+    }
+}
