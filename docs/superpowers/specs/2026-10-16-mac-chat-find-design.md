@@ -1,12 +1,12 @@
 # Mac chat find (Cmd-F across the whole transcript): design
 
-Date: 2026-10-16. Status: draft for review. Decision number: D23. Target: the macOS app only (`ConduitMac`). iOS is unchanged.
+Date: 2026-10-16. Status: implemented (D23). Decision number: D23. Target: the macOS app only (`ConduitMac`). iOS is unchanged.
 
 ## Goal
 
 A transcript-wide find in the main chat window, Safari/Xcode style: a find bar with a query field, a match count ("3 of 12"), next / previous (Return / Shift-Return, Cmd-G / Cmd-Shift-G), Esc closes. Every match in a mounted message is highlighted; next / previous scrolls to the message holding the match even when its row is not yet built by the `LazyVStack`. Searches the loaded transcript only (`AppState.messages`). Closes the ledger row "Menu: Find in Chat (Cmd-F) | deferred" (`docs/macos/PORTING_LEDGER.md:48`).
 
-Scope, stated plainly: the main chat window only (identifier prefix `conduit-primary`). The session windows of D21 (scene id `conduit-session`, own transcript, not `ChatView`) get no whole-chat Find in v1, and Cmd-F / Cmd-G / Cmd-Shift-G do nothing in them. Group-chat rooms (`GroupChatView`) are out of scope too.
+Scope, stated plainly: the main chat window only (identifier prefix `conduit-primary`). The session windows of D21 (scene id `conduit-session`, own transcript, not `ChatView`) get no whole-chat Find in v1; there Cmd-F / Cmd-G / Cmd-Shift-G fall back to the focused message's per-message find bar (Find, Next, Previous), and do nothing when no message view is focused (Task 7 ruling). Group-chat rooms (`GroupChatView`) are out of scope too.
 
 ## Constraints
 
@@ -83,13 +83,13 @@ B3 + C3 + D2 + E2 with the A2 model:
 - **Open.** Cmd-F (Edit > Find in Chat) in the main window, chat pane shown, focus not in the sidebar: the bar slides in at the top of the chat pane and its field takes focus with its text selected. The previous first responder is remembered (`MacPaletteActions.focusRestorer`). Cmd-F while the bar is open refocuses the field and selects its text. The bar keeps the last query when reopened.
 - **Look.** Full-width strip at the top of the chat pane, 40 pt: magnifier, search field, count label, previous / next chevrons, a trailing "Loaded messages only" caption when older pages exist (`canLoadEarlierMessagesForActiveConversation`), and Done. Opaque window background with a bottom divider (no second glass layer, D7). The strip overlays the first rows; scrolling to a match treats the top 48 pt as covered.
 - **Match rules.** Query as typed (no trimming; empty or whitespace-only query matches nothing). Case-insensitive, diacritic-insensitive (`cafe` finds `Café`), literal (no regex or wildcard), non-overlapping. Searched: user, assistant and partial rows, as drawn (markdown stripped, reply-quote envelope removed from user rows, the assistant's `code` block appended). Not searched in v1: system rows, reasoning, tool, clarify, approval and input-prompt rows, the live streaming tail, attachment names, timestamps, reactions.
-- **Count.** "3 of 12" (position of the current match, total). "No matches" for a non-empty query without hits. Total is capped at 5,000; beyond that the label reads "3 of 5000+". Nothing is shown for an empty query.
+- **Count.** "3 of 12" (position of the current match, total). "No matches" for a non-empty query without hits. Total is capped at 5,000; beyond that the label reads "3 of 5000+", and "newest" (a new query's selection) is the 5,000th hit, the last one counted. Nothing is shown for an empty query.
 - **Current match.** A new query selects the last (newest) match, because the transcript is read from the bottom; as the user keeps typing the selection stays at the match nearest the previous one (same message or the next one down). Return / Cmd-G go to the next match (down the transcript, wrapping from last to first); Shift-Return / Cmd-Shift-G go to the previous (wrapping). With the bar closed, Cmd-G opens the bar (no hidden "repeat last search").
 - **Highlights.** Every hit in every mounted searched message gets a yellow background with black text; the current hit is orange. Black text on both clears 7:1 in light and dark (the yellow is fixed, not appearance-adaptive, as in Safari). Highlights follow the view when the row scrolls out and back, and are re-applied after `updateNSView` replaces the text. Closing the bar removes them.
 - **Scrolling.** See D2. A visible match is not scrolled if it already sits in the band between the bar and 16 pt above the bottom. Scrolling moves the engine to browsing mode (it does not snap back to the latest message); the existing jump-to-latest affordance returns the user.
 - **Transcript changes while open.** A settled message arriving, a prepended older page or a session switch re-runs the search (150 ms debounce) and keeps the current hit if it still exists (same message id and ordinal), otherwise the nearest one. No scroll happens on such a refresh.
 - **Close.** Esc in the field or the Done button (Cmd-F does not toggle: with the bar open it refocuses the field). Highlights cleared, pending reveal cancelled, focus returned to the previous responder if it is still on screen.
-- **Keyboard.** In the field: Return next, Shift-Return previous, Esc close. Return during IME composition confirms the composition and does not navigate. Menu: Edit > Find in Chat (Cmd-F), Find Next (Cmd-G), Find Previous (Cmd-Shift-G), Search Sessions (no key). The items are never disabled; the actions do nothing under a sheet, in a floating panel, or in a session window (`conduit-session` prefix).
+- **Keyboard.** In the field: Return next, Shift-Return previous, Esc close. Return during IME composition confirms the composition and does not navigate. Menu: Edit > Find in Chat (Cmd-F), Find Next (Cmd-G), Find Previous (Cmd-Shift-G), Search Sessions (no key). The items are never disabled; the actions do nothing under a sheet or in a floating panel. In a session window (`conduit-session` prefix) they fall back to the focused message view's own find bar (Next and Previous via `performFindPanelAction`) and do nothing when no message view is focused.
 - **Pane and room guards.** With chat hidden under Bots / Cron / Kanban, Cmd-F is Search Sessions (D10, unchanged) and an open bar is hidden with the chat. In a group-chat room the bar does not open (controller `isAvailable` false) and Cmd-F is Search Sessions.
 - **Edit > Find > Find...** (per-message find bar) stays in the menu without a key equivalent, as D10 left it.
 
@@ -102,6 +102,8 @@ B3 + C3 + D2 + E2 with the A2 model:
 - **Cost on large transcripts.** Projection is cached per message (key: role, content, code) and filled in chunks of 40 with a `Task.yield` when the bar opens; a query pass over the cache is a linear `NSString.range(of:)` scan. Hits are capped at 5,000. The projection of a 500 KB message is the slowest single step and runs once.
 - **Real key events.** Hosted tests send synthetic events to the field and call `doCommandBy` directly; real hardware Return, Shift-Return and IME are only verifiable by hand (smoke checklist), as D10 already notes for its keys.
 - **Native Find items.** `TextEditingCommands` also adds Find Next / Find Previous with Cmd-G / Cmd-Shift-G. Ours sit earlier in Edit and are never disabled, so they win; a test pins "first item with this key is ours" for all three keys.
+- **Unsearched blocks.** Image alt text, math blocks, collapsed thinking and collapsed tool text are not searched (they are not drawn as selectable message text); system rows and the live streaming tail are also out of scope.
+- **No-resolver MEDIA: tag.** With no gateway media resolver the views draw a raw `MEDIA:` tag as text but the projection does not emit it, so the count can miss such a tag (rare).
 - **D21 overlap.** The session-window check is written as a local helper against the literal prefix `conduit-session`. When D21 lands, swap it for `MacSessionWindows.isSessionWindow` (one call site, noted in the plan).
 
 ## Architecture and file paths
@@ -129,7 +131,7 @@ Upstream edit (one gate, one ledger row): `Conduit/Views/ChatView.swift`, `.macC
 - Row hook: a `SelectableTextView` under `.macChatFindRow` with a controller in the environment registers under the row id; without a controller nothing registers.
 - Parity: `MarkdownText` samples hosted; per-message hit counts from projection equal the sum over mounted views.
 - Bar: hosted bar renders in light and dark; `doCommandBy` mapping (Return, Shift-Return, Esc, IME marked text); focus token focuses and selects; accessibility labels.
-- Commands: menu table (`/Edit/Find in Chat`, `/Edit/Find Next`, `/Edit/Find Previous` win their keys), routing (composer, message view, sidebar-like responder, nothing focused, hidden chat, room, sheet, session window, Quick Ask panel), existing `testCmdF*` cases unchanged and green because a window without a controller keeps D10's behavior.
+- Commands: menu table (`/Edit/Find in Chat`, `/Edit/Find Next`, `/Edit/Find Previous` win their keys), routing (composer, message view, sidebar-like responder, nothing focused, hidden chat, room, sheet, session window with its per-message fallback, Quick Ask panel), existing `testCmdF*` cases unchanged and green because a window without a controller keeps D10's behavior.
 - Full Mac suite twice; `git diff -- Conduit Shared` removes zero lines and adds exactly one gated region in `ChatView.swift`.
 
 ## Open questions (default chosen)

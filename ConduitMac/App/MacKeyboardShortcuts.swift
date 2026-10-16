@@ -198,7 +198,7 @@ enum MacKeyboardActions {
     }
 
     enum FindOutcome: Equatable {
-        case messageFind, searchSessions
+        case chatFind, messageFind, searchSessions
     }
 
     /// The text view whose own find bar Cmd-F should open: the first responder
@@ -213,14 +213,17 @@ enum MacKeyboardActions {
         return textView.validateUserInterfaceItem(findItem()) ? textView : nil
     }
 
-    private static func findItem() -> NSMenuItem {
+    static func findItem(_ action: NSTextFinder.Action = .showFindInterface) -> NSMenuItem {
         let item = NSMenuItem()
-        item.tag = NSTextFinder.Action.showFindInterface.rawValue
+        item.tag = action.rawValue
         return item
     }
 
     /// Cmd-F. A focused message view keeps its find bar; everywhere else the
     /// key focuses Search Sessions. Returns what it did (nil: blocked).
+    /// D23: in the main chat window with chat shown and focus in the chat, Cmd-F
+    /// opens the whole-chat find bar. A session window (D21) has no whole-chat
+    /// find: it keeps the focused message view's own find bar, else does nothing.
     @discardableResult
     static func findOrSearchSessions(
         window: NSWindow?,
@@ -228,16 +231,24 @@ enum MacKeyboardActions {
         requests: MacFocusRequests? = nil
     ) -> FindOutcome? {
         guard !commandsBlocked(by: window) else { return nil }
-        // A session window (D21) always shows its chat; the main window's pane does not decide.
-        let inSessionWindow = MacSessionWindows.isSessionWindow(window)
-        let chatActive = inSessionWindow
-            || MacChatRoute.isChatActive(tabRaw: defaults.string(forKey: MacSidebarState.tabDefaultsKey))
+        // A session window (D21) has no whole-chat find: it keeps the focused message view's own find bar
+        // (never the main window's search). Its chat is always shown; the main window's pane does not decide.
+        if MacSessionWindows.isSessionWindow(window) {
+            return MacChatFindActions.sessionWindowFind(.showFindInterface, window: window) ? .messageFind : nil
+        }
+        let chatActive = MacChatRoute.isChatActive(tabRaw: defaults.string(forKey: MacSidebarState.tabDefaultsKey))
+        // D23: whole-chat find, unless focus is outside the chat (sidebar list,
+        // session search) or no find controller exists for the window.
+        if chatActive, let window, let controller = MacChatFindControllers.controller(for: window),
+           controller.isAvailable,
+           MacChatFindActions.routesToChatFind(responder: window.firstResponder, window: window, controller: controller) {
+            controller.open(restoreFocus: MacPaletteActions.focusRestorer(in: window))
+            return .chatFind
+        }
         if let target = findTarget(in: window?.firstResponder, chatActive: chatActive) {
             target.performFindPanelAction(findItem())
             return .messageFind
         }
-        // The session search lives in the main window: nothing to focus from a session window.
-        guard !inSessionWindow else { return nil }
         focusSessionSearch(defaults: defaults, requests: requests)
         return .searchSessions
     }
@@ -250,6 +261,17 @@ enum MacKeyboardActions {
     ) {
         defaults.set(true, forKey: MacSidebarState.defaultsKey)
         (requests ?? .shared).requestSearch()
+    }
+
+    /// Edit > Search Sessions (no key equivalent): the explicit way in now that
+    /// Cmd-F is contextual (D23).
+    static func searchSessions(
+        window: NSWindow?,
+        defaults: UserDefaults = .standard,
+        requests: MacFocusRequests? = nil
+    ) {
+        guard !commandsBlocked(by: window), !MacSessionWindows.isSessionWindow(window) else { return }
+        focusSessionSearch(defaults: defaults, requests: requests)
     }
 
     /// Cmd-L. Chat comes back first (it stays mounted under other panes), so
@@ -365,6 +387,69 @@ enum MacPaletteActions {
             guard let window, let view, view.window === window, !view.isHiddenOrHasHiddenAncestor else { return }
             window.makeFirstResponder(view)
         }
+    }
+}
+
+/// What the Find items do (D23). The controller lives per main window; the
+/// actions check the same guards as every D10 command.
+@MainActor
+enum MacChatFindActions {
+    /// Focus in the chat (nothing, the window, the composer, a message view, the
+    /// transcript, the find field) opens chat find; focus anywhere else (the
+    /// sidebar list, the session search field) keeps D10's Search Sessions.
+    static func routesToChatFind(responder: NSResponder?, window: NSWindow, controller: MacChatFindController) -> Bool {
+        guard let responder, responder !== window, responder !== window.contentView else { return true }
+        return controller.ownsResponder(responder)
+    }
+
+    /// The pre-D23 behaviour a session window keeps: the focused message view's
+    /// own find bar, through the same path D10's Cmd-F used. False when no
+    /// find-capable message view has focus (or a sheet / floating panel blocks).
+    @discardableResult
+    static func sessionWindowFind(_ action: NSTextFinder.Action, window: NSWindow?) -> Bool {
+        guard let window, !MacKeyboardActions.commandsBlocked(by: window),
+              let target = findTarget(responder: window.firstResponder) else { return false }
+        target.performFindPanelAction(MacKeyboardActions.findItem(action))
+        return true
+    }
+
+    /// The focused message view, or the message view whose own find bar holds
+    /// focus (its search field edits through the window's field editor, which
+    /// is not itself find-capable), so Cmd-G still steps once the bar is open.
+    private static func findTarget(responder: NSResponder?) -> NSTextView? {
+        if let target = MacKeyboardActions.findTarget(in: responder) { return target }
+        guard let editor = responder as? NSTextView, editor.isFieldEditor, let owner = editor.delegate as? NSView else { return nil }
+        var view: NSView? = owner
+        while let current = view {
+            if let scroll = current as? NSScrollView, scroll.isFindBarVisible,
+               let text = scroll.documentView as? NSTextView {
+                return MacKeyboardActions.findTarget(in: text)
+            }
+            view = current.superview
+        }
+        return nil
+    }
+
+    private static func controller(for window: NSWindow?, defaults: UserDefaults) -> MacChatFindController? {
+        guard let window, !MacKeyboardActions.commandsBlocked(by: window), !MacSessionWindows.isSessionWindow(window),
+              MacChatRoute.isChatActive(tabRaw: defaults.string(forKey: MacSidebarState.tabDefaultsKey)),
+              let controller = MacChatFindControllers.controller(for: window), controller.isAvailable else { return nil }
+        return controller
+    }
+
+    /// Cmd-G. With the bar closed it opens the bar (there is no hidden "repeat
+    /// the last search").
+    static func next(window: NSWindow?, defaults: UserDefaults = .standard) {
+        if MacSessionWindows.isSessionWindow(window) { sessionWindowFind(.nextMatch, window: window); return }
+        guard let controller = controller(for: window, defaults: defaults) else { return }
+        if controller.isOpen { controller.next() } else { controller.open(restoreFocus: MacPaletteActions.focusRestorer(in: window)) }
+    }
+
+    /// Cmd-Shift-G.
+    static func previous(window: NSWindow?, defaults: UserDefaults = .standard) {
+        if MacSessionWindows.isSessionWindow(window) { sessionWindowFind(.previousMatch, window: window); return }
+        guard let controller = controller(for: window, defaults: defaults) else { return }
+        if controller.isOpen { controller.previous() } else { controller.open(restoreFocus: MacPaletteActions.focusRestorer(in: window)) }
     }
 }
 

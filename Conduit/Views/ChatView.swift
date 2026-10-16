@@ -297,6 +297,9 @@ struct ChatView: View {
                 ForEach(chatMessageScrollTargets) { target in
                     MessageBubble(message: target.message, gatewayResolver: appState.gatewayMediaResolver)
                         .id(target.id)
+#if os(macOS)
+                        .macChatFindRow(id: target.id, engine: scrollEngine) // MAC: whole-chat Find (D23)
+#endif
                         .background {
                             // Measured in the stack's own coordinate space,
                             // so the value changes only when layout does,

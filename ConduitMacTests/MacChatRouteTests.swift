@@ -213,29 +213,33 @@ final class MacSessionOpenSignalTests: XCTestCase {
     }
 
     /// Drives the router's real handler. Each router gets its own defaults
-    /// suite and its own NotificationCenter, so neither the live app's router
-    /// nor another test's post can reach it: every non-chat pane returns to
-    /// chat on the signal, and nothing else moves it.
+    /// suite, its own NotificationCenter and its own AppState, so neither the
+    /// live app's router, another test's post, nor another test's change to
+    /// the process-wide AppState's active session (the router also returns to
+    /// chat on that) can reach it: every non-chat pane returns to chat on the
+    /// signal, and nothing else moves it.
     func testSignalReturnsEveryPaneToChatAndNothingElseDoes() {
         for tab in [SidebarTab.bots, .cron, .kanban] {
             let suite = HostedTestSupport.makeSuite()
             defer { HostedTestSupport.dropSuite(suite) }
+            let fixture = MacSharedBaseAppStateFixture()
+            defer { fixture.tearDown() }
             let center = NotificationCenter()
             suite.defaults.set(tab.rawValue, forKey: MacSidebarState.tabDefaultsKey)
             let mounted = Mounted()
             let window = HostedTestSupport.host(
                 MacDetailRouter(defaults: suite.defaults, notificationCenter: center, chat: { MountProbe(mounted: mounted) })
-                    .environmentObject(AppStateRuntimeRegistry.shared.appState)
+                    .environmentObject(fixture.appState)
                     .frame(width: 600, height: 400),
                 size: NSSize(width: 600, height: 400))
             defer { HostedTestSupport.tearDown(window) }
-            XCTAssertTrue(HostedTestSupport.waitUntil { mounted.value }, "\(tab): router mounted")
+            XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 15) { mounted.value }, "\(tab): router mounted")
             HostedTestSupport.settle()
             XCTAssertEqual(suite.defaults.string(forKey: MacSidebarState.tabDefaultsKey), tab.rawValue,
                            "\(tab): staying put without a signal")
             center.post(name: .macSessionOpenRequested, object: nil)
             XCTAssertTrue(
-                HostedTestSupport.waitUntil {
+                HostedTestSupport.waitUntil(timeout: 15) {
                     suite.defaults.string(forKey: MacSidebarState.tabDefaultsKey) == SidebarTab.sessions.rawValue
                 },
                 "\(tab): returns to chat on the signal")
