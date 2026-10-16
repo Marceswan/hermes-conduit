@@ -5,7 +5,9 @@ import SwiftUI
 // here so the menu (ConduitCommands), the sidebar list modifier and the
 // composer twin share one definition and tests can reach it headlessly.
 
-/// Ctrl-Cmd-1 ... Ctrl-Cmd-5: one shortcut per sidebar tab, in tab-strip order.
+/// Ctrl-Cmd-1 ... Ctrl-Cmd-5: one shortcut per sidebar tab, in `SidebarTab` order (Sessions to
+/// Kanban, then Home). The Mac strip shows Home first (`MacSidebarTabOrder`, D24); the numbers
+/// and the Go menu keep their order so muscle memory does not move.
 enum MacSidebarShortcut: CaseIterable, Identifiable {
     case sessions, bots, cron, kanban, home
 

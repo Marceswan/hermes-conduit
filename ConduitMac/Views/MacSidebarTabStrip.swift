@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Mac sidebar tab strip (Sessions | Bots | Cron | Kanban | Home). A glass container
+/// Mac sidebar tab strip (Home | Sessions | Bots | Cron | Kanban, `MacSidebarTabOrder`). A glass container
 /// holds equal-width segments; the selected one carries an accent indicator
 /// inset uniformly inside the container, with a radius concentric to the
 /// container's (`MacTabStripMetrics`). Icon and label are centred in each
@@ -25,19 +25,19 @@ struct MacSidebarTabStrip: View {
         .frame(height: MacTabStripMetrics.containerHeight)
     }
 
-    /// Width each tab's icon-and-name segment needs, in tab order, measured
+    /// Width each tab's icon-and-name segment needs, by tab, measured
     /// with the segment's own font (caption, semibold; small-scale glyph) so
     /// a longer localized name moves the steps.
-    static var nameSegmentWidths: [CGFloat] {
+    static var nameSegmentWidths: [SidebarTab: CGFloat] {
         let size = NSFont.preferredFont(forTextStyle: .caption1).pointSize
         let font = NSFont.systemFont(ofSize: size, weight: .semibold)
         let glyph = NSImage.SymbolConfiguration(pointSize: size, weight: .semibold, scale: .small)
-        return SidebarTab.allCases.map { tab in
+        return Dictionary(uniqueKeysWithValues: MacSidebarTabOrder.strip.map { tab in
             let text = (tab.displayName as NSString).size(withAttributes: [.font: font]).width
             let icon = NSImage(systemSymbolName: tab.icon, accessibilityDescription: nil)?
                 .withSymbolConfiguration(glyph)?.size.width ?? size
-            return MacTabStripMetrics.nameSegmentWidth(iconWidth: icon.rounded(.up), textWidth: text.rounded(.up))
-        }
+            return (tab, MacTabStripMetrics.nameSegmentWidth(iconWidth: icon.rounded(.up), textWidth: text.rounded(.up)))
+        })
     }
 
     @ViewBuilder
@@ -45,21 +45,42 @@ struct MacSidebarTabStrip: View {
         switch ladder {
         case .names:
             EqualWidthHStack(spacing: 0) {
-                ForEach(SidebarTab.allCases, id: \.self) { segment($0, iconOnly: false) }
+                ForEach(MacSidebarTabOrder.strip, id: \.self) { segment($0, iconOnly: false) }
             }
         case .icons:
             EqualWidthHStack(spacing: 0) {
-                ForEach(SidebarTab.allCases, id: \.self) { segment($0, iconOnly: true) }
+                ForEach(MacSidebarTabOrder.strip, id: \.self) { segment($0, iconOnly: true) }
             }
         case .homeCompact:
+            // Home is found by value: it stays an icon wherever the strip order puts it.
             HStack(spacing: 0) {
-                EqualWidthHStack(spacing: 0) {
-                    ForEach(SidebarTab.allCases.filter { $0 != .home }, id: \.self) { segment($0, iconOnly: false) }
+                ForEach(Self.compactGroups, id: \.self) { group in
+                    if group == [.home] {
+                        segment(.home, iconOnly: true)
+                            .frame(width: MacTabStripMetrics.homeSegmentWidth)
+                    } else {
+                        EqualWidthHStack(spacing: 0) {
+                            ForEach(group, id: \.self) { segment($0, iconOnly: false) }
+                        }
+                    }
                 }
-                segment(.home, iconOnly: true)
-                    .frame(width: MacTabStripMetrics.homeSegmentWidth)
             }
         }
+    }
+
+    /// The strip order split around Home: runs of named tabs and Home on its own, in strip order.
+    static var compactGroups: [[SidebarTab]] {
+        var groups: [[SidebarTab]] = []
+        for tab in MacSidebarTabOrder.strip {
+            if tab == .home {
+                groups.append([.home])
+            } else if let last = groups.last, last != [.home] {
+                groups[groups.count - 1].append(tab)
+            } else {
+                groups.append([tab])
+            }
+        }
+        return groups
     }
 
     private func segment(_ tab: SidebarTab, iconOnly: Bool) -> some View {

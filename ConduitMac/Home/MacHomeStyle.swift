@@ -7,10 +7,18 @@ enum MacHomeStyle {
     static let cardRadius: CGFloat = MacSidebarMetrics.sessionCardRadius
     static let tileMinWidth: CGFloat = 150
     static let wideCardMinWidth: CGFloat = 260
+    /// Column steps of the card grids, widest first: the four tiles go 4 -> 2 (x2) -> 1, the
+    /// Activity / Kanban / Cron row 3 -> 2 -> 1, Model / Context 2 -> 1.
+    static let tileColumns = [4, 2, 1]
+    static let overviewColumns = [3, 2, 1]
+    static let pairColumns = [2, 1]
     static let rowHeight: CGFloat = MacControlHeight.compact
+    /// A card's title row, with or without a header action.
+    static let headerHeight: CGFloat = rowHeight - 8
 
     // Charts: thin marks, 4 pt rounded data end on a square baseline, 2 pt gaps.
-    static let maxBarThickness: CGFloat = 24
+    static let maxBarThickness: CGFloat = 40
+    /// The day chart's least height; it grows with the card (the row's tallest card sets the height).
     static let chartHeight: CGFloat = 72
     static let barGap: CGFloat = 2
     /// The day chart's value caption and the gap under it; the tallest bar gets the rest of `chartHeight`.

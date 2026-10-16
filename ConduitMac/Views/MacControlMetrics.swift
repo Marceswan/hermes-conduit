@@ -47,6 +47,13 @@ enum MacSidebarMetrics {
     static let sessionCardPaddingV: CGFloat = 5
 }
 
+/// The order the Mac sidebar tab strip shows its tabs in (D24): Home leftmost, then the four
+/// upstream tabs in their own order. Mac-owned, so upstream's `SidebarTab.allCases` order (and
+/// the Ctrl-Cmd-digit numbering that follows it) is untouched.
+enum MacSidebarTabOrder {
+    static let strip: [SidebarTab] = [.home, .sessions, .bots, .cron, .kanban]
+}
+
 /// Geometry of the sidebar tab strip: a rounded container with a uniformly
 /// inset selection indicator whose radius is concentric with the container's.
 enum MacTabStripMetrics {
@@ -70,8 +77,8 @@ enum MacTabStripMetrics {
     enum Ladder: Equatable {
         /// Every tab shows icon and name, in equal segments.
         case names
-        /// The tabs before the last keep icon and name in equal segments; the
-        /// last (Home) is an icon-only segment of `homeSegmentWidth`.
+        /// Every tab except Home keeps icon and name in equal segments; Home
+        /// is an icon-only segment of `homeSegmentWidth`.
         case homeCompact
         /// Every tab is an icon in an equal segment.
         case icons
@@ -84,16 +91,17 @@ enum MacTabStripMetrics {
     }
 
     /// Which layout fits `availableWidth` (the strip's own width, container
-    /// included). `nameSegmentWidths` are the tabs' `nameSegmentWidth`s in
-    /// tab order, Home last. Equal segments are as wide as the widest in
-    /// their group, so a group needs `count * widest`. A pure function of its
-    /// arguments: the strip's steps do not depend on view hosting.
-    static func ladder(availableWidth: CGFloat, nameSegmentWidths: [CGFloat]) -> Ladder {
-        guard let last = nameSegmentWidths.last, nameSegmentWidths.count > 1 else { return .icons }
-        let leading = nameSegmentWidths.dropLast()
-        let allNames = CGFloat(nameSegmentWidths.count) * max(last, leading.max() ?? 0)
+    /// included). `nameSegmentWidths` are the tabs' `nameSegmentWidth`s keyed
+    /// by tab: Home is found by value, wherever the strip puts it. Equal
+    /// segments are as wide as the widest in their group, so a group needs
+    /// `count * widest`. A pure function of its arguments: the strip's steps
+    /// do not depend on view hosting.
+    static func ladder(availableWidth: CGFloat, nameSegmentWidths: [SidebarTab: CGFloat]) -> Ladder {
+        guard nameSegmentWidths.count > 1 else { return .icons }
+        let allNames = CGFloat(nameSegmentWidths.count) * (nameSegmentWidths.values.max() ?? 0)
         if availableWidth >= allNames { return .names }
-        let compact = CGFloat(leading.count) * (leading.max() ?? 0) + homeSegmentWidth
+        let others = nameSegmentWidths.filter { $0.key != .home }.values
+        let compact = CGFloat(others.count) * (others.max() ?? 0) + homeSegmentWidth
         return availableWidth >= compact ? .homeCompact : .icons
     }
 

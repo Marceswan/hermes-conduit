@@ -39,8 +39,8 @@ final class MacControlMetricsTests: XCTestCase {
     }
 
     func testLadderStepsFollowWidthAlone() {
-        // Segment widths in tab order, Home last: the widest of five is 70.
-        let widths: [CGFloat] = [70, 60, 50, 66, 62]
+        // Segment widths by tab: the widest of five is 70. Home is found by value, not position.
+        let widths: [SidebarTab: CGFloat] = [.home: 62, .sessions: 70, .bots: 60, .cron: 50, .kanban: 66]
         let ladder = { (width: CGFloat) in MacTabStripMetrics.ladder(availableWidth: width, nameSegmentWidths: widths) }
         XCTAssertEqual(ladder(5 * 70), .names)
         XCTAssertEqual(ladder(5 * 70 - 0.5), .homeCompact, "five equal segments need the widest times five")
@@ -50,14 +50,22 @@ final class MacControlMetricsTests: XCTestCase {
         XCTAssertEqual(ladder(0), .icons)
         XCTAssertEqual(ladder(2000), .names)
         // Home's own name never sets the compact step: it is an icon there.
-        let longHome: [CGFloat] = [70, 60, 50, 66, 120]
+        let longHome: [SidebarTab: CGFloat] = [.home: 120, .sessions: 70, .bots: 60, .cron: 50, .kanban: 66]
         XCTAssertEqual(MacTabStripMetrics.ladder(availableWidth: 4 * 70 + MacTabStripMetrics.homeSegmentWidth,
                                                  nameSegmentWidths: longHome), .homeCompact)
         XCTAssertEqual(MacTabStripMetrics.ladder(availableWidth: 5 * 120 - 0.5, nameSegmentWidths: longHome), .homeCompact,
                        "but it widens the all-names step")
-        XCTAssertEqual(MacTabStripMetrics.ladder(availableWidth: 1000, nameSegmentWidths: [70]), .icons, "one tab has nothing to step")
+        XCTAssertEqual(MacTabStripMetrics.ladder(availableWidth: 1000, nameSegmentWidths: [.home: 70]), .icons, "one tab has nothing to step")
         XCTAssertEqual(MacTabStripMetrics.nameSegmentWidth(iconWidth: 12, textWidth: 40),
                        12 + MacTabStripMetrics.nameGap + 40 + 2 * MacTabStripMetrics.nameMargin + 2 * MacTabStripMetrics.inset)
+    }
+
+    func testStripOrderPutsHomeFirstAndKeepsTheUpstreamOrderAfterIt() {
+        XCTAssertEqual(MacSidebarTabOrder.strip, [.home, .sessions, .bots, .cron, .kanban])
+        XCTAssertEqual(MacSidebarTabOrder.strip.count, SidebarTab.allCases.count)
+        XCTAssertEqual(Set(MacSidebarTabOrder.strip), Set(SidebarTab.allCases), "every tab is on the strip once")
+        XCTAssertEqual(Array(MacSidebarTabOrder.strip.dropFirst()), SidebarTab.allCases.filter { $0 != .home })
+        XCTAssertEqual(MacSidebarTabStrip.compactGroups, [[.home], [.sessions, .bots, .cron, .kanban]])
     }
 
     func testSegmentsAreEqualWidthAndTileTheContainer() {

@@ -31,7 +31,10 @@ final class MacSidebarShortcutTests: XCTestCase {
         XCTAssertEqual(tabs.count, SidebarTab.allCases.count)
         let keys = MacSidebarShortcut.allCases.map(\.key.character)
         XCTAssertEqual(Set(keys).count, keys.count)
-        XCTAssertEqual(tabs, SidebarTab.allCases, "numbered in tab-strip order")
+        XCTAssertEqual(tabs, SidebarTab.allCases, "numbered in SidebarTab order: Home is Ctrl-Cmd-5 and last in Go, though the strip shows it first (D24)")
+        XCTAssertEqual(MacSidebarShortcut.allCases.map(\.key.character), ["1", "2", "3", "4", "5"])
+        XCTAssertEqual(MacSidebarShortcut.tab(forKey: "5"), .home)
+        XCTAssertEqual(MacSidebarShortcut.tab(forKey: "1"), .sessions)
     }
 
     func testTitleIsTheTabsOwnName() {

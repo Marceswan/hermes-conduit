@@ -23,7 +23,9 @@ final class MacChatRouteTests: XCTestCase {
         XCTAssertFalse(MacChatRoute.isChatActive(tabRaw: "Home"))
         XCTAssertEqual(MacChatRoute.navigationTitle(tabRaw: "Home"), SidebarTab.home.displayName)
         XCTAssertEqual(SidebarTab.home.rawValue, "Home")
-        XCTAssertEqual(SidebarTab.allCases.last, .home)
+        XCTAssertEqual(SidebarTab.allCases.last, .home, "upstream's order (shortcuts, palette) keeps Home last; only the Mac strip puts it first")
+        XCTAssertEqual(MacSidebarTabOrder.strip.first, .home)
+        XCTAssertEqual(MacSidebarTabOrder.strip.last, .kanban)
         XCTAssertEqual(SidebarTab.migrated(rawValue: "Home"), .home)
     }
 

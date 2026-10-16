@@ -8,6 +8,8 @@ struct MacHomeView: View {
     private let actions: MacHomeActions
     /// The calendar the model buckets days with; weekday names use its time zone.
     private let calendar: Calendar
+    /// Test hook: receives the cards' and tiles' frames (`MacHomeFrames`) when they change.
+    var frameReport: (([String: CGRect]) -> Void)?
 
     init(appState: AppState) {
         calendar = .current
@@ -36,6 +38,8 @@ struct MacHomeView: View {
                     overview(snapshot)
                 }
                 .padding(.bottom, 20)
+                .coordinateSpace(name: MacHomeFrames.space)
+                .onPreferenceChange(MacHomeFrames.self) { frameReport?($0) }
             }
         }
         // Restarts when the dashboard, profile or connection changes.
@@ -56,6 +60,7 @@ struct MacHomeView: View {
         return MacPaneHeader(title: AppLocalization.string("Home"), subtitle: subtitle.isEmpty ? nil : subtitle) {
             MacHomeConnectionPill(state: snapshot.connection.state)
         }
+        .macHomeFrame("header")
     }
 
     private var offlineNotice: some View {
@@ -116,8 +121,8 @@ struct MacHomeView: View {
 
     private func tiles(_ snapshot: MacHomeSnapshot) -> some View {
         let t = snapshot.tiles
-        return LazyVGrid(columns: [GridItem(.adaptive(minimum: MacHomeStyle.tileMinWidth), spacing: MacHomeStyle.sectionGap)],
-                         spacing: MacHomeStyle.sectionGap) {
+        // One row of equal tiles across the full content width; 2 x 2 then one column when narrow.
+        return MacHomeGrid(columnOptions: MacHomeStyle.tileColumns, minColumnWidth: MacHomeStyle.tileMinWidth, uniformRows: true) {
             MacHomeTile(
                 value: "\(t.sessions)", label: AppLocalization.string("Sessions"),
                 detail: String(format: AppLocalization.string("Today %@"), String(t.activeToday)),
@@ -125,22 +130,21 @@ struct MacHomeView: View {
                 spokenValue: MacHomeText.spoken([
                     String(format: AppLocalization.string("%@ in loaded chats"), String(t.sessions)),
                     String(format: AppLocalization.string("Today %@"), String(t.activeToday)),
-                ]))
-            MacHomeTile(value: "\(t.unread)", label: AppLocalization.string("Unread"))
+                ]), slot: 0)
+            MacHomeTile(value: "\(t.unread)", label: AppLocalization.string("Unread"), slot: 1)
             MacHomeTile(
                 value: "\(t.needsYou)", label: AppLocalization.string("Waiting on you"),
-                detail: t.needsYou == 0 ? nil : String(format: AppLocalization.string("Approvals %1$@, questions %2$@"), String(t.approvals), String(t.questions)))
+                detail: t.needsYou == 0 ? nil : String(format: AppLocalization.string("Approvals %1$@, questions %2$@"), String(t.approvals), String(t.questions)), slot: 2)
             MacHomeTile(
                 value: "\(t.working)", label: AppLocalization.string("Working"),
-                detail: t.subAgents == 0 ? nil : String(format: AppLocalization.string("Sub-agents %@"), String(t.subAgents)))
+                detail: t.subAgents == 0 ? nil : String(format: AppLocalization.string("Sub-agents %@"), String(t.subAgents)), slot: 3)
         }
     }
 
     @ViewBuilder
     private func modelAndContext(_ snapshot: MacHomeSnapshot) -> some View {
         if snapshot.model != nil || snapshot.context != nil {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: MacHomeStyle.wideCardMinWidth), spacing: MacHomeStyle.sectionGap)],
-                      alignment: .leading, spacing: MacHomeStyle.sectionGap) {
+            MacHomeGrid(columnOptions: MacHomeStyle.pairColumns, minColumnWidth: MacHomeStyle.wideCardMinWidth) {
                 if let line = snapshot.model {
                     MacHomeCard(title: AppLocalization.string("Model"), symbol: "cpu") {
                         Text(verbatim: line.model).font(.subheadline.weight(.semibold)).lineLimit(1)
@@ -175,8 +179,8 @@ struct MacHomeView: View {
 
     private func overview(_ snapshot: MacHomeSnapshot) -> some View {
         let offline = snapshot.connection.state == .offline
-        return LazyVGrid(columns: [GridItem(.adaptive(minimum: MacHomeStyle.wideCardMinWidth), spacing: MacHomeStyle.sectionGap)],
-                  alignment: .leading, spacing: MacHomeStyle.sectionGap) {
+        // Equal-width columns across the content width, the same height per row, tops aligned.
+        return MacHomeGrid(columnOptions: MacHomeStyle.overviewColumns, minColumnWidth: MacHomeStyle.wideCardMinWidth) {
             MacHomeCard(title: AppLocalization.string("Activity, 7 days"), symbol: "chart.bar") {
                 MacHomeDayBars(days: snapshot.days, calendar: calendar)
             }

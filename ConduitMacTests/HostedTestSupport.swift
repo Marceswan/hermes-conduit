@@ -64,6 +64,7 @@ enum AccessibilityProbe {
         var value: String?
         /// Relative to the content view's top-left.
         var frame: CGRect
+        var identifier: String?
     }
 
     /// Every accessibility element below the window's content view, depth-first.
@@ -79,7 +80,8 @@ enum AccessibilityProbe {
                 nodes.append(Node(role: role, label: element.axValue("accessibilityLabel"),
                                   value: AccessibilityProbe.stringValue(of: element),
                                   frame: CGRect(x: r.minX - content.minX, y: content.maxY - r.maxY,
-                                                width: r.width, height: r.height)))
+                                                width: r.width, height: r.height),
+                                  identifier: element.axValue("accessibilityIdentifier")))
             }
             let kids: [Any]? = element.axValue("accessibilityChildren")
             if depth < 10 { for kid in kids ?? [] { if let o = kid as? NSObject { walk(o, depth: depth + 1) } } }
@@ -106,6 +108,10 @@ enum AccessibilityProbe {
 
     static func frame(of label: String, in window: NSWindow) -> CGRect? {
         nodes(in: window).first { $0.label == label }?.frame
+    }
+
+    static func frame(identifier: String, in window: NSWindow) -> CGRect? {
+        nodes(in: window).first { $0.identifier == identifier }?.frame
     }
 
     /// Presses the element labelled `label` (its default accessibility action).

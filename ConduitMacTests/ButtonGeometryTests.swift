@@ -80,7 +80,8 @@ final class ButtonGeometryTests: XCTestCase {
                      size: NSSize(width: width, height: MacTabStripMetrics.containerHeight + 40))
     }
 
-    private let allNames = ["Sessions", "Bots", "Cron", "Kanban", "Home"]
+    /// Strip order (`MacSidebarTabOrder.strip`): Home leftmost.
+    private let allNames = ["Home", "Sessions", "Bots", "Cron", "Kanban"]
 
     func testWideStripShowsFiveEqualSegmentsWithNames() throws {
         let width: CGFloat = 640
@@ -98,6 +99,7 @@ final class ButtonGeometryTests: XCTestCase {
         }
         XCTAssertTrue(nodes.allSatisfy { $0.identifier == HoverTooltipPolicy.visibleLabelIdentifier },
                       "names are visible, so no tooltip repeats them")
+        XCTAssertEqual(nodes.map(\.label), MacSidebarTabOrder.strip.map(\.displayName), "the strip follows its Mac-owned order")
         XCTAssertEqual(try XCTUnwrap(nodes.first).frame.minX - 14, MacTabStripMetrics.inset, accuracy: 0.6, "left inset")
         XCTAssertEqual(width - 14 - (try XCTUnwrap(nodes.last)).frame.maxX, MacTabStripMetrics.inset, accuracy: 0.6, "right inset")
         XCTAssertEqual(try XCTUnwrap(nodes.first).frame.minY - 20, MacTabStripMetrics.inset, accuracy: 0.6, "top inset")
@@ -105,19 +107,21 @@ final class ButtonGeometryTests: XCTestCase {
 
     /// The widest the sidebar column can be dragged (390 pt) is the only column width where the
     /// second step of the ladder shows: four equal name segments (the widest, Sessions, sets the
-    /// width) plus the 38 pt Home segment need 338 pt inside the padding.
+    /// width) plus the 38 pt Home segment (leftmost) need 338 pt inside the padding.
     func testWidestColumnKeepsTheFourExistingNamesAndCompactsHome() throws {
         let nodes = try strip(width: MacSidebarState.sidebarMaxWidth)
         XCTAssertEqual(nodes.map(\.label), allNames)
-        let names = nodes.dropLast()
+        let home = try XCTUnwrap(nodes.first)
+        XCTAssertEqual(home.label, "Home", "Home is the leftmost segment")
+        let names = nodes.dropFirst()
         XCTAssertTrue(names.allSatisfy { $0.identifier == HoverTooltipPolicy.visibleLabelIdentifier },
                       "Sessions, Bots, Cron and Kanban keep their names at the widest column: \(nodes.map { $0.identifier ?? "nil" })")
-        let home = try XCTUnwrap(nodes.last)
         XCTAssertNotEqual(home.identifier, HoverTooltipPolicy.visibleLabelIdentifier, "Home is icon-only and keeps its tooltip")
         XCTAssertEqual(home.frame.width, MacTabStripMetrics.homeSegmentWidth - 2 * MacTabStripMetrics.inset, accuracy: 0.6)
+        XCTAssertEqual(home.frame.minX - 14, MacTabStripMetrics.inset, accuracy: 0.6, "left inset")
         let widths = names.map(\.frame.width)
         XCTAssertEqual(try XCTUnwrap(widths.max()) - (try XCTUnwrap(widths.min())), 0, accuracy: 0.6, "the four names stay equal")
-        XCTAssertEqual(MacSidebarState.sidebarMaxWidth - 14 - home.frame.maxX, MacTabStripMetrics.inset, accuracy: 0.6, "right inset")
+        XCTAssertEqual(MacSidebarState.sidebarMaxWidth - 14 - (try XCTUnwrap(nodes.last)).frame.maxX, MacTabStripMetrics.inset, accuracy: 0.6, "right inset")
     }
 
     /// Spec open question 2, measured: at the default 340 pt column (312 pt inside the padding)
@@ -163,8 +167,8 @@ final class ButtonGeometryTests: XCTestCase {
             return host.fittingSize.width
         }
         let widths = MacSidebarTabStrip.nameSegmentWidths
-        let namesNeed = CGFloat(widths.count) * (widths.max() ?? 0)
-        let compactNeed = CGFloat(widths.count - 1) * (widths.dropLast().max() ?? 0) + MacTabStripMetrics.homeSegmentWidth
+        let namesNeed = CGFloat(widths.count) * (widths.values.max() ?? 0)
+        let compactNeed = CGFloat(widths.count - 1) * (widths.filter { $0.key != .home }.values.max() ?? 0) + MacTabStripMetrics.homeSegmentWidth
         XCTAssertEqual(ideal(.names), namesNeed, accuracy: 1.0)
         XCTAssertEqual(ideal(.homeCompact), compactNeed, accuracy: 1.0)
     }

@@ -2,6 +2,25 @@ import SwiftUI
 
 // MARK: - Card and tile
 
+/// Frames of the cards and tiles in the Home content's coordinate space, by name. Read by the
+/// layout tests (`MacHomeView.frameReport`); nothing in the app uses them. Accessibility frames
+/// cannot serve: SwiftUI reports a container's content, not its glass.
+struct MacHomeFrames: PreferenceKey {
+    static let space = "macHomeContent"
+    static var defaultValue: [String: CGRect] { [:] }
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue()) { $1 }
+    }
+}
+
+extension View {
+    func macHomeFrame(_ name: String) -> some View {
+        background(GeometryReader { proxy in
+            Color.clear.preference(key: MacHomeFrames.self, value: [name: proxy.frame(in: .named(MacHomeFrames.space))])
+        })
+    }
+}
+
 /// One glass card with a title row. Rows inside are flat.
 struct MacHomeCard<Content: View>: View {
     private let title: String
@@ -37,14 +56,17 @@ struct MacHomeCard<Content: View>: View {
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(MacHomeStyle.secondaryText)
                 }
-                .frame(minHeight: MacHomeStyle.rowHeight - 8)
+                .frame(minHeight: MacHomeStyle.headerHeight)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(Text(verbatim: headerAction.label))
             .accessibilityAddTraits(.isHeader)
         } else {
-            titleRow.accessibilityAddTraits(.isHeader)
+            // Same height as the button form, so cards side by side start their content level.
+            titleRow
+                .frame(minHeight: MacHomeStyle.headerHeight, alignment: .leading)
+                .accessibilityAddTraits(.isHeader)
         }
     }
 
@@ -54,9 +76,11 @@ struct MacHomeCard<Content: View>: View {
             content
         }
         .padding(MacHomeStyle.cardPadding)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // Fills the cell the grid gives it (equal row heights) and keeps its content at the top.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .conduitGlassSurface(cornerRadius: MacHomeStyle.cardRadius)
         .accessibilityElement(children: .contain)
+        .macHomeFrame("card.\(symbol)")
     }
 }
 
@@ -67,6 +91,8 @@ struct MacHomeTile: View {
     var detail: String?
     /// Replaces "value, detail" for VoiceOver (the Sessions tile says what it counts).
     var spokenValue: String?
+    /// Names the tile in `MacHomeFrames` (layout tests); not spoken.
+    var slot = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -79,8 +105,9 @@ struct MacHomeTile: View {
                 .opacity(detail == nil ? 0 : 1)
         }
         .padding(MacHomeStyle.cardPadding)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .conduitGlassSurface(cornerRadius: MacHomeStyle.cardRadius)
+        .macHomeFrame("tile.\(slot)")
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(verbatim: label))
         .accessibilityValue(Text(verbatim: spokenValue ?? detail.map { "\(value), \($0)" } ?? value))
@@ -294,36 +321,41 @@ struct MacHomeDayBars: View {
 
     var body: some View {
         let peak = max(columns.map(\.day.count).max() ?? 0, 1)
-        // The column stacks caption, spacer and bar with a gap between each pair, so the tallest
-        // bar is the chart height minus the caption and two gaps: the column never overflows.
-        let plot = MacHomeStyle.chartHeight - MacHomeStyle.dayValueHeight - 2 * MacHomeStyle.dayValueGap
         VStack(spacing: 4) {
-            HStack(alignment: .bottom, spacing: MacHomeStyle.barGap * 3) {
-                ForEach(columns) { column in
-                    let day = column.day
-                    let barHeight: CGFloat = day.count == 0 ? 2 : max(4, plot * CGFloat(day.count) / CGFloat(peak))
-                    VStack(spacing: MacHomeStyle.dayValueGap) {
-                        Text(verbatim: day.isToday ? "\(day.count)" : " ")
-                            .font(.caption2.weight(.semibold)).monospacedDigit()
-                            .foregroundStyle(MacHomeStyle.secondaryText)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.6)
-                            .frame(height: MacHomeStyle.dayValueHeight)
-                        Spacer(minLength: 0)
-                        UnevenRoundedRectangle(
-                            topLeadingRadius: MacHomeStyle.topCornerRadius, bottomLeadingRadius: 0,
-                            bottomTrailingRadius: 0, topTrailingRadius: MacHomeStyle.topCornerRadius
-                        )
-                        .fill(day.isToday ? MacHomeStyle.emphasisMark : MacHomeStyle.mutedMark)
-                        .frame(maxWidth: MacHomeStyle.maxBarThickness)
-                        .frame(height: barHeight)
+            // The plot takes whatever height the card gives it (never less than `chartHeight`),
+            // so a card stretched to its row's height gets a taller chart, not empty space.
+            GeometryReader { proxy in
+                // Each column stacks caption, spacer and bar with a gap between each pair, so the
+                // tallest bar is the plot height minus the caption and two gaps: no overflow.
+                let plot = max(8, proxy.size.height - MacHomeStyle.dayValueHeight - 2 * MacHomeStyle.dayValueGap)
+                HStack(alignment: .bottom, spacing: MacHomeStyle.barGap * 3) {
+                    ForEach(columns) { column in
+                        let day = column.day
+                        let barHeight: CGFloat = day.count == 0 ? 2 : max(4, plot * CGFloat(day.count) / CGFloat(peak))
+                        VStack(spacing: MacHomeStyle.dayValueGap) {
+                            Text(verbatim: day.isToday ? "\(day.count)" : " ")
+                                .font(.caption2.weight(.semibold)).monospacedDigit()
+                                .foregroundStyle(MacHomeStyle.secondaryText)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.6)
+                                .frame(height: MacHomeStyle.dayValueHeight)
+                            Spacer(minLength: 0)
+                            UnevenRoundedRectangle(
+                                topLeadingRadius: MacHomeStyle.topCornerRadius, bottomLeadingRadius: 0,
+                                bottomTrailingRadius: 0, topTrailingRadius: MacHomeStyle.topCornerRadius
+                            )
+                            .fill(day.isToday ? MacHomeStyle.emphasisMark : MacHomeStyle.mutedMark)
+                            .frame(maxWidth: MacHomeStyle.maxBarThickness)
+                            .frame(height: barHeight)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .contentShape(Rectangle())
+                        .help(Text(verbatim: "\(column.wide): \(day.count)"))
                     }
-                    .frame(maxWidth: .infinity)
-                    .contentShape(Rectangle())
-                    .help(Text(verbatim: "\(column.wide): \(day.count)"))
                 }
+                .frame(width: proxy.size.width, height: proxy.size.height)
             }
-            .frame(height: MacHomeStyle.chartHeight)
+            .frame(minHeight: MacHomeStyle.chartHeight, maxHeight: .infinity)
             HStack(spacing: MacHomeStyle.barGap * 3) {
                 ForEach(columns) { column in
                     Text(verbatim: column.narrow)

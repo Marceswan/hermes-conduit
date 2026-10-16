@@ -231,7 +231,8 @@ Human pass at release time (agents never click or type into the running app, R18
 - [ ] On macOS 14 or 15 (if available): the picker shows the note that glass needs macOS 26 and the notch is drawn Solid black.
 
 ## Home (D24)
-- [ ] Home: the sidebar tab strip shows the five tabs. At the default 340 pt column D24 records all icons (names in tooltips and VoiceOver); widen the column past 366 pt and the four names show with Home an icon; the strip does not flicker while resizing the sidebar.
+- [ ] Home: the sidebar tab strip shows the five tabs with Home leftmost (Home, Sessions, Bots, Cron, Kanban). At the default 340 pt column D24 records all icons (names in tooltips and VoiceOver); widen the column past 366 pt and the four names show with Home, still leftmost, an icon; the strip does not flicker while resizing the sidebar. Ctrl-Cmd-1 is still Sessions and Ctrl-Cmd-5 is still Home (Home is last in Go).
+- [ ] Home layout: at a wide window the four tiles fill the row to the same right edge as Recent chats; Activity, Kanban and Cron are three equal-width, equal-height cards that start level and span the same width; narrow the window to the minimum: tiles go 2 x 2, the cards one column, nothing clips (light and dark).
 - [ ] Home, connected: header shows the dashboard label, the profile and "Connected"; New Chat, Quick Ask and Kanban work; New Chat is disabled exactly when the sidebar's is (Home is stricter: also disabled while disconnected).
 - [ ] Home: start a turn that needs approval in another session: it appears under Needs you with the command text; clicking it opens that session in Sessions; a running turn appears under Working with its tool name.
 - [ ] Home: recent chats list the eight newest; unread ones are bold with a dot; clicking opens the chat and returns the pane to Sessions; open with Return after Tab in the VoiceOver rotor.
