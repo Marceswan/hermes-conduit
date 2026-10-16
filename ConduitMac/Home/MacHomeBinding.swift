@@ -35,9 +35,11 @@ enum MacHomeKanbanError: Error { case noDashboard }
 /// Maps AppState, the activity feed and the Kanban loader into `MacHomeInput`.
 @MainActor
 enum MacHomeBinding {
-    /// Whether this Home session has asked for the cron list yet. A reference box
-    /// because `Sources` closures share it.
-    final class CronLoadState { var loaded = false }
+    /// Whether this Home session has loaded the cron list yet. Observable so that
+    /// flipping it (reset on a scope change, set once loaded) reaches `Sources.changes`
+    /// and rebuilds the snapshot without waiting for an unrelated publisher.
+    @MainActor
+    final class CronLoadState: ObservableObject { @Published var loaded = false }
 
     static func makeModel(appState: AppState) -> MacHomeModel {
         MacHomeModel(sources: sources(appState: appState, feed: AgentActivityFeed.shared, kanban: makeKanbanLoader(appState: appState)))
@@ -61,12 +63,14 @@ enum MacHomeBinding {
         appState: AppState,
         feed: AgentActivityFeed?,
         kanban: MacHomeKanbanLoader,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        cron injectedCron: CronLoadState? = nil
     ) -> MacHomeModel.Sources {
-        let cron = CronLoadState()
+        let cron = injectedCron ?? CronLoadState()
         var publishers: [AnyPublisher<Void, Never>] = [
             appState.objectWillChange.eraseToAnyPublisher(),
             kanban.objectWillChange.eraseToAnyPublisher(),
+            cron.objectWillChange.eraseToAnyPublisher(),
         ]
         if let feed { publishers.append(feed.objectWillChange.eraseToAnyPublisher()) }
         return MacHomeModel.Sources(
@@ -154,9 +158,11 @@ enum MacHomeBinding {
                 contextPercent: runtime.contextPercent, contextUsed: runtime.contextUsed, contextMax: runtime.contextMax
             ),
             subAgents: appState.activeAgents,
-            // The sidebar button only checks `macNewChatDisabled`, but `createNewSession`
-            // is a silent no-op without a live gateway; Home does not offer a dead button.
-            canStartChat: !appState.macNewChatDisabled && appState.isConnected && !appState.isConnecting
+            // Stricter than the sidebar button (`macNewChatDisabled` alone): `createNewSession`
+            // is a silent no-op without a live client, so Home does not offer a dead button.
+            // The live-client rule is the one `macNewChatDisabled` itself uses (hasLiveGateway).
+            canStartChat: !appState.macNewChatDisabled
+                && appState.isConnected && !appState.isConnecting && appState.client != nil
         )
     }
 

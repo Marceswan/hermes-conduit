@@ -113,7 +113,7 @@ final class MacHomeBindingTests: XCTestCase {
         XCTAssertTrue(input.live.isEmpty)
         XCTAssertNil(input.cron, "cron is nil until it has been loaded")
         XCTAssertEqual(input.kanban, .unavailable)
-        XCTAssertFalse(input.canStartChat, "no live gateway: New Chat is disabled, as in the sidebar")
+        XCTAssertFalse(input.canStartChat, "no live client: New Chat is off (stricter than the sidebar, whose button stays enabled but does nothing)")
         XCTAssertTrue(input.scope.hasSuffix("|false"))
     }
 
@@ -151,5 +151,53 @@ final class MacHomeBindingTests: XCTestCase {
     func testOpenPaneWritesTheTabKey() {
         MacHomeActions.live(appState: appState, defaults: suite.defaults).openPane(.kanban)
         XCTAssertEqual(suite.defaults.string(forKey: MacSidebarState.tabDefaultsKey), SidebarTab.kanban.rawValue)
+    }
+
+    // MARK: Cron load state reaches the snapshot
+
+    func testAScopeChangeClearsTheOldCronListWithoutAnyOtherChange() async {
+        let cron = MacHomeBinding.CronLoadState()
+        cron.loaded = true
+        let kanban = MacHomeKanbanLoader { _ in [] }
+        let sources = MacHomeBinding.sources(appState: appState, feed: nil, kanban: kanban, defaults: suite.defaults, cron: cron)
+        let model = MacHomeModel(sources: sources, calendar: MacHomeTestCalendar.utc, throttle: 0.02, tick: .seconds(3600))
+        XCTAssertNotNil(model.snapshot.cron, "precondition: the old scope's cron list is showing")
+        // Offline AppState: refresh fetches nothing, so only the .appeared reset can clear cron.
+        let task = Task { await model.run() }
+        let cleared = await macHomeEventually { model.snapshot.cron == nil }
+        XCTAssertTrue(cleared, "a new scope must not keep the previous dashboard's cron list")
+        task.cancel()
+        await task.value
+    }
+
+    func testCronLoadStatePublishesBothFlips() {
+        let cron = MacHomeBinding.CronLoadState()
+        var fired = 0
+        let sink = cron.objectWillChange.sink { fired += 1 }
+        defer { sink.cancel() }
+        cron.loaded = true
+        cron.loaded = false
+        XCTAssertEqual(fired, 2, "the reset on .appeared and the set once loaded must both reach Sources.changes")
+    }
+
+    func testCronAppearsWithoutWaitingForASlowKanbanFetch() async {
+        let cron = MacHomeBinding.CronLoadState()
+        let kanban = MacHomeKanbanLoader { _ in
+            // Never returns until cancelled: a hung Kanban request.
+            try await Task.sleep(for: .seconds(600))
+            return []
+        }
+        let sources = MacHomeBinding.sources(appState: appState, feed: nil, kanban: kanban, defaults: suite.defaults, cron: cron)
+        let model = MacHomeModel(sources: sources, calendar: MacHomeTestCalendar.utc, throttle: 0.02, tick: .seconds(3600))
+        XCTAssertNil(model.snapshot.cron)
+        let slow = Task { await kanban.load(preferredSlug: nil) }
+        await macHomeSettle(0.05)
+        // What refresh does once loadCronJobs returns, while the Kanban fetch is still in flight.
+        cron.loaded = true
+        let shown = await macHomeEventually { model.snapshot.cron != nil }
+        XCTAssertTrue(shown, "cron must publish on its own, not ride on the Kanban fetch")
+        XCTAssertEqual(model.snapshot.kanban.state, .notLoaded)
+        slow.cancel()
+        await slow.value
     }
 }
