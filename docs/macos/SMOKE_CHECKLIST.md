@@ -137,6 +137,7 @@ Human pass at release time (agents never click or type into the running app, R18
 - Logged-in items (key save end to end, sidebar toggle): user.
 - Keyboard checks (D10), user (hosted tests send synthetic events only; none of these has run against real hardware keys):
   - [ ] Ctrl-Cmd-1 to Ctrl-Cmd-4 switch Sessions / Bots / Cron / Kanban from the composer and from the sidebar search field.
+  - [ ] Ctrl-Cmd-5 shows Home from the composer, the sidebar search field and Bots/Cron/Kanban; Ctrl-Cmd-1 returns to Sessions with the draft intact (D24).
   - [ ] Cmd-[ and Cmd-] (and Opt-Cmd-Up / Down) open the previous / next session in the order shown, including with a search filter; greyed at the ends; Cmd-[ in the composer does not type or indent.
   - [ ] Cmd-F focuses "Search sessions" (also with the sidebar hidden and from the composer); with text selected in a message it opens that message's find bar instead; Edit > Find > Find... shows no Cmd-F.
   - [ ] Cmd-F then Cmd-L (or a click in the composer) quickly: the keyboard ends in the composer, not pulled back to the search field. Ctrl-Cmd-1..4, Cmd-1..9, Cmd-]/[, Cmd-W and Cmd-F do nothing while a sheet (model picker, Settings) is open.
@@ -222,6 +223,19 @@ Human pass at release time (agents never click or type into the running app, R18
 - [ ] Approval row in every style over a white window and over a dark one: the command, the secondary lines and the "Couldn't send" line read clearly, and the Allow (amber) and Deny (pink) buttons show as filled shapes with legible labels, in light and dark Mac appearance.
 - [ ] Reduce Transparency on (System Settings > Accessibility > Display), toggled while the panel is open: every style draws solid black with white text; off restores the chosen style.
 - [ ] On macOS 14 or 15 (if available): the picker shows the note that glass needs macOS 26 and the notch is drawn Solid black.
+
+## Home (D24)
+- [ ] Home: the sidebar tab strip shows the five tabs. At the default 340 pt column D24 records all icons (names in tooltips and VoiceOver); widen the column past 366 pt and the four names show with Home an icon; the strip does not flicker while resizing the sidebar.
+- [ ] Home, connected: header shows the dashboard label, the profile and "Connected"; New Chat, Quick Ask and Kanban work; New Chat is disabled exactly when the sidebar's is (Home is stricter: also disabled while disconnected).
+- [ ] Home: start a turn that needs approval in another session: it appears under Needs you with the command text; clicking it opens that session in Sessions; a running turn appears under Working with its tool name.
+- [ ] Home: recent chats list the eight newest; unread ones are bold with a dot; clicking opens the chat and returns the pane to Sessions; open with Return after Tab in the VoiceOver rotor.
+- [ ] Home: Sessions, Unread, Waiting on you, Working tiles match the sidebar (Unread chip count, Needs input and Working chips); the Model and Context cards follow the open chat.
+- [ ] Home: Kanban counts (total, blocked, per column) match the board the Kanban pane shows; switch dashboard and the old counts disappear at once; cron shows Active/Paused/Failing and a sensible Next run (record the real `next_run_at` format seen).
+- [ ] Home, disconnected (turn off the network): "Offline", the banner, no Needs you/Working, the saved recent list still opens chats; reconnect and the sections return without reopening Home.
+- [ ] Home in light and dark, Reduce Transparency on, and a 470 pt-wide window: no clipping, text readable, charts legible; VoiceOver reads each tile and chart as one element with its values.
+- [ ] Home does not run while another pane is shown (Activity Monitor: no periodic Kanban requests after switching to Sessions).
+- [ ] With a D21 session window key, Ctrl-Cmd-5 leaves the main window on its pane; a session window shows no Home tab.
+- [ ] The Home strings in the 13 shipped languages are model-generated: have native speakers review them before a localized release.
 
 ## Session windows (D21)
 - [ ] Right-click a tab > Open in New Window: a window opens with that chat; the main window shows the neighbour tab.

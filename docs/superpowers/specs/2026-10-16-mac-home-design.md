@@ -1,6 +1,6 @@
 # Mac Home view: design
 
-Date: 2026-10-16. Status: draft for review. Decision: D24. Target: the macOS app only (`ConduitMac`, branch `macos`). iOS is unchanged.
+Date: 2026-10-16. Status: built (D24), 2026-10-16. Decision: D24. Target: the macOS app only (`ConduitMac`, branch `macos`). iOS is unchanged.
 
 User request, verbatim: "A "Home" view, with a dashboard, metrics, recent sessions, etc."
 
