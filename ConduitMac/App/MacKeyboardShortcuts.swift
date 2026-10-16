@@ -352,12 +352,9 @@ enum MacPaletteActions {
 /// so a D21 session window forwards to it instead of acting on itself.
 @MainActor
 enum MacAppActions {
-    /// The D21 session window scene id (`WindowGroup(id: "conduit-session")`).
-    /// Once the session-windows branch merges, use `MacSessionWindows.sceneID`.
-    static let sessionWindowPrefix = "conduit-session"
-
+    /// One definition of "session window" (D21): the scene id prefix lives in `MacSessionWindows`.
     static func isSessionWindow(_ window: NSWindow?) -> Bool {
-        window?.identifier?.rawValue.hasPrefix(sessionWindowPrefix) ?? false
+        MacSessionWindows.isSessionWindow(window)
     }
 
     /// The window the command acts in: the key window when it is the chat

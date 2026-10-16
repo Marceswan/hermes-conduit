@@ -148,6 +148,7 @@ Human pass at release time (agents never click or type into the running app, R18
   - [ ] Palette focus: open it from the session list or the search field, press Esc: the list or field has focus again (not only the composer). Light and dark: subtitles and the selected row's subtitle are legible; an unread row shows its dot on the selected row too.
   - [ ] Settings (D22): Cmd-, and Conduit > Settings... open Settings from the composer, the sidebar and Bots / Cron / Kanban; with Settings or the model picker already open, Cmd-, does nothing; on the login screen it does nothing. With a session window key (D21) it brings the main window forward and opens Settings there.
   - [ ] Switch Dashboard (D22): Cmd-Shift-D (Go > Switch Dashboard...) opens the Saved Dashboards sheet over the chat and over the login screen; Switch to another saved dashboard works and closes the sheet when it ends at sign-in; Add Dashboard closes the sheet and shows login; Esc and the X close it; with another sheet up it does nothing; with the palette open the palette closes first.
+  - [ ] With the Switch Dashboard sheet open, open a `conduit://settings/...` link: note whether Settings stacks over the sheet.
   - [ ] Palette with a sheet open (Settings, model picker): Cmd-K does nothing. Japanese IME in the search field: Return confirms the composition and does not run the row.
   - [ ] Tab from the composer goes to the sidebar list, then the search field, then back to the composer (Shift-Tab reverses); the list shows an accent ring in light and dark; Up / Down / Home / End move it, Return opens it.
   - [ ] System Settings > Keyboard > Keyboard navigation off and on: Tab still reaches list, search field and composer; buttons join the loop only when it is on.
@@ -219,3 +220,18 @@ Human pass at release time (agents never click or type into the running app, R18
 - [ ] Approval row in every style over a white window and over a dark one: the command, the secondary lines and the "Couldn't send" line read clearly, and the Allow (amber) and Deny (pink) buttons show as filled shapes with legible labels, in light and dark Mac appearance.
 - [ ] Reduce Transparency on (System Settings > Accessibility > Display), toggled while the panel is open: every style draws solid black with white text; off restores the chosen style.
 - [ ] On macOS 14 or 15 (if available): the picker shows the note that glass needs macOS 26 and the notch is drawn Solid black.
+
+## Session windows (D21)
+- [ ] Right-click a tab > Open in New Window: a window opens with that chat; the main window shows the neighbour tab.
+- [ ] Option-Command-N with a chat active does the same; with a sheet open it does nothing.
+- [ ] Send in the window while main streams another chat: both stream at once; neither shows the other's text.
+- [ ] Stop in the window stops only that turn. Cmd-. with the window key stops only the window's turn.
+- [ ] An approval in the window: Allow works; the main window is unaffected.
+- [ ] Turn Wi-Fi off and on: the window says "Not connected", then catches up; no Stop button left over.
+- [ ] Switch profile in main: the window says "Belongs to <profile>" and its composer is disabled; switch back: it resumes.
+- [ ] Delete the chat from the sidebar: the window says "This conversation was deleted." and Close works.
+- [ ] Open 4 windows; a fifth: beep, nothing opens; the tab menu item is disabled.
+- [ ] Cmd-W in the window closes the window, not a main tab. Cmd-L focuses the window's composer and leaves main on its pane.
+- [ ] Quit with a window open and relaunch: no session window comes back.
+- [ ] Cmd-, and Cmd-Shift-D with a session window key: the main window comes forward and opens Settings / the Saved Dashboards sheet there (D22); the session window never shows the sheet.
+- [ ] Open a `conduit://session/...` or other in-app link from a chat inside the window: it follows the same link policy as main (an app link opens in main, other schemes go to the system or are dropped).

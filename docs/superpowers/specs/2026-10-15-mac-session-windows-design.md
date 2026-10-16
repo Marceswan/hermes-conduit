@@ -1,6 +1,6 @@
 # Mac session windows: design
 
-Date: 2026-10-15. Status: draft for review (nothing built; no product code written). Target: the macOS app only (`ConduitMac`). iOS is unchanged.
+Date: 2026-10-15. Status: Built (D21), 2026-10-16. Target: the macOS app only (`ConduitMac`). iOS is unchanged.
 
 ## Goal
 
@@ -117,13 +117,13 @@ New folder `ConduitMac/Windows/` (all Mac-only, no gates):
 - Live (manual, SMOKE_CHECKLIST): two sessions streaming side by side against a real gateway; main switches sessions mid-stream; reconnect; profile switch.
 - Full Mac suite twice; iOS simulator build; `git diff -- Conduit Shared` removes zero lines outside gates (expected: no diff at all).
 
-## Open questions (max 5)
+## Open questions (answered, v1)
 
-1. S1: does the gateway deliver events for two resumed sessions on one WebSocket? Needs a read of upstream `tui_gateway/server.py` and a live two-session test. Gates the shared-client design.
-2. Is the v1 fidelity cut acceptable (no slash, mentions, voice, attachments beyond paste, no send while busy)? Attachments via `attachFile`/`attachImage` could be added for about 1.5 days.
-3. Same session in main and a window: allow (v1 as written) or focus the window instead of opening it in main?
-4. Should closing a window re-add its tab to the strip, and should windows be restored at relaunch?
-5. Is a sidebar-row "Open in New Window" worth a gated edit to the shared `SessionActionMenuItems` (one ledger row)?
+1. S1: YES. The gateway keeps no per-socket "current session"; one shared `HermesClient` serves main and every window (evidence in D21, docs/macos/DECISIONS.md). The own-client fallback was not built.
+2. The v1 fidelity cut stands (no slash commands, mentions, voice, attachments, or steer/queue while busy; a pasted image shows a notice). Attachments remain a follow-up.
+3. Same session in main and a window: allowed. Pop-out detaches the tab, but opening the chat in main again is not blocked; opening the same window token twice focuses the existing window. A card answered in one place gives the other an error (first answer wins).
+4. Closing a window does not re-add its tab. Windows are not restored at relaunch (the registry closes any session window it did not request in this run).
+5. No sidebar-row "Open in New Window" in v1: it needs a gated edit to the shared `SessionActionMenuItems`. Entry points are the tab context menu and File > Open Session in New Window.
 
 ## Effort
 

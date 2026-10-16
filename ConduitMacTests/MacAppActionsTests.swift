@@ -73,6 +73,15 @@ final class MacAppActionsTests: XCTestCase {
         XCTAssertTrue(MacAppActions.isSessionWindow(session()))
     }
 
+    func testBothSessionWindowHelpersAgreeOnASwiftUIIdentifier() {
+        let side = window("\(MacSessionWindows.sceneID)-AppWindow-1")
+        XCTAssertTrue(MacSessionWindows.isSessionWindow(side))
+        XCTAssertTrue(MacAppActions.isSessionWindow(side))
+        let main = primary()
+        XCTAssertFalse(MacSessionWindows.isSessionWindow(main))
+        XCTAssertFalse(MacAppActions.isSessionWindow(main))
+    }
+
     // MARK: Settings
 
     func testSettingsPostsOnceFromThePrimaryWindow() {
