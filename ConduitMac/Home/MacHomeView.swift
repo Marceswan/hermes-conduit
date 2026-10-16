@@ -1,0 +1,239 @@
+import SwiftUI
+
+/// The Home pane (D24). Read-only: rows open sessions through `MacHomeActions`,
+/// buttons dispatch existing actions. Mounted by `MacDetailRouter` only while it
+/// is the shown route, so the model's subscriptions and polls exist only then.
+struct MacHomeView: View {
+    @StateObject private var model: MacHomeModel
+    private let actions: MacHomeActions
+    /// The calendar the model buckets days with; weekday names use its time zone.
+    private let calendar: Calendar
+
+    init(appState: AppState) {
+        calendar = .current
+        _model = StateObject(wrappedValue: MacHomeBinding.makeModel(appState: appState))
+        actions = .live(appState: appState)
+    }
+
+    init(model: MacHomeModel, actions: MacHomeActions, calendar: Calendar = .current) {
+        _model = StateObject(wrappedValue: model)
+        self.actions = actions
+        self.calendar = calendar
+    }
+
+    var body: some View {
+        let snapshot = model.snapshot
+        ScrollView {
+            ConduitGlassGroup(spacing: MacHomeStyle.sectionGap) {
+                VStack(alignment: .leading, spacing: MacHomeStyle.sectionGap) {
+                    header(snapshot)
+                    if snapshot.connection.state == .offline { offlineNotice }
+                    quickActions(snapshot)
+                    liveSections(snapshot)
+                    tiles(snapshot)
+                    modelAndContext(snapshot)
+                    recent(snapshot)
+                    overview(snapshot)
+                }
+                .padding(.bottom, 20)
+            }
+        }
+        // Restarts when the dashboard, profile or connection changes.
+        .task(id: snapshot.scope) { await model.run() }
+    }
+
+    // MARK: Header and actions
+
+    static func subtitle(_ connection: MacHomeConnection) -> String {
+        [connection.dashboardLabel, connection.profileName]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: " \u{00B7} ")
+    }
+
+    private func header(_ snapshot: MacHomeSnapshot) -> some View {
+        let subtitle = Self.subtitle(snapshot.connection)
+        return MacPaneHeader(title: AppLocalization.string("Home"), subtitle: subtitle.isEmpty ? nil : subtitle) {
+            MacHomeConnectionPill(state: snapshot.connection.state)
+        }
+    }
+
+    private var offlineNotice: some View {
+        Label(AppLocalization.string("Not connected. Showing the last saved list."), systemImage: "wifi.slash")
+            .font(.caption)
+            .foregroundStyle(MacHomeStyle.secondaryText)
+    }
+
+    private func quickActions(_ snapshot: MacHomeSnapshot) -> some View {
+        HStack(spacing: MacSidebarMetrics.rowGap) {
+            actionButton(AppLocalization.string("New Chat"), "square.and.pencil", enabled: snapshot.canStartChat, actions.newChat)
+            actionButton(AppLocalization.string("Quick Ask"), "bolt", enabled: true, actions.quickAsk)
+            actionButton(AppLocalization.string("Kanban"), SidebarTab.kanban.icon, enabled: true) { actions.openPane(.kanban) }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func actionButton(_ title: String, _ symbol: String, enabled: Bool, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label { Text(verbatim: title) } icon: { Image(systemName: symbol) }
+                .font(.subheadline.weight(.medium))
+                .padding(.horizontal, 12)
+                .frame(height: MacControlHeight.compact)
+        }
+        .conduitGlassControl(cornerRadius: MacSidebarMetrics.controlRadius)
+        .disabled(!enabled)
+        .accessibilityLabel(Text(verbatim: title))
+    }
+
+    // MARK: Live
+
+    @ViewBuilder
+    private func liveSections(_ snapshot: MacHomeSnapshot) -> some View {
+        if !snapshot.needsYou.isEmpty {
+            MacHomeCard(title: AppLocalization.string("Needs you"), symbol: "exclamationmark.bubble") {
+                ForEach(snapshot.needsYou) { MacHomeLiveRowView(row: $0, open: actions.openSession) }
+            }
+        }
+        if !snapshot.working.isEmpty {
+            MacHomeCard(title: AppLocalization.string("Working"), symbol: "arrow.triangle.2.circlepath") {
+                ForEach(snapshot.working) { MacHomeLiveRowView(row: $0, open: actions.openSession) }
+            }
+        }
+        if snapshot.needsYou.isEmpty, snapshot.working.isEmpty, snapshot.feed == .live,
+           snapshot.connection.state == .connected {
+            Label(AppLocalization.string("Nothing running"), systemImage: "moon.zzz")
+                .font(.caption)
+                .foregroundStyle(MacHomeStyle.secondaryText)
+        }
+        if snapshot.feed == .eventsOnly {
+            Text(verbatim: AppLocalization.string("Only chats on this connection show here."))
+                .font(.caption)
+                .foregroundStyle(MacHomeStyle.secondaryText)
+        }
+    }
+
+    // MARK: Tiles, model, context
+
+    private func tiles(_ snapshot: MacHomeSnapshot) -> some View {
+        let t = snapshot.tiles
+        return LazyVGrid(columns: [GridItem(.adaptive(minimum: MacHomeStyle.tileMinWidth), spacing: MacHomeStyle.sectionGap)],
+                         spacing: MacHomeStyle.sectionGap) {
+            MacHomeTile(
+                value: "\(t.sessions)", label: AppLocalization.string("Sessions"),
+                detail: String(format: AppLocalization.string("Today %lld"), t.activeToday))
+            MacHomeTile(value: "\(t.unread)", label: AppLocalization.string("Unread"))
+            MacHomeTile(
+                value: "\(t.needsYou)", label: AppLocalization.string("Waiting on you"),
+                detail: t.needsYou == 0 ? nil : String(format: AppLocalization.string("Approvals %lld, questions %lld"), t.approvals, t.questions))
+            MacHomeTile(
+                value: "\(t.working)", label: AppLocalization.string("Working"),
+                detail: t.subAgents == 0 ? nil : String(format: AppLocalization.string("Sub-agents %lld"), t.subAgents))
+        }
+    }
+
+    @ViewBuilder
+    private func modelAndContext(_ snapshot: MacHomeSnapshot) -> some View {
+        if snapshot.model != nil || snapshot.context != nil {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: MacHomeStyle.wideCardMinWidth), spacing: MacHomeStyle.sectionGap)],
+                      alignment: .leading, spacing: MacHomeStyle.sectionGap) {
+                if let line = snapshot.model {
+                    MacHomeCard(title: AppLocalization.string("Model"), symbol: "cpu") {
+                        Text(verbatim: line.model).font(.subheadline.weight(.semibold)).lineLimit(1)
+                        Text(verbatim: [line.provider, line.effort.isEmpty ? "" : String(format: AppLocalization.string("Reasoning: %@"), line.effort)]
+                            .filter { !$0.isEmpty }.joined(separator: " \u{00B7} "))
+                            .font(.caption).foregroundStyle(MacHomeStyle.secondaryText).lineLimit(1)
+                        Text(verbatim: AppLocalization.string("Open chat"))
+                            .font(.caption2).foregroundStyle(MacHomeStyle.secondaryText)
+                    }
+                }
+                if let context = snapshot.context {
+                    MacHomeCard(title: AppLocalization.string("Context"), symbol: "gauge.with.dots.needle.50percent") {
+                        MacHomeContextMeter(context: context)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Recent
+
+    private func recent(_ snapshot: MacHomeSnapshot) -> some View {
+        MacHomeCard(title: AppLocalization.string("Recent chats"), symbol: "bubble.left.and.bubble.right") {
+            if snapshot.recent.isEmpty {
+                Text(verbatim: AppLocalization.string("No chats yet. Start one with New Chat or Quick Ask."))
+                    .font(.subheadline).foregroundStyle(MacHomeStyle.secondaryText)
+            } else {
+                ForEach(snapshot.recent) { MacHomeRecentRowView(row: $0, open: actions.openSession) }
+            }
+        }
+    }
+
+    // MARK: Activity, Kanban, Cron
+
+    private func overview(_ snapshot: MacHomeSnapshot) -> some View {
+        let offline = snapshot.connection.state == .offline
+        return LazyVGrid(columns: [GridItem(.adaptive(minimum: MacHomeStyle.wideCardMinWidth), spacing: MacHomeStyle.sectionGap)],
+                  alignment: .leading, spacing: MacHomeStyle.sectionGap) {
+            MacHomeCard(title: AppLocalization.string("Activity, 7 days"), symbol: "chart.bar") {
+                MacHomeDayBars(days: snapshot.days, calendar: calendar)
+            }
+            kanbanCard(snapshot.kanban, offline: offline)
+            cronCard(snapshot.cron, offline: offline)
+        }
+    }
+
+    private func kanbanCard(_ kanban: MacHomeKanbanSummary, offline: Bool) -> some View {
+        MacHomeCard(title: AppLocalization.string("Kanban"), symbol: SidebarTab.kanban.icon) {
+            switch kanban.state {
+            case .notLoaded:
+                note(offline ? AppLocalization.string("Unavailable offline") : AppLocalization.string("Loading"))
+            case .unavailable: note(AppLocalization.string("Unavailable"))
+            case .empty: note(AppLocalization.string("No tasks"))
+            case .loaded: MacHomeKanbanBars(bars: kanban.bars)
+            }
+        }
+    }
+
+    private func cronCard(_ cron: MacHomeCronSummary?, offline: Bool) -> some View {
+        MacHomeCard(title: AppLocalization.string("Cron"), symbol: SidebarTab.cron.icon) {
+            if let cron {
+                if cron.active == 0, cron.paused == 0 {
+                    note(AppLocalization.string("No scheduled jobs"))
+                } else {
+                    cronLine(AppLocalization.string("Active"), cron.active)
+                    cronLine(AppLocalization.string("Paused"), cron.paused)
+                    cronLine(AppLocalization.string("Failing"), cron.failing)
+                    if let next = cron.next {
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack {
+                                Text(verbatim: AppLocalization.string("Next run")).font(.caption)
+                                Spacer(minLength: 4)
+                                Text(next.date, style: .relative).font(.caption.weight(.semibold)).monospacedDigit()
+                            }
+                            Text(verbatim: MacHomeText.untitledJob(next.name)).font(.caption).lineLimit(1)
+                                .foregroundStyle(MacHomeStyle.secondaryText)
+                        }
+                    } else if cron.active > 0 {
+                        // Active jobs exist but none has a future run time (overdue or unparseable).
+                        note(AppLocalization.string("No upcoming run"))
+                    }
+                }
+            } else {
+                note(offline ? AppLocalization.string("Unavailable offline") : AppLocalization.string("Loading"))
+            }
+        }
+    }
+
+    private func cronLine(_ label: String, _ value: Int) -> some View {
+        HStack {
+            Text(verbatim: label).font(.caption)
+            Spacer(minLength: 4)
+            Text(verbatim: "\(value)").font(.caption.weight(.semibold)).monospacedDigit()
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func note(_ text: String) -> some View {
+        Text(verbatim: text).font(.subheadline).foregroundStyle(MacHomeStyle.secondaryText)
+    }
+}

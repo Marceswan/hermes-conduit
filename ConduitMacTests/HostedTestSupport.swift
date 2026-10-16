@@ -60,6 +60,8 @@ enum AccessibilityProbe {
     struct Node {
         var role: String
         var label: String?
+        /// The element's string value (static text carries its text here, not in the label).
+        var value: String?
         /// Relative to the content view's top-left.
         var frame: CGRect
     }
@@ -75,6 +77,7 @@ enum AccessibilityProbe {
                 let r = frame.rectValue
                 // Screen space is bottom-left; report top-left relative to the host.
                 nodes.append(Node(role: role, label: element.axValue("accessibilityLabel"),
+                                  value: AccessibilityProbe.stringValue(of: element),
                                   frame: CGRect(x: r.minX - content.minX, y: content.maxY - r.maxY,
                                                 width: r.width, height: r.height)))
             }
@@ -86,6 +89,20 @@ enum AccessibilityProbe {
     }
 
     static func labels(in window: NSWindow) -> [String] { nodes(in: window).compactMap(\.label) }
+
+    /// Every label and string value: what a screen reader can read, including static text.
+    static func texts(in window: NSWindow) -> [String] {
+        nodes(in: window).flatMap { [$0.label, $0.value].compactMap { $0 } }
+    }
+
+    private static func stringValue(of element: NSObject) -> String? {
+        // SwiftUI exposes `.accessibilityValue` as the value for controls and static text,
+        // and as the value description for other elements.
+        let raw: Any? = element.axValue("accessibilityValue")
+        if let text = raw as? String { return text }
+        let description: String? = element.axValue("accessibilityValueDescription")
+        return description
+    }
 
     static func frame(of label: String, in window: NSWindow) -> CGRect? {
         nodes(in: window).first { $0.label == label }?.frame
