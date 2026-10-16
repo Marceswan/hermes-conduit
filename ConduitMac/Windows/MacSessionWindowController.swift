@@ -52,6 +52,8 @@ final class MacSessionWindowController: ObservableObject {
     private var lastClientID: ObjectIdentifier?
     /// Set by a client change; the next resume then asks the live list (stale idle).
     private var probeOnNextResume = false
+    /// Bumped by every applied event and every send; the live probe drops its answer when it moved.
+    private var revision = 0
     private var bindings: Set<AnyCancellable> = []
     private static let timestampFormatter = ISO8601DateFormatter()
 
@@ -120,6 +122,7 @@ final class MacSessionWindowController: ObservableObject {
     }
 
     private func apply(_ event: StreamEvent) {
+        revision += 1
         switch event {
         case .messageStart, .messageDelta, .toolStart: settleTask?.cancel()
         default: break
@@ -157,12 +160,10 @@ final class MacSessionWindowController: ObservableObject {
                 bufferOverflowed = false
                 resumeInFlight = false
                 lastError = nil
-                replay.forEach(apply)
+                replay.filter { transcript.isRelevant($0) }.forEach(apply)
                 phase = phaseForScope() ?? .ready
-                if probeBusy {
-                    probeOnNextResume = false
-                    await probeLiveStatus()
-                }
+                // The flag stays set until the gateway answered (or the answer no longer matters).
+                if probeBusy, await probeLiveStatus() { probeOnNextResume = false }
                 if overflowed { scheduleSettle() }
             } catch {
                 guard !Task.isCancelled else { return }
@@ -178,14 +179,29 @@ final class MacSessionWindowController: ObservableObject {
 
     /// After a reconnect the resume can report a turn that already ended; the
     /// gateway's live list is the authority (AppState.swift:827, stale idle).
-    private func probeLiveStatus() async {
-        guard transcript.turn == .running, let rows = try? await environment.activeSessions() else { return }
+    /// Returns true when the probe is finished (answered, or no longer needed because
+    /// the turn is not running or live events overtook it); false to retry on the next resume.
+    private func probeLiveStatus() async -> Bool {
+        guard transcript.turn == .running else { return true }
+        guard !Task.isCancelled, scopeMatches else { return false }
+        let startedAt = revision
+        guard let rows = try? await environment.activeSessions() else { return false }
+        guard !Task.isCancelled, scopeMatches else { return false }
+        // Live events or a new send moved the turn while the RPC was out: the answer is stale.
+        guard revision == startedAt, transcript.turn == .running else { return true }
         let stillRunning = rows.contains { row in
             row.isRunning && (transcript.owns(row.runtimeSessionId) || transcript.owns(row.storedSessionId))
         }
-        guard !stillRunning else { return }
+        guard !stillRunning else { return true }
         // Idle, or needsInput when a card is still pending: the reducer decides.
         transcript.apply(.sessionBusy(sessionId: transcript.runtimeID ?? token.sessionID, busy: false), timestamp: timestamp())
+        return true
+    }
+
+    /// Re-reads a window whose first read failed (the Retry button). Respects the scope.
+    func retry() {
+        guard case .failed = phase else { return }
+        refreshPhaseForScope()
     }
 
     // MARK: Changes from AppState
@@ -259,6 +275,8 @@ final class MacSessionWindowController: ObservableObject {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         draft = ""
         lastError = nil
+        settleTask?.cancel()
+        revision += 1
         transcript.userSent(text, timestamp: timestamp())
         let id = transcript.runtimeID ?? token.sessionID
         sendTask = Task { [weak self] in
@@ -280,6 +298,14 @@ final class MacSessionWindowController: ObservableObject {
         Task { try? await cancel(id) }
     }
 
+    /// A card left the pending state locally. When it was the last one, the turn leaves needsInput:
+    /// running when the answer was accepted (the agent continues, like upstream's setRunning(true)),
+    /// idle when the request had already expired.
+    private func cardResolved(accepted: Bool) {
+        guard transcript.turn == .needsInput, !transcript.hasPendingCard else { return }
+        transcript.setTurn(accepted ? .running : .idle)
+    }
+
     func approve(messageID: String, choice: String) {
         guard scopeMatches, let approval = transcript.messages.first(where: { $0.id == messageID })?.approval,
               approval.status == .pending else { return }
@@ -291,6 +317,7 @@ final class MacSessionWindowController: ObservableObject {
                 transcript.updateMessage(id: messageID) {
                     $0.approval?.status = accepted ? (choice == "deny" ? .rejected : .approved) : .expired
                 }
+                cardResolved(accepted: accepted)
             } catch {
                 transcript.updateMessage(id: messageID) {
                     $0.approval?.status = .pending
@@ -303,19 +330,30 @@ final class MacSessionWindowController: ObservableObject {
 
     func answerClarify(messageID: String, questionID: String, answer: String) {
         guard scopeMatches, let clarify = transcript.messages.first(where: { $0.id == messageID })?.clarify,
-              !clarify.isExpired else { return }
+              !clarify.isExpired,
+              clarify.questions.first(where: { $0.id == questionID })?.status == .pending else { return }
+        func setQuestion(_ change: @escaping (inout ClarifyQuestion) -> Void) {
+            transcript.updateMessage(id: messageID) { row in
+                guard let index = row.clarify?.questions.firstIndex(where: { $0.id == questionID }) else { return }
+                change(&row.clarify!.questions[index])
+            }
+        }
+        setQuestion { $0.status = .submitting }
+        transcript.updateMessage(id: messageID) { $0.clarify?.error = nil }
         Task { [weak self] in
             guard let self else { return }
             do {
                 let outcome = try await environment.respondToClarification(clarify.requestId, answer, questionID)
-                transcript.updateMessage(id: messageID) { row in
-                    if case .expired = outcome { row.clarify?.isExpired = true; return }
-                    if let index = row.clarify?.questions.firstIndex(where: { $0.id == questionID }) {
-                        row.clarify?.questions[index].status = .answered
-                        row.clarify?.questions[index].answer = answer
-                    }
+                if case .expired = outcome {
+                    setQuestion { $0.status = .pending }
+                    transcript.updateMessage(id: messageID) { $0.clarify?.isExpired = true }
+                    cardResolved(accepted: false)
+                } else {
+                    setQuestion { $0.status = .answered; $0.answer = answer }
+                    cardResolved(accepted: true)
                 }
             } catch {
+                setQuestion { $0.status = .pending }
                 transcript.updateMessage(id: messageID) {
                     $0.clarify?.error = MacUntrustedText.sanitize(UserFacingError.message(for: error), maxGraphemes: 300)
                 }
@@ -324,17 +362,22 @@ final class MacSessionWindowController: ObservableObject {
     }
 
     func answerInputPrompt(messageID: String, value: String?) {
+        // Same as upstream `isAnswerable`: a failed answer can be retried.
         guard scopeMatches, let prompt = transcript.messages.first(where: { $0.id == messageID })?.inputPrompt,
-              prompt.status == .pending else { return }
-        transcript.updateMessage(id: messageID) { $0.inputPrompt?.status = .submitting }
+              prompt.isAnswerable else { return }
+        transcript.updateMessage(id: messageID) { $0.inputPrompt?.status = .submitting; $0.inputPrompt?.error = nil }
         Task { [weak self] in
             guard let self else { return }
             do {
                 // Skip sends what upstream's InputPromptCard sends for skip (read ChatView.swift:3026, AppState.swift:24450).
                 try await environment.respondToInputPrompt(prompt.requestId, value ?? "")
                 transcript.updateMessage(id: messageID) { $0.inputPrompt?.status = value == nil ? .skipped : .submitted }
+                cardResolved(accepted: true)
             } catch {
-                transcript.updateMessage(id: messageID) { $0.inputPrompt?.status = .error }
+                transcript.updateMessage(id: messageID) {
+                    $0.inputPrompt?.status = .error
+                    $0.inputPrompt?.error = AppLocalization.string("Hermes did not receive that answer.")
+                }
             }
         }
     }

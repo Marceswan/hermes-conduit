@@ -15,6 +15,10 @@ final class MacSessionWindowControllerTests: XCTestCase {
     private var liveCalls = 0
     private var failSend = false
     private var failResume = false
+    private var liveFailures = 0
+    private var liveGate: CheckedContinuation<Void, Never>?
+    private var holdLive = false
+    private var failInputAnswers = 0
     private var approvals: [(String, String?, String)] = []
     private var inputAnswers: [(String, String)] = []
 
@@ -24,6 +28,7 @@ final class MacSessionWindowControllerTests: XCTestCase {
                                            snapshot: .macTestSnapshot(running: false))
         resumes = []; sends = []; live = []; liveCalls = 0; holdResume = false; failSend = false
         failResume = false; approvals = []; inputAnswers = []
+        liveFailures = 0; liveGate = nil; holdLive = false; failInputAnswers = 0
     }
 
     private func makeController(sessionID: String = "row-1") -> MacSessionWindowController {
@@ -40,11 +45,19 @@ final class MacSessionWindowControllerTests: XCTestCase {
             if failSend { throw HermesError.notConnected }
             sends.append((id, text)); return .accepted
         }
-        env.activeSessions = { [unowned self] in liveCalls += 1; return live }
+        env.activeSessions = { [unowned self] in
+            liveCalls += 1
+            if liveFailures > 0 { liveFailures -= 1; throw HermesError.notConnected }
+            if holdLive { await withCheckedContinuation { liveGate = $0 } }
+            return live
+        }
         env.respondToApproval = { [unowned self] session, request, choice in
             approvals.append((session, request, choice)); return true
         }
-        env.respondToInputPrompt = { [unowned self] request, value in inputAnswers.append((request, value)) }
+        env.respondToInputPrompt = { [unowned self] request, value in
+            if failInputAnswers > 0 { failInputAnswers -= 1; throw HermesError.notConnected }
+            inputAnswers.append((request, value))
+        }
         env.catalogRow = { _ in nil }
         let token = MacSessionWindowToken(dashboardID: nil, profile: "default", sessionID: sessionID)
         return MacSessionWindowController(token: token, environment: env, hub: hub, settleDelay: .milliseconds(10))
@@ -267,17 +280,147 @@ final class MacSessionWindowControllerTests: XCTestCase {
         XCTAssertEqual(c.transcript.messages.last?.inputPrompt?.status, .skipped)
     }
 
+    private func pendingApprovalResume(running: Bool) -> SessionResumeResult {
+        SessionResumeResult(sessionId: "rt-1", storedSessionId: "st-1", messages: [], snapshot: SessionRuntimeSnapshot(object: [
+            "running": .bool(running),
+            "pending_approval": .object(["request_id": .string("r9"), "command": .string("make"), "description": .string("Build")])
+        ]))
+    }
+
     func testLiveProbeKeepsNeedsInputWhenACardIsPending() async {
         let c = makeController()
         c.start(); await settle()
-        hub.publish(.approval(sessionId: "rt-1", activity: .macTest(requestId: "r1")))
         hub.publish(.sessionBusy(sessionId: "rt-1", busy: true))
-        resumeResult = SessionResumeResult(sessionId: "rt-1", storedSessionId: "st-1", messages: [],
-                                           snapshot: .macTestSnapshot(running: true))
+        resumeResult = pendingApprovalResume(running: true)
         live = []
         clientID = ObjectIdentifier(NSObject())
         c.clientChanged(); await settle()
         XCTAssertEqual(liveCalls, 1)
-        XCTAssertNotEqual(c.transcript.turn, .running)
+        XCTAssertEqual(c.transcript.messages.last?.approval?.requestId, "r9")
+        XCTAssertEqual(c.transcript.turn, .needsInput)
+    }
+
+    func testFailedProbeIsRetriedOnTheNextResume() async {
+        let c = makeController()
+        c.start(); await settle()
+        hub.publish(.sessionBusy(sessionId: "rt-1", busy: true))
+        resumeResult = SessionResumeResult(sessionId: "rt-1", storedSessionId: "st-1", messages: [],
+                                           snapshot: .macTestSnapshot(running: true))
+        live = []
+        liveFailures = 1
+        clientID = ObjectIdentifier(NSObject())
+        c.clientChanged(); await settle()
+        XCTAssertEqual(liveCalls, 1)
+        XCTAssertEqual(c.transcript.turn, .running, "the probe could not answer, so the stale turn stays")
+        hub.publish(.messageStart(sessionId: "rt-1"))   // activity that ends in a settle resume
+        hub.publish(.messageComplete(sessionId: "rt-1", messageId: "m1", content: "x", reasoning: nil))
+        await c.awaitInFlightWork(); await settle()
+        XCTAssertEqual(liveCalls, 2, "the next resume probes again")
+        XCTAssertEqual(c.transcript.turn, .idle)
+    }
+
+    func testProbeAnswerIsDroppedWhenTheTurnMovedMeanwhile() async {
+        let c = makeController()
+        c.start(); await settle()
+        hub.publish(.sessionBusy(sessionId: "rt-1", busy: true))
+        resumeResult = SessionResumeResult(sessionId: "rt-1", storedSessionId: "st-1", messages: [],
+                                           snapshot: .macTestSnapshot(running: true))
+        live = []
+        holdLive = true
+        clientID = ObjectIdentifier(NSObject())
+        c.clientChanged(); await settle()
+        XCTAssertEqual(liveCalls, 1)
+        // While the probe is out, the turn ends and a new one is sent.
+        hub.publish(.messageInterrupted(sessionId: "rt-1"))
+        c.draft = "Next"
+        c.send(); await settle()
+        XCTAssertEqual(c.transcript.turn, .running)
+        liveGate?.resume()
+        await settle()
+        XCTAssertEqual(c.transcript.turn, .running, "a pre-send live list must not idle the new turn")
+    }
+
+    func testRejectedInputPromptCanBeRetried() async {
+        let c = makeController()
+        c.start(); await settle()
+        hub.publish(.inputPrompt(sessionId: "rt-1", activity: InputPromptActivity(requestId: "srq-1", sessionId: "rt-1", kind: .sudo)))
+        failInputAnswers = 1
+        c.answerInputPrompt(messageID: "input-srq-1", value: "pw")
+        await settle()
+        XCTAssertEqual(c.transcript.messages.last?.inputPrompt?.status, .error)
+        XCTAssertNotNil(c.transcript.messages.last?.inputPrompt?.error)
+        XCTAssertEqual(c.transcript.turn, .needsInput)
+        c.answerInputPrompt(messageID: "input-srq-1", value: "pw")
+        await settle()
+        XCTAssertEqual(c.transcript.messages.last?.inputPrompt?.status, .submitted)
+        XCTAssertNil(c.transcript.messages.last?.inputPrompt?.error)
+        XCTAssertEqual(c.transcript.turn, .running, "answered: the agent continues")
+    }
+
+    func testRetryRecoversAFailedWindow() async {
+        failResume = true
+        let c = makeController()
+        c.start(); await settle()
+        guard case .failed = c.phase else { return XCTFail("expected .failed, got \(c.phase)") }
+        failResume = false
+        c.retry(); await settle()
+        XCTAssertEqual(c.phase, .ready)
+        XCTAssertEqual(c.transcript.runtimeID, "rt-1")
+    }
+
+    func testFailedReReadAfterClientChangeKeepsTranscriptAndRetryRecovers() async {
+        let c = makeController()
+        resumeResult = SessionResumeResult(sessionId: "rt-1", storedSessionId: "st-1",
+                                           messages: [ChatMessage(id: "m1", role: .assistant, content: "hi", timestamp: "")],
+                                           snapshot: .macTestSnapshot(running: false))
+        c.start(); await settle()
+        failResume = true
+        clientID = ObjectIdentifier(NSObject())
+        c.clientChanged(); await settle()
+        guard case .failed = c.phase else { return XCTFail("expected .failed, got \(c.phase)") }
+        XCTAssertEqual(c.transcript.messages.map(\.id), ["m1"], "previous transcript stays visible")
+        failResume = false
+        c.retry(); await settle()
+        XCTAssertEqual(c.phase, .ready)
+    }
+
+    func testSendCancelsAPendingSettle() async {
+        let c = makeController()
+        c.start(); await settle()
+        hub.publish(.messageComplete(sessionId: "rt-1", messageId: "m1", content: "x", reasoning: nil))
+        c.draft = "Quick follow-up"
+        c.send()
+        await c.awaitInFlightWork(); await settle()
+        XCTAssertEqual(resumes.count, 1, "the settle was cancelled so it cannot drop the optimistic row")
+        XCTAssertEqual(c.transcript.messages.last?.role, .user)
+    }
+
+    func testApprovalAcceptedMovesTurnToRunningAndExpiredToIdle() async {
+        let c = makeController()
+        c.start(); await settle()
+        hub.publish(.approval(sessionId: "rt-1", activity: .macTest(requestId: "r1")))
+        c.approve(messageID: "approval-r1", choice: "once"); await settle()
+        XCTAssertEqual(c.transcript.turn, .running)
+    }
+
+    func testClarifyQuestionIsSubmittingAndNotSentTwice() async {
+        var calls = 0
+        var env = MacSessionWindowEnvironment()
+        env.scope = { [unowned self] in scope }
+        env.resume = { [unowned self] _ in resumeResult }
+        env.respondToClarification = { _, _, _ in calls += 1; return .accepted(remaining: nil) }
+        let token = MacSessionWindowToken(dashboardID: nil, profile: "default", sessionID: "row-1")
+        let c = MacSessionWindowController(token: token, environment: env, hub: hub, settleDelay: .milliseconds(10))
+        c.start(); await settle()
+        let q = ClarifyQuestion(id: "q1", question: "Which?", choices: [], multiSelect: false, status: .pending,
+                                answer: nil, error: nil, isSyntheticID: false)
+        hub.publish(.clarify(sessionId: "rt-1", activity: ClarifyActivity(requestId: "c1", questions: [q])))
+        c.answerClarify(messageID: "clarify-c1", questionID: "q1", answer: "A")
+        c.answerClarify(messageID: "clarify-c1", questionID: "q1", answer: "A")
+        XCTAssertEqual(c.transcript.messages.last?.clarify?.questions.first?.status, .submitting)
+        await settle()
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(c.transcript.messages.last?.clarify?.questions.first?.status, .answered)
+        XCTAssertEqual(c.transcript.turn, .running)
     }
 }

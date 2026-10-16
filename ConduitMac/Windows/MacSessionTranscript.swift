@@ -192,7 +192,7 @@ struct MacSessionTranscript: Equatable {
 
     // MARK: Private
 
-    private var hasPendingCard: Bool { messages.contains { Self.isPending($0) } }
+    var hasPendingCard: Bool { messages.contains { Self.isPending($0) } }
 
     private static func isPending(_ row: ChatMessage) -> Bool {
         if row.approval?.status == .pending { return true }
