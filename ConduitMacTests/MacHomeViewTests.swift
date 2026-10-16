@@ -287,6 +287,24 @@ final class MacHomeViewTests: XCTestCase {
         XCTAssertFalse(all.contains("No scheduled jobs"), all)
     }
 
+    func testFailingJobsAreShownEvenWhenNothingIsActiveOrPaused() async throws {
+        var input = full()
+        // A finished one-shot that errored: not active, not paused, but failing.
+        input.cron = [MacHomeCronJob(id: "c", name: "Once", isActive: false, isFinished: true, hasError: true, nextRun: nil)]
+        let all = labels(try await host(input, calls: Calls())).joined(separator: "\n")
+        XCTAssertTrue(all.contains("Failing"), all)
+        XCTAssertFalse(all.contains("No scheduled jobs"), all)
+    }
+
+    func testAFailedCronLoadSaysUnavailableNotLoading() async throws {
+        var input = full()
+        input.cron = nil
+        input.cronUnavailable = true
+        let all = labels(try await host(input, calls: Calls()))
+        XCTAssertFalse(all.contains("Loading"), "\(all)")
+        XCTAssertFalse(all.contains("No scheduled jobs"), "\(all)")
+    }
+
     func testEmptyAfterSanitizeTitleGetsAPlaceholder() async throws {
         var input = full()
         input.sessions = [.fixture("s1", title: "\u{200B}\u{200B}", at: MacHomeInput.referenceNow)]

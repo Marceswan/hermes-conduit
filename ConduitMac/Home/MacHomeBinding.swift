@@ -31,18 +31,44 @@ struct MacHomeActions {
 }
 
 enum MacHomeKanbanError: Error { case noDashboard }
+enum MacHomeCronError: Error { case noConnection }
 
 /// Maps AppState, the activity feed and the Kanban loader into `MacHomeInput`.
 @MainActor
 enum MacHomeBinding {
-    /// Whether this Home session has loaded the cron list yet. Observable so that
-    /// flipping it (reset on a scope change, set once loaded) reaches `Sources.changes`
-    /// and rebuilds the snapshot without waiting for an unrelated publisher.
-    @MainActor
-    final class CronLoadState: ObservableObject { @Published var loaded = false }
-
     static func makeModel(appState: AppState) -> MacHomeModel {
-        MacHomeModel(sources: sources(appState: appState, feed: AgentActivityFeed.shared, kanban: makeKanbanLoader(appState: appState)))
+        MacHomeModel(sources: sources(
+            appState: appState, feed: AgentActivityFeed.shared,
+            kanban: makeKanbanLoader(appState: appState), cron: makeCronLoader(appState: appState)
+        ))
+    }
+
+    /// The request `AppState.loadCronJobs` makes (same bridge path or client RPC, same
+    /// decoding), into Home-owned state. It does not touch `cronJobs`, `cronJobsLoading`
+    /// or `errorMessage`, so a failure here cannot reach the composer.
+    static func makeCronLoader(appState: AppState) -> MacHomeCronLoader {
+        MacHomeCronLoader { [weak appState] in
+            guard let appState else { throw CancellationError() }
+            let profile = appState.activeProfile
+            let jobs: [CronJob]
+            if let bridge = appState.dashboardTicketBridge {
+                let result = try await bridge.requestJSON(path: DashboardPath.withExplicitProfile("/api/cron/jobs", profile: profile))
+                let values = result["_array"] as? [Any] ?? result["jobs"] as? [Any] ?? []
+                jobs = values.compactMap { value -> CronJob? in
+                    guard JSONSerialization.isValidJSONObject(value),
+                          let data = try? JSONSerialization.data(withJSONObject: value) else { return nil }
+                    return try? JSONDecoder().decode(CronJob.self, from: data)
+                }
+                .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+                guard profile == appState.activeProfile else { throw CancellationError() }
+            } else if let client = appState.client {
+                jobs = try await client.listCronJobs()
+                guard profile == appState.activeProfile, appState.client === client else { throw CancellationError() }
+            } else {
+                throw MacHomeCronError.noConnection
+            }
+            return cronJobs(jobs)
+        }
     }
 
     static func makeKanbanLoader(appState: AppState) -> MacHomeKanbanLoader {
@@ -64,9 +90,8 @@ enum MacHomeBinding {
         feed: AgentActivityFeed?,
         kanban: MacHomeKanbanLoader,
         defaults: UserDefaults = .standard,
-        cron injectedCron: CronLoadState? = nil
+        cron: MacHomeCronLoader
     ) -> MacHomeModel.Sources {
-        let cron = injectedCron ?? CronLoadState()
         var publishers: [AnyPublisher<Void, Never>] = [
             appState.objectWillChange.eraseToAnyPublisher(),
             kanban.objectWillChange.eraseToAnyPublisher(),
@@ -75,7 +100,7 @@ enum MacHomeBinding {
         if let feed { publishers.append(feed.objectWillChange.eraseToAnyPublisher()) }
         return MacHomeModel.Sources(
             input: { now in
-                input(appState: appState, feed: feed, kanban: kanban.state, cronLoaded: cron.loaded, now: now)
+                input(appState: appState, feed: feed, kanban: kanban.state, cron: cron.state, now: now)
             },
             changes: Publishers.MergeMany(publishers).eraseToAnyPublisher(),
             refresh: { reason in
@@ -91,28 +116,29 @@ enum MacHomeBinding {
         appState: AppState,
         feed: AgentActivityFeed?,
         kanban: MacHomeKanbanLoader,
-        cron: CronLoadState,
-        defaults: UserDefaults
+        cron: MacHomeCronLoader,
+        defaults: UserDefaults,
+        isAppActive: @MainActor () -> Bool = { NSApplication.shared.isActive }
     ) async {
         // The poll loop is for a Home someone is looking at.
-        if reason == .periodic, !NSApplication.shared.isActive { return }
+        if reason == .periodic, !isAppActive() { return }
         if reason == .appeared {
             // A new scope (or first appearance): never show the old dashboard's data.
             kanban.reset()
-            cron.loaded = false
+            cron.reset()
         }
         feed?.refreshNow()
         guard appState.isConnected else { return }
-        // Failures surface through the shared errorMessage path, like the Cron pane (spec open question 4).
-        await appState.loadCronJobs()
-        // A superseded run (scope change, leaving Home) must not mark the new scope loaded.
-        if Task.isCancelled { return }
-        cron.loaded = true
-        guard let bridge = appState.dashboardTicketBridge else {
+        // Cron is Home-owned and error-swallowing: a failure shows "Unavailable" on the card and
+        // never reaches AppState.errorMessage (the composer renders it). It runs concurrently
+        // with Kanban, so a slow one does not delay the other.
+        async let cronLoad: Void = cron.load()
+        if let bridge = appState.dashboardTicketBridge {
+            await kanban.load(preferredSlug: savedBoardSlug(serverIdentity: bridge.baseURL, defaults: defaults))
+        } else {
             kanban.markUnavailable()
-            return
         }
-        await kanban.load(preferredSlug: savedBoardSlug(serverIdentity: bridge.baseURL, defaults: defaults))
+        await cronLoad
     }
 
     /// The board the user last picked for this server (KanbanStore writes it; Home only reads).
@@ -126,7 +152,7 @@ enum MacHomeBinding {
         appState: AppState,
         feed: AgentActivityFeed?,
         kanban: MacHomeKanbanInput,
-        cronLoaded: Bool,
+        cron: MacHomeCronState,
         now: Date
     ) -> MacHomeInput {
         let state: MacHomeConnectionState = appState.isConnected ? .connected : (appState.isConnecting ? .connecting : .offline)
@@ -151,7 +177,8 @@ enum MacHomeBinding {
             sessions: sessions,
             live: feed.map { liveItems($0.items) } ?? [],
             feed: availability(feed),
-            cron: cronLoaded ? cronJobs(appState.cronJobs) : nil,
+            cron: { if case .loaded(let jobs) = cron { return jobs } else { return nil } }(),
+            cronUnavailable: cron == .unavailable,
             kanban: kanban,
             runtime: MacHomeRuntime(
                 model: runtime.model, provider: runtime.provider, reasoningEffort: runtime.reasoningEffort,

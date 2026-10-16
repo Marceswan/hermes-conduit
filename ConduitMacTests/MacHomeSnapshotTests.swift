@@ -100,6 +100,15 @@ final class MacHomeSnapshotTests: XCTestCase {
 
     func testCronNilStaysNil() {
         XCTAssertNil(make(.fixture(cron: nil)).cron)
+        XCTAssertFalse(make(.fixture(cron: nil)).cronUnavailable)
+    }
+
+    func testCronUnavailableOnlyWhenNoListIsOnHand() {
+        var input = MacHomeInput.fixture(cron: nil)
+        input.cronUnavailable = true
+        XCTAssertTrue(make(input).cronUnavailable)
+        input.cron = []
+        XCTAssertFalse(make(input).cronUnavailable, "a list always wins")
     }
 
     func testCronSummaryPicksSoonestFutureActiveJob() {

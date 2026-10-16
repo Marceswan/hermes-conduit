@@ -180,7 +180,7 @@ Localization: new strings are catalogued in `Conduit/Localizable.xcstrings` in a
 1. **Launch default.** Should Home be the pane a fresh launch shows? Default: no; Sessions stays default, Home is one click or Ctrl-Cmd-5 away.
 2. **Strip behaviour when five names do not fit.** Default: the ladder (names + compact Home icon, else all icons). Alternative: widen the ideal sidebar column (D6 metrics, larger change) or show the name only on the selected segment.
 3. **Home position and key.** Default: last segment, Ctrl-Cmd-5. Alternative: first segment, which would renumber Sessions to Ctrl-Cmd-2 and break muscle memory.
-4. **Cron load errors.** Default: surface through the existing `errorMessage` path like the Cron pane. Alternative: direct `listCronJobs()` with errors swallowed into "Unavailable".
+4. **Cron load errors.** Default: surface through the existing `errorMessage` path like the Cron pane. Alternative: direct `listCronJobs()` with errors swallowed into "Unavailable". Resolved at final review: the alternative (Home-owned `MacHomeCronLoader`).
 5. **Live data source.** Default: `AgentActivityFeed` (titles, tool names, approval text, same as the notch). Alternative: `AppState.sessionLiveStatus(_:)` over the catalog (`AppState.swift:5788`), which has no detail text.
 6. **Recent count.** Default 8. Cron runs excluded; a "Cron runs" shortcut is Cron's job.
 7. **Kanban board.** Default: the board the user last selected, else the server's current. Alternative: always the server's current.

@@ -105,7 +105,7 @@ final class MacHomeBindingTests: XCTestCase {
             .macTestSummary(id: "a", alternateIds: [], title: "Alpha", lastActivityAt: 1_760_000_000),
             .macTestSummary(id: "z", alternateIds: [], title: "Gone", isArchived: true, lastActivityAt: 1_760_000_100),
         ]
-        let input = MacHomeBinding.input(appState: appState, feed: nil, kanban: .unavailable, cronLoaded: false, now: Date(timeIntervalSince1970: 1_760_000_500))
+        let input = MacHomeBinding.input(appState: appState, feed: nil, kanban: .unavailable, cron: .notLoaded, now: Date(timeIntervalSince1970: 1_760_000_500))
         XCTAssertEqual(input.sessions.map(\.id), ["a"], "archived rows are not recents")
         XCTAssertEqual(input.sessions.first?.lastActivity, Date(timeIntervalSince1970: 1_760_000_000))
         XCTAssertEqual(input.connection.state, .offline)
@@ -118,7 +118,7 @@ final class MacHomeBindingTests: XCTestCase {
     }
 
     func testCronIsPassedOnceLoaded() {
-        let input = MacHomeBinding.input(appState: appState, feed: nil, kanban: .notLoaded, cronLoaded: true, now: Date())
+        let input = MacHomeBinding.input(appState: appState, feed: nil, kanban: .notLoaded, cron: .loaded([]), now: Date())
         XCTAssertEqual(input.cron?.count, 0)
     }
 
@@ -130,13 +130,20 @@ final class MacHomeBindingTests: XCTestCase {
         }
         await loader.load(preferredSlug: nil)
         XCTAssertEqual(loader.state, .loaded([MacHomeKanbanColumnInput(status: "todo", displayName: "To Do", sortOrder: 1, count: 3)]))
-        let cron = MacHomeBinding.CronLoadState()
-        cron.loaded = true
+        let cron = MacHomeCronLoader { [Self.job("old")] }
+        await cron.load()
+        XCTAssertEqual(cron.state, .loaded([Self.job("old")]))
         // Not connected: the refresh fetches nothing, but a new scope must still forget the old one.
         await MacHomeBinding.refresh(.appeared, appState: appState, feed: nil, kanban: loader, cron: cron, defaults: suite.defaults)
         XCTAssertEqual(loader.state, .notLoaded, "the old dashboard's board must not survive a scope change")
-        XCTAssertFalse(cron.loaded)
+        XCTAssertEqual(cron.state, .notLoaded)
     }
+
+    private static func job(_ id: String) -> MacHomeCronJob {
+        MacHomeCronJob(id: id, name: id, isActive: true, hasError: false, nextRun: nil)
+    }
+
+    private struct CronBoom: Error {}
 
     // MARK: Actions
 
@@ -153,11 +160,11 @@ final class MacHomeBindingTests: XCTestCase {
         XCTAssertEqual(suite.defaults.string(forKey: MacSidebarState.tabDefaultsKey), SidebarTab.kanban.rawValue)
     }
 
-    // MARK: Cron load state reaches the snapshot
+    // MARK: Cron is Home-owned
 
     func testAScopeChangeClearsTheOldCronListWithoutAnyOtherChange() async {
-        let cron = MacHomeBinding.CronLoadState()
-        cron.loaded = true
+        let cron = MacHomeCronLoader { [Self.job("old")] }
+        await cron.load()
         let kanban = MacHomeKanbanLoader { _ in [] }
         let sources = MacHomeBinding.sources(appState: appState, feed: nil, kanban: kanban, defaults: suite.defaults, cron: cron)
         let model = MacHomeModel(sources: sources, calendar: MacHomeTestCalendar.utc, throttle: 0.02, tick: .seconds(3600))
@@ -170,18 +177,99 @@ final class MacHomeBindingTests: XCTestCase {
         await task.value
     }
 
-    func testCronLoadStatePublishesBothFlips() {
-        let cron = MacHomeBinding.CronLoadState()
+    func testAFailingCronLoadAfterAScopeChangeShowsNoOldJobs() async {
+        appState.isConnected = true
+        // AppState still holds the previous dashboard's jobs; Home must never read them.
+        appState.cronJobs = [CronJob(enabled: true, id: "stale", name: "Old scope job")]
+        var fail = false
+        let cron = MacHomeCronLoader {
+            if fail { throw CronBoom() }
+            return [Self.job("old")]
+        }
+        let kanban = MacHomeKanbanLoader { _ in [] }
+        await MacHomeBinding.refresh(.appeared, appState: appState, feed: nil, kanban: kanban, cron: cron, defaults: suite.defaults)
+        XCTAssertEqual(cron.state, .loaded([Self.job("old")]))
+        // Dashboard switch whose cron request fails.
+        fail = true
+        await MacHomeBinding.refresh(.appeared, appState: appState, feed: nil, kanban: kanban, cron: cron, defaults: suite.defaults)
+        XCTAssertEqual(cron.state, .unavailable)
+        let input = MacHomeBinding.input(appState: appState, feed: nil, kanban: kanban.state, cron: cron.state, now: Date())
+        XCTAssertNil(input.cron, "neither the previous scope's list nor AppState.cronJobs may show")
+        XCTAssertTrue(input.cronUnavailable)
+        XCTAssertNil(MacHomeSnapshot.make(input).cron)
+        XCTAssertTrue(MacHomeSnapshot.make(input).cronUnavailable)
+    }
+
+    func testAPeriodicCronFailureLeavesTheSharedErrorMessageAlone() async {
+        appState.isConnected = true
+        appState.errorMessage = "unrelated"
+        var fail = false
+        let cron = MacHomeCronLoader {
+            if fail { throw CronBoom() }
+            return [Self.job("a")]
+        }
+        let kanban = MacHomeKanbanLoader { _ in [] }
+        await MacHomeBinding.refresh(.appeared, appState: appState, feed: nil, kanban: kanban, cron: cron, defaults: suite.defaults, isAppActive: { true })
+        fail = true
+        await MacHomeBinding.refresh(.periodic, appState: appState, feed: nil, kanban: kanban, cron: cron, defaults: suite.defaults, isAppActive: { true })
+        XCTAssertEqual(appState.errorMessage, "unrelated", "Home must not write the message the composer renders")
+        XCTAssertEqual(cron.state, .loaded([Self.job("a")]), "a transient failure keeps this scope's last list")
+        appState.errorMessage = nil
+        cron.reset()
+        await MacHomeBinding.refresh(.periodic, appState: appState, feed: nil, kanban: kanban, cron: cron, defaults: suite.defaults, isAppActive: { true })
+        XCTAssertNil(appState.errorMessage)
+        XCTAssertEqual(cron.state, .unavailable)
+    }
+
+    func testAnInactiveAppSkipsThePeriodicCronLoad() async {
+        appState.isConnected = true
+        var calls = 0
+        let cron = MacHomeCronLoader { calls += 1; return [] }
+        let kanban = MacHomeKanbanLoader { _ in [] }
+        await MacHomeBinding.refresh(.periodic, appState: appState, feed: nil, kanban: kanban, cron: cron, defaults: suite.defaults, isAppActive: { false })
+        XCTAssertEqual(calls, 0)
+        XCTAssertEqual(cron.state, .notLoaded)
+    }
+
+    func testASupersededCronResponseDoesNotMarkTheNewScopeLoaded() async {
+        var release: CheckedContinuation<Void, Never>?
+        let cron = MacHomeCronLoader {
+            await withCheckedContinuation { release = $0 }
+            return [Self.job("old")]
+        }
+        let slow = Task { await cron.load() }
+        let started = await macHomeEventually { release != nil }
+        XCTAssertTrue(started)
+        cron.reset()
+        release?.resume()
+        await slow.value
+        XCTAssertEqual(cron.state, .notLoaded, "a response from before the reset is inert")
+    }
+
+    func testACancelledCronLoadDoesNotMarkLoaded() async {
+        let cron = MacHomeCronLoader {
+            try await Task.sleep(for: .seconds(600))
+            return []
+        }
+        let task = Task { await cron.load() }
+        await macHomeSettle(0.05)
+        task.cancel()
+        await task.value
+        XCTAssertEqual(cron.state, .notLoaded)
+    }
+
+    func testCronLoaderPublishesBothFlips() async {
+        let cron = MacHomeCronLoader { [] }
         var fired = 0
         let sink = cron.objectWillChange.sink { fired += 1 }
         defer { sink.cancel() }
-        cron.loaded = true
-        cron.loaded = false
-        XCTAssertEqual(fired, 2, "the reset on .appeared and the set once loaded must both reach Sources.changes")
+        await cron.load()
+        cron.reset()
+        XCTAssertEqual(fired, 2, "the load and the reset on .appeared must both reach Sources.changes")
     }
 
     func testCronAppearsWithoutWaitingForASlowKanbanFetch() async {
-        let cron = MacHomeBinding.CronLoadState()
+        let cron = MacHomeCronLoader { [] }
         let kanban = MacHomeKanbanLoader { _ in
             // Never returns until cancelled: a hung Kanban request.
             try await Task.sleep(for: .seconds(600))
@@ -192,8 +280,8 @@ final class MacHomeBindingTests: XCTestCase {
         XCTAssertNil(model.snapshot.cron)
         let slow = Task { await kanban.load(preferredSlug: nil) }
         await macHomeSettle(0.05)
-        // What refresh does once loadCronJobs returns, while the Kanban fetch is still in flight.
-        cron.loaded = true
+        // refresh runs the two loads side by side (async let); cron's own state publishes.
+        await cron.load()
         let shown = await macHomeEventually { model.snapshot.cron != nil }
         XCTAssertTrue(shown, "cron must publish on its own, not ride on the Kanban fetch")
         XCTAssertEqual(model.snapshot.kanban.state, .notLoaded)

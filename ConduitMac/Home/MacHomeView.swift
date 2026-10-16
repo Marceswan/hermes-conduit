@@ -181,7 +181,7 @@ struct MacHomeView: View {
                 MacHomeDayBars(days: snapshot.days, calendar: calendar)
             }
             kanbanCard(snapshot.kanban, offline: offline)
-            cronCard(snapshot.cron, offline: offline)
+            cronCard(snapshot.cron, unavailable: snapshot.cronUnavailable, offline: offline)
         }
     }
 
@@ -203,10 +203,10 @@ struct MacHomeView: View {
         }
     }
 
-    private func cronCard(_ cron: MacHomeCronSummary?, offline: Bool) -> some View {
+    private func cronCard(_ cron: MacHomeCronSummary?, unavailable: Bool, offline: Bool) -> some View {
         MacHomeCard(title: AppLocalization.string("Cron"), symbol: SidebarTab.cron.icon) {
             if let cron {
-                if cron.active == 0, cron.paused == 0 {
+                if cron.active == 0, cron.paused == 0, cron.failing == 0 {
                     note(AppLocalization.string("No scheduled jobs"))
                 } else {
                     cronLine(AppLocalization.string("Active"), cron.active)
@@ -231,6 +231,8 @@ struct MacHomeView: View {
                         note(AppLocalization.string("No upcoming run"))
                     }
                 }
+            } else if unavailable {
+                note(AppLocalization.string("Unavailable"))
             } else {
                 note(offline ? AppLocalization.string("Unavailable offline") : AppLocalization.string("Loading"))
             }

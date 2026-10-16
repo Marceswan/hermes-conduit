@@ -91,6 +91,8 @@ struct MacHomeInput: Equatable {
     var feed: MacHomeFeedAvailability
     /// nil: not loaded (or unavailable).
     var cron: [MacHomeCronJob]?
+    /// The cron request failed and nothing from this scope is on hand.
+    var cronUnavailable = false
     var kanban: MacHomeKanbanInput
     var runtime: MacHomeRuntime
     var subAgents: Int
@@ -204,6 +206,7 @@ struct MacHomeSnapshot: Equatable {
     var days: [MacHomeDay]
     var kanban: MacHomeKanbanSummary
     var cron: MacHomeCronSummary?
+    var cronUnavailable: Bool
 
     static func make(_ input: MacHomeInput, calendar: Calendar = .current) -> MacHomeSnapshot {
         let rows = input.feed == .offline ? [] : liveRows(input.live)
@@ -246,7 +249,8 @@ struct MacHomeSnapshot: Equatable {
             recent: recent(input.sessions),
             days: days,
             kanban: kanban(input.kanban),
-            cron: cron(input.cron, now: input.now)
+            cron: cron(input.cron, now: input.now),
+            cronUnavailable: input.cron == nil && input.cronUnavailable
         )
     }
 
@@ -403,26 +407,38 @@ struct MacHomeSnapshot: Equatable {
 // MARK: - Dates
 
 enum MacHomeDates {
+    // Built once: this runs per job on every rebuild. Main-actor use in practice.
+    private static let fractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let plain: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+    private static let naiveLocal: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        return formatter
+    }()
+
     /// `CronJob.nextRunAt` is a raw String and no fixture pins its format.
     /// Accepts ISO 8601 with a zone, with or without fractional seconds; a
     /// zone-less value is read as the Mac's local time. Anything else is nil.
     static func parse(_ raw: String?) -> Date? {
         guard let text = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = fractional.date(from: text) { return date }
-        let plain = ISO8601DateFormatter()
-        plain.formatOptions = [.withInternetDateTime]
         if let date = plain.date(from: text) { return date }
-        let local = DateFormatter()
-        local.locale = Locale(identifier: "en_US_POSIX")
-        local.timeZone = .current
-        local.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
         // Python's naive isoformat() can carry microseconds: drop the fraction (seconds are enough here).
         var wholeSeconds = text
         if let dot = text.firstIndex(of: "."), text[text.index(after: dot)...].allSatisfy(\.isNumber) {
             wholeSeconds = String(text[..<dot])
         }
-        return local.date(from: wholeSeconds)
+        // "Local" follows the Mac's zone at call time.
+        if naiveLocal.timeZone != TimeZone.current { naiveLocal.timeZone = .current }
+        return naiveLocal.date(from: wholeSeconds)
     }
 }
