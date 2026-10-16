@@ -120,7 +120,12 @@ struct MacHomeView: View {
                          spacing: MacHomeStyle.sectionGap) {
             MacHomeTile(
                 value: "\(t.sessions)", label: AppLocalization.string("Sessions"),
-                detail: String(format: AppLocalization.string("Today %lld"), t.activeToday))
+                detail: String(format: AppLocalization.string("Today %lld"), t.activeToday),
+                // Counts are over the loaded catalog, not the server's total.
+                spokenValue: MacHomeText.spoken([
+                    String(format: AppLocalization.string("%lld in loaded chats"), t.sessions),
+                    String(format: AppLocalization.string("Today %lld"), t.activeToday),
+                ]))
             MacHomeTile(value: "\(t.unread)", label: AppLocalization.string("Unread"))
             MacHomeTile(
                 value: "\(t.needsYou)", label: AppLocalization.string("Waiting on you"),
@@ -142,8 +147,6 @@ struct MacHomeView: View {
                         Text(verbatim: [line.provider, line.effort.isEmpty ? "" : String(format: AppLocalization.string("Reasoning: %@"), line.effort)]
                             .filter { !$0.isEmpty }.joined(separator: " \u{00B7} "))
                             .font(.caption).foregroundStyle(MacHomeStyle.secondaryText).lineLimit(1)
-                        Text(verbatim: AppLocalization.string("Open chat"))
-                            .font(.caption2).foregroundStyle(MacHomeStyle.secondaryText)
                     }
                 }
                 if let context = snapshot.context {
@@ -183,13 +186,19 @@ struct MacHomeView: View {
     }
 
     private func kanbanCard(_ kanban: MacHomeKanbanSummary, offline: Bool) -> some View {
-        MacHomeCard(title: AppLocalization.string("Kanban"), symbol: SidebarTab.kanban.icon) {
+        MacHomeCard(
+            title: AppLocalization.string("Kanban"), symbol: SidebarTab.kanban.icon,
+            headerAction: (AppLocalization.string("Open Kanban"), { actions.openPane(.kanban) })
+        ) {
             switch kanban.state {
             case .notLoaded:
                 note(offline ? AppLocalization.string("Unavailable offline") : AppLocalization.string("Loading"))
             case .unavailable: note(AppLocalization.string("Unavailable"))
             case .empty: note(AppLocalization.string("No tasks"))
-            case .loaded: MacHomeKanbanBars(bars: kanban.bars)
+            case .loaded:
+                cronLine(AppLocalization.string("Total"), kanban.total)
+                blockedLine(kanban.blocked)
+                MacHomeKanbanBars(bars: kanban.bars)
             }
         }
     }
@@ -208,7 +217,11 @@ struct MacHomeView: View {
                             HStack {
                                 Text(verbatim: AppLocalization.string("Next run")).font(.caption)
                                 Spacer(minLength: 4)
-                                Text(next.date, style: .relative).font(.caption.weight(.semibold)).monospacedDigit()
+                                // "in 2 hr." with a direction; the timeline keeps it current between snapshots.
+                                TimelineView(.periodic(from: .now, by: 30)) { context in
+                                    Text(verbatim: MacHomeText.relative(next.date, now: context.date))
+                                        .font(.caption.weight(.semibold)).monospacedDigit()
+                                }
                             }
                             Text(verbatim: MacHomeText.untitledJob(next.name)).font(.caption).lineLimit(1)
                                 .foregroundStyle(MacHomeStyle.secondaryText)
@@ -222,6 +235,22 @@ struct MacHomeView: View {
                 note(offline ? AppLocalization.string("Unavailable offline") : AppLocalization.string("Loading"))
             }
         }
+    }
+
+    /// Icon and word, so a blocked count is never colour alone.
+    private func blockedLine(_ count: Int) -> some View {
+        HStack {
+            Label {
+                Text(verbatim: AppLocalization.string("Blocked")).font(.caption)
+            } icon: {
+                Image(systemName: "exclamationmark.octagon")
+                    .font(.caption)
+                    .foregroundStyle(count > 0 ? Color.conduitAccent : MacHomeStyle.secondaryText)
+            }
+            Spacer(minLength: 4)
+            Text(verbatim: "\(count)").font(.caption.weight(.semibold)).monospacedDigit()
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private func cronLine(_ label: String, _ value: Int) -> some View {

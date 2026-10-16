@@ -6,21 +6,51 @@ import SwiftUI
 struct MacHomeCard<Content: View>: View {
     private let title: String
     private let symbol: String
+    private let headerAction: (label: String, run: () -> Void)?
     private let content: Content
 
-    init(title: String, symbol: String, @ViewBuilder content: () -> Content) {
+    /// `headerAction` turns the title row into a button (the Kanban card opens its pane).
+    init(
+        title: String, symbol: String,
+        headerAction: (label: String, run: () -> Void)? = nil,
+        @ViewBuilder content: () -> Content
+    ) {
         self.title = title
         self.symbol = symbol
+        self.headerAction = headerAction
         self.content = content()
+    }
+
+    @ViewBuilder
+    private var header: some View {
+        let titleRow = Label {
+            Text(verbatim: title).font(.subheadline.weight(.semibold))
+        } icon: {
+            Image(systemName: symbol).foregroundStyle(MacHomeStyle.secondaryText)
+        }
+        if let headerAction {
+            Button(action: headerAction.run) {
+                HStack(spacing: 4) {
+                    titleRow
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(MacHomeStyle.secondaryText)
+                }
+                .frame(minHeight: MacHomeStyle.rowHeight - 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text(verbatim: headerAction.label))
+            .accessibilityAddTraits(.isHeader)
+        } else {
+            titleRow.accessibilityAddTraits(.isHeader)
+        }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label {
-                Text(verbatim: title).font(.subheadline.weight(.semibold))
-            } icon: {
-                Image(systemName: symbol).foregroundStyle(MacHomeStyle.secondaryText)
-            }
+            header
             content
         }
         .padding(MacHomeStyle.cardPadding)
@@ -35,6 +65,8 @@ struct MacHomeTile: View {
     let value: String
     let label: String
     var detail: String?
+    /// Replaces "value, detail" for VoiceOver (the Sessions tile says what it counts).
+    var spokenValue: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -51,7 +83,7 @@ struct MacHomeTile: View {
         .conduitGlassSurface(cornerRadius: MacHomeStyle.cardRadius)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(verbatim: label))
-        .accessibilityValue(Text(verbatim: detail.map { "\(value), \($0)" } ?? value))
+        .accessibilityValue(Text(verbatim: spokenValue ?? detail.map { "\(value), \($0)" } ?? value))
     }
 }
 
@@ -93,6 +125,18 @@ enum MacHomeText {
         title.isEmpty ? AppLocalization.string("Untitled chat") : title
     }
 
+    /// "4 min. ago" / "in 2 hr." against an explicit `now`, so it is testable and a timeline can drive it.
+    static func relative(_ date: Date, now: Date = Date()) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        formatter.dateTimeStyle = .numeric
+        return formatter.localizedString(for: date, relativeTo: now)
+    }
+
+    static func spoken(_ parts: [String?]) -> String {
+        parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
+    }
+
     static func untitledJob(_ name: String) -> String {
         name.isEmpty ? AppLocalization.string("Untitled job") : name
     }
@@ -124,6 +168,11 @@ struct MacHomeLiveRowView: View {
         "\(MacHomeText.kindLabel(row.kind)): \(MacHomeText.untitled(row.title))"
     }
 
+    /// What a screen reader adds after the label: the command or tool, and how long ago it started.
+    var spokenValue: String {
+        MacHomeText.spoken([row.detail, MacHomeText.relative(row.since)])
+    }
+
     private var content: some View {
         HStack(spacing: 8) {
             Image(systemName: MacHomeText.kindSymbol(row.kind))
@@ -153,12 +202,12 @@ struct MacHomeLiveRowView: View {
             Button { open(id) } label: { content }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(verbatim: accessibilityTitle))
-                .accessibilityValue(Text(verbatim: row.detail ?? ""))
+                .accessibilityValue(Text(verbatim: spokenValue))
         } else {
             content
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(Text(verbatim: accessibilityTitle))
-                .accessibilityValue(Text(verbatim: row.detail ?? ""))
+                .accessibilityValue(Text(verbatim: spokenValue))
         }
     }
 }
@@ -196,17 +245,45 @@ struct MacHomeRecentRowView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(Text(verbatim: MacHomeText.untitled(row.title)))
-        .accessibilityValue(Text(verbatim: row.isUnread ? AppLocalization.string("Unread") : ""))
+        .accessibilityValue(Text(verbatim: spokenValue))
+    }
+
+    /// Unread state, model and how long ago, as the row shows them.
+    var spokenValue: String {
+        MacHomeText.spoken([
+            row.isUnread ? AppLocalization.string("Unread") : nil,
+            row.model,
+            row.lastActivity.map { MacHomeText.relative($0) },
+        ])
     }
 }
 
 // MARK: - Charts
 
 /// Sessions touched per day, seven columns, today in the accent hue and the rest neutral
-/// (the emphasis form). The accessibility label carries every value, which is also the table view.
+/// (the emphasis form). The accessibility value carries every number, which is also the table view.
 struct MacHomeDayBars: View {
-    let days: [MacHomeDay]
-    var calendar: Calendar = .current
+    private struct Column: Identifiable {
+        var day: MacHomeDay
+        var abbreviated: String
+        var wide: String
+        var narrow: String
+        var id: Date { day.id }
+    }
+
+    private let columns: [Column]
+    private let summaryText: String
+
+    /// Weekday names are formatted once per `days` value, not on every body evaluation.
+    init(days: [MacHomeDay], calendar: Calendar = .current) {
+        func name(_ date: Date, _ width: Date.FormatStyle.Symbol.Weekday) -> String {
+            date.formatted(Date.FormatStyle(timeZone: calendar.timeZone).weekday(width))
+        }
+        columns = days.map {
+            Column(day: $0, abbreviated: name($0.start, .abbreviated), wide: name($0.start, .wide), narrow: name($0.start, .narrow))
+        }
+        summaryText = Self.summary(days: days, calendar: calendar)
+    }
 
     static func summary(days: [MacHomeDay], calendar: Calendar = .current) -> String {
         days.map { day in
@@ -216,16 +293,22 @@ struct MacHomeDayBars: View {
     }
 
     var body: some View {
-        let peak = max(days.map(\.count).max() ?? 0, 1)
-        let plot = MacHomeStyle.chartHeight - 16
+        let peak = max(columns.map(\.day.count).max() ?? 0, 1)
+        // The column stacks caption, spacer and bar with a gap between each pair, so the tallest
+        // bar is the chart height minus the caption and two gaps: the column never overflows.
+        let plot = MacHomeStyle.chartHeight - MacHomeStyle.dayValueHeight - 2 * MacHomeStyle.dayValueGap
         VStack(spacing: 4) {
             HStack(alignment: .bottom, spacing: MacHomeStyle.barGap * 3) {
-                ForEach(days) { day in
+                ForEach(columns) { column in
+                    let day = column.day
                     let barHeight: CGFloat = day.count == 0 ? 2 : max(4, plot * CGFloat(day.count) / CGFloat(peak))
-                    VStack(spacing: 2) {
+                    VStack(spacing: MacHomeStyle.dayValueGap) {
                         Text(verbatim: day.isToday ? "\(day.count)" : " ")
                             .font(.caption2.weight(.semibold)).monospacedDigit()
                             .foregroundStyle(MacHomeStyle.secondaryText)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
+                            .frame(height: MacHomeStyle.dayValueHeight)
                         Spacer(minLength: 0)
                         UnevenRoundedRectangle(
                             topLeadingRadius: MacHomeStyle.topCornerRadius, bottomLeadingRadius: 0,
@@ -237,13 +320,13 @@ struct MacHomeDayBars: View {
                     }
                     .frame(maxWidth: .infinity)
                     .contentShape(Rectangle())
-                    .help(Text(verbatim: "\(day.start.formatted(Date.FormatStyle(timeZone: calendar.timeZone).weekday(.wide))): \(day.count)"))
+                    .help(Text(verbatim: "\(column.wide): \(day.count)"))
                 }
             }
             .frame(height: MacHomeStyle.chartHeight)
             HStack(spacing: MacHomeStyle.barGap * 3) {
-                ForEach(days) { day in
-                    Text(day.start.formatted(Date.FormatStyle(timeZone: calendar.timeZone).weekday(.narrow)))
+                ForEach(columns) { column in
+                    Text(verbatim: column.narrow)
                         .font(.caption2)
                         .foregroundStyle(MacHomeStyle.secondaryText)
                         .frame(maxWidth: .infinity)
@@ -252,7 +335,7 @@ struct MacHomeDayBars: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(verbatim: AppLocalization.string("Sessions per day")))
-        .accessibilityValue(Text(verbatim: Self.summary(days: days, calendar: calendar)))
+        .accessibilityValue(Text(verbatim: summaryText))
     }
 }
 
@@ -306,6 +389,15 @@ struct MacHomeContextMeter: View {
         return String(format: AppLocalization.string("%@ of %@ tokens"), used, limit)
     }
 
+    /// The spoken value: percent, tokens when the limit is known, and the warning when high.
+    static func spokenValue(_ context: MacHomeContext) -> String {
+        MacHomeText.spoken([
+            "\(Int(context.percent.rounded())) %",
+            tokens(context),
+            context.isHigh ? AppLocalization.string("Context is nearly full") : nil,
+        ])
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
@@ -331,6 +423,6 @@ struct MacHomeContextMeter: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(verbatim: AppLocalization.string("Context")))
-        .accessibilityValue(Text(verbatim: "\(Int(context.percent.rounded())) %, \(Self.tokens(context))"))
+        .accessibilityValue(Text(verbatim: Self.spokenValue(context)))
     }
 }

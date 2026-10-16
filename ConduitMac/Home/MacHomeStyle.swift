@@ -13,6 +13,9 @@ enum MacHomeStyle {
     static let maxBarThickness: CGFloat = 24
     static let chartHeight: CGFloat = 72
     static let barGap: CGFloat = 2
+    /// The day chart's value caption and the gap under it; the tallest bar gets the rest of `chartHeight`.
+    static let dayValueHeight: CGFloat = 14
+    static let dayValueGap: CGFloat = 2
     static let topCornerRadius: CGFloat = 4
     static let meterHeight: CGFloat = 8
 

@@ -92,9 +92,10 @@ final class MacHomeViewTests: XCTestCase {
     func testRecentRowOpensItsSession() async throws {
         let calls = Calls()
         let window = try await host(full(), calls: calls)
-        XCTAssertTrue(AccessibilityProbe.press("Refactor billing", in: window) || AccessibilityProbe.press("Deploy script", in: window))
-        XCTAssertFalse(calls.opened.isEmpty)
-        XCTAssertTrue(["s1", "s2"].contains(calls.opened[0]))
+        XCTAssertTrue(AccessibilityProbe.press("Deploy script", in: window))
+        XCTAssertEqual(calls.opened, ["s2"])
+        XCTAssertTrue(AccessibilityProbe.press("Refactor billing", in: window))
+        XCTAssertEqual(calls.opened, ["s2", "s1"])
     }
 
     func testLiveRowOpensItsSessionAndAnInertRowIsNotAButton() async throws {
@@ -123,7 +124,10 @@ final class MacHomeViewTests: XCTestCase {
         var input = full()
         input.canStartChat = false
         let window = try await host(input, calls: calls)
-        _ = AccessibilityProbe.press("New Chat", in: window)
+        let button = AccessibilityProbe.nodes(in: window).first { $0.label == "New Chat" }
+        XCTAssertNotNil(button, "the button is still described")
+        XCTAssertEqual(button?.role, "AXButton")
+        XCTAssertFalse(AccessibilityProbe.press("New Chat", in: window), "a disabled button does not press")
         XCTAssertEqual(calls.newChats, 0)
     }
 
@@ -162,12 +166,83 @@ final class MacHomeViewTests: XCTestCase {
         var input = full()
         input.sessions = [.fixture("a", at: MacHomeInput.referenceNow)]
         let window = try await host(input, calls: Calls())
-        let all = labels(window).joined(separator: "\n")
-        XCTAssertTrue(all.contains("Sessions per day"), all)
-        let days = MacHomeSnapshot.make(input, calendar: MacHomeTestCalendar.utc).days
-        let summary = MacHomeDayBars.summary(days: days, calendar: MacHomeTestCalendar.utc)
+        let snapshot = MacHomeSnapshot.make(input, calendar: MacHomeTestCalendar.utc)
+        let summary = MacHomeDayBars.summary(days: snapshot.days, calendar: MacHomeTestCalendar.utc)
         XCTAssertEqual(summary.components(separatedBy: ", ").count, 7)
         XCTAssertTrue(summary.hasSuffix(" 1"), "today's count is last: \(summary)")
+        let nodes = AccessibilityProbe.nodes(in: window)
+        let days = nodes.first { $0.label == "Sessions per day" }
+        XCTAssertNotNil(days)
+        XCTAssertEqual(days?.value, summary, "the rendered chart speaks every value")
+        let kanban = nodes.first { $0.label == "Kanban tasks per column" }
+        XCTAssertNotNil(kanban)
+        XCTAssertEqual(kanban?.value, MacHomeKanbanBars.summary(snapshot.kanban.bars))
+        XCTAssertEqual(kanban?.value, "To Do 4, Done 9")
+        // The column never overflows the chart height (caption + gaps + tallest bar).
+        if let days {
+            XCTAssertLessThanOrEqual(days.frame.height, MacHomeStyle.chartHeight + 4 + 20, "chart plus the weekday row")
+        }
+    }
+
+    func testKanbanCardShowsTotalAndBlockedWithAWord() async throws {
+        var input = full()
+        input.kanban = .loaded([
+            MacHomeKanbanColumnInput(status: "todo", displayName: "To Do", sortOrder: 1, count: 4),
+            MacHomeKanbanColumnInput(status: "blocked", displayName: "Blocked", sortOrder: 5, count: 2),
+            MacHomeKanbanColumnInput(status: "done", displayName: "Done", sortOrder: 7, count: 9),
+        ])
+        let window = try await host(input, calls: Calls())
+        let all = labels(window)
+        XCTAssertTrue(all.contains("Total, 15"), "\(all)")
+        XCTAssertTrue(all.contains("Blocked, 2"), "icon plus word plus number: \(all)")
+    }
+
+    func testKanbanCardHeaderOpensTheKanbanPane() async throws {
+        let calls = Calls()
+        let window = try await host(full(), calls: calls)
+        let header = AccessibilityProbe.nodes(in: window).first { $0.label == "Open Kanban" }
+        XCTAssertEqual(header?.role, "AXButton")
+        XCTAssertTrue(AccessibilityProbe.press("Open Kanban", in: window))
+        XCTAssertEqual(calls.panes, [.kanban])
+        XCTAssertEqual(calls.newChats, 0)
+    }
+
+    func testSessionsTileSaysItCountsTheLoadedCatalog() async throws {
+        let window = try await host(full(), calls: Calls())
+        let tile = AccessibilityProbe.nodes(in: window).first { $0.label == "Sessions" }
+        XCTAssertEqual(tile?.value, "2 in loaded chats, Today 2")
+    }
+
+    func testRowsSpeakModelAndTime() async throws {
+        let window = try await host(full(), calls: Calls())
+        let nodes = AccessibilityProbe.nodes(in: window)
+        let recent = nodes.first { $0.label == "Refactor billing" && $0.role == "AXButton" }?.value ?? ""
+        XCTAssertTrue(recent.hasPrefix("Unread, opus, "), recent)
+        XCTAssertEqual(recent.components(separatedBy: ", ").count, 3, "unread, model, time: \(recent)")
+        let live = nodes.first { $0.label == "Approval: Refactor billing" }?.value ?? ""
+        XCTAssertTrue(live.hasPrefix("git push origin main, "), live)
+    }
+
+    func testRelativeTimeHasADirection() {
+        let now = MacHomeInput.referenceNow
+        XCTAssertTrue(MacHomeText.relative(now.addingTimeInterval(-240), now: now).contains("ago"))
+        XCTAssertTrue(MacHomeText.relative(now.addingTimeInterval(7200), now: now).hasPrefix("in "))
+    }
+
+    func testNextRunReadsAsInTheFuture() async throws {
+        let window = try await host(full(), calls: Calls())
+        // The fixture's job is two hours after the fixture clock; the view reads the real clock,
+        // so only the direction is pinned here (the wording is covered by testRelativeTimeHasADirection).
+        let value = labels(window).first { $0.hasPrefix("in ") || $0.hasSuffix(" ago") }
+        XCTAssertNotNil(value, "\(labels(window))")
+    }
+
+    func testCardTitlesAreHeaders() async throws {
+        let window = try await host(full(), calls: Calls())
+        let nodes = AccessibilityProbe.nodes(in: window)
+        for title in ["Recent chats", "Cron", "Context", "Activity, 7 days"] {
+            XCTAssertTrue(nodes.contains { $0.role == "AXHeading" && $0.label == title }, "\(title) is a heading")
+        }
     }
 
     func testHostileTextStaysOnOneLineAtTheMinimumWidth() async throws {
@@ -227,6 +302,16 @@ final class MacHomeViewTests: XCTestCase {
         XCTAssertEqual(meter?.value, "62 %, 124K of 200K tokens")
         XCTAssertEqual(MacHomeContextMeter.tokens(MacHomeContext(percent: 62, used: 124_000, max: 200_000, isHigh: false)).isEmpty, false)
         XCTAssertEqual(MacHomeContextMeter.tokens(MacHomeContext(percent: 10, used: 5, max: 0, isHigh: false)), "")
+    }
+
+    func testContextMeterValueWarnsWhenHighAndHasNoTrailingComma() {
+        let high = MacHomeContextMeter.spokenValue(MacHomeContext(percent: 91, used: 182_000, max: 200_000, isHigh: true))
+        XCTAssertEqual(high, "91 %, 182K of 200K tokens, Context is nearly full")
+        let unknownMax = MacHomeContextMeter.spokenValue(MacHomeContext(percent: 10, used: 5, max: 0, isHigh: false))
+        XCTAssertEqual(unknownMax, "10 %")
+        XCTAssertFalse(unknownMax.hasSuffix(", "))
+        let highUnknownMax = MacHomeContextMeter.spokenValue(MacHomeContext(percent: 90, used: 0, max: 0, isHigh: true))
+        XCTAssertEqual(highUnknownMax, "90 %, Context is nearly full")
     }
 
     func testOfflineKanbanAndCronAreNotReportedAsLoading() async throws {
