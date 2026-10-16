@@ -5,7 +5,8 @@ import SwiftUI
 /// the tallest in its row; `uniformRows` makes every row as tall as the tallest of all).
 /// The column count is the largest of `columnOptions` whose columns are each at least
 /// `minColumnWidth` wide, so a 4-tile row steps 4 -> 2 -> 1 and never leaves an orphan
-/// tile. With fewer cards than columns the cards share the width. Cards stretch to the
+/// tile. A last row with fewer cards than columns shares the full width among its cards, so a lone
+/// last card spans the row. With fewer cards than columns overall the cards share the width. Cards stretch to the
 /// cell they are given and top-align their content (`MacHomeCard`, `MacHomeTile`).
 struct MacHomeGrid: Layout {
     /// Allowed column counts, widest first (for example `[3, 2, 1]`).
@@ -25,24 +26,37 @@ struct MacHomeGrid: Layout {
         max(1, min(Self.columns(width: width, options: columnOptions, minColumnWidth: minColumnWidth, spacing: spacing), max(count, 1)))
     }
 
-    private struct Plan {
-        var columns: Int
-        var columnWidth: CGFloat
-        var rowHeights: [CGFloat]
+    private struct Row {
+        var first: Int
+        var count: Int
+        var cellWidth: CGFloat
+        var height: CGFloat
     }
 
-    private func plan(width: CGFloat, subviews: Subviews) -> Plan {
+    private struct Plan {
+        var columns: Int
+        var rows: [Row]
+    }
+
+    /// A last row with fewer cards than columns shares the full width among its cards (so a lone
+    /// third card spans the row under two columns); every other row uses the equal column width.
+    private func plan(width proposed: CGFloat, subviews: Subviews) -> Plan {
+        let width = proposed.isFinite ? max(proposed, 0) : idealWidth
         let columns = columnCount(width: width, count: subviews.count)
-        let columnWidth = max(0, (width - CGFloat(columns - 1) * spacing) / CGFloat(columns))
-        var heights: [CGFloat] = []
+        var rows: [Row] = []
         var index = 0
         while index < subviews.count {
-            let row = subviews[index..<min(index + columns, subviews.count)]
-            heights.append(row.map { $0.sizeThatFits(ProposedViewSize(width: columnWidth, height: nil)).height }.max() ?? 0)
-            index += columns
+            let count = min(columns, subviews.count - index)
+            let cellWidth = max(0, (width - CGFloat(count - 1) * spacing) / CGFloat(count))
+            let height = subviews[index..<index + count]
+                .map { $0.sizeThatFits(ProposedViewSize(width: cellWidth, height: nil)).height }.max() ?? 0
+            rows.append(Row(first: index, count: count, cellWidth: cellWidth, height: height))
+            index += count
         }
-        if uniformRows, let tallest = heights.max() { heights = heights.map { _ in tallest } }
-        return Plan(columns: columns, columnWidth: columnWidth, rowHeights: heights)
+        if uniformRows, let tallest = rows.map(\.height).max() {
+            for i in rows.indices { rows[i].height = tallest }
+        }
+        return Plan(columns: columns, rows: rows)
     }
 
     private var idealWidth: CGFloat {
@@ -52,9 +66,9 @@ struct MacHomeGrid: Layout {
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         guard !subviews.isEmpty else { return .zero }
-        let width = proposal.width ?? idealWidth
+        let width = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? idealWidth
         let plan = plan(width: width, subviews: subviews)
-        let height = plan.rowHeights.reduce(0, +) + CGFloat(max(plan.rowHeights.count - 1, 0)) * spacing
+        let height = plan.rows.reduce(0) { $0 + $1.height } + CGFloat(max(plan.rows.count - 1, 0)) * spacing
         return CGSize(width: width, height: height)
     }
 
@@ -62,16 +76,14 @@ struct MacHomeGrid: Layout {
         guard !subviews.isEmpty else { return }
         let plan = plan(width: bounds.width, subviews: subviews)
         var y = bounds.minY
-        for (row, rowHeight) in plan.rowHeights.enumerated() {
-            for column in 0..<plan.columns {
-                let index = row * plan.columns + column
-                guard index < subviews.count else { break }
-                subviews[index].place(
-                    at: CGPoint(x: bounds.minX + CGFloat(column) * (plan.columnWidth + spacing), y: y),
+        for row in plan.rows {
+            for offset in 0..<row.count {
+                subviews[row.first + offset].place(
+                    at: CGPoint(x: bounds.minX + CGFloat(offset) * (row.cellWidth + spacing), y: y),
                     anchor: .topLeading,
-                    proposal: ProposedViewSize(width: plan.columnWidth, height: rowHeight))
+                    proposal: ProposedViewSize(width: row.cellWidth, height: row.height))
             }
-            y += rowHeight + spacing
+            y += row.height + spacing
         }
     }
 }

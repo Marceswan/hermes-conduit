@@ -169,6 +169,44 @@ final class MacHomeLayoutTests: XCTestCase {
         XCTAssertEqual(MacHomeGrid.columns(width: 100, options: [], minColumnWidth: 10, spacing: 1), 1)
     }
 
+    // MARK: Grid sizing
+
+    /// `sizeThatFits` and `placeSubviews` agree: the grid's height is the placed cards' extent, for
+    /// one to three cards at two and three columns (a lone last card spans its row).
+    func testGridHeightEqualsThePlacedExtent() throws {
+        let heights: [CGFloat] = [40, 70, 55]
+        for (width, options) in [(560, [2]), (860, [3])] as [(CGFloat, [Int])] {
+            for count in 1...3 {
+                var placed: [String: CGRect] = [:]
+                let grid = MacHomeGrid(columnOptions: options, minColumnWidth: 200) {
+                    ForEach(0..<count, id: \.self) { index in
+                        Color.clear.frame(height: heights[index]).frame(maxWidth: .infinity).macHomeFrame("c\(index)")
+                    }
+                }
+                .coordinateSpace(name: MacHomeFrames.space)
+                .onPreferenceChange(MacHomeFrames.self) { placed = $0 }
+                .frame(width: width)
+                .fixedSize(horizontal: false, vertical: true)
+                let window = HostedTestSupport.host(grid, size: NSSize(width: width, height: 400))
+                defer { HostedTestSupport.tearDown(window) }
+                HostedTestSupport.settle(0.2)
+                XCTAssertEqual(placed.count, count, "\(count) cards at \(options)")
+                let extent = placed.values.map(\.maxY).max() ?? 0
+                let host = NSHostingView(rootView: grid)
+                XCTAssertEqual(host.fittingSize.height, extent, accuracy: accuracy, "\(count) cards, columns \(options)")
+                if count == 3, options == [2] {
+                    XCTAssertEqual(try XCTUnwrap(placed["c2"]).width, width, accuracy: accuracy, "the lone third card spans the width")
+                }
+                if count == 3, options == [3] {
+                    XCTAssertEqual(try XCTUnwrap(placed["c2"]).width, (width - 24) / 3, accuracy: accuracy)
+                }
+            }
+        }
+        // A non-finite proposal does not produce a non-finite size.
+        let host = NSHostingView(rootView: MacHomeGrid(columnOptions: [3, 2, 1], minColumnWidth: 100) { Color.clear.frame(height: 10) })
+        XCTAssertTrue(host.fittingSize.width.isFinite && host.fittingSize.height.isFinite)
+    }
+
     // MARK: Hosted frames
 
     func testWidePaneTilesFillTheRowAndBottomCardsAreEqualTopAlignedColumns() async throws {
@@ -216,12 +254,13 @@ final class MacHomeLayoutTests: XCTestCase {
         assertEqualWidths(f.tiles, "2x2 tiles"); assertEqualHeights(f.tiles, "2x2 tiles")
         XCTAssertEqual(f.tiles[0].minX, f.recent.minX, accuracy: accuracy)
         XCTAssertEqual(f.tiles[1].maxX, f.recent.maxX, accuracy: accuracy)
-        // Cards: Activity and Kanban share row one, Cron starts row two in the same column width.
+        // Cards: Activity and Kanban share row one; Cron spans the content width under them.
         assertSameTop([f.activity, f.kanban], "first row"); assertEqualHeights([f.activity, f.kanban], "first row")
-        assertEqualWidths(f.bottom, "2 columns")
-        XCTAssertGreaterThan(f.cron.minY, f.activity.maxY)
-        XCTAssertEqual(f.cron.minX, f.activity.minX, accuracy: accuracy)
+        assertEqualWidths([f.activity, f.kanban], "first row")
         assertFillsRow([f.activity, f.kanban], like: f.recent)
+        XCTAssertEqual(f.cron.minX, f.recent.minX, accuracy: accuracy)
+        XCTAssertEqual(f.cron.width, f.recent.width, accuracy: accuracy, "the lone last card spans the row")
+        XCTAssertEqual(f.cron.minY - f.activity.maxY, MacHomeStyle.sectionGap, accuracy: accuracy)
     }
 
     func testMinimumPaneIsOneColumnWithoutClipping() async throws {
