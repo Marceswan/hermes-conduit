@@ -219,12 +219,26 @@ extension SelectableTextView {
 
     func updateNSView(_ view: NSTextView, context: Context) {
         let styled = styledText()
-        if view.attributedString() != styled {
+        let textChanged = view.attributedString() != styled
+        if textChanged {
             view.textStorage?.setAttributedString(styled)
         }
         view.textContainer?.maximumNumberOfLines = maximumNumberOfLines
         view.linkTextAttributes = [.foregroundColor: linkColor, .cursor: NSCursor.pointingHand]
         context.coordinator.openURL = context.environment.openURL
+        // D23: whole-chat find registers each message text view under its row id.
+        context.coordinator.attachFind(
+            view,
+            controller: context.environment.macChatFindController,
+            messageID: context.environment.macChatFindMessageID,
+            textChanged: textChanged
+        )
+    }
+
+    static func dismantleNSView(_ view: NSTextView, coordinator: Coordinator) {
+        coordinator.findController?.registry.unregister(view)
+        coordinator.findController = nil
+        coordinator.findMessageID = nil
     }
 
     /// Mirrors upstream `measureNonWrapping`: the text's natural single-line size.
@@ -273,10 +287,31 @@ extension SelectableTextView {
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var openURL: OpenURLAction?
+        weak var findController: MacChatFindController?
+        var findMessageID: String?
         private let opener: @MainActor (URL) -> Void
 
         init(opener: @escaping @MainActor (URL) -> Void = { UIApplication.shared.open($0) }) {
             self.opener = opener
+        }
+
+        /// Registers when the view sits in a transcript row of a window with
+        /// whole-chat find; otherwise makes sure it is not registered. Runs on
+        /// every `updateNSView`, so it registers again only when something
+        /// changed (controller, row id, or the text, whose highlights must be
+        /// repainted); the registry fires `didRegister` on every call.
+        func attachFind(_ view: NSTextView, controller: MacChatFindController?, messageID: String?, textChanged: Bool = true) {
+            if let controller, let messageID {
+                if findController === controller, findMessageID == messageID, !textChanged { return }
+                if let old = findController, old !== controller { old.registry.unregister(view) }
+                findController = controller
+                findMessageID = messageID
+                controller.registry.register(view, messageID: messageID)
+            } else if let old = findController {
+                old.registry.unregister(view)
+                findController = nil
+                findMessageID = nil
+            }
         }
 
         static func url(fromLink link: Any) -> URL? {
