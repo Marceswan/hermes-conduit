@@ -5,9 +5,9 @@ import SwiftUI
 // here so the menu (ConduitCommands), the sidebar list modifier and the
 // composer twin share one definition and tests can reach it headlessly.
 
-/// Ctrl-Cmd-1 ... Ctrl-Cmd-4: one shortcut per sidebar tab, in tab-strip order.
+/// Ctrl-Cmd-1 ... Ctrl-Cmd-5: one shortcut per sidebar tab, in tab-strip order.
 enum MacSidebarShortcut: CaseIterable, Identifiable {
-    case sessions, bots, cron, kanban
+    case sessions, bots, cron, kanban, home
 
     var id: Self { self }
 
@@ -17,6 +17,7 @@ enum MacSidebarShortcut: CaseIterable, Identifiable {
         case .bots: return .bots
         case .cron: return .cron
         case .kanban: return .kanban
+        case .home: return .home
         }
     }
 
@@ -27,6 +28,7 @@ enum MacSidebarShortcut: CaseIterable, Identifiable {
         case .bots: return "2"
         case .cron: return "3"
         case .kanban: return "4"
+        case .home: return "5"
         }
     }
 

@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 enum MacDetailDestination: Equatable {
-    case chat, bots, cron, kanban
+    case chat, bots, cron, kanban, home
 }
 
 /// Main-area content on Mac. The sidebar tab picker drives which view fills
@@ -40,6 +40,7 @@ struct MacDetailRouter<Chat: View>: View {
         case .bots: return .bots
         case .cron: return .cron
         case .kanban: return .kanban
+        case .home: return .home
         }
     }
 
@@ -99,6 +100,7 @@ struct MacDetailRouter<Chat: View>: View {
             }
         case .cron: CronList()
         case .kanban: KanbanView()
+        case .home: MacHomeView(appState: appState)
         }
     }
 

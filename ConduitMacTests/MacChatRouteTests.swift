@@ -19,6 +19,14 @@ final class MacChatRouteTests: XCTestCase {
         XCTAssertEqual(MacChatRoute.navigationTitle(tabRaw: SidebarTab.bots.rawValue), SidebarTab.bots.displayName)
     }
 
+    func testHomeIsAPaneNotChat() {
+        XCTAssertFalse(MacChatRoute.isChatActive(tabRaw: "Home"))
+        XCTAssertEqual(MacChatRoute.navigationTitle(tabRaw: "Home"), SidebarTab.home.displayName)
+        XCTAssertEqual(SidebarTab.home.rawValue, "Home")
+        XCTAssertEqual(SidebarTab.allCases.last, .home)
+        XCTAssertEqual(SidebarTab.migrated(rawValue: "Home"), .home)
+    }
+
     func testColumnMetricsFitWindowMinimum() {
         XCTAssertLessThanOrEqual(
             MacSidebarState.sidebarMaxWidth + MacSidebarState.detailMinWidth,

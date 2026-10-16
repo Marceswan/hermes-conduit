@@ -159,6 +159,7 @@ final class MacPaneTitleTests: XCTestCase {
 
     func testRouteDecidesWhenTheToolbarTitleIsHidden() {
         XCTAssertTrue(MacChatRoute.hidesToolbarTitle(tabRaw: SidebarTab.kanban.rawValue))
+        XCTAssertTrue(MacChatRoute.hidesToolbarTitle(tabRaw: SidebarTab.home.rawValue))
         XCTAssertTrue(MacChatRoute.hidesToolbarTitle(tabRaw: SidebarTab.bots.rawValue))
         XCTAssertTrue(MacChatRoute.hidesToolbarTitle(tabRaw: SidebarTab.cron.rawValue))
         XCTAssertFalse(MacChatRoute.hidesToolbarTitle(tabRaw: SidebarTab.sessions.rawValue))

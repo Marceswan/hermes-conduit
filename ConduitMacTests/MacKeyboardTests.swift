@@ -16,10 +16,11 @@ final class MacSidebarShortcutTests: XCTestCase {
         XCTAssertEqual(MacSidebarShortcut.tab(forKey: "2"), .bots)
         XCTAssertEqual(MacSidebarShortcut.tab(forKey: "3"), .cron)
         XCTAssertEqual(MacSidebarShortcut.tab(forKey: "4"), .kanban)
+        XCTAssertEqual(MacSidebarShortcut.tab(forKey: "5"), .home)
     }
 
     func testOtherKeysMapToNothing() {
-        for key in ["0", "5", "9", "a", "[", " "] as [Character] {
+        for key in ["0", "6", "9", "a", "[", " "] as [Character] {
             XCTAssertNil(MacSidebarShortcut.tab(forKey: key), "\(key)")
         }
     }
