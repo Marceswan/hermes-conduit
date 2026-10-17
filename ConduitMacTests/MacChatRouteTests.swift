@@ -117,6 +117,53 @@ final class MacHiddenChatFocusTests: XCTestCase {
         XCTAssertFalse(composer.heldFocusForRoute)
     }
 
+    // MARK: window becomes key again
+
+    func testWindowReturnFocusesTheComposer() {
+        let composer = ComposerTextView()
+        let window = makeWindow(with: [composer])
+        defer { window.close() }
+        window.makeFirstResponder(nil)
+        XCTAssertTrue(composer.focusOnWindowReturn())
+        XCTAssertTrue(window.firstResponder === composer)
+    }
+
+    func testWindowReturnLeavesAnotherTextFieldFocused() {
+        let composer = ComposerTextView()
+        let field = NSTextField(frame: .zero)
+        let window = makeWindow(with: [composer, field])
+        defer { window.close() }
+        XCTAssertTrue(window.makeFirstResponder(field), "sidebar search was being typed in")
+        XCTAssertFalse(composer.focusOnWindowReturn())
+        XCTAssertTrue(window.firstResponder is NSText)
+        XCTAssertFalse(window.firstResponder === composer)
+    }
+
+    func testWindowReturnUnderASheetDoesNothing() {
+        let composer = ComposerTextView()
+        let window = makeWindow(with: [composer])
+        defer { window.close() }
+        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
+        sheet.isReleasedWhenClosed = false
+        window.orderFront(nil)
+        window.beginSheet(sheet)
+        defer { window.endSheet(sheet) }
+        XCTAssertTrue(HostedTestSupport.waitUntil { window.attachedSheet != nil })
+        // Ordering the window front made the composer its initial first responder.
+        window.makeFirstResponder(nil)
+        XCTAssertFalse(composer.focusOnWindowReturn())
+        XCTAssertFalse(window.firstResponder === composer)
+    }
+
+    func testWindowReturnSkipsAReadOnlyComposer() {
+        let composer = ComposerTextView()
+        composer.isEditable = false
+        let window = makeWindow(with: [composer])
+        defer { window.close() }
+        window.makeFirstResponder(nil)
+        XCTAssertFalse(composer.focusOnWindowReturn())
+    }
+
     /// End to end through updateNSView: focused composer, leave chat, return.
     private struct FocusedComposer: View {
         @State var text = ""
@@ -170,6 +217,34 @@ final class MacHiddenChatFocusTests: XCTestCase {
         defaults.set(SidebarTab.sessions.rawValue, forKey: MacSidebarState.tabDefaultsKey)
         XCTAssertTrue(HostedTestSupport.waitUntil { window.firstResponder === composer },
                       "focus returns with the chat")
+    }
+
+    /// End to end: the hosted composer takes focus when its window becomes
+    /// key, only while chat is shown.
+    func testComposerFocusesWhenItsWindowBecomesKey() {
+        let defaults = UserDefaults.standard
+        let original = defaults.object(forKey: MacSidebarState.tabDefaultsKey)
+        defer {
+            if let original { defaults.set(original, forKey: MacSidebarState.tabDefaultsKey) }
+            else { defaults.removeObject(forKey: MacSidebarState.tabDefaultsKey) }
+        }
+        defaults.set(SidebarTab.kanban.rawValue, forKey: MacSidebarState.tabDefaultsKey)
+        let window = HostedTestSupport.host(FocusedComposer(isFocused: false), size: NSSize(width: 300, height: 100))
+        defer { HostedTestSupport.tearDown(window) }
+        var composer: ComposerTextView?
+        XCTAssertTrue(HostedTestSupport.waitUntil { composer = composerTextView(in: window); return composer != nil })
+        guard let composer else { return }
+        window.makeFirstResponder(nil)
+
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        XCTAssertFalse(window.firstResponder === composer, "a chat hidden under Kanban does not take focus")
+
+        defaults.set(SidebarTab.sessions.rawValue, forKey: MacSidebarState.tabDefaultsKey)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: NSWindow())
+        XCTAssertFalse(window.firstResponder === composer, "another window becoming key is ignored")
+
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        XCTAssertTrue(window.firstResponder === composer, "the chat's composer takes focus")
     }
 }
 

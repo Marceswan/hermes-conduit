@@ -126,22 +126,42 @@ struct ComposerPasteTextView: NSViewRepresentable {
         var parent: ComposerPasteTextView
         var lastRevision: UInt64 = 0
         private var focusObserver: NSObjectProtocol?
+        private var keyObserver: NSObjectProtocol?
         private var focusObserverCenter: NotificationCenter?
 
         init(_ parent: ComposerPasteTextView) { self.parent = parent }
 
         deinit {
-            if let focusObserver { focusObserverCenter?.removeObserver(focusObserver) }
+            for observer in [focusObserver, keyObserver].compactMap({ $0 }) {
+                focusObserverCenter?.removeObserver(observer)
+            }
         }
 
         /// Cmd-L: the composer in the command's window takes first responder.
+        /// The same when its window becomes key again (Conduit re-activated,
+        /// a sheet or another window closed) while the chat is shown.
         func observeFocusRequests(for textView: ComposerTextView, center: NotificationCenter) {
-            if let focusObserver { focusObserverCenter?.removeObserver(focusObserver) }
+            for observer in [focusObserver, keyObserver].compactMap({ $0 }) {
+                focusObserverCenter?.removeObserver(observer)
+            }
             focusObserverCenter = center
             focusObserver = center.addObserver(forName: .macFocusComposerRequested, object: nil, queue: .main) { [weak textView] note in
                 guard let textView, let window = textView.window else { return }
                 if let target = note.object as? NSWindow, target !== window { return }
                 textView.focusFromCommand()
+            }
+            keyObserver = center.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self, weak textView] note in
+                // The route is read from defaults, not `parent`: the stored
+                // copy can trail a tab switch until the next update.
+                guard let self, let textView, let window = textView.window, note.object as? NSWindow === window else { return }
+                guard ComposerPasteTextView.mayTakeFocus(
+                          followsMainRoute: self.parent.followsMainRoute,
+                          routeTabRaw: UserDefaults.standard.string(forKey: MacSidebarState.tabDefaultsKey)
+                      ) else { return }
+                // Tell the owner now, not on the next pass like
+                // `onFocusChange`: an update in between could see the old
+                // value and resign the composer again (updateNSView).
+                if textView.focusOnWindowReturn() { self.parent.isFocused = true }
             }
         }
 
@@ -294,6 +314,17 @@ final class ComposerTextView: NSTextView {
         guard let window, isEditable, !isHiddenOrHasHiddenAncestor, window.attachedSheet == nil else { return false }
         heldFocusForRoute = false
         return window.firstResponder === self || window.makeFirstResponder(self)
+    }
+
+    /// The window became key again: the composer takes the keyboard unless
+    /// another text input has it (AppKit has just restored it, e.g. the
+    /// sidebar search), a sheet is up, or the composer is read-only.
+    @discardableResult
+    func focusOnWindowReturn() -> Bool {
+        guard let window else { return false }
+        if window.firstResponder === self { return true }
+        guard !(window.firstResponder is NSText) else { return false }
+        return focusFromCommand()
     }
 
     /// Tab and Shift-Tab leave the composer along the window's key view loop
