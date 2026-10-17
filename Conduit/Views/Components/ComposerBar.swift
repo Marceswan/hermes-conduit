@@ -1134,11 +1134,21 @@ struct ComposerBar: View {
             .foregroundStyle(.secondary)
 #endif
             .padding(.horizontal, 4)
+#if !os(macOS)
+            // MAC: the bordered pull-down drew its bezel around this frame,
+            // so the pointer-sized chip grew to a 44pt slab.
             .frame(minWidth: 44, minHeight: 44)
+#endif
             .contentShape(Rectangle())
         }
         .menuOrder(.fixed)
 #if os(macOS)
+        // MAC: no bezel; the chip reads as text like the model name beside it.
+        // A plain button menu keeps the label's font and chevron order, which
+        // the borderless pop-up flattened.
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .fixedSize()
         // MAC: a pull-down label takes the app tint over foregroundStyle.
         .tint(.primary)
         // MAC: the label already draws its own up/down chevrons; hide the system one.
