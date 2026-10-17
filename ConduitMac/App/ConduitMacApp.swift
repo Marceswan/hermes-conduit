@@ -65,7 +65,10 @@ struct ConduitMacApp: App {
 
     init() {
         MacDefaults.register()
-        if !MacDefaults.isRunningUnderXCTest { SheetEscape.install() }
+        if !MacDefaults.isRunningUnderXCTest {
+            SheetEscape.install()
+            SheetCloseButton.install()
+        }
     }
 
     var body: some Scene {

@@ -26,10 +26,16 @@ enum SheetEscape {
     static func handleEscape(in window: NSWindow?) -> Bool {
         guard let window, window.sheetParent != nil, isSwiftUIHosted(window) else { return false }
         if let editor = window.firstResponder as? NSTextView, editor.hasMarkedText() { return false }
-        return AccessibilityTreeBoost.withTree {
+        let handled = AccessibilityTreeBoost.withTree {
             guard let control = closeControl(in: window.contentView) else { return false }
             return pressed(control)
         }
+        if handled { return true }
+        // A sheet with the added X has no control of its own; close it the
+        // way the X does, focused field or not.
+        guard SheetCloseButton.isDecorated(window) else { return false }
+        SheetCloseButton.close(window)
+        return true
     }
 
     /// SwiftUI sheets host their content in an `NSHostingController`/hosting
@@ -59,7 +65,9 @@ enum SheetEscape {
 
     // MARK: - Matching
 
-    private enum Kind: Int { case cancel = 0, close = 1 }
+    /// `done` only tells `hasDismissControl` a sheet has a way out; it is
+    /// never pressed.
+    private enum Kind: Int { case cancel = 0, close = 1, done = 2 }
 
     /// Breadth-first search for the Cancel or Close control; Cancel wins over
     /// Close. Bounded so a huge sheet cannot stall a key press.
@@ -76,10 +84,36 @@ enum SheetEscape {
             let control = (dequeued as? NSCell)?.controlView ?? dequeued
             var kind = classify(accessible(dequeued, requiring: pressSelectors))
             if kind == nil, control !== dequeued { kind = classify(accessible(control, requiring: pressSelectors)) }
-            if let kind, best == nil || kind.rawValue < best!.kind.rawValue { best = (kind, control) }
+            if let kind, kind != .done, best == nil || kind.rawValue < best!.kind.rawValue { best = (kind, control) }
             queue.append(contentsOf: (node.accessibilityChildren() ?? []).compactMap { $0 as? NSObject })
         }
         return best?.control
+    }
+
+    /// True when the sheet shows its own Cancel, Close or Done control, so it
+    /// needs no added close button (SheetCloseButton.swift).
+    static func hasDismissControl(in window: NSWindow) -> Bool {
+        AccessibilityTreeBoost.withTree {
+            firstControl(in: window.contentView) { classify(accessible($0, requiring: pressSelectors)) != nil } != nil
+        }
+    }
+
+    /// Breadth-first search for the first node `matches` accepts, judged on
+    /// the node and, for an AppKit cell, on its control. Bounded like
+    /// `closeControl`.
+    private static func firstControl(in root: Any?, where matches: (NSObject) -> Bool) -> NSObject? {
+        var queue: [NSObject] = (root as? NSObject).map { [$0] } ?? []
+        var visited = 0
+        while !queue.isEmpty, visited < 2_000 {
+            let dequeued = queue.removeFirst()
+            visited += 1
+            guard let node = accessible(dequeued, requiring: traversalSelectors) else { continue }
+            let control = (dequeued as? NSCell)?.controlView ?? dequeued
+            if matches(dequeued) { return control }
+            if control !== dequeued, matches(control) { return control }
+            queue.append(contentsOf: (node.accessibilityChildren() ?? []).compactMap { $0 as? NSObject })
+        }
+        return nil
     }
 
     private static func classify(_ node: NSAccessibilityProtocol?) -> Kind? {
@@ -109,24 +143,28 @@ enum SheetEscape {
 
     private static let cancelWords = words("Cancel")
     private static let closeWords = words("Close")
+    private static let doneWords = words("Done")
 
     private static func words(_ english: String) -> Set<String> {
         [english, AppLocalization.string(String.LocalizationValue(english))]
     }
 
     /// Exact "Cancel"; exact "Close"; "Close <anything>" only for an
-    /// icon-only button (the sheet header's X, labelled "Close <title>").
-    /// Everything else, including "Done" and "Cancel dictation", is no match.
+    /// icon-only button (the sheet header's X, labelled "Close <title>");
+    /// exact "Done" as `.done`, which Esc never presses. Everything else,
+    /// including "Cancel dictation", is no match.
     private static func kind(forLabel label: String, iconOnly: Bool) -> Kind? {
         let trimmed = label.trimmingCharacters(in: .whitespaces)
         if cancelWords.contains(trimmed) { return .cancel }
         if closeWords.contains(trimmed) { return .close }
         if iconOnly, closeWords.contains(where: { trimmed.hasPrefix($0 + " ") }) { return .close }
+        if doneWords.contains(trimmed) { return .done }
         return nil
     }
 
     static func isCloseLabel(_ label: String, iconOnly: Bool = true) -> Bool {
-        kind(forLabel: label, iconOnly: iconOnly) != nil
+        guard let kind = kind(forLabel: label, iconOnly: iconOnly) else { return false }
+        return kind != .done
     }
 
     /// `accessibilityPerformPress()` reports false for AppKit buttons even when
