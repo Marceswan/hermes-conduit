@@ -92,6 +92,10 @@ struct Attachment: Codable, Identifiable, Equatable {
     /// without those copies (#652); this says where to fetch one when its
     /// file is gone from the server.
     var inlineImage: InlineImageRef? = nil
+    /// What Hermes' vision saw in a picture, from history saved before
+    /// Hermes kept the picture's reference instead (#887). Shown on a long
+    /// press and read by VoiceOver.
+    var imageDescription: String? = nil
 
     enum Kind: String, Codable {
         case image
@@ -390,6 +394,7 @@ struct ClarifyActivity: Codable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case requestId = "request_id"
+        case legacyRequestId = "requestId"
         case questions
         case isExpired
         case error
@@ -399,7 +404,11 @@ struct ClarifyActivity: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        requestId = try container.decode(String.self, forKey: .requestId)
+        if let currentID = try container.decodeIfPresent(String.self, forKey: .requestId) {
+            requestId = currentID
+        } else {
+            requestId = try container.decode(String.self, forKey: .legacyRequestId)
+        }
         isExpired = try container.decodeIfPresent(Bool.self, forKey: .isExpired) ?? false
         error = try container.decodeIfPresent(String.self, forKey: .error)
         if let questions = try? container.decode([ClarifyQuestion].self, forKey: .questions), !questions.isEmpty {
@@ -409,11 +418,14 @@ struct ClarifyActivity: Codable, Equatable {
         // Migration: presentation caches written by older builds stored the
         // legacy single-question fields. Decode what is still usable instead
         // of failing the whole cache load; a degenerate empty-text record
-        // yields an empty question list rather than a phantom question.
+        // yields an empty question list rather than a phantom question, and
+        // is expired because a card with nothing to answer would otherwise
+        // derive pending and render an inert "needs your input" prompt.
         let question = (try? container.decode(String.self, forKey: .question)) ?? ""
         let choices = (try? container.decode([ClarifyChoice].self, forKey: .choices)) ?? []
         let status = (try? container.decode(ClarifyQuestion.Status.self, forKey: .status)) ?? .pending
         let answer = try? container.decode(String.self, forKey: .answer)
+        if question.isEmpty { isExpired = true }
         questions = question.isEmpty
             ? []
             : [
@@ -1027,7 +1039,7 @@ enum TurnState: Equatable {
             // Attachments do not have steering semantics. With no typed text,
             // keep Stop available even if an attachment was drafted earlier.
             guard hasText else { return .stop }
-            return busyInputMode == .interrupt ? .interrupt : .steer
+            return busyInputMode.composerAction
         }
     }
 }
@@ -1038,12 +1050,84 @@ enum ComposerAction: Equatable {
     case stop
     case steer
     case interrupt
+    /// Waits as the next message until the running turn finishes.
+    case queue
+}
+
+/// What a long-press on the composer's action button offers for this
+/// message only; a plain tap keeps the action it shows (#816, #817, #842,
+/// #962).
+enum ComposerSendChoice: String, CaseIterable, Identifiable {
+    case steer
+    case interrupt
+    case queue
+    /// `/background`: a separate agent takes the message.
+    case background
+    /// `/btw`: a side question over a snapshot of the chat.
+    case btw
+
+    var id: String { rawValue }
+
+    /// The busy mode this choice stands for, if it is one.
+    var busyInputMode: BusyInputMode? {
+        switch self {
+        case .steer: return .steer
+        case .interrupt: return .interrupt
+        case .queue: return .queue
+        case .background, .btw: return nil
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .steer, .interrupt, .queue: return busyInputMode?.title ?? ""
+        case .background: return AppLocalization.string("Background")
+        case .btw: return AppLocalization.string("Side question")
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .steer, .interrupt, .queue: return busyInputMode?.symbol ?? ""
+        case .background: return "square.stack.3d.up"
+        case .btw: return "bubble.left.and.text.bubble.right"
+        }
+    }
+
+    /// The slash command a side-agent choice sends the message as.
+    var slashCommand: String? {
+        switch self {
+        case .background: return "background"
+        case .btw: return "btw"
+        case .steer, .interrupt, .queue: return nil
+        }
+    }
+
+    /// The other ways to send a typed message, in menu order. While Hermes
+    /// works: the busy modes the tap doesn't use, then the side agents.
+    /// While idle: the side agents. None for attachments (no busy mode or
+    /// side agent takes them) or a slash command (it runs as typed).
+    static func choices(for action: ComposerAction, hasAttachments: Bool, isSlashCommand: Bool) -> [ComposerSendChoice] {
+        guard !hasAttachments, !isSlashCommand else { return [] }
+        switch action {
+        case .send:
+            return [.background, .btw]
+        case .steer, .interrupt, .queue:
+            let busyModes: [ComposerSendChoice] = [.steer, .queue, .interrupt]
+            return busyModes.filter { $0.busyInputMode?.composerAction != action } + [.background, .btw]
+        case .stop, .unavailable:
+            return []
+        }
+    }
 }
 
 /// Profile-scoped Hermes setting (`display.busy_input_mode`).
 enum BusyInputMode: String, CaseIterable, Codable, Identifiable {
     case steer
     case interrupt
+    /// The message waits and goes as the next turn once the running one
+    /// finishes (#842). Held on the phone, so it works on any Hermes.
+    case queue
 
     var id: String { rawValue }
 
@@ -1051,6 +1135,16 @@ enum BusyInputMode: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .steer: return AppLocalization.string("Steer")
         case .interrupt: return AppLocalization.string("Interrupt")
+        case .queue: return AppLocalization.string("Queue")
+        }
+    }
+
+    /// The composer action a typed message takes in this mode.
+    var composerAction: ComposerAction {
+        switch self {
+        case .steer: return .steer
+        case .interrupt: return .interrupt
+        case .queue: return .queue
         }
     }
 
@@ -1061,11 +1155,17 @@ enum BusyInputMode: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .steer: return "steeringwheel"
         case .interrupt: return "hand.raised.fill"
+        case .queue: return "text.line.last.and.arrowtriangle.forward"
         }
     }
 
+    /// Unset or unknown is interrupt, as Hermes reads it.
     static func fromGatewayValue(_ value: String?) -> BusyInputMode {
-        value?.lowercased() == BusyInputMode.interrupt.rawValue ? .interrupt : .steer
+        switch value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case BusyInputMode.steer.rawValue: return .steer
+        case BusyInputMode.queue.rawValue: return .queue
+        default: return .interrupt
+        }
     }
 }
 
@@ -1257,6 +1357,14 @@ struct ProfileModelDefaults: Equatable {
         return (row?.name ?? savedProvider, savedModel)
     }
 
+    /// Whether the saved main model offers Ultrafast, which Hermes' config
+    /// schema leaves out of the Fast mode choices (Desktop adds it the same
+    /// way, from the catalog row's capabilities).
+    var mainModelOffersUltrafast: Bool {
+        let (rowName, model) = selection
+        return providers.first { $0.matches(rowName) }?.offersUltrafast(model) ?? false
+    }
+
     private func uniqueRow(listing model: String) -> ProviderInfo? {
         guard !model.isEmpty else { return nil }
         let rows = providers.filter { $0.models.contains(where: { $0.id == model }) }
@@ -1300,6 +1408,9 @@ struct RuntimeState: Equatable {
     var contextMax: Int = 0
     var cwd: String = ""
     var fast: Bool = false
+    /// The tier behind `fast`: "priority", "ultrafast", "auto", "cold", or
+    /// empty for normal. Empty on gateways that only report `fast`.
+    var serviceTier: String = ""
     var model: String = ""
     var provider: String = ""
     var reasoningEffort: String = ""

@@ -25,10 +25,22 @@ extension ShapeStyle where Self == Color {
     // Text colors (adapt to light/dark via system colors)
     static var conduitText: Color { Color.primary }
     static var conduitTextSecondary: Color { Color.secondary }
-    static var conduitTextTertiary: Color { Color(red: 0.5, green: 0.5, blue: 0.55) }
     // Backgrounds
     static var conduitBackground: Color { Color(.systemBackground) }
     static var conduitSurface: Color { Color(.secondarySystemBackground) }
+}
+
+/// Quiet information (timestamps, hints, counts) at the tertiary level,
+/// raised to secondary under Increase Contrast: tertiary is far below
+/// 4.5:1 on the light background (#830).
+struct ConduitTertiaryStyle: ShapeStyle {
+    func resolve(in environment: EnvironmentValues) -> HierarchicalShapeStyle {
+        environment.colorSchemeContrast == .increased ? .secondary : .tertiary
+    }
+}
+
+extension ShapeStyle where Self == ConduitTertiaryStyle {
+    static var conduitTertiary: ConduitTertiaryStyle { ConduitTertiaryStyle() }
 }
 
 extension Color {
@@ -716,9 +728,10 @@ private struct OutOfProcessAccentTint: ViewModifier {
 
 #if os(iOS) // MAC: no Mac use: ConduitApp (not compiled on Mac) is its only caller. The Mac picker tint comes from conduitOutOfProcessAccentTint (reads \.conduitAccent)
 /// Gives the window the chosen accent as its tint, for system screens Conduit
-/// presents but doesn't draw. The colour is resolved, not dynamic: a dynamic
+/// presents but doesn't draw, and as its accent trait, for the sheets it does. The colour is resolved, not dynamic: a dynamic
 /// one sent to another process loses the pick (#748). It is set again when
-/// the window turns light or dark.
+/// the window turns light or dark: the window's own trait change, since the
+/// tinting view is never laid out again and its changes can arrive late.
 struct WindowAccentTint: UIViewRepresentable {
     let choice: ConduitAccentChoice
 
@@ -738,22 +751,32 @@ struct WindowAccentTint: UIViewRepresentable {
             didSet { if choice != oldValue { applyTint() } }
         }
 
-        override init(frame: CGRect) {
-            super.init(frame: frame)
-            registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: TintingView, _) in
-                view.applyTint()
-            }
-        }
-
-        required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+        private weak var observedWindow: UIWindow?
+        private var styleRegistration: (any UITraitChangeRegistration)?
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
+            if observedWindow !== window {
+                if let styleRegistration { observedWindow?.unregisterForTraitChanges(styleRegistration) }
+                styleRegistration = window?.registerForTraitChanges([UITraitUserInterfaceStyle.self]) { [weak self] (_: UIWindow, _: UITraitCollection) in
+                    self?.applyTint()
+                }
+                observedWindow = window
+            }
             applyTint()
         }
 
         private func applyTint() {
             guard let window else { return }
+            // Screens presented over the root (sheets: the full message
+            // editor) inherit their traits from the window, not from the
+            // root's environment, so without this their accent colours
+            // resolve the default amber (#920).
+            // Reading an override that was never set throws, so ask first.
+            let overrides = window.traitOverrides
+            if !overrides.contains(ConduitAccentTrait.self) || overrides.conduitAccent != choice {
+                window.traitOverrides.conduitAccent = choice
+            }
             window.tintColor = choice.color(dark: window.traitCollection.userInterfaceStyle == .dark)
         }
     }

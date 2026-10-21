@@ -257,6 +257,54 @@ final class OfflineChatCacheTests: XCTestCase {
         XCTAssertNotNil(store.loadTranscript("x", dashboardID: dashboard, profile: "other"))
     }
 
+    /// A deleted chat's copy goes under every id it was saved by, with its
+    /// saved rows, and a launch no longer opens to it (#1040).
+    func testRemovingADeletedChatsCopyLeavesNothingToOpen() throws {
+        let store = makeStore()
+        let dashboard = UUID()
+        let row = [ChatMessage(id: "m", role: .user, content: "hi", timestamp: "1")]
+        var deleted = session("runtime-a")
+        deleted.storedSessionId = "stored-a"
+        store.record(dashboardID: dashboard, profile: "default", sessionID: "stored-b", title: "B", messages: row, sessions: [deleted, session("stored-b")])
+        store.record(dashboardID: dashboard, profile: "default", sessionID: "stored-a", title: "A", messages: row, sessions: [deleted, session("stored-b")])
+        store.record(dashboardID: dashboard, profile: "work", sessionID: "stored-a", title: "A", messages: row, sessions: [deleted])
+        store.recordChatList(
+            SavedChatList.capture(sessions: [deleted, session("stored-b")], cronSessions: [], isPinned: { $0.id == "runtime-a" }, voiceTags: [:], projects: [], supportsProjects: false),
+            dashboardID: dashboard,
+            profile: "default"
+        )
+        let file = store.transcriptFileURL("stored-a", dashboardID: dashboard, profile: "default")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+
+        // Deleted by its runtime id: the saved row's alias finds the copy.
+        store.removeTranscripts(sessionIDs: ["runtime-a"], dashboardID: dashboard, profile: "default")
+
+        let snapshot = try XCTUnwrap(store.load(dashboardID: dashboard, profile: "default"))
+        XCTAssertNil(snapshot.transcript(for: "stored-a"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "The deleted chat's rows leave the phone")
+        XCTAssertEqual(snapshot.lastSessionID, "stored-b", "A launch opens to a chat that still exists")
+        XCTAssertEqual(snapshot.sessions.map(\.id), ["stored-b"])
+        XCTAssertNotNil(store.loadTranscript("stored-b", dashboardID: dashboard, profile: "default"))
+        let list = try XCTUnwrap(store.loadChatList(dashboardID: dashboard, profile: "default"))
+        XCTAssertEqual(list.sessions.map(\.id), ["stored-b"])
+        XCTAssertEqual(list.pinnedRowIDs, [])
+        XCTAssertNotNil(store.loadTranscript("stored-a", dashboardID: dashboard, profile: "work"), "Another profile's chat of the same id stays")
+    }
+
+    /// The last chat saved being deleted leaves no chat to open to.
+    func testRemovingTheOnlySavedChatClearsTheChatALaunchOpensTo() throws {
+        let store = makeStore()
+        let dashboard = UUID()
+        seedCopy(store, dashboard: dashboard)
+
+        store.removeTranscripts(sessionIDs: ["stored-a"], dashboardID: dashboard, profile: "default")
+
+        let snapshot = try XCTUnwrap(store.load(dashboardID: dashboard, profile: "default"))
+        XCTAssertNil(snapshot.lastSessionID)
+        XCTAssertTrue(snapshot.transcripts.isEmpty)
+        XCTAssertNil(store.loadTranscript("stored-a", dashboardID: dashboard, profile: "default"))
+    }
+
     /// Copies saved by an earlier build, every chat inside the one file,
     /// still show after the update: the first read moves them to a file each.
     func testCopiesSavedInTheFirstFormatMoveToAFileEach() throws {
@@ -821,6 +869,29 @@ final class OfflineChatCacheTests: XCTestCase {
         XCTAssertNil(appState.offlineChatPresentation)
     }
 
+    /// Deleting a chat takes its saved copy off the phone and off the
+    /// screen, so the next launch can't show it as the saved copy (#1040).
+    func testDeletingAChatRemovesItsSavedCopy() async throws {
+        let (appState, store, dashboard) = makeAppState()
+        seedCopy(store, dashboard: dashboard)
+        appState.presentOfflineChatIfAvailable(dashboardID: dashboard)
+        XCTAssertEqual(appState.offlineChatPresentation?.displayedSessionID, "stored-a")
+
+        appState.widgetSessionMutationRequestOverride = { _, method, _ in
+            method == "GET" ? ["runtime_revision": 3, "runtime_generation": 1] : ["ok": true]
+        }
+        var deleted = session("runtime-a")
+        deleted.storedSessionId = "stored-a"
+
+        let removed = await appState.deleteSession(deleted)
+
+        XCTAssertTrue(removed)
+        XCTAssertNil(appState.offlineChatPresentation)
+        XCTAssertNil(store.loadTranscript("stored-a", dashboardID: dashboard, profile: "default"))
+        appState.presentOfflineChatIfAvailable(dashboardID: dashboard)
+        XCTAssertNil(appState.offlineChatPresentation?.displayedTranscript, "The next launch has no deleted chat to show")
+    }
+
     func testRemovingAnInactiveDashboardWipesOnlyItsCopy() {
         let active = SavedDashboard(id: UUID(), label: "One", normalizedURL: "https://one.example")
         let other = SavedDashboard(id: UUID(), label: "Two", normalizedURL: "https://two.example")
@@ -934,6 +1005,75 @@ final class OfflineChatCacheTests: XCTestCase {
         XCTAssertTrue(copy.displayedMessages.isEmpty)
         XCTAssertEqual(appState.lastConnectionFailure, .unreachable)
         XCTAssertNil(store.load(dashboardID: dashboard, profile: "default"))
+    }
+
+    /// Offline with a Face ID dashboard: closing the Face ID sheet makes
+    /// Conduit active again, which retries the restore. One unlock holds,
+    /// so the retries don't bring the sheet back in a loop; a newly saved
+    /// password or signing out of the dashboard asks again.
+    func testOneFaceIDUnlockHoldsWhileTheServerCantBeReached() async {
+        useInMemoryKeychain()
+        // Loopback port 1: nothing listens, so the restore fails as
+        // unreachable and the saved copy stays up.
+        let loopback = SavedDashboard(id: UUID(), label: "Local", normalizedURL: "http://127.0.0.1:1")
+        let (appState, store, dashboard) = makeAppState(
+            registry: SavedDashboardRegistry(activeDashboardID: loopback.id, dashboards: [loopback])
+        )
+        seedCopy(store, dashboard: dashboard)
+        KeychainHelper.saveCredentials(
+            DashboardCredentials(baseURL: loopback.normalizedURL, username: "hermes", password: "unused", requiresFaceID: true),
+            dashboardID: dashboard
+        )
+        var unlocks = 0
+        appState.unlockWithFaceID = {
+            unlocks += 1
+            return true
+        }
+        let passwordTries: @MainActor () -> Int = {
+            appState.connectionTimeline?.events.filter { $0.label.hasPrefix("Password sign-in") }.count ?? 0
+        }
+
+        appState.loadSavedConnection()
+        await waitUntil { passwordTries() == 1 && !appState.isConnecting }
+        XCTAssertEqual(unlocks, 1)
+        XCTAssertNotNil(appState.offlineChatPresentation)
+        XCTAssertNil(appState.connection)
+        XCTAssertFalse(appState.showLogin)
+
+        for round in 1...3 {
+            // Each retry starts its own timeline.
+            let previous = appState.connectionTimeline?.startedAt
+            _ = appState.handleScenePhase(.inactive)
+            _ = appState.handleScenePhase(.active)
+            await waitUntil {
+                appState.connectionTimeline?.startedAt != previous
+                    && appState.connectionTimeline?.trigger.hasPrefix("retry from offline copy") == true
+                    && passwordTries() == 1 && !appState.isConnecting
+            }
+            XCTAssertEqual(unlocks, 1, "Retry \(round) asked for Face ID again")
+            XCTAssertNotNil(appState.offlineChatPresentation)
+            XCTAssertFalse(appState.showLogin)
+        }
+
+        // A password saved later for the dashboard wasn't unlocked yet.
+        let previous = appState.connectionTimeline?.startedAt
+        KeychainHelper.saveCredentials(
+            DashboardCredentials(baseURL: loopback.normalizedURL, username: "hermes", password: "changed", requiresFaceID: true),
+            dashboardID: dashboard
+        )
+        appState.loadSavedConnection()
+        await waitUntil {
+            appState.connectionTimeline?.startedAt != previous && passwordTries() == 1 && !appState.isConnecting
+        }
+        XCTAssertEqual(unlocks, 2)
+
+        appState.signOutDashboard(dashboard)
+        KeychainHelper.saveCredentials(
+            DashboardCredentials(baseURL: loopback.normalizedURL, username: "hermes", password: "changed", requiresFaceID: true),
+            dashboardID: dashboard
+        )
+        appState.loadSavedConnection()
+        await waitUntil { unlocks == 3 }
     }
 
     /// A dashboard switch starts the phone's pins over until Hermes' arrive
@@ -1475,6 +1615,43 @@ final class OfflineChatCacheTests: XCTestCase {
         XCTAssertNil(appState.pendingComposerSend)
         await waitUntil { store.loadPendingSends(dashboardID: dashboard).isEmpty }
         XCTAssertTrue(appState.composerRestoreRequests.isEmpty)
+    }
+
+    /// Queue (#842): Hermes keeps the message as the next turn, so it goes
+    /// even if the app closes. It is sent at once, marked queued, and the
+    /// running reply goes on streaming meanwhile.
+    func testQueueHandsTheMessageToHermesAndKeepsTheReplyStreaming() async throws {
+        let plain = SentPrompts()
+        let queued = SentPrompts()
+        var operations = ChatResumeLifecycleOperations(sendPrompt: { _, sessionID, text in
+            plain.prompts.append((sessionID, text))
+            return .accepted
+        })
+        operations.sendQueuedPrompt = { _, sessionID, text in
+            queued.prompts.append((sessionID, text))
+            return .queued
+        }
+        let (appState, _, _) = makeAppState(lifecycleOperations: operations)
+        let connection = HermesConnection(baseUrl: "https://one.example", ticket: "ticket")
+        appState.connection = connection
+        appState.client = HermesClient(connection: connection, profile: "default")
+        appState.sessions = [session("stored-a")]
+        appState.activeSessionId = "stored-a"
+        appState.isConnected = true
+        appState.handleStreamEvent(.sessionBusy(sessionId: "stored-a", busy: true))
+        appState.handleStreamEvent(.messageDelta(sessionId: "stored-a", text: "Partial answer"))
+        await waitUntil { appState.streamingText == "Partial answer" }
+
+        let sent = await appState.submitComposer(text: "Next one", busyMode: .queue)
+
+        XCTAssertTrue(sent)
+        XCTAssertEqual(queued.prompts.map { $0.text }, ["Next one"])
+        XCTAssertEqual(queued.prompts.map { $0.sessionID }, ["stored-a"])
+        XCTAssertTrue(plain.prompts.isEmpty, "Queue never goes as a plain send, which would steer or interrupt")
+        XCTAssertEqual(appState.messages.last?.content, "Next one")
+        XCTAssertEqual(appState.streamingText, "Partial answer")
+        XCTAssertEqual(appState.turnState, .running)
+        XCTAssertNil(appState.pendingComposerSend, "Nothing waits on the phone")
     }
 
     /// A message an earlier run left waiting comes back as a draft at

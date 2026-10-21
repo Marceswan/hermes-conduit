@@ -84,6 +84,19 @@ final class CompatShimTests: XCTestCase {
         XCTAssertNoThrow(try session.overrideOutputAudioPort(.speaker))
     }
 
+    func testLabelColorsMapToTheSystemLabelColors() {
+        XCTAssertEqual(UIColor.label, NSColor.labelColor)
+        XCTAssertEqual(UIColor.secondaryLabel, NSColor.secondaryLabelColor)
+        // ToolResultViews.coloredDiff dims file and hunk headers with it (upstream step 5, 86f838a4).
+        XCTAssertEqual(UIColor.tertiaryLabel, NSColor.tertiaryLabelColor)
+    }
+
+    func testBluetoothLEPortKeepsTheIOSRawValueAndCountsAsABluetoothInput() {
+        XCTAssertEqual(AVAudioSession.Port.bluetoothLE.rawValue, "BluetoothLE")
+        XCTAssertTrue(VoiceBuiltInMicrophoneFallback.bluetoothInputs.contains(.bluetoothLE))
+        XCTAssertTrue(VoiceBuiltInMicrophoneFallback.bluetoothInputs.contains(.bluetoothHFP))
+    }
+
     func testDynamicColorResolvesPerAppearance() throws {
         let color = UIColor { traits in
             traits.userInterfaceStyle == .dark

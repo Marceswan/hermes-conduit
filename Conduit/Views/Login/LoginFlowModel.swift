@@ -77,6 +77,12 @@ struct LoginBrowserRequest: Identifiable {
     let webKitStoreID: UUID
 }
 
+/// The extra-header editor's address, captured when it is opened.
+struct LoginExtraHeadersRequest: Identifiable {
+    let id = UUID()
+    let serverURL: String
+}
+
 /// What the Connection Setup assistant (or a later scan) fills in.
 struct LoginSeed: Identifiable {
     let id = UUID()
@@ -209,7 +215,7 @@ final class LoginFlowModel: ObservableObject {
     @Published var browserRequest: LoginBrowserRequest?
     @Published var connectionSetupDestination: ConnectionHelpDestination?
     @Published var connectionRepairContext: ConnectionRepairContext?
-    @Published var showsExtraHeaders = false
+    @Published var extraHeadersRequest: LoginExtraHeadersRequest?
     @Published var extraHeadersRevision = 0
     @Published var showsScanner = false
     /// A scanned sign-in code, asked about in its own sheet.
@@ -600,7 +606,7 @@ final class LoginFlowModel: ObservableObject {
                         requiresFaceID: useBiometrics
                     ), dashboardID: dashboardID)
                 } else {
-                    KeychainHelper.clearCredentials(dashboardID: dashboardID)
+                    appState.clearSavedPassword(dashboardID: dashboardID)
                 }
                 if let cloudflare = target.cloudflare {
                     KeychainHelper.saveCloudflareAccess(cloudflare, origin: target.baseURL, dashboardID: dashboardID)
@@ -814,7 +820,7 @@ final class LoginFlowModel: ObservableObject {
         // Browser and single sign-on logins leave no password Conduit can
         // reuse.
         if let dashboardID = appState.resolveDashboardID(forURL: baseURL, registerIfMissing: true) {
-            KeychainHelper.clearCredentials(dashboardID: dashboardID)
+            appState.clearSavedPassword(dashboardID: dashboardID)
             KeychainHelper.clearNativeOAuthTokens(dashboardID: dashboardID)
         }
         appState.rememberDashboardURL(baseURL)

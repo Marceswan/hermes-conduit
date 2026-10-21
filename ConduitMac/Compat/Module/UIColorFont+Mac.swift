@@ -4,6 +4,7 @@ import SwiftUI
 public extension NSColor {
     static var label: NSColor { .labelColor }
     static var secondaryLabel: NSColor { .secondaryLabelColor }
+    static var tertiaryLabel: NSColor { .tertiaryLabelColor }
     static var link: NSColor { .linkColor }
     static var systemBackground: NSColor { .windowBackgroundColor }
     static var secondarySystemBackground: NSColor { .controlBackgroundColor }

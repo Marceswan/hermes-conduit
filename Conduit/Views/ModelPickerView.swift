@@ -74,6 +74,38 @@ enum ReasoningEffortLevel: String, CaseIterable, Identifiable {
     }
 }
 
+/// The session's speed as Hermes' `/fast` words: normal, Fast (OpenAI
+/// Priority / Anthropic Fast Mode) or OpenAI Ultrafast.
+enum ModelSpeed: String, CaseIterable, Identifiable {
+    case normal, fast, ultrafast
+
+    var id: String { rawValue }
+
+    /// The speed the runtime reports. Ultrafast needs `service_tier`; a
+    /// gateway that only sends `fast` reads as Fast or normal.
+    init(fast: Bool, serviceTier: String) {
+        guard fast else { self = .normal; return }
+        self = serviceTier.lowercased() == "ultrafast" ? .ultrafast : .fast
+    }
+
+    /// The tier word session info reports for this speed.
+    var serviceTier: String {
+        switch self {
+        case .normal: return ""
+        case .fast: return "priority"
+        case .ultrafast: return "ultrafast"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .normal: return AppLocalization.string("Off")
+        case .fast: return AppLocalization.string("Fast")
+        case .ultrafast: return AppLocalization.string("Ultrafast")
+        }
+    }
+}
+
 /// The settings an Apply sends, captured from the sheet's draft.
 struct ModelPickerApplyDraft: Equatable {
     var model: String
@@ -83,7 +115,10 @@ struct ModelPickerApplyDraft: Equatable {
     /// The effort word sent to Hermes ("none" turns reasoning off), or nil
     /// to leave reasoning alone. The sheet sets reasoning on tap instead.
     var reasoningEffort: String?
-    var fast: Bool
+    /// Sent only when changed, so Apply never rewrites a speed set
+    /// elsewhere (a typed `/fast cold`, or Ultrafast on an older sheet).
+    var speedChanged: Bool
+    var speed: ModelSpeed
 }
 
 /// The gateway writes one Apply makes, in order. Injected so the apply flow
@@ -92,7 +127,7 @@ struct ModelPickerApplyActions {
     var setModel: @MainActor (_ model: String, _ provider: String, _ confirmed: Bool) async throws -> ModelSwitchOutcome
     var setYolo: @MainActor (_ enabled: Bool) async -> AppState.YoloWriteFailure?
     var setReasoning: @MainActor (_ effort: String) async throws -> Void
-    var setFast: @MainActor (_ enabled: Bool) async throws -> Void
+    var setSpeed: @MainActor (_ speed: ModelSpeed) async throws -> Void
 }
 
 /// How far an Apply got. Steps already applied stay applied when a later one
@@ -102,7 +137,7 @@ struct ModelPickerApplyProgress: Equatable {
     var switchedModel: String?
     var yoloApplied = false
     var reasoningApplied = false
-    var fastApplied = false
+    var speedApplied = false
 }
 
 enum ModelPickerApplyResult: Equatable {
@@ -113,7 +148,7 @@ enum ModelPickerApplyResult: Equatable {
 }
 
 /// Runs one Apply: the model switch first, as the confirmation gate, then
-/// YOLO, reasoning and fast. A guarded switch stops before anything else is
+/// YOLO, reasoning and speed. A guarded switch stops before anything else is
 /// written, so cancelling its confirmation leaves the session untouched.
 @MainActor
 func runModelPickerApply(
@@ -159,8 +194,10 @@ func runModelPickerApply(
             try await actions.setReasoning(effort)
             progress.reasoningApplied = true
         }
-        try await actions.setFast(draft.fast)
-        progress.fastApplied = true
+        if draft.speedChanged {
+            try await actions.setSpeed(draft.speed)
+            progress.speedApplied = true
+        }
         return .completed(progress)
     } catch {
         return .failed(UserFacingError.message(for: error), progress)
@@ -221,7 +258,7 @@ struct ModelPickerSelection: Equatable {
 private struct ModelPickerDraftKey: Equatable {
     var model: String
     var provider: String
-    var fast: Bool
+    var speed: ModelSpeed
     var yolo: Bool
 }
 
@@ -235,7 +272,14 @@ struct ModelPickerView: View {
     @State private var reasoningEffort = "none"
     @State private var isApplyingReasoning = false
     @State private var reasoningError: String?
-    @State private var fastEnabled = false
+    @State private var speed = ModelSpeed.normal
+    /// The speed the session had when the sheet seeded it; Apply writes
+    /// only a change from it.
+    @State private var initialSpeed = ModelSpeed.normal
+    /// The session's model as the catalog load seeded it, so only a model
+    /// picked here can drop Ultrafast.
+    @State private var seededModel = ""
+    @State private var seededProvider = ""
     @State private var yoloEnabled = false
     @State private var initialYoloEnabled: Bool?
     @State private var providers: [ProviderInfo] = []
@@ -256,10 +300,12 @@ struct ModelPickerView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                ConduitBackdrop()
+                // V2: a settings page's layout, each group's name over a
+                // quiet card on the profile's glow.
+                ConduitBackdrop(glowTint: appState.profileGlowTint(appState.activeProfile))
 
                 ScrollView {
-                    VStack(spacing: 14) {
+                    VStack(alignment: .leading, spacing: 24) {
                         if editingVisibility {
                             visibilityEditor
                         } else {
@@ -271,10 +317,13 @@ struct ModelPickerView: View {
                             applyButton
                         }
                     }
-                    .padding(16)
-                    .padding(.bottom, 8)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .padding(.bottom, 24)
                 }
                 .scrollIndicators(.hidden)
+                .scrollDismissesKeyboard(.interactively)
+                .modifier(V2SoftTopScrollEdge(isOn: true))
             }
             .navigationTitle("Model")
             .navigationBarTitleDisplayMode(.inline)
@@ -301,6 +350,14 @@ struct ModelPickerView: View {
             // Seeded here, not after the catalog loads, so a failed catalog
             // fetch still shows the real level.
             reasoningEffort = appState.runtime.reasoningEffort.isEmpty ? "none" : appState.runtime.reasoningEffort
+            // Seeded here, not after the catalog loads: a failed fetch would
+            // leave it empty for Done to save, and a late one would replace
+            // edits already made.
+            visibility = appState.modelVisibility
+            // Seed the speed here too: a failed catalog fetch must not
+            // leave the draft at its initial value.
+            speed = runtimeSpeed
+            initialSpeed = runtimeSpeed
             refreshYoloToggle(force: false)
         }
         .onChange(of: appState.runtime.approvalsMode) { oldMode, newMode in
@@ -321,6 +378,17 @@ struct ModelPickerView: View {
             guard !isApplyingReasoning else { return }
             reasoningEffort = effort.isEmpty ? "none" : effort
         }
+        .onChange(of: runtimeSpeed) { old, new in
+            // Follow a speed changed elsewhere while the sheet is open, so
+            // Apply doesn't write the stale draft back; a draft the user
+            // already changed here stays theirs.
+            guard !isApplying, speed == old else { return }
+            speed = new
+            initialSpeed = new
+        }
+        .onChange(of: ultrafastOffered) { _, _ in dropUnofferedUltrafast() }
+        .onChange(of: selectedModel) { _, _ in dropUnofferedUltrafast() }
+        .onChange(of: selectedProvider) { _, _ in dropUnofferedUltrafast() }
         .onChange(of: applyError) { _, message in
             // The error row appears silently; tell VoiceOver the apply failed.
             guard let message else { return }
@@ -344,19 +412,25 @@ struct ModelPickerView: View {
     }
 
     private var modelSection: some View {
-        ModelPickerSection(title: AppLocalization.string("Model"), symbol: "cpu", tint: .conduitAccent) {
+        ModelPickerSection(title: AppLocalization.string("Model"), symbol: "cpu", tint: .conduitAccent, flush: true) {
             if providers.isEmpty {
                 Text("No models are available from this gateway.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .padding(16)
             } else {
-                ForEach(visibleProviders, id: \.name) { provider in
+                let shown = visibleProviders
+                ForEach(shown, id: \.name) { provider in
                     providerCard(provider)
+                    if provider.name != shown.last?.name {
+                        Divider().overlay(rowStroke).padding(.leading, 46)
+                    }
                 }
-                if visibleProviders.isEmpty {
+                if shown.isEmpty {
                     Text("All providers are hidden. Tap Edit to restore one.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                        .padding(16)
                 }
             }
         }
@@ -376,6 +450,7 @@ struct ModelPickerView: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.conduitAccent)
                         .frame(width: 20)
+                        .accessibilityHidden(true)
                     Text(provider.name)
                         .font(.subheadline.weight(.semibold))
                     Spacer(minLength: 12)
@@ -385,42 +460,42 @@ struct ModelPickerView: View {
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
                 }
-                .padding(.horizontal, 14)
+                .padding(.horizontal, 16)
                 .frame(minHeight: 50)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityValue(isExpanded ? Text("Expanded") : Text("Collapsed"))
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if isExpanded {
                 Divider()
                     .overlay(rowStroke)
-                    .padding(.horizontal, 14)
+                    .padding(.leading, 46)
 
                 ForEach(provider.models, id: \.id) { model in
-                    modelRow(model, providerName: provider.name)
+                    modelRow(model, provider: provider)
                     if model.id != provider.models.last?.id {
                         Divider()
                             .overlay(rowStroke)
-                            .padding(.leading, 48)
+                            .padding(.leading, 46)
                     }
                 }
             }
         }
-        .background(rowFoundation, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(rowStroke, lineWidth: 1)
-        }
     }
 
-    private func modelRow(_ model: ModelInfo, providerName: String) -> some View {
-        Button {
-            Haptics.selectionChanged(selectedModel != model.id || selectedProvider != providerName)
+    private func modelRow(_ model: ModelInfo, provider: ProviderInfo) -> some View {
+        // The provider too, by any of its spellings: two providers can list
+        // the same model id.
+        let isSelected = selectedModel == model.id && provider.matches(selectedProvider)
+        return Button {
+            Haptics.selectionChanged(selectedModel != model.id || !provider.matches(selectedProvider))
             selectedModel = model.id
-            selectedProvider = providerName
+            selectedProvider = provider.name
         } label: {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -435,26 +510,32 @@ struct ModelPickerView: View {
                     }
                 }
                 Spacer(minLength: 12)
-                if selectedModel == model.id {
+                if isSelected {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.conduitAccent)
+                        .accessibilityHidden(true)
                 }
             }
-            .padding(.horizontal, 14)
+            // Under the provider's name.
+            .padding(.leading, 42)
+            .padding(.trailing, 12)
             .padding(.vertical, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                selectedModel == model.id ? Color.conduitAccent.opacity(colorScheme == .dark ? 0.14 : 0.08) : .clear,
+                isSelected ? Color.conduitAccent.opacity(colorScheme == .dark ? 0.14 : 0.08) : .clear,
                 in: RoundedRectangle(cornerRadius: 12, style: .continuous)
             )
             .padding(.horizontal, 4)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private var reasoningSection: some View {
-        ModelPickerSection(title: AppLocalization.string("Reasoning"), symbol: "brain.head.profile", tint: .conduitAura) {
+        // Flush, so the pills scroll to the card's edge rather than being
+        // cut off inside its padding.
+        ModelPickerSection(title: AppLocalization.string("Reasoning"), symbol: "brain.head.profile", tint: .conduitAura, flush: true) {
             ScrollView(.horizontal) {
                 HStack(spacing: 8) {
                     // A level Hermes reports that Conduit doesn't offer still
@@ -467,7 +548,7 @@ struct ModelPickerView: View {
                         reasoningPill(level)
                     }
                 }
-                .padding(.vertical, 1)
+                .padding(16)
             }
             .scrollIndicators(.hidden)
 
@@ -476,6 +557,7 @@ struct ModelPickerView: View {
                     .font(.footnote)
                     .foregroundStyle(.red)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding([.horizontal, .bottom], 16)
             }
         }
     }
@@ -493,28 +575,56 @@ struct ModelPickerView: View {
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
+    /// V2: the picked level is Settings' gold capsule (dark text on the
+    /// dark-mode gold, white on the light-mode brown), the rest quiet.
     private func reasoningPillLabel(_ title: String, isSelected: Bool) -> some View {
         Text(title)
             .font(.subheadline.weight(isSelected ? .semibold : .regular))
-            .foregroundStyle(isSelected ? Color.white : Color.primary)
+            .foregroundStyle(isSelected ? selectedPillText : Color.primary)
             .padding(.horizontal, 14)
             .frame(minHeight: 36)
             .background(
-                isSelected ? AnyShapeStyle(Color.conduitAura) : AnyShapeStyle(rowFoundation),
+                isSelected ? Color.conduitAccent : rowFoundation,
                 in: Capsule()
             )
             .overlay {
-                Capsule().strokeBorder(isSelected ? Color.clear : rowStroke, lineWidth: 1)
+                Capsule().strokeBorder(isSelected ? Color.clear : rowStroke, lineWidth: 0.5)
             }
             .contentShape(Capsule())
     }
 
+    private var selectedPillText: Color {
+        colorScheme == .dark ? Color.black.opacity(0.85) : .white
+    }
+
     private var runSettingsSection: some View {
         ModelPickerSection(title: AppLocalization.string("Run settings"), symbol: "slider.horizontal.3", tint: .conduitAccent) {
-            Toggle("Fast mode", isOn: $fastEnabled)
+            if ultrafastOffered == true || speed == .ultrafast {
+                // Hermes offers Ultrafast for this model and account, so
+                // the three speeds Desktop's picker has.
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Fast mode")
+                        .accessibilityHidden(true)
+                    Picker("Fast mode", selection: $speed) {
+                        ForEach(ModelSpeed.allCases) { option in
+                            Text(option.title).tag(option)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .accessibilityLabel(Text("Fast mode"))
+                }
+            } else {
+                Toggle("Fast mode", isOn: Binding(
+                    get: { speed != .normal },
+                    set: { speed = $0 ? .fast : .normal }
+                ))
+                .tint(.conduitAccent)
+            }
             if globalYoloFloor {
                 VStack(alignment: .leading, spacing: 4) {
                     Toggle("YOLO mode", isOn: $yoloEnabled)
+                        .tint(.conduitAccent)
                         .disabled(true)
                     Text(yoloHelpText)
                         .font(.footnote)
@@ -526,6 +636,7 @@ struct ModelPickerView: View {
                 .accessibilityElement(children: .combine)
             } else {
                 Toggle("YOLO mode", isOn: $yoloEnabled)
+                    .tint(.conduitAccent)
                 Text(yoloHelpText)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -551,27 +662,34 @@ struct ModelPickerView: View {
         providers.map { provider in
             ProviderInfo(
                 name: provider.name,
-                models: provider.models.filter { !visibility.hiddenModels.contains(modelVisibilityKey(provider: provider.name, model: $0.id)) }
+                models: provider.models.filter { !visibility.hiddenModels.contains(modelVisibilityKey(provider: provider.name, model: $0.id)) },
+                // Kept so a saved provider spelled by alias still matches.
+                displayName: provider.displayName,
+                aliases: provider.aliases,
+                isCurrent: provider.isCurrent
             )
         }.filter { !visibility.hiddenProviders.contains($0.name) }
     }
 
     private var visibilityEditor: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            ModelPickerSection(title: AppLocalization.string("Model visibility"), symbol: "line.3.horizontal.decrease.circle", tint: .conduitAccent) {
+        ModelPickerSection(title: AppLocalization.string("Model visibility"), symbol: "line.3.horizontal.decrease.circle", tint: .conduitAccent, flush: true) {
+            VStack(alignment: .leading, spacing: 10) {
                 TextField("Search providers or models", text: $visibilityQuery)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .padding(11)
-                    .background(rowFoundation, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .background(rowFoundation, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
                 Text("Hiding a provider preserves its individual model choices. These filters stay on this device.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+            .padding(16)
 
-                ForEach(visibilityProviders, id: \.name) { provider in
-                    visibilityProviderCard(provider)
-                }
+            let shown = visibilityProviders
+            ForEach(shown, id: \.name) { provider in
+                Divider().overlay(rowStroke).padding(.leading, provider.name == shown.first?.name ? 0 : 16)
+                visibilityProviderCard(provider)
             }
         }
     }
@@ -616,10 +734,14 @@ struct ModelPickerView: View {
                 }
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(providerHidden ? Color.secondary : Color.green)
-                .padding(.horizontal, 10).padding(.vertical, 7)
-                .conduitGlassControl(cornerRadius: 11, tint: providerHidden ? .secondary.opacity(0.08) : .green.opacity(0.10))
+                .padding(.horizontal, 12).frame(minHeight: 30)
+                .background(providerHidden ? Color.secondary.opacity(0.12) : Color.green.opacity(0.12), in: Capsule())
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+                .buttonStyle(.plain)
             }
-            .padding(12)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 4)
 
             if expanded {
                 Divider().overlay(rowStroke)
@@ -629,7 +751,7 @@ struct ModelPickerView: View {
                     Button("Hide all") { setAllModels(in: provider, visible: false) }
                 }
                 .font(.caption.weight(.semibold)).tint(.conduitAccent)
-                .padding(.horizontal, 12).padding(.vertical, 8)
+                .padding(.horizontal, 16).padding(.vertical, 8)
 
                 ForEach(shownModels, id: \.id) { model in
                     let key = modelVisibilityKey(provider: provider.name, model: model.id)
@@ -644,10 +766,10 @@ struct ModelPickerView: View {
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(hidden ? Color.secondary : Color.green)
                         }
-                        .padding(.horizontal, 12).padding(.vertical, 10)
+                        .padding(.leading, 36).padding(.trailing, 16).padding(.vertical, 10)
                     }
                     .buttonStyle(.plain)
-                    if model.id != shownModels.last?.id { Divider().overlay(rowStroke).padding(.leading, 12) }
+                    if model.id != shownModels.last?.id { Divider().overlay(rowStroke).padding(.leading, 36) }
                 }
                 if models.count > shownModels.count {
                     Button("Show \(models.count - shownModels.count) more") { showAllModelsFor.insert(provider.name) }
@@ -656,8 +778,6 @@ struct ModelPickerView: View {
                 }
             }
         }
-        .background(rowFoundation, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(rowStroke, lineWidth: 1) }
     }
 
     private func matchingModels(in provider: ProviderInfo) -> [ModelInfo] {
@@ -704,18 +824,16 @@ struct ModelPickerView: View {
                 Group {
                     if isApplying {
                         ProgressView()
-                            .tint(.white)
+                            .tint(selectedPillText)
                             .accessibilityLabel(AppLocalization.string("Applying configuration"))
                     } else {
                         Label("Apply configuration", systemImage: "checkmark")
                     }
                 }
-                .font(.headline)
-                .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 6).frame(minHeight: 46)
+                .frame(minHeight: 46)
             }
-            .conduitGlassControl(cornerRadius: 17, tint: .conduitAccent, prominent: true)
+            .buttonStyle(.settingsPrimary)
             .disabled(isApplying || isApplyingReasoning)
         }
     }
@@ -724,17 +842,37 @@ struct ModelPickerView: View {
         ModelPickerDraftKey(
             model: selectedModel,
             provider: selectedProvider,
-            fast: fastEnabled,
+            speed: speed,
             yolo: yoloEnabled
         )
     }
 
+    /// Picking a model that says it lacks Ultrafast falls back to Fast. The
+    /// session's own model keeps what Hermes reports.
+    private func dropUnofferedUltrafast() {
+        // A row that says nothing about Ultrafast counts as lacking it.
+        guard ultrafastOffered != true, speed == .ultrafast,
+              ProviderInfo.normalized(selectedModel) != ProviderInfo.normalized(seededModel)
+                || ProviderInfo.normalized(selectedProvider) != ProviderInfo.normalized(seededProvider) else { return }
+        speed = .fast
+    }
+
+    private var runtimeSpeed: ModelSpeed {
+        ModelSpeed(fast: appState.runtime.fast, serviceTier: appState.runtime.serviceTier)
+    }
+
+    /// Whether the selected model offers Ultrafast, from the catalog row's
+    /// capabilities. Nil until the catalog says.
+    private var ultrafastOffered: Bool? {
+        providers.first { $0.matches(selectedProvider) }?.offersUltrafast(selectedModel)
+    }
+
     private var rowFoundation: Color {
-        colorScheme == .dark ? Color.white.opacity(0.055) : Color.black.opacity(0.035)
+        Color.primary.opacity(0.05)
     }
 
     private var rowStroke: Color {
-        colorScheme == .dark ? Color.white.opacity(0.11) : Color.black.opacity(0.075)
+        Color.primary.opacity(0.07)
     }
 
     private func loadModels() async {
@@ -742,10 +880,12 @@ struct ModelPickerView: View {
         do {
             let (_, _, provs) = try await client.modelOptions(sessionId: appState.activeSessionId)
             providers = provs ?? []
-            visibility = appState.modelVisibility
             selectedModel = appState.runtime.model
+            seededModel = selectedModel
             selectedProvider = appState.runtime.provider
-            fastEnabled = appState.runtime.fast
+            seededProvider = selectedProvider
+            // Speed is seeded on appear: re-seeding here would undo a toggle
+            // made while the catalog loaded, and Apply would write that back.
             refreshYoloToggle(force: false)
         } catch {
             // Model options are supplementary to the current session state.
@@ -818,7 +958,8 @@ struct ModelPickerView: View {
             yoloChanged: sessionYoloSelectionChanged(from: initialYoloEnabled, to: yoloEnabled),
             yolo: yoloEnabled,
             reasoningEffort: nil,
-            fast: fastEnabled
+            speedChanged: speed != initialSpeed,
+            speed: speed
         )
         let sendModelSwitch = modelPickerShouldSwitch(
             selection,
@@ -834,7 +975,7 @@ struct ModelPickerView: View {
             // reported here instead.
             setYolo: { enabled in await appState.setYoloModeReportingFailure(enabled, context: context) },
             setReasoning: { effort in try await client.setReasoning(sessionId, effort: effort) },
-            setFast: { enabled in try await client.setFast(sessionId, enabled: enabled) }
+            setSpeed: { speed in try await client.setSpeed(sessionId, speed: speed) }
         )
 
         let result = await runModelPickerApply(
@@ -866,6 +1007,8 @@ struct ModelPickerView: View {
             appState.runtime.model = model
             appState.runtime.provider = selection.provider
             switchedRow = ModelPickerSwitchedRow(selection: selection, resolvedModel: model)
+            seededModel = selection.model
+            seededProvider = selection.provider
         }
         if progress.yoloApplied {
             initialYoloEnabled = draft.yolo
@@ -873,51 +1016,41 @@ struct ModelPickerView: View {
         if progress.reasoningApplied, let effort = draft.reasoningEffort {
             appState.runtime.reasoningEffort = effort == "none" ? "" : effort
         }
-        if progress.fastApplied {
-            appState.runtime.fast = draft.fast
+        if progress.speedApplied {
+            appState.runtime.fast = draft.speed != .normal
+            appState.runtime.serviceTier = draft.speed.serviceTier
+            initialSpeed = draft.speed
         }
     }
 }
 
-/// Picker sheets use a stable standard surface rather than a large glass pane.
-/// Native glass remains on compact controls, where it does not change the
-/// readability of rows as the presentation moves between detents.
+/// V2: a group's name over a quiet card, as on a settings page. `flush`
+/// drops the card's padding for a list of rows that run edge to edge.
 private struct ModelPickerSection<Content: View>: View {
     let title: String
     let symbol: String
     let tint: Color
+    var flush = false
     private let content: Content
-    @Environment(\.colorScheme) private var colorScheme
 
-    init(title: String, symbol: String, tint: Color, @ViewBuilder content: () -> Content) {
+    init(title: String, symbol: String, tint: Color, flush: Bool = false, @ViewBuilder content: () -> Content) {
         self.title = title
         self.symbol = symbol
         self.tint = tint
+        self.flush = flush
         self.content = content()
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Label(title, systemImage: symbol)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(tint)
-            content
+        VStack(alignment: .leading, spacing: 8) {
+            SettingsSectionHeader(title: title, symbol: symbol, tint: tint)
+            VStack(alignment: .leading, spacing: flush ? 0 : 14) {
+                content
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(flush ? 0 : 16)
+            .settingsCard()
         }
-        .padding(16)
-        .background(sectionFoundation, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .strokeBorder(sectionStroke, lineWidth: 1)
-        }
-    }
-
-    private var sectionFoundation: Color {
-        colorScheme == .dark
-            ? Color(red: 0.072, green: 0.080, blue: 0.106).opacity(0.96)
-            : Color.white.opacity(0.94)
-    }
-
-    private var sectionStroke: Color {
-        colorScheme == .dark ? Color.white.opacity(0.14) : Color.black.opacity(0.08)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

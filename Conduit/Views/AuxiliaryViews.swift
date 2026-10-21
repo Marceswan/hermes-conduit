@@ -25,53 +25,54 @@ struct ContextSheet: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                ConduitBackdrop()
-                ScrollView {
-                    VStack(spacing: 14) {
-                        ConduitSettingsSection(title: AppLocalization.string("Context"), symbol: "circle.dotted.circle", tint: .conduitAura) {
-                            SettingsMetricRow(label: AppLocalization.string("Used"), value: AppLocalization.string("\(Int(appState.runtime.contextUsed)) tokens"))
-                            SettingsMetricRow(label: AppLocalization.string("Capacity"), value: AppLocalization.string("\(Int(appState.runtime.contextMax)) tokens"))
-                            VStack(alignment: .leading, spacing: 7) {
-                                HStack {
-                                    Text("Window usage")
-                                        .font(.caption.weight(.medium))
-                                        .foregroundStyle(.secondary)
-                                    Spacer()
-                                    Text("\(String(Int(appState.runtime.contextPercent.rounded())))%")
-                                        .font(.caption.monospacedDigit().weight(.semibold))
-                                }
-                                ProgressView(value: appState.runtime.contextPercent, total: 100)
-                                    .tint(.conduitAccent)
-                            }
-                            .padding(.top, 4)
+            // V2: laid out as a settings page, its cards on the profile's
+            // glow and fading under the bar; compact to fit the half sheet.
+            SettingsDetailContainer(compact: true) {
+                ConduitSettingsSection(title: AppLocalization.string("Context"), symbol: "circle.dotted.circle", tint: .conduitAura) {
+                    SettingsMetricRow(label: AppLocalization.string("Used"), value: AppLocalization.string("\(Int(appState.runtime.contextUsed)) tokens"))
+                    SettingsMetricRow(label: AppLocalization.string("Capacity"), value: AppLocalization.string("\(Int(appState.runtime.contextMax)) tokens"))
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack {
+                            Text("Window usage")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("\(String(Int(appState.runtime.contextPercent.rounded())))%")
+                                .font(.caption.monospacedDigit().weight(.semibold))
                         }
+                        ContextWindowBar(
+                            segments: segments,
+                            capacity: Double(max(Int(appState.runtime.contextMax), breakdown?.contextMax ?? 0)),
+                            fallbackFraction: appState.runtime.contextPercent / 100
+                        )
+                        .accessibilityElement()
+                        .accessibilityLabel(Text("Window usage"))
+                        .accessibilityValue(Text("\(String(Int(appState.runtime.contextPercent.rounded())))%"))
+                    }
+                    .padding(.top, 4)
+                }
 
-                        if let breakdown {
-                            ConduitSettingsSection(title: AppLocalization.string("Breakdown"), symbol: "chart.pie", tint: .conduitAccent) {
-                                ForEach(breakdown.categories, id: \.id) { category in
-                                    HStack(spacing: 10) {
-                                        Circle()
-                                            .fill(colorFor(category.color))
-                                            .frame(width: 9, height: 9)
-                                        Text(category.label)
-                                        Spacer()
-                                        Text("\(category.tokens)")
-                                            .font(.caption.monospacedDigit())
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .padding(.vertical, 3)
-                                }
+                if breakdown != nil {
+                    ConduitSettingsSection(title: AppLocalization.string("Breakdown"), symbol: "chart.pie", tint: .conduitAccent) {
+                        ForEach(segments) { category in
+                            HStack(spacing: 10) {
+                                Circle()
+                                    .fill(category.color)
+                                    .frame(width: 9, height: 9)
+                                Text(category.label)
+                                Spacer()
+                                Text("\(category.tokens)")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
                             }
+                            .padding(.vertical, 3)
                         }
                     }
-                    .padding(16)
                 }
             }
             .navigationTitle("Context")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.hidden, for: .navigationBar)
         }
+        .environment(\.settingsGlowTint, appState.profileGlowTint(appState.activeProfile))
         .task { await loadBreakdown() }
     }
 
@@ -82,7 +83,28 @@ struct ContextSheet: View {
         breakdown = loaded
     }
 
-    private func colorFor(_ name: String) -> Color {
+    /// The breakdown's categories with the color each takes in the bar and
+    /// beside its row. Hermes's own colors only when each is one Conduit
+    /// knows and no two share one; otherwise (it often names one for all,
+    /// or names Conduit doesn't map) they take the palette in turn, so the
+    /// categories never all come out amber.
+    private var segments: [ContextWindowBar.Segment] {
+        guard let categories = breakdown?.categories else { return [] }
+        let named = categories.map { colorFor($0.color) }
+        let useNamed = named.allSatisfy { $0 != nil }
+            && Set(categories.map { $0.color.lowercased() }).count == categories.count
+        return categories.enumerated().map { index, category in
+            ContextWindowBar.Segment(
+                id: category.id,
+                label: category.label,
+                tokens: category.tokens,
+                color: (useNamed ? named[index] : nil)
+                    ?? ContextWindowBar.palette[index % ContextWindowBar.palette.count]
+            )
+        }
+    }
+
+    private func colorFor(_ name: String) -> Color? {
         switch name.lowercased() {
         case "blue": return .blue
         case "green": return .green
@@ -92,8 +114,53 @@ struct ContextSheet: View {
         case "pink": return .pink
         case "cyan": return .cyan
         case "amber", "yellow": return .yellow
-        default: return .conduitAccent
+        default: return nil
         }
+    }
+}
+
+/// The context window as one bar: a segment per category, sized by its
+/// share of the capacity, on a quiet track for what is still free. Before
+/// the breakdown loads, one gold segment for the used share.
+struct ContextWindowBar: View {
+    struct Segment: Identifiable {
+        let id: String
+        let label: String
+        let tokens: Int
+        let color: Color
+    }
+
+    static let palette: [Color] = [.conduitAccent, .conduitAura, .teal, .pink, .blue, .green, .orange, .purple]
+
+    let segments: [Segment]
+    let capacity: Double
+    let fallbackFraction: Double
+
+    var body: some View {
+        GeometryReader { proxy in
+            let shown = segments.filter { $0.tokens > 0 }
+            let total = max(capacity, Double(shown.reduce(0) { $0 + $1.tokens }), 1)
+            HStack(spacing: 2) {
+                if shown.isEmpty {
+                    Rectangle()
+                        .fill(Color.conduitAccent)
+                        .frame(width: proxy.size.width * min(max(fallbackFraction, 0), 1))
+                } else {
+                    ForEach(shown) { segment in
+                        Rectangle()
+                            .fill(segment.color)
+                            // A sliver stays visible however small its share.
+                            .frame(width: max(3, (proxy.size.width - CGFloat(shown.count) * 2) * Double(segment.tokens) / total))
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.08))
+            .clipShape(Capsule())
+        }
+        .frame(height: 10)
+        .animation(.easeOut(duration: 0.25), value: segments.map(\.tokens))
     }
 }
 
@@ -105,6 +172,8 @@ struct SettingsSnapshot: Identifiable {
     let isConnected: Bool
     let profile: String
     let defaultProfileName: String
+    /// The active profile as people see it: Hermes' display name when set.
+    let profileDisplayName: String
     let theme: ThemePreference
     let busyInputMode: BusyInputMode
     let chatResumeBehavior: ChatResumeBehavior
@@ -230,10 +299,14 @@ private struct LegacySettingsView: View {
             Text("Choose what a typed message does while Hermes is still working.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+            Text("Touch and hold the send button to choose another way for one message.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
 
             ConduitGlassGroup(spacing: 10) {
                 AdaptiveStack(spacing: 10) {
                     busyModeChoice(.steer, symbol: BusyInputMode.steer.symbol, detail: AppLocalization.string("Guide safely"))
+                    busyModeChoice(.queue, symbol: BusyInputMode.queue.symbol, detail: AppLocalization.string("Send next"))
                     busyModeChoice(.interrupt, symbol: BusyInputMode.interrupt.symbol, detail: AppLocalization.string("Stop and correct"))
                 }
             }
@@ -258,7 +331,7 @@ private struct LegacySettingsView: View {
 
     private var aboutSection: some View {
         ConduitSettingsSection(title: AppLocalization.string("About"), symbol: "info.circle", tint: .conduitAura) {
-            SettingsMetricRow(label: AppLocalization.string("Profile"), value: snapshot.profile.capitalized)
+            SettingsMetricRow(label: AppLocalization.string("Profile"), value: snapshot.profileDisplayName)
             SettingsMetricRow(label: AppLocalization.string("Version"), value: ConduitAppVersion.display)
         }
     }
@@ -514,6 +587,9 @@ struct SettingsView: View {
 
     @State private var path: [SettingsDestination] = []
     @State private var openedAtLink = false
+    /// Counts main-model saves, so Fast mode's model-dependent choices
+    /// reload for the new model.
+    @State private var mainModelSaves = 0
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -588,7 +664,7 @@ struct SettingsView: View {
         case .profile:
             ProfileSettingsDetail(
                 profile: snapshot.profile,
-                displayName: snapshot.profile == "default" ? snapshot.defaultProfileName : snapshot.profile.capitalized,
+                displayName: snapshot.profileDisplayName,
                 saveDefaultProfileName: saveDefaultProfileName
             )
         case .model:
@@ -599,13 +675,22 @@ struct SettingsView: View {
                 load: loadProfileSettings,
                 save: persistProfileSetting,
                 fieldsHeader: AppLocalization.string("Speed & limits"),
-                leadingSection: AnyView(ProfileModelSettingsDetail(load: loadProfileModelDefaults, save: persistProfileMainModel)),
+                leadingSection: AnyView(ProfileModelSettingsDetail(load: loadProfileModelDefaults, save: { provider, model, reasoning in
+                    let saved = await persistProfileMainModel(provider, model, reasoning)
+                    if saved { await MainActor.run { mainModelSaves += 1 } }
+                    return saved
+                })),
                 trailingSection: AnyView(FallbackModelsSettings(
                     loadModels: loadProfileModelDefaults,
                     load: { await appState.loadProfileFallbackModels() },
                     save: { await appState.setProfileFallbackModels($0) }
                 )),
-                loadSchema: { await appState.loadProfileConfigSchema() }
+                loadSchema: { await appState.loadProfileConfigSchema() },
+                loadExtraOptions: {
+                    await loadProfileModelDefaults()?.mainModelOffersUltrafast == true
+                        ? ["agent.service_tier": ["ultrafast"]] : [:]
+                },
+                extraOptionsRefresh: mainModelSaves
             )
         case .chat:
             ChatSettingsDetail(
@@ -824,7 +909,9 @@ struct SettingsView: View {
                 loadOptions: loadProfileConfigOptions,
                 loadModels: loadProfileModelDefaults,
                 loadSchema: { await appState.loadProfileConfigSchema() },
-                sections: Self.memorySections
+                sections: Self.memorySections,
+                loadDelegationPaused: { await appState.loadDelegationPaused() },
+                setDelegationPaused: { await appState.setDelegationPaused($0) }
             )
         case .advanced:
             ProfileConfigSettingsPage(
@@ -1338,7 +1425,7 @@ private struct SettingsHome: View {
             Spacer(minLength: 8)
             Image(systemName: "chevron.right")
                 .font(.footnote.weight(.semibold))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.conduitTertiary)
                 .accessibilityHidden(true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1387,7 +1474,7 @@ private struct SettingsHome: View {
     }
 
     private var profileDisplayName: String {
-        snapshot.profile == "default" ? appState.defaultProfileName : snapshot.profile.capitalized
+        appState.profileDisplayName(snapshot.profile)
     }
 
     private func homeSection<Content: View>(_ title: String, symbol: String = "gearshape.2", tint: Color, @ViewBuilder content: () -> Content) -> some View {
@@ -1431,7 +1518,7 @@ private struct SettingsHome: View {
                 }
             }
             Spacer(minLength: 8)
-            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.conduitTertiary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 5)
@@ -1577,11 +1664,13 @@ private struct ChatTextSizeSettings: View {
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
+                    // Fixed size: the slider's small and large ends.
                     Text("A")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true)
                     Spacer()
+                    // Fixed size: the slider's small and large ends.
                     Text("A")
                         .font(.system(size: 22, weight: .medium))
                         .foregroundStyle(.secondary)
@@ -1670,10 +1759,11 @@ private struct AttachmentLimitSettings: View {
 }
 
 /// Device-only: take a chat over from Hermes Desktop or a terminal as soon
-/// as a send is refused, instead of offering a button (#304).
+/// as a send is refused (#304), on until turned off (#1061). Off, the
+/// composer offers a button instead; calls take over either way.
 private struct ChatTakeoverSettings: View {
     @ObservedObject var appLanguage = AppLanguageStore.shared
-    @AppStorage(ChatTakeoverPreference.automaticKey) private var automatic = false
+    @AppStorage(ChatTakeoverPreference.automaticKey) private var automatic = ChatTakeoverPreference.automaticDefault
 
     var body: some View {
         ConduitSettingsSection(
@@ -1681,7 +1771,7 @@ private struct ChatTakeoverSettings: View {
             symbol: "desktopcomputer",
             tint: .conduitAura
         ) {
-            Text("Hermes lets one app use a chat at a time. When a chat is open in Hermes Desktop or a terminal, Conduit offers to take it over when you send.")
+            Text("Hermes lets one app use a chat at a time. When a chat is open in Hermes Desktop or a terminal, Conduit takes it over when you send. Calls always take it over; turn this off to be asked first when you type.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             Text("A reply running there always finishes first. If you go back to that app, reopen the chat there to see what you sent from Conduit.")
@@ -1734,7 +1824,7 @@ private struct NotifierPluginUpdateNotice: View {
         if status.offersInstall {
             return AppLocalization.string("Missing or out of date on this dashboard's host, so features like taking chats over from Hermes Desktop won't work.")
         }
-        switch (dashboardLabel, status.restartPending && !status.updateAvailable) {
+        switch (dashboardLabel, status.restartPending && !status.updateRecommended) {
         case (let label?, true):
             return AppLocalization.string("The Conduit plugin on \(label) was updated, and Hermes needs a restart to use it.")
         case (.none, true):
@@ -1863,10 +1953,11 @@ private struct ResponseBehaviorSettings: View {
 
     var body: some View {
         ConduitSettingsSection(title: AppLocalization.string("During a response"), symbol: BusyInputMode.steer.symbol, tint: .conduitAccent) {
-            Text("Steer adds guidance to the active turn. Interrupt stops it before handling the new message.")
+            Text("Steer adds guidance to the active turn. Queue sends the message once it finishes. Interrupt stops it before handling the new message.")
                 .font(.footnote).foregroundStyle(.secondary)
             Picker("Messages during a response", selection: Binding(get: { mode }, set: choose)) {
                 Text("Steer").tag(BusyInputMode.steer)
+                Text("Queue").tag(BusyInputMode.queue)
                 Text("Interrupt").tag(BusyInputMode.interrupt)
             }
             .pickerStyle(.segmented)
@@ -2063,6 +2154,7 @@ private struct ProfileModelSettingsDetail: View {
     }
     private func persist() {
         Task {
+            guard defaults != nil else { return }
             saving = true
             error = nil
             if !(await save(provider, model, reasoning)) {
@@ -2135,7 +2227,7 @@ private struct DelegationModelSettings: View {
                 }
             } else { ProgressView("Loading available models…") }
             Button { persist() } label: { Label(saving ? AppLocalization.string("Saving…") : AppLocalization.string("Save delegate defaults"), systemImage: "checkmark").frame(maxWidth: .infinity).padding(.vertical, 6).frame(minHeight: 42) }
-                .disabled(saving).conduitGlassControl(cornerRadius: 15, tint: .conduitAccent.opacity(0.18))
+                .disabled(saving || defaults == nil).conduitGlassControl(cornerRadius: 15, tint: .conduitAccent.opacity(0.18))
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
         }
         .task { await reload() }
@@ -2155,7 +2247,14 @@ private struct DelegationModelSettings: View {
     private func chooseProvider(_ next: String) {
         guard next != provider else { return }
         provider = next
-        model = next.isEmpty ? "" : defaults?.providers.first(where: { $0.name == next })?.models.first?.id ?? ""
+        guard !next.isEmpty else {
+            model = ""
+            return
+        }
+        guard let models = defaults?.providers.first(where: { $0.name == next })?.models else { return }
+        if !models.contains(where: { $0.id == model }) {
+            model = models.first?.id ?? ""
+        }
     }
     private func persist() {
         Task {
@@ -2165,6 +2264,67 @@ private struct DelegationModelSettings: View {
             let modelSaved = providerSaved ? await save("delegation.model", .text(model)) : false
             let reasoningSaved = modelSaved ? await save("delegation.reasoning_effort", .text(reasoning)) : false
             if !reasoningSaved { error = AppLocalization.string("Could not save delegate defaults.") }
+            saving = false
+        }
+    }
+}
+
+/// Holds new delegate agents on the whole Hermes (`delegation.pause`,
+/// #820). Agents already working carry on.
+private struct DelegationPauseSettings: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
+    let load: () async -> Bool?
+    let save: (Bool) async -> Bool?
+    @State private var paused: Bool?
+    @State private var loaded = false
+    @State private var saving = false
+    @State private var error: String?
+
+    var body: some View {
+        ConduitSettingsSection(title: AppLocalization.string("Pause delegation"), symbol: "pause.circle", tint: .orange) {
+            if let paused {
+                Toggle(isOn: Binding(get: { paused }, set: { change(to: $0) })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Pause new delegate agents").font(.subheadline.weight(.medium))
+                        Text("Hermes starts no new delegate agents while this is on. Agents already working carry on. This applies to every profile on this Hermes.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .tint(.conduitAccent)
+                .disabled(saving)
+                .padding(.vertical, 2)
+                .accessibilityIdentifier("settings.delegationPause")
+            } else if loaded {
+                Text("This Hermes can't pause delegation, or Conduit isn't connected.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Button { Task { await reload() } } label: {
+                    Label("Try again", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.settings)
+            } else {
+                ProgressView().controlSize(.small)
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+        }
+        .task { await reload() }
+    }
+
+    private func reload() async {
+        loaded = false
+        paused = await load()
+        loaded = true
+    }
+
+    private func change(to next: Bool) {
+        guard !saving else { return }
+        saving = true
+        Task {
+            error = nil
+            if let state = await save(next) {
+                paused = state
+            } else {
+                error = AppLocalization.string("Could not change the delegation pause.")
+            }
             saving = false
         }
     }
@@ -2193,7 +2353,12 @@ private struct FallbackModelsSettings: View {
             if !loaded {
                 // A list that didn't load is never edited: saving it would
                 // replace the real one.
-                if error == nil { ProgressView("Loading available models…") }
+                if error == nil {
+                    ProgressView("Loading available models…")
+                } else {
+                    Button(AppLocalization.string("Try Again")) { Task { await reload() } }
+                        .buttonStyle(.settings)
+                }
             } else {
                 if entries.isEmpty {
                     Text("No fallback models yet.")
@@ -2299,14 +2464,19 @@ private struct FallbackModelsSettings: View {
     }
 
     private func reload() async {
+        error = nil
         async let modelRequest = loadModels()
         async let entryRequest = load()
         let (models, loadedEntries) = await (modelRequest, entryRequest)
-        defaults = models
-        guard let loadedEntries else {
+        // Without the model catalog no fallback can be added or changed, so
+        // a half-loaded list fails with Try Again instead of a silently
+        // disabled Add. A re-load (the editor re-appearing) that fails keeps
+        // the catalog and rows it already had: only the error is new.
+        guard let loadedEntries, let models else {
             error = AppLocalization.string("Could not load fallback models.")
             return
         }
+        defaults = models
         entries = loadedEntries
         saved = loadedEntries
         loaded = true
@@ -2335,6 +2505,8 @@ private struct MemorySettingsDetail: View {
     let loadModels: () async -> ProfileModelDefaults?
     let loadSchema: () async -> ProfileConfigSchema
     let sections: [ProfileSettingSection]
+    let loadDelegationPaused: () async -> Bool?
+    let setDelegationPaused: (Bool) async -> Bool?
     @State private var options = ProfileConfigOptions()
 
     var body: some View {
@@ -2345,7 +2517,12 @@ private struct MemorySettingsDetail: View {
             load: load,
             save: save,
             optionOverrides: ["memory.provider": options.memoryProviders, "context.engine": options.contextEngines],
-            trailingSection: AnyView(DelegationModelSettings(loadModels: loadModels, loadSettings: load, save: save)),
+            trailingSection: AnyView(
+                VStack(spacing: 24) {
+                    DelegationModelSettings(loadModels: loadModels, loadSettings: load, save: save)
+                    DelegationPauseSettings(load: loadDelegationPaused, save: setDelegationPaused)
+                }
+            ),
             sections: sections,
             loadSchema: loadSchema
         )
@@ -2360,7 +2537,7 @@ enum ProfileConfigValueDisplay {
         "approvals.mode": ["manual": "Manual", "smart": "Smart", "off": "YOLO mode"],
         "code_execution.mode": ["project": "Project", "strict": "Strict"],
         "agent.image_input_mode": ["auto": "Automatic", "native": "Native images", "text": "Text only"],
-        "agent.service_tier": ["normal": "Off", "fast": "Always", "auto": "Start of each turn", "cold": "First turn only"],
+        "agent.service_tier": ["normal": "Off", "fast": "Always", "auto": "Start of each turn", "cold": "First turn only", "ultrafast": "Ultrafast"],
         "updates.non_interactive_local_changes": ["stash": "Keep them", "discard": "Throw them away"],
         "display.personality": [
             "": "Default", "helpful": "Helpful", "concise": "Concise", "technical": "Technical",
@@ -2396,7 +2573,12 @@ struct ProfileConfigSettingsPage: View {
     /// The gateway's config schema, which hides settings this Hermes lacks
     /// and fills in runtime choices.
     var loadSchema: (() async -> ProfileConfigSchema)? = nil
+    /// Choices a field gains beyond its schema's, loaded with the page.
+    var loadExtraOptions: (() async -> [String: [String]])? = nil
+    /// Changing it reloads the extra choices.
+    var extraOptionsRefresh = 0
 
+    @State private var extraOptions: [String: [String]] = [:]
     @State private var values: [String: ProfileSettingValue] = [:]
     @State private var drafts: [String: String] = [:]
     @State private var schema = ProfileConfigSchema()
@@ -2429,6 +2611,13 @@ struct ProfileConfigSettingsPage: View {
         }
         .navigationTitle(showsNavigationTitle ? title : "")
         .task { await reload() }
+        // Also the first load. A newer refresh cancels an older one, so a
+        // slow read for the previous model can't land last.
+        .task(id: extraOptionsRefresh) {
+            let options = await loadExtras()
+            guard !Task.isCancelled else { return }
+            extraOptions = options
+        }
     }
 
     private struct FieldsCard: Identifiable {
@@ -2492,7 +2681,8 @@ struct ProfileConfigSettingsPage: View {
             case .options(let options, let defaultValue):
                 fieldLabel(field)
                 // A runtime list that came back empty falls back to the schema's.
-                let choices = optionOverrides[field.key].flatMap { $0.isEmpty ? nil : $0 } ?? options
+                let baseChoices = optionOverrides[field.key].flatMap { $0.isEmpty ? nil : $0 } ?? options
+                let choices = baseChoices + (extraOptions[field.key] ?? []).filter { !baseChoices.contains($0) }
                 let selectedValue = textValue(field.key, defaultValue: defaultValue)
                 let displayedValue = selectedValue
                 Menu {
@@ -2510,7 +2700,7 @@ struct ProfileConfigSettingsPage: View {
             case .labeledOptions(let options, let defaultValue):
                 fieldLabel(field)
                 let selectedValue = textValue(field.key, defaultValue: defaultValue)
-                let displayedValue = options.first(where: { $0.value == selectedValue })?.label ?? options.first?.label ?? ""
+                let displayedValue = options.first(where: { $0.value == selectedValue })?.label ?? selectedValue
                 Menu {
                     ForEach(options, id: \.value) { option in
                         Button(option.label) { save(field, value: .text(option.value)) }
@@ -2680,6 +2870,10 @@ struct ProfileConfigSettingsPage: View {
         values = await valuesRequest
         for field in fields { drafts[field.key] = values[field.key]?.textValue }
         loading = false
+    }
+
+    private func loadExtras() async -> [String: [String]] {
+        await loadExtraOptions?() ?? [:]
     }
 
     private func save(_ field: ProfileSettingField, value: ProfileSettingValue) {
@@ -3643,7 +3837,7 @@ private struct AboutSettingsDetail: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                SettingsMetricRow(label: AppLocalization.string("Active profile"), value: profile.capitalized)
+                SettingsMetricRow(label: AppLocalization.string("Active profile"), value: appState.profileDisplayName(profile))
                 SettingsMetricRow(label: AppLocalization.string("Version"), value: ConduitAppVersion.display)
             }
             ConduitSettingsSection(title: AppLocalization.string("Data handling"), symbol: "hand.raised", tint: .conduitAura) {
@@ -3659,7 +3853,7 @@ private struct AboutSettingsDetail: View {
                         Image(systemName: "lock.shield")
                         Text("Privacy policy")
                         Spacer()
-                        Image(systemName: "arrow.up.right.square").font(.caption).foregroundStyle(.tertiary)
+                        Image(systemName: "arrow.up.right.square").font(.caption).foregroundStyle(.conduitTertiary)
                     }
                 }
                 Link(destination: URL(string: "https://kaishi00.github.io/hermes-conduit-notifier/support/")!) {
@@ -3667,7 +3861,7 @@ private struct AboutSettingsDetail: View {
                         Image(systemName: "lifepreserver")
                         Text("Support")
                         Spacer()
-                        Image(systemName: "arrow.up.right.square").font(.caption).foregroundStyle(.tertiary)
+                        Image(systemName: "arrow.up.right.square").font(.caption).foregroundStyle(.conduitTertiary)
                     }
                 }
                 Link(destination: URL(string: "https://github.com/kaishi00/hermes-conduit-notifier")!) {
@@ -3675,7 +3869,7 @@ private struct AboutSettingsDetail: View {
                         Image(systemName: "chevron.left.forwardslash.chevron.right")
                         Text("GitHub")
                         Spacer()
-                        Image(systemName: "arrow.up.right.square").font(.caption).foregroundStyle(.tertiary)
+                        Image(systemName: "arrow.up.right.square").font(.caption).foregroundStyle(.conduitTertiary)
                     }
                 }
             }
