@@ -125,6 +125,29 @@ final class CompatShimTests: XCTestCase {
         XCTAssertGreaterThan(bottom.blueComponent, 0.9)
     }
 
+    func testImageRendererPngDataIsAPngOfTheDrawing() throws {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let data = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8), format: format).pngData { context in
+            NSColor.systemTeal.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+        }
+        XCTAssertEqual(Array(data.prefix(8)), [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A], "PNG signature")
+        let rep = try XCTUnwrap(NSBitmapImageRep(data: data))
+        XCTAssertEqual(rep.pixelsWide, 8)
+        XCTAssertEqual(rep.pixelsHigh, 8)
+        let pixel = try XCTUnwrap(rep.colorAt(x: 4, y: 4)?.usingColorSpace(.sRGB))
+        XCTAssertGreaterThan(pixel.greenComponent, pixel.redComponent, "teal, not black or transparent")
+        XCTAssertEqual(pixel.alphaComponent, 1, accuracy: 0.01)
+    }
+
+    @MainActor
+    func testScreenChangedIsPostedWithoutEffectOnMac() {
+        // Like layoutChanged: iOS-only, so `post` must accept it and do nothing.
+        UIAccessibility.post(notification: .screenChanged, argument: nil)
+        UIAccessibility.post(notification: .layoutChanged, argument: nil)
+    }
+
     func testFontLineHeightPositive() {
         XCTAssertGreaterThan(UIFont.preferredFont(forTextStyle: .body).lineHeight, 0)
     }

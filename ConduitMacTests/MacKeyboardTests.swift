@@ -1227,4 +1227,33 @@ extension MacSessionListKeyboardTests {
         XCTAssertEqual(MacVisibleSessionRows.ids(pinned: sections.pinned, recent: sections.recent, expanded: ["st-1"]).count,
                        collapsed.count + 1)
     }
+
+    /// The cursor sits on a child row; its parent collapses, so the child leaves the visible rows. The cursor is
+    /// cleared, not moved to a neighbour, and Return opens nothing.
+    func testCollapsingTheParentOfTheCursorRowClearsTheCursor() throws {
+        let rows = [nestRow("p1"), nestRow("c1", activity: 20), nestRow("c2", activity: 10), nestRow("p2")]
+        let parents = ["c1": "p1", "c2": "p1"]
+        let sections = SessionNesting.sections(rows, query: "", statusFilterActive: false,
+                                               isPinned: { _ in false }, parentKeyOf: { parents[$0.id] })
+        func visible(expanded: Set<String>) -> [String] {
+            MacVisibleSessionRows.ids(pinned: sections.pinned, recent: sections.recent, expanded: expanded)
+        }
+        let model = Model()
+        model.ids = visible(expanded: ["p1"])
+        model.activeID = "p1"
+        XCTAssertEqual(model.ids, ["p1", "c1", "c2", "p2"])
+        let window = host(model)
+        let table = try waitForTable(in: window)
+        focusList(table, in: window)
+        pressDown(window)   // the open session is "p1": the cursor lands on its child "c1"
+        pressReturn(window)
+        XCTAssertTrue(HostedTestSupport.waitUntil { model.opened == ["c1"] }, "the cursor reached the child: \(model.opened)")
+
+        model.ids = visible(expanded: [])   // "p1" collapses: "c1" and "c2" leave the list
+        HostedTestSupport.settle(0.3)
+        model.opened.removeAll()
+        pressReturn(window)
+        HostedTestSupport.settle(0.2)
+        XCTAssertTrue(model.opened.isEmpty, "the cursor was on a row that is gone: \(model.opened)")
+    }
 }
