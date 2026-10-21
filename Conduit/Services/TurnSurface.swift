@@ -46,7 +46,7 @@ struct TurnSurface: Equatable {
 
     /// The device this app runs on.
     @MainActor static var device: Place {
-        #if os(macOS) // MAC: the UIKit shim reports the iPad idiom (wide layouts), so the idiom would name the iPad
+        #if os(macOS) // MAC: the UIKit shim reports the iPad idiom (wide layouts), so the idiom would name the iPad. This is the native Mac app, not an iOS app running on a Mac, so the isiOSAppOnMac line below does not apply either
         return .mac
         #else // MAC:
         if ProcessInfo.processInfo.isiOSAppOnMac { return .mac }
