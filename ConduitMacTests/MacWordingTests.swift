@@ -168,11 +168,36 @@ final class MacWordingTests: XCTestCase {
                         outside: ["settingsLink(.workspace", "settingsLink(.voice"])
         try assertGated(path, first: "v2Link(.hermesCalls", inside: ["if appState.supportsHermesCalls {"],
                         outside: ["v2Link(.voice", "v2Group(AppLocalization.string(\"Hermes\")"])
-        // A `conduit://settings/calls` link opens Settings at its start on Mac, in both settings hosts.
+        // A `conduit://settings/calls` link opens Settings at its start on Mac.
         try assertMacRegion("Conduit/Views/RootView.swift", mac: "case .calls: settingsOpensAt = nil",
                             upstream: "case .calls: settingsOpensAt = appState.supportsHermesCalls ? page : nil")
-        try assertMacRegion("Conduit/Views/V2/V2SettingsTab.swift", mac: "case .calls: fresh.opensAt = nil",
-                            upstream: "case .calls: fresh.opensAt = appState.supportsHermesCalls ? page : nil")
+        // The V2 link host has no Mac region (V2 is off on Mac, and `supportsHermesCalls` is false there).
+        let v2 = try lines("Conduit/Views/V2/V2SettingsTab.swift").joined(separator: "\n")
+        XCTAssertFalse(v2.contains("MAC:"), "V2SettingsTab.swift is upstream's")
+    }
+
+    /// Ruling R46: Calls need push (APNs) and the Mac uses local notifications only (D20), so the Mac never
+    /// reports the host's call support. Live voice then offers no "call me when it's done" tool.
+    func testSupportsHermesCallsIsFalseOnMacRegion() throws {
+        try assertMacRegion("Conduit/Services/AppState+HermesCalls.swift", mac: "a call reaches the iPhone through push (APNs)",
+                            upstream: "capabilities.contains(\"hermes-calls\")")
+    }
+
+    @MainActor
+    func testAHostThatReportsCallsGivesTheMacNoCallsSupport() throws {
+        let suite = HostedTestSupport.makeSuite()
+        defer { HostedTestSupport.dropSuite(suite) }
+        let appState = AppState(
+            defaults: suite.defaults,
+            loadSavedConnection: false,
+            dashboardRegistry: SavedDashboardRegistry(),
+            clearSessionPresentationCache: {},
+            sessionPresentationCache: SessionPresentationCache(defaults: suite.defaults)
+        )
+        appState.setNotifierPluginStateForTesting(.reported(version: "0.48.0", capabilities: ["hermes-calls", "hermes-call-outcomes"]))
+        XCTAssertFalse(appState.supportsHermesCalls, "the plugin reports calls; the Mac cannot receive them")
+        XCTAssertEqual(appState.hermesCallbackAvailability, .unsupported, "no callback tool in live voice")
+        XCTAssertEqual(appState.hermesCallsInstructions(delegation: true), "", "no call-me rule in GPT-Live's instructions")
     }
 
     func testNoMacRowReachesTheCallsPage() throws {
@@ -200,7 +225,8 @@ final class MacWordingTests: XCTestCase {
             "Conduit/Views/AuxiliaryViews.swift (Appearance, App icon)",
             "Conduit/Views/AuxiliaryViews.swift (NotificationsSettingsDetail, This iPhone push section)",
             "Conduit/Views/AuxiliaryViews.swift (NotificationsSettingsDetail, relay pairing blocks, Push relay section, relay refresh)",
-            "Conduit/Views/AuxiliaryViews.swift (Calls from Hermes rows), Conduit/Views/RootView.swift and Conduit/Views/V2/V2SettingsTab.swift (settings links to calls)",
+            "Conduit/Views/AuxiliaryViews.swift (Calls from Hermes rows) and Conduit/Views/RootView.swift (settings link to calls)",
+            "Conduit/Services/AppState+HermesCalls.swift (supportsHermesCalls)",
         ] {
             let row = rows.first { $0.hasPrefix("| \(path) |") }
             XCTAssertNotNil(row, "Kept off row: \(path)")
@@ -208,7 +234,7 @@ final class MacWordingTests: XCTestCase {
                           "gate named: \(path)")
         }
         XCTAssertTrue(rows.filter { $0.contains("iPhone-only feature") }.count >= 5, "the reason is named")
-        XCTAssertEqual(rows.filter { $0.contains("needs push (APNs); the Mac uses local notifications only (D20)") }.count, 3,
+        XCTAssertEqual(rows.filter { $0.contains("needs push (APNs); the Mac uses local notifications only (D20)") }.count, 4,
                        "the push gates name their reason")
     }
 
@@ -246,6 +272,14 @@ final class MacWordingTests: XCTestCase {
         try assertMacRegion(path, mac: "\"Mac.VoiceSettings.KeepScreenAwakeNote\"", upstream: "the phone locks on its usual timer")
         try assertMacRegion(path, mac: "\"Mac.VoiceSettings.OrbMotionNote\"", upstream: "Turn this off for a still orb that uses less battery.", sites: 2)
         try assertMacRegion(path, mac: "\"Mac.VoiceSettings.SaveNowBlocked\"", upstream: "then tap Save Now.")
+        // Fix round 1: the iOS wording that sat in the same blocks.
+        try assertMacRegion(path, mac: "\"Mac.VoiceSettings.MicrophoneAsksFirst\"", upstream: "iOS asks the first time you talk.")
+        try assertMacRegion(path, mac: "\"Mac.VoiceSettings.SpeechRecognitionPermissionDenied\"",
+                            upstream: "Please enable it in Settings > Conduit > Speech Recognition.", sites: 2)
+        try assertMacRegion(path, mac: "\"Mac.VoiceSettings.KeepScreenAwakeToggle\"", upstream: "\"Keep phone awake during voice conversations\"")
+        try assertMacRegion(path, mac: "\"Mac.VoiceSettings.KeepListeningLockedNote\"", upstream: "when you lock the phone or switch apps")
+        try assertMacRegion(path, mac: "\"Mac.VoiceSettings.TalkOverNote\"", upstream: "on the phone's speaker or in the car, with iOS echo cancellation")
+        try assertMacRegion(path, mac: "\"Mac.WakePhrase.OtherAudioNote\"", upstream: "but iOS may play that audio in mono", sites: 2)
     }
 
     func testOnThisMacUsesTheExistingKeyOnMac() throws {
@@ -284,6 +318,33 @@ final class MacWordingTests: XCTestCase {
                             upstream: "and tap \\(mode.checkTitle) to check availability.")
         try assertMacRegion("Conduit/Voice/VoiceConversationController.swift", mac: "\"Mac.VoiceConversation.ListeningStoppedLocked\"",
                             upstream: "Listening stopped while your phone was locked. Tap Listen to continue.")
+    }
+
+    func testConnectionFailureTextNamesTheMac() throws {
+        let path = "Conduit/Services/ConnectionFailure.swift"
+        try assertMacRegion(path, mac: "\"Mac.ConnectionFailure.Offline\"", upstream: "Reconnect to Wi-Fi or cellular and try again.")
+        try assertMacRegion(path, mac: "\"Mac.ConnectionFailure.TLSUntrusted\"", upstream: "but iOS does not trust its TLS certificate.")
+    }
+
+    /// Every upstream line a Mac region edits (the `let` a Mac region fills, read by an upstream statement) carries
+    /// `// MAC:` itself, so a grep for the tag finds every edit.
+    func testEditedUpstreamLinesCarryTheMacTag() throws {
+        let edited: [(String, [String])] = [
+            ("Conduit/Views/VoiceSettingsView.swift", [
+                "Text(voiceNote)", "detail: deniedDetail,", "detail: notAllowedYet,", "detail: speechDeniedDetail,",
+                "detail: unsupportedDetail,", "detail: notReadyDetail,", "detail: ttsNotReadyDetail,",
+                "fix: (label: useThisDevice,", "Text(savesNote)",
+            ]),
+            ("Conduit/Views/LiveVoiceSetupSheet.swift", ["checkHint,"]),
+        ]
+        for (path, needles) in edited {
+            let all = try lines(path)
+            for needle in needles {
+                let found = indices(of: needle, in: all)
+                XCTAssertEqual(found.count, 1, "\(path): \(needle)")
+                for at in found { XCTAssertTrue(all[at].contains("// MAC:"), "\(path):\(at + 1) has no // MAC: tag") }
+            }
+        }
     }
 
     func testLiveVoiceAndDictationTextNamesTheMac() throws {
@@ -325,6 +386,10 @@ final class MacWordingTests: XCTestCase {
         "Mac.VoiceSettings.OrbMotionNote", "Mac.Chat.SendButtonHint", "Mac.HermesClient.QueueUnsupported",
         "Mac.Sidebar.ProjectRowHint", "Mac.Sidebar.SessionRowHint", "Mac.LiveVoiceBar.CallStopped", "Mac.ModelPicker.AllHidden",
         "Mac.GeminiLive.ResumptionLost", "Mac.VoiceSettings.SaveNowBlocked", "Mac.VoiceConversation.ListeningStoppedLocked",
+        // Fix round 1
+        "Mac.VoiceSettings.MicrophoneAsksFirst", "Mac.VoiceSettings.SpeechRecognitionPermissionDenied",
+        "Mac.VoiceSettings.KeepScreenAwakeToggle", "Mac.VoiceSettings.KeepListeningLockedNote", "Mac.VoiceSettings.TalkOverNote",
+        "Mac.WakePhrase.OtherAudioNote", "Mac.ConnectionFailure.Offline", "Mac.ConnectionFailure.TLSUntrusted",
     ]
 
     /// New keys whose English text is the key (they carry a placeholder, so a symbolic name cannot hold it).
@@ -337,6 +402,12 @@ final class MacWordingTests: XCTestCase {
         "%@ sends your voice to %@. Allow it in Conduit on your Mac to start the call.",
         "Return to Voice settings, enable this mode if it is off, and click %@ to check availability.",
     ]
+
+    /// Whole English words that give an iPhone gesture or device away ("microphone" does not match).
+    private static let iPhoneWord = try! NSRegularExpression(
+        pattern: "\\b(tap|taps|tapping|touch|swipe|swipes|ios|phone|iphone|cellular)\\b", options: [.caseInsensitive])
+    /// Stems of "phone" in the other languages (de, es, fr, id, it, pl, pt-BR, ru, tr, zh-Hans, zh-Hant).
+    private static let phoneRoots = ["telefon", "teléfono", "téléphone", "ponsel", "telefono", "telefone", "телефон", "手机", "手機"]
 
     func testEveryMacKeyHasEnglishAndAllLanguagesAndNoIPhone() throws {
         let all = try strings()
@@ -351,6 +422,15 @@ final class MacWordingTests: XCTestCase {
                 let value = unit.value ?? ""
                 XCTAssertFalse(value.isEmpty, "\(key) [\(language)] is empty")
                 XCTAssertFalse(value.contains("iPhone"), "\(key) [\(language)]: \(value)")
+                XCTAssertFalse(value.contains("iOS"), "\(key) [\(language)]: \(value)")
+                if language == "en" {
+                    XCTAssertNil(Self.iPhoneWord.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)),
+                                 "\(key) [en] names an iPhone gesture or device: \(value)")
+                } else {
+                    for root in Self.phoneRoots {
+                        XCTAssertFalse(value.lowercased().contains(root), "\(key) [\(language)] has a phone word (\(root)): \(value)")
+                    }
+                }
                 if language != "en", key != "Mac.Pane.Home" {
                     XCTAssertNotEqual(value, v["en"]?.value, "\(key) [\(language)] is not translated")
                 }
@@ -362,6 +442,7 @@ final class MacWordingTests: XCTestCase {
         let all = try strings()
         for key in textKeys {
             XCTAssertFalse(key.contains("iPhone"), key)
+            XCTAssertNil(Self.iPhoneWord.firstMatch(in: key, range: NSRange(key.startIndex..., in: key)), key)
             let v = try values(all[key])
             XCTAssertEqual(Set(v.keys), Set(languages), "\(key): the English text is the key, so no `en` value")
             let wanted = key.components(separatedBy: "%@").count - 1
@@ -373,6 +454,47 @@ final class MacWordingTests: XCTestCase {
                 XCTAssertEqual(found, wanted, "\(key) [\(language)]: placeholders")
             }
         }
+    }
+
+    /// Every Swift file the Mac app compiles from the repo (not the tests).
+    private func sourceText() throws -> String {
+        var text = ""
+        for folder in ["Conduit", "Shared", "ConduitMac"] {
+            let root = repoRoot.appendingPathComponent(folder)
+            let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)
+            while let item = files?.nextObject() as? URL {
+                guard item.pathExtension == "swift" else { continue }
+                text += try String(contentsOf: item, encoding: .utf8) + "\n"
+            }
+        }
+        return text
+    }
+
+    /// An English-text key must be the Swift literal itself (`%@` is an interpolation there). If an edit of the
+    /// sentence in Swift leaves the key behind, the app falls back to English in all 13 languages without a failure.
+    func testEnglishTextKeysAreTheSwiftLiterals() throws {
+        let source = try sourceText()
+        for key in textKeys {
+            let pieces = key.components(separatedBy: "%@").map { NSRegularExpression.escapedPattern(for: $0) }
+            let pattern = "AppLocalization\\.string\\(\"" + pieces.joined(separator: "\\\\\\(.*?\\)") + "\"\\)"
+            let regex = try NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators])
+            XCTAssertNotNil(regex.firstMatch(in: source, range: NSRange(source.startIndex..., in: source)),
+                            "no `AppLocalization.string(...)` literal in the sources matches the key: \(key)")
+        }
+    }
+
+    /// A `Mac.` key nobody reads is dead weight in 13 languages.
+    func testEveryMacKeyIsUsedInTheSources() throws {
+        let source = try sourceText()
+        for key in macKeys {
+            XCTAssertTrue(source.contains("\"\(key)\""), "\(key) is not used in the sources")
+        }
+    }
+
+    /// `GeminiLiveSession` calls this on Mac (the key literal sits in a Mac-only file; see MacSharedWording).
+    func testMacSharedWordingResolves() {
+        XCTAssertNotEqual(MacSharedWording.geminiLiveResumptionLost, "Mac.GeminiLive.ResumptionLost")
+        XCTAssertFalse(MacSharedWording.geminiLiveResumptionLost.isEmpty)
     }
 
     func testMacKeysResolveInTheBundle() {
