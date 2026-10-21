@@ -65,7 +65,7 @@ final class MacAccentEnvironmentTests: XCTestCase {
         XCTAssertTrue(HostedTestSupport.waitUntil { matches(centerColor(of: window), .amber) }, "amber first")
 
         UserDefaults.standard.set(ConduitAccentChoice.blue.rawValue, forKey: ConduitAccentChoice.storageKey)
-        XCTAssertTrue(HostedTestSupport.waitUntil { matches(centerColor(of: window), .blue) },
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 1.5) { matches(centerColor(of: window), .blue) },
                       "the swatch kept the old pick: \(String(describing: centerColor(of: window)))")
     }
 
@@ -77,7 +77,7 @@ final class MacAccentEnvironmentTests: XCTestCase {
         XCTAssertTrue(HostedTestSupport.waitUntil { matches(centerColor(of: window), .amber, dark: true) }, "amber first")
 
         UserDefaults.standard.set(ConduitAccentChoice.green.rawValue, forKey: ConduitAccentChoice.storageKey)
-        XCTAssertTrue(HostedTestSupport.waitUntil { matches(centerColor(of: window), .green, dark: true) },
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 1.5) { matches(centerColor(of: window), .green, dark: true) },
                       "the swatch kept the old pick: \(String(describing: centerColor(of: window)))")
     }
 
@@ -126,5 +126,99 @@ final class MacAccentEnvironmentTests: XCTestCase {
 
         UserDefaults.standard.set(ConduitAccentChoice.pink.rawValue, forKey: ConduitAccentChoice.storageKey)
         XCTAssertTrue(HostedTestSupport.waitUntil { seen.choice == .pink }, "saw \(String(describing: seen.choice))")
+    }
+
+    // MARK: Hardening
+
+    /// Calls made in one run loop turn share one refresh; a later call makes a new one.
+    func testScheduledRefreshesInOneTurnShareOneRun() {
+        let before = MacAccentRedraw.scheduledRunCount
+        for _ in 0..<5 { MacAccentRedraw.scheduleForAllWindows() }
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 1.5) { MacAccentRedraw.scheduledRunCount > before })
+        HostedTestSupport.settle(0.1)
+        XCTAssertEqual(MacAccentRedraw.scheduledRunCount, before + 1, "five calls, one run")
+        MacAccentRedraw.scheduleForAllWindows()
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 1.5) { MacAccentRedraw.scheduledRunCount == before + 2 })
+    }
+
+    /// An open or save panel, or any window without SwiftUI, never takes the vibrant appearance.
+    func testAWindowWithoutSwiftUIIsLeftAlone() {
+        final class Spy: NSObject {
+            var changes = 0
+            override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
+                changes += 1
+            }
+        }
+        let plain = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 80, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
+        plain.isReleasedWhenClosed = false
+        plain.contentView = NSView(frame: NSRect(x: 0, y: 0, width: 80, height: 80))
+        let spy = Spy()
+        plain.addObserver(spy, forKeyPath: "appearance", options: [], context: nil)
+        defer { plain.removeObserver(spy, forKeyPath: "appearance") }
+        let hosted = HostedTestSupport.host(AccentSwatch(), size: NSSize(width: 40, height: 40))
+        defer { HostedTestSupport.tearDown(hosted) }
+
+        XCTAssertFalse(MacAccentRedraw.showsSwiftUI(plain.contentView!))
+        XCTAssertTrue(MacAccentRedraw.showsSwiftUI(hosted.contentView!))
+        XCTAssertEqual(MacAccentRedraw.refresh([plain, hosted]), 1, "only the SwiftUI window is refreshed")
+        XCTAssertEqual(spy.changes, 0, "the plain window's appearance was never set")
+    }
+
+    /// A hosting view that sets the window appearance during layout, the way a `preferredColorScheme` change in the
+    /// same transaction would.
+    private final class AppearanceChangingHostingView<Content: View>: NSHostingView<Content> {
+        var appearanceToSetOnLayout: NSAppearance?
+        override func layout() {
+            super.layout()
+            if let appearance = appearanceToSetOnLayout {
+                appearanceToSetOnLayout = nil
+                window?.appearance = appearance
+            }
+        }
+    }
+
+    func testAnAppearanceSetDuringLayoutIsNotOverwritten() {
+        let view = AppearanceChangingHostingView(rootView: AccentSwatch())
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 40, height: 40), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = view
+        window.appearance = NSAppearance(named: .aqua)
+        window.orderFront(nil)
+        defer { HostedTestSupport.tearDown(window) }
+        HostedTestSupport.settle(0.1)
+
+        view.appearanceToSetOnLayout = NSAppearance(named: .darkAqua)
+        view.needsLayout = true
+        XCTAssertEqual(MacAccentRedraw.refresh([window]), 1)
+        XCTAssertEqual(window.appearance?.name, .darkAqua, "the appearance set during the layout stays")
+    }
+
+    /// The window shows a sheet: the parent and the sheet both redraw, and the sheet stays open.
+    func testAWindowThatShowsASheetRedrawsBothAndKeepsTheSheet() throws {
+        struct Presenter: View {
+            var body: some View {
+                AccentSwatch()
+                    .sheet(isPresented: .constant(true)) {
+                        AccentSwatch().frame(width: 60, height: 60).macAccentEnvironment()
+                    }
+                    .macAccentEnvironment()
+            }
+        }
+        UserDefaults.standard.set(ConduitAccentChoice.amber.rawValue, forKey: ConduitAccentChoice.storageKey)
+        let window = HostedTestSupport.host(Presenter(), size: NSSize(width: 200, height: 200))
+        window.appearance = NSAppearance(named: .aqua)
+        defer { HostedTestSupport.tearDown(window) }
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 3) { window.attachedSheet != nil }, "the sheet opens")
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        XCTAssertNil(sheet.appearance)
+        func centre(_ w: NSWindow) -> NSColor? { centerColor(of: w) }
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 1.5) { matches(centre(sheet), .amber) }, "sheet amber first")
+
+        UserDefaults.standard.set(ConduitAccentChoice.blue.rawValue, forKey: ConduitAccentChoice.storageKey)
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 1.5) { matches(centre(sheet), .blue) },
+                      "the sheet kept the old pick: \(String(describing: centre(sheet)))")
+        XCTAssertTrue(window.attachedSheet === sheet, "the sheet is still open")
+        XCTAssertEqual(window.appearance?.name, .aqua, "the parent has its appearance back")
+        XCTAssertNil(sheet.appearance, "the sheet has its own (none) back")
     }
 }
