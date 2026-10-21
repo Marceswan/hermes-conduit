@@ -714,7 +714,7 @@ private struct OutOfProcessAccentTint: ViewModifier {
     }
 }
 
-#if os(iOS) // MAC: no Mac use: ConduitApp (not compiled on Mac) is its only caller, and the Mac photo picker draws in-process
+#if os(iOS) // MAC: no Mac use: ConduitApp (not compiled on Mac) is its only caller. The Mac picker tint comes from conduitOutOfProcessAccentTint (reads \.conduitAccent)
 /// Gives the window the chosen accent as its tint, for system screens Conduit
 /// presents but doesn't draw. The colour is resolved, not dynamic: a dynamic
 /// one sent to another process loses the pick (#748). It is set again when

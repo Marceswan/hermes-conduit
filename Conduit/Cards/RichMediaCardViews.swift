@@ -462,11 +462,11 @@ private struct RichPersonRow: View {
         #endif // MAC:
     }
 
+    // MAC: one entry point for the button: the sheet on iOS, a vCard in Contacts on the Mac (below)
     private func addToContacts() {
-        #if os(iOS)
+        #if os(iOS) // MAC: CNContactViewController(forNewContact:) is not in the macOS SDK
         addsContact = true
-        #else
-        // MAC: CNContactViewController(forNewContact:) is not in the macOS SDK; Contacts asks the user to confirm.
+        #else // MAC: Contacts asks the user to confirm
         RichContactVCard.openInContacts(person)
         #endif // MAC:
     }
@@ -516,7 +516,7 @@ private struct RichPersonRow: View {
                     RichPersonAction(title: Text("Website"), symbol: "safari.fill") { openURL(url) }
                 }
                 if known == nil, person.phone != nil || person.email != nil {
-                    RichPersonAction(title: Text("Add to Contacts"), symbol: "person.crop.circle.badge.plus") { addToContacts() }
+                    RichPersonAction(title: Text("Add to Contacts"), symbol: "person.crop.circle.badge.plus") { addToContacts() } // MAC: was addsContact = true
                 }
             }
         }
