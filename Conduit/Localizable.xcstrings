@@ -327823,19 +327823,19 @@
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Mac bei Sprachunterhaltungen wach halten"
+            "value" : "Bildschirm während Sprachunterhaltungen eingeschaltet lassen"
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Keep Mac awake during voice conversations"
+            "value" : "Keep the screen on during voice conversations"
           }
         },
         "es" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Mantener el Mac activo en conversaciones de voz"
+            "value" : "Mantener la pantalla encendida durante las conversaciones de voz"
           }
         },
         "fr" : {
@@ -327847,7 +327847,7 @@
         "id" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Jaga Mac tetap menyala selama percakapan suara"
+            "value" : "Biarkan layar tetap menyala selama percakapan suara"
           }
         },
         "it" : {
@@ -327871,31 +327871,31 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie usypiaj Maca podczas rozmów głosowych"
+            "value" : "Nie wygaszaj ekranu podczas rozmów głosowych"
           }
         },
         "pt-BR" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Manter o Mac ativo durante conversas por voz"
+            "value" : "Manter a tela ligada durante conversas por voz"
           }
         },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Не блокировать экран при разговоре"
+            "value" : "Не гасить экран во время голосовых разговоров"
           }
         },
         "tr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sesli konuşmalarda Mac’i uyanık tut"
+            "value" : "Sesli konuşmalarda ekranı açık tut"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "语音对话期间保持 Mac 唤醒"
+            "value" : "语音对话期间保持屏幕常亮"
           }
         },
         "zh-Hant" : {
