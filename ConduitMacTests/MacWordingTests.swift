@@ -140,6 +140,52 @@ final class MacWordingTests: XCTestCase {
                         inside: [".foregroundStyle(.secondary)"])
     }
 
+    func testPushSectionsOfNotificationsSettingsAreGatedOffOnMac() throws {
+        let path = "Conduit/Views/AuxiliaryViews.swift"
+        // The Mac keeps its own local controls (D20): `MacNotificationSettingsView` stays above the gates.
+        let all = try lines(path)
+        let local = try XCTUnwrap(indices(of: "MacNotificationSettingsView()", in: all).first)
+        XCTAssertEqual(directive(above: local, in: all)?.text.prefix(21), "#if os(macOS) // MAC:")
+        try assertGated(path, first: "ConduitSettingsSection(title: AppLocalization.string(\"This iPhone\")",
+                        inside: ["SettingsMetricRow(", "notifications.lastError", "\"Enable notifications\""],
+                        outside: ["MacNotificationSettingsView()", "\"Notify me when\"", "\"Push relay\""])
+        try assertGated(path, first: "ConduitSettingsSection(title: AppLocalization.string(\"Notify me when\")",
+                        inside: ["if notifications.isEnabled {", "\"Connect a Hermes profile\"", "\"Verify pairing\"",
+                                 "\"Push relay\"", "notifications.relayNotice"],
+                        outside: ["MacNotificationSettingsView()", "\"This iPhone\""])
+        // The page's refresh reads the relay's metadata: the Mac calls no relay.
+        let title = try XCTUnwrap(indices(of: ".navigationTitle(\"Notifications\")", in: all).first)
+        XCTAssertTrue(trimmed(all[title + 1]).hasPrefix("#if !os(macOS) // MAC:"), "the refresh task is under a gate")
+        let close = try XCTUnwrap(nextBranch(below: title + 2, in: all))
+        XCTAssertEqual(close.text, "#endif // MAC:")
+        let task = all[(title + 2)..<close.line].joined(separator: "\n")
+        XCTAssertTrue(task.contains(".task {") && task.contains("await notifications.refreshMeta()"))
+    }
+
+    func testCallsFromHermesEntryPointsAreGatedOffOnMac() throws {
+        let path = "Conduit/Views/AuxiliaryViews.swift"
+        try assertGated(path, first: "settingsLink(.hermesCalls", inside: ["if appState.supportsHermesCalls {"],
+                        outside: ["settingsLink(.workspace", "settingsLink(.voice"])
+        try assertGated(path, first: "v2Link(.hermesCalls", inside: ["if appState.supportsHermesCalls {"],
+                        outside: ["v2Link(.voice", "v2Group(AppLocalization.string(\"Hermes\")"])
+        // A `conduit://settings/calls` link opens Settings at its start on Mac, in both settings hosts.
+        try assertMacRegion("Conduit/Views/RootView.swift", mac: "case .calls: settingsOpensAt = nil",
+                            upstream: "case .calls: settingsOpensAt = appState.supportsHermesCalls ? page : nil")
+        try assertMacRegion("Conduit/Views/V2/V2SettingsTab.swift", mac: "case .calls: fresh.opensAt = nil",
+                            upstream: "case .calls: fresh.opensAt = appState.supportsHermesCalls ? page : nil")
+    }
+
+    func testNoMacRowReachesTheCallsPage() throws {
+        // The only `.hermesCalls` links are the two gated rows; the page destination is reached only through them
+        // and through `SettingsDestination(.calls)`, which the two link hosts no longer pass on Mac.
+        let all = try lines("Conduit/Views/AuxiliaryViews.swift")
+        let links = indices(of: "(.hermesCalls", in: all)
+        XCTAssertEqual(links.count, 2, "settingsLink and v2Link are the only rows to the page")
+        for at in links {
+            XCTAssertEqual(directive(above: at, in: all)?.text.prefix(22), "#if !os(macOS) // MAC:", "line \(at + 1)")
+        }
+    }
+
     func testEveryGateHasAKeptOffRow() throws {
         let ledger = try String(contentsOf: repoRoot.appendingPathComponent("docs/macos/PORTING_LEDGER.md"), encoding: .utf8)
         let section = try XCTUnwrap(ledger.components(separatedBy: "## Kept off on Mac").dropFirst().first?
@@ -152,12 +198,18 @@ final class MacWordingTests: XCTestCase {
             "Conduit/Views/VoiceSettingsView.swift (WakePhraseSettingsSection, Siri Lock Screen note)",
             "Conduit/Views/AuxiliaryViews.swift (Ask Hermes About Screen links)",
             "Conduit/Views/AuxiliaryViews.swift (Appearance, App icon)",
+            "Conduit/Views/AuxiliaryViews.swift (NotificationsSettingsDetail, This iPhone push section)",
+            "Conduit/Views/AuxiliaryViews.swift (NotificationsSettingsDetail, relay pairing blocks, Push relay section, relay refresh)",
+            "Conduit/Views/AuxiliaryViews.swift (Calls from Hermes rows), Conduit/Views/RootView.swift and Conduit/Views/V2/V2SettingsTab.swift (settings links to calls)",
         ] {
             let row = rows.first { $0.hasPrefix("| \(path) |") }
             XCTAssertNotNil(row, "Kept off row: \(path)")
-            XCTAssertTrue(row?.contains("#if !os(macOS)") == true && row?.contains("// MAC:") == true, "gate named: \(path)")
+            XCTAssertTrue(row?.contains("// MAC:") == true && (row?.contains("#if !os(macOS)") == true || row?.contains("#if os(macOS)") == true),
+                          "gate named: \(path)")
         }
         XCTAssertTrue(rows.filter { $0.contains("iPhone-only feature") }.count >= 5, "the reason is named")
+        XCTAssertEqual(rows.filter { $0.contains("needs push (APNs); the Mac uses local notifications only (D20)") }.count, 3,
+                       "the push gates name their reason")
     }
 
     // MARK: Mac regions (device and gesture words)
@@ -209,9 +261,7 @@ final class MacWordingTests: XCTestCase {
         }
     }
 
-    func testNotificationsSectionTitleNamesTheMac() throws {
-        try assertMacRegion("Conduit/Views/AuxiliaryViews.swift", mac: "\"Mac.Notifications.ThisMac\"",
-                            upstream: "AppLocalization.string(\"This iPhone\")")
+    func testTimeZoneShortcutNamesTheMac() throws {
         try assertMacRegion("Conduit/Views/AuxiliaryViews.swift", mac: "Use this Mac's time zone (\\(id))",
                             upstream: "Use this iPhone's time zone (\\(id))")
     }
@@ -245,14 +295,6 @@ final class MacWordingTests: XCTestCase {
                             upstream: "isn't available on this iPhone.")
     }
 
-    func testCallsFromHermesTextHasNoRingOnMac() throws {
-        let path = "Conduit/Views/HermesCallSettingsViews.swift"
-        try assertMacRegion(path, mac: "\"Mac.HermesCalls.HowToAsk\"", upstream: "Your iPhone rings once the job is done")
-        try assertMacRegion(path, mac: "\"Mac.HermesCalls.Explainer\"", upstream: "Your iPhone rings like a phone call")
-        try assertMacRegion(path, mac: "Send it, and a notification arrives when Hermes replies.", upstream: "Send it, and your iPhone rings when Hermes replies.")
-        try assertMacRegion(path, mac: "\"Mac.HermesCalls.WatchNote\"", upstream: "After you change the note, tap it again")
-    }
-
     // MARK: Catalog
 
     private func strings() throws -> [String: [String: Any]] {
@@ -275,7 +317,7 @@ final class MacWordingTests: XCTestCase {
     private let macKeys = [
         "Mac.VoiceAudioError.MicrophoneDenied", "Mac.VoiceSettings.MicrophoneDenied",
         "Mac.VoiceSettings.SpeechRecognitionDenied", "Mac.VoiceSetupIssue.SpeechRecognitionDenied",
-        "Mac.VoiceSettings.SpeechRecognitionRetry", "Mac.RichInfoCard.NotificationsOff", "Mac.Notifications.ThisMac",
+        "Mac.VoiceSettings.SpeechRecognitionRetry", "Mac.RichInfoCard.NotificationsOff",
         "Mac.VoiceSettings.UseThisMac", "Mac.VoiceSettings.SpeechNotAllowedYet", "Mac.VoiceSettings.SpeechUnsupportedLanguage",
         "Mac.VoiceSettings.AppleSpeechPrivacy", "Mac.VoiceSettings.LocalWhisperNote", "Mac.WakePhrase.ListensOnThisMac",
         "Mac.Dictation.AppleSummary", "Mac.Dictation.SpeechAnalyzerSummary", "Mac.Dictation.SpeechAnalyzerUnavailable",
@@ -283,7 +325,6 @@ final class MacWordingTests: XCTestCase {
         "Mac.VoiceSettings.OrbMotionNote", "Mac.Chat.SendButtonHint", "Mac.HermesClient.QueueUnsupported",
         "Mac.Sidebar.ProjectRowHint", "Mac.Sidebar.SessionRowHint", "Mac.LiveVoiceBar.CallStopped", "Mac.ModelPicker.AllHidden",
         "Mac.GeminiLive.ResumptionLost", "Mac.VoiceSettings.SaveNowBlocked", "Mac.VoiceConversation.ListeningStoppedLocked",
-        "Mac.HermesCalls.HowToAsk", "Mac.HermesCalls.Explainer", "Mac.HermesCalls.WatchNote",
     ]
 
     /// New keys whose English text is the key (they carry a placeholder, so a symbolic name cannot hold it).
@@ -294,7 +335,6 @@ final class MacWordingTests: XCTestCase {
         "%@ on Hermes isn't ready (%@). This Mac can do it instead, with nothing to install.",
         "%@ isn't ready on Hermes. This Mac can speak the replies instead, with nothing to set up.",
         "%@ sends your voice to %@. Allow it in Conduit on your Mac to start the call.",
-        "Opens a new chat with \u{201C}%@\u{201D} ready to send. Send it, and a notification arrives when Hermes replies.",
         "Return to Voice settings, enable this mode if it is off, and click %@ to check availability.",
     ]
 
