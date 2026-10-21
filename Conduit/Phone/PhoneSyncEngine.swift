@@ -374,13 +374,13 @@ final class PhoneSyncEngine: ObservableObject {
             case .http(let status, _) where status == 404:
                 state.pause = .pluginMissing
                 return .paused(.pluginMissing)
-            case .http(let status, let detail) where status == 409:
+            case .http(let status, let detail) where status == 409 && HostKeyConflict.isKeyLoss(detail):
                 // The host lost or replaced this phone's key: set it up again.
                 keys.clear()
                 state.forgetSent()
                 lastError = detail
                 return .unfinished
-            case .http(let status, let detail) where status == 400 || status == 413:
+            case .http(let status, let detail) where status == 400 || status == 409 || status == 413:
                 state.pause = .refused(detail)
                 return .paused(.refused(detail))
             default:
@@ -462,7 +462,7 @@ final class PhoneSyncEngine: ObservableObject {
         var newContactsHash = state.contactsHash
         var statusSent = false
 
-        let readsEvents = preferences.calendar == .full && calendarSource.eventAccess == .full
+        let readsEvents = preferences.calendar.reads && calendarSource.eventAccess == .full
         let readsReminders = preferences.reminders && calendarSource.remindersAuthorized
         let calendars = calendarSource.calendars(eventsReadable: readsEvents, reminders: readsReminders)
             .filter { entry in
@@ -565,11 +565,18 @@ final class PhoneSyncEngine: ObservableObject {
             lastPosted: state.lastIngest, hostReportsPending: hostPending != nil, keepalive: keepalive, now: currentNow)
         var pending = hostPending ?? 0
         if send {
-            let batchID = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-            batch["batch_id"] = batchID
-            let body = try await Self.sealBatch(batch, key: key, deviceID: state.deviceID, batchID: batchID)
-            let answer = try await request("\(Self.base)/ingest", "POST", body)
-            pending = (answer["pending"] as? NSNumber)?.intValue ?? 0
+            // A large upload goes in parts the host takes. Nothing below
+            // counts as sent until it took the last one, so a refused part
+            // sends the whole pass again (a full one starting over).
+            let parts = await Self.partsInBackground(batch, maxItems: PhoneSyncLimits.batchItems,
+                                                     maxBytes: PhoneSyncLimits.batchBytes)
+            for var part in parts {
+                let batchID = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+                part["batch_id"] = batchID
+                let body = try await Self.sealBatch(part, key: key, deviceID: state.deviceID, batchID: batchID)
+                let answer = try await request("\(Self.base)/ingest", "POST", body)
+                pending = (answer["pending"] as? NSNumber)?.intValue ?? 0
+            }
             state.frameHash = frame
             state.lastIngest = currentNow
         }
@@ -625,14 +632,18 @@ final class PhoneSyncEngine: ObservableObject {
         let calendar: PhoneCalendarAccess
         switch (preferences.calendar, access) {
         case (.full, .full): calendar = .full
-        case (.off, _), (_, .off): calendar = .off
+        case (.readOnly, .full), (.readOnly, .readOnly), (.full, .readOnly): calendar = .readOnly
+        // Read-only without read access leaves nothing Hermes may have.
+        case (.off, _), (_, .off), (.readOnly, .writeOnly), (.writeOnly, .readOnly): calendar = .off
         case (.full, .writeOnly), (.writeOnly, .full), (.writeOnly, .writeOnly): calendar = .writeOnly
         }
-        sharing["calendar"] = calendar.rawValue
-        if calendar != .full { sharing["attendee_emails"] = false }
+        sharing["calendar"] = calendar == .readOnly ? PhoneCalendarAccess.full.rawValue : calendar.rawValue
+        sharing["calendar_read_only"] = calendar == .readOnly
+        if !calendar.reads { sharing["attendee_emails"] = false }
         let reminders = preferences.reminders && remindersAuthorized
         sharing["reminders"] = reminders
-        if calendar != .full, !reminders { sharing["details"] = false }
+        sharing["reminders_read_only"] = reminders && preferences.remindersReadOnly
+        if !calendar.reads, !reminders { sharing["details"] = false }
         sharing["alarms"] = preferences.alarms && alarmsAuthorized
         return sharing
     }
@@ -660,6 +671,82 @@ final class PhoneSyncEngine: ObservableObject {
         guard !full, !truncated else { return Section(upsert: upsert, delete: [], hashes: hashes) }
         let delete = sent.keys.filter { hashes[$0] == nil }.sorted()
         return Section(upsert: upsert, delete: delete, hashes: hashes)
+    }
+
+    /// An upload as parts the host takes, each with at most `maxItems` items
+    /// (what phone_store counts against MAX_ITEMS: calendars, upserts,
+    /// deletions, alarms and people) and about `maxBytes` of JSON. The first
+    /// part is the upload with as many event and reminder deletions, then
+    /// upserts, as fit: it carries every other section and each section's
+    /// `full`. The others only add deletions and upserts (never `full`) under
+    /// the same `sent_at`, which the host applies after the first. An upload
+    /// that fits is one part.
+    ///
+    /// The host applies each part on its own, so between a full first part
+    /// and the last one it has only some of the snapshot; if a later part is
+    /// refused, nothing counts as sent and the next pass sends it all again.
+    nonisolated static func parts(of batch: [String: Any], maxItems: Int, maxBytes: Int) -> [[String: Any]] {
+        func size(_ value: Any) -> Int {
+            (try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .fragmentsAllowed]))?.count ?? 0
+        }
+        func count(_ value: Any?) -> Int { (value as? [Any])?.count ?? 0 }
+        var head = batch
+        // Deletions first, so an upload that fits keeps them all in its first part.
+        var deletes: [(section: String, list: String, item: Any)] = []
+        var upserts: [(section: String, list: String, item: Any)] = []
+        var later = batch.filter { frameKeys.contains($0.key) }
+        for section in ["events", "reminders"] {
+            guard var body = batch[section] as? [String: Any] else { continue }
+            deletes += (body["delete"] as? [Any] ?? []).map { (section, "delete", $0) }
+            upserts += (body["upsert"] as? [Any] ?? []).map { (section, "upsert", $0) }
+            body["upsert"] = [[String: Any]]()
+            if body["delete"] != nil { body["delete"] = [String]() }
+            head[section] = body
+            var more: [String: Any] = ["full": false, "upsert": [[String: Any]](), "delete": [String]()]
+            more["from"] = body["from"]
+            more["to"] = body["to"]
+            later[section] = more
+        }
+        var items = count(head["calendars"]) + count(head["alarms"]) + count(head["contacts"])
+        var bytes = size(head)
+        var base = head
+        var taken: [String: [String: [Any]]] = [:]
+        var parts: [[String: Any]] = []
+        func close() {
+            var part = base
+            for (section, lists) in taken {
+                var body = part[section] as? [String: Any] ?? [:]
+                for (list, values) in lists { body[list] = values }
+                part[section] = body
+            }
+            // A later part has only the sections it adds to.
+            if !parts.isEmpty {
+                part = part.filter { frameKeys.contains($0.key) || taken[$0.key] != nil }
+            }
+            parts.append(part)
+        }
+        for (section, list, item) in deletes + upserts {
+            let itemBytes = size(item) + 1
+            // A later part takes at least one item, however large.
+            let mustTakeOne = !parts.isEmpty && taken.isEmpty
+            if !mustTakeOne, items + 1 > maxItems || bytes + itemBytes > maxBytes {
+                close()
+                base = later
+                taken = [:]
+                items = 0
+                bytes = size(later)
+            }
+            taken[section, default: [:]][list, default: []].append(item)
+            items += 1
+            bytes += itemBytes
+        }
+        close()
+        return parts
+    }
+
+    nonisolated private static func partsInBackground(_ batch: [String: Any], maxItems: Int,
+                                                      maxBytes: Int) async -> [[String: Any]] {
+        parts(of: batch, maxItems: maxItems, maxBytes: maxBytes)
     }
 
     /// A full upload can be thousands of items, so it's serialized and
@@ -711,6 +798,16 @@ final class PhoneSyncEngine: ObservableObject {
                 if !state.unreported.contains(known) { state.unreported.append(known) }
                 continue
             }
+            if !preferences.allows(change.kind) {
+                // Read-only (or no longer shared): never a card, whatever
+                // the host asked. A host from before read-only can ask.
+                // Reported, not remembered as answered: it's the setting
+                // now, so the same change asked again after the user allows
+                // changes gets its card.
+                let refusal = PhoneChangeResult(id: change.id, outcome: .failed, note: Self.refusalNote(change.kind))
+                if !state.unreported.contains(refusal) { state.unreported.append(refusal) }
+                continue
+            }
             if change.auto, change.kind.addsWithoutAsking, preferences.autoAdd {
                 await applyNow(change, auto: true)
             } else {
@@ -746,9 +843,23 @@ final class PhoneSyncEngine: ObservableObject {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
+    /// Why a change the user doesn't allow was refused, for Hermes (not UI
+    /// copy, so not localized).
+    nonisolated static func refusalNote(_ kind: PhoneChange.Kind) -> String {
+        if kind.isAlarm { return "The user doesn't let Hermes set alarms on this iPhone" }
+        return kind.isEvent
+            ? "The user doesn't let Hermes make this change to their calendar (read-only or not shared)"
+            : "The user doesn't let Hermes change their reminders (read-only or not shared)"
+    }
+
     private func applyNow(_ change: PhoneChange, auto: Bool) async {
         guard state.answered[change.id] == nil, applying.insert(change.id).inserted else { return }
         defer { applying.remove(change.id) }
+        // The user can make it read-only while a card waits.
+        guard preferences.allows(change.kind) else {
+            record(PhoneChangeResult(id: change.id, outcome: .failed, note: Self.refusalNote(change.kind)))
+            return
+        }
         if change.kind.isAlarm {
             await applyAlarm(change, auto: auto)
             return
@@ -802,8 +913,6 @@ final class PhoneSyncEngine: ObservableObject {
     // MARK: Live voice calls
 
     struct VoiceNotReady: Error {}
-    /// Voice adds and deletions only: updates stay with Hermes' cards.
-    struct NotForVoice: Error {}
 
     /// One sealed read for a live voice call (`op: "voice"`, at `path`): the
     /// host's result, for this iPhone's data only. Checks only that sharing
@@ -829,22 +938,18 @@ final class PhoneSyncEngine: ObservableObject {
         return json["result"] ?? NSNull()
     }
 
-    /// Adds or deletes an event or reminder the user asked for in a voice
-    /// call, straight away (no card: they said so out loud). The next upload
-    /// sends it. Like `voiceRead`, the caller checks the voice mode may use it.
+    /// Adds, changes or deletes an event or reminder, or sets or cancels an
+    /// alarm, the user asked for in a voice call, straight away (no card:
+    /// they said so out loud). The next upload sends it. Like `voiceRead`,
+    /// the caller checks the voice mode may use it.
     func applyFromVoice(_ change: PhoneChange) async throws -> String? {
-        guard change.kind.addsWithoutAsking || change.kind == .deleteEvent || change.kind == .deleteReminder else {
-            throw NotForVoice()
-        }
-        guard preferences.isOn, readStateIfNeeded() else { throw VoiceNotReady() }
+        // Still shared, and not read-only, after the wait for the user's yes.
+        guard preferences.isOn, preferences.allows(change.kind), readStateIfNeeded() else { throw VoiceNotReady() }
         if change.kind.isAlarm {
-            guard preferences.alarms else { throw VoiceNotReady() }
             return try await alarmSource.apply(change, now: now())
         }
-        if change.kind == .deleteEvent || change.kind == .deleteReminder {
-            let isEvent = change.kind == .deleteEvent
-            // Still shared after the wait for the user's yes.
-            guard isEvent ? preferences.calendar == .full : preferences.reminders else { throw VoiceNotReady() }
+        if !change.kind.isAddition {
+            let isEvent = change.kind.isEvent
             // Only what's still shared: an id read before its calendar was
             // left out isn't.
             if let calendar = await calendarSource.itemCalendar(itemID: (isEvent ? change.eventID : change.reminderID) ?? "",
@@ -854,7 +959,7 @@ final class PhoneSyncEngine: ObservableObject {
             }
         }
         let itemID = try await calendarSource.apply(change, window: window)
-        // A deletion needs nothing here: the next upload sees it gone.
+        // A change or deletion needs nothing here: the next upload sees it.
         if change.kind.isAddition, let itemID {
             if change.kind.isEvent {
                 if state.eventHashes[itemID] == nil { state.eventHashes[itemID] = "" }

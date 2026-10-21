@@ -171,6 +171,9 @@ struct RpcError: Decodable, Error, LocalizedError, Sendable {
     /// (Hermes' contract; the message is for people), e.g.
     /// `SESSION_NOT_OWNED` on a `prompt.submit` 4090.
     var reason: String? = nil
+    /// Hermes' one-line explanation from `data.detail`, e.g. what to use
+    /// instead of a command `slash.exec` refuses.
+    var detail: String? = nil
 
     var errorDescription: String? { message }
 
@@ -199,7 +202,12 @@ extension RpcError {
             code = number.intValue
         }
         let data = AnyCodable(optionalJSONObject: object["data"])
-        self.init(code: code, message: message, reason: data?.objectValue?["reason"]?.stringValue)
+        self.init(
+            code: code,
+            message: message,
+            reason: data?.objectValue?["reason"]?.stringValue,
+            detail: data?.objectValue?["detail"]?.stringValue
+        )
     }
 
     init(from decoder: Decoder) throws {
@@ -208,7 +216,8 @@ extension RpcError {
         self.init(
             code: try container.decodeIfPresent(Int.self, forKey: .code),
             message: try container.decode(String.self, forKey: .message),
-            reason: data?.objectValue?["reason"]?.stringValue
+            reason: data?.objectValue?["reason"]?.stringValue,
+            detail: data?.objectValue?["detail"]?.stringValue
         )
     }
 }
@@ -388,6 +397,13 @@ enum StreamEvent {
     /// the reacted row's role so a live row with no `rowId` yet can match.
     case messageReaction(sessionId: String, rowId: Int, reactions: [MessageReaction], role: String)
     case messageError(sessionId: String, message: String)
+    /// `user.message`: a user message another client sent in the session,
+    /// already stored as `rowId`.
+    case userMessage(sessionId: String, rowId: Int?, text: String, origin: String?)
+    /// `sessions.changed`: the stored session list moved (state.db), from
+    /// any process: a turn run in the TUI or on another device, a rename,
+    /// a deletion. Carries nothing; the catalog says what moved.
+    case sessionsChanged
     case messageInterrupted(sessionId: String)
     case sessionBusy(sessionId: String, busy: Bool)
     case sessionInfo(sessionId: String, snapshot: SessionRuntimeSnapshot)
@@ -468,6 +484,9 @@ struct SessionRuntimeSnapshot {
     let activeAgents: Int?
     let reasoningEffort: String?
     let fast: Bool?
+    /// The session's next-turn tier (`service_tier`), so Ultrafast reads
+    /// apart from Fast.
+    let serviceTier: String?
     /// Per-session approval bypass. This overrides the profile default while
     /// the conversation is active without changing `approvals.mode` itself.
     let yolo: Bool?
@@ -542,6 +561,7 @@ struct SessionRuntimeSnapshot {
             ?? object["reasoning"]?.stringValue
         fast = object["fast"]?.boolValue
             ?? object["fast_mode"]?.boolValue
+        serviceTier = object["service_tier"]?.stringValue
         yolo = object["yolo"]?.boolValue
         approvalsMode = object["approvals_mode"]?.stringValue
             ?? object["approval_mode"]?.stringValue
@@ -640,6 +660,15 @@ struct SessionCompressResult {
 struct SessionBranchMessage {
     let role: MessageRole
     let content: String
+}
+
+/// The end of a delegate agent's live transcript, from `subagent.tail`.
+/// `available` is false before the agent has written anything and after it
+/// ends.
+struct SubagentTail: Equatable {
+    var available: Bool
+    var text: String
+    var truncated: Bool
 }
 
 /// Typed result of `prompt.submit`, derived from the gateway's actual
@@ -818,10 +847,13 @@ final class URLSessionWebSocketTransport: HermesWebSocketTransport {
     /// own default (1 MiB) closes the connection with close code 1009 as soon
     /// as a single WebSocket message exceeds it, which is how resuming a large
     /// session — one huge `session.resume` frame — used to kill Conduit's
-    /// connection in a reconnect loop (issue #106). 4 MiB comfortably covers
-    /// legitimate control payloads while staying bounded; the compact resume
-    /// keeps transcript-sized payloads off the socket entirely.
-    static let maximumMessageSize = 4 * 1024 * 1024
+    /// connection in a reconnect loop (issue #106). The compact resume keeps
+    /// transcript-sized payloads off the socket, but other frames can still
+    /// be large (Hermes sends a tool's whole result in `tool.complete`): a
+    /// bot that sent videos made 4 MiB too small, and the socket closed with
+    /// 1009 after each of its replies. 64 MiB takes those while staying
+    /// bounded.
+    static let maximumMessageSize = 64 * 1024 * 1024
 
     private var session: URLSession?
     private var delegate: DashboardWebSocketDelegate?
@@ -2324,7 +2356,17 @@ final class HermesClient: ObservableObject {
     /// gateway from before that slot refuses the unknown key with `4000`
     /// before anything runs, so the turn is resent once without it and the
     /// key is dropped for this client from then on.
-    func sendPrompt(_ sessionId: String, text: String, surface: String? = nil, voiceTurn: Bool = false) async throws -> PromptSubmissionOutcome {
+    /// `queued` is Queue (#842): with a turn running, Hermes keeps the
+    /// message as the next turn, on its side, instead of steering or
+    /// interrupting with it. A gateway that refuses the key is never sent
+    /// the message without it, which would steer or interrupt instead.
+    func sendPrompt(
+        _ sessionId: String,
+        text: String,
+        surface: String? = nil,
+        voiceTurn: Bool = false,
+        queued: Bool = false
+    ) async throws -> PromptSubmissionOutcome {
         var params: [String: Any] = [
             "session_id": sessionId,
             "text": text
@@ -2332,6 +2374,10 @@ final class HermesClient: ObservableObject {
         if let surface { params["surface"] = surface }
         let marksVoiceTurn = voiceTurn && !gatewayRefusesVoiceTurn
         if marksVoiceTurn { params["voice_turn"] = true }
+        if queued {
+            guard !gatewayRefusesQueued else { throw QueueUnsupportedError() }
+            params["queued"] = true
+        }
         let result: AnyCodable
         do {
             result = try await rpc("prompt.submit", params: params, timeout: Self.promptSubmitTimeout)
@@ -2339,6 +2385,9 @@ final class HermesClient: ObservableObject {
             gatewayRefusesVoiceTurn = true
             params.removeValue(forKey: "voice_turn")
             result = try await rpc("prompt.submit", params: params, timeout: Self.promptSubmitTimeout)
+        } catch let error as RpcError where queued && error.refusesUnknownParam("queued") {
+            gatewayRefusesQueued = true
+            throw QueueUnsupportedError()
         }
         return PromptSubmissionOutcome(
             gatewayStatus: result.objectValue?["status"]?.stringValue
@@ -2348,6 +2397,16 @@ final class HermesClient: ObservableObject {
     /// Set once this gateway refused `prompt.submit`'s `voice_turn` key
     /// (a Hermes from before `auxiliary.voice_chat`).
     private var gatewayRefusesVoiceTurn = false
+
+    /// Set once this gateway refused `prompt.submit`'s `queued` key.
+    private var gatewayRefusesQueued = false
+
+    /// Queue on a Hermes without `prompt.submit`'s `queued` key.
+    struct QueueUnsupportedError: LocalizedError {
+        var errorDescription: String? {
+            AppLocalization.string("This Hermes can't queue messages. Update Hermes, or touch and hold send to steer or interrupt instead.")
+        }
+    }
 
     /// Read-only liveness probe against the gateway's in-memory runtime
     /// registry (`session.active_list`). Unlike `session.resume` this does not
@@ -2615,6 +2674,66 @@ final class HermesClient: ObservableObject {
         return Set(ids)
     }
 
+    /// Queues `text` into one running delegate agent (`subagent.steer`).
+    /// Hermes hands it over at the agent's next tool step; false when Hermes
+    /// rejected it because the agent isn't running for this session.
+    func steerSubagent(sessionId: String, subagentId: String, text: String) async throws -> Bool {
+        let result = try await rpc("subagent.steer", params: [
+            "session_id": sessionId,
+            "subagent_id": subagentId,
+            "text": text
+        ])
+        switch result.objectValue?["status"]?.stringValue {
+        case "queued": return true
+        case "rejected": return false
+        // Only an explicit rejection may end the card.
+        default: throw HermesError.invalidResponse
+        }
+    }
+
+    /// Stops one running delegate agent (`subagent.interrupt`). False when
+    /// Hermes no longer has that agent running for this session.
+    func interruptSubagent(sessionId: String, subagentId: String) async throws -> Bool {
+        let result = try await rpc("subagent.interrupt", params: [
+            "session_id": sessionId,
+            "subagent_id": subagentId
+        ])
+        // A reply without `found` must not end a card that may still run.
+        guard let found = result.objectValue?["found"]?.boolValue else { throw HermesError.invalidResponse }
+        return found
+    }
+
+    /// The end of one delegate agent's live transcript (`subagent.tail`,
+    /// at most 16 KB).
+    func tailSubagent(sessionId: String, subagentId: String) async throws -> SubagentTail {
+        let result = try await rpc("subagent.tail", params: [
+            "session_id": sessionId,
+            "subagent_id": subagentId
+        ])
+        guard let object = result.objectValue else { throw HermesError.invalidResponse }
+        return SubagentTail(
+            available: object["available"]?.boolValue ?? false,
+            text: object["text"]?.stringValue ?? "",
+            truncated: object["truncated"]?.boolValue ?? false
+        )
+    }
+
+    /// Whether Hermes is holding new delegate agents (`delegation.status`).
+    /// The pause covers the whole Hermes, not one profile.
+    func delegationPaused() async throws -> Bool {
+        let result = try await rpc("delegation.status")
+        guard let paused = result.objectValue?["paused"]?.boolValue else { throw HermesError.invalidResponse }
+        return paused
+    }
+
+    /// Holds or releases new delegate agents (`delegation.pause`); agents
+    /// already running keep going. Returns the state Hermes reports.
+    func setDelegationPaused(_ paused: Bool) async throws -> Bool {
+        let result = try await rpc("delegation.pause", params: ["paused": paused])
+        guard let state = result.objectValue?["paused"]?.boolValue else { throw HermesError.invalidResponse }
+        return state
+    }
+
     func modelOptions(sessionId: String? = nil) async throws -> (model: String?, provider: String?, providers: [ProviderInfo]?) {
         var params: [String: Any] = ["explicit_only": true]
         if let sessionId { params["session_id"] = sessionId }
@@ -2649,11 +2768,13 @@ final class HermesClient: ObservableObject {
         ])
     }
 
-    func setFast(_ sessionId: String, enabled: Bool) async throws {
+    /// Session-scoped `/fast`. A gateway older than Ultrafast refuses
+    /// "ultrafast" as an unknown word.
+    func setSpeed(_ sessionId: String, speed: ModelSpeed) async throws {
         _ = try await rpc("config.set", params: [
             "key": "fast",
             "session_id": sessionId,
-            "value": enabled ? "fast" : "normal"
+            "value": speed.rawValue
         ])
     }
 
@@ -2699,6 +2820,13 @@ final class HermesClient: ObservableObject {
             "text": text
         ])
         return result.objectValue?["task_id"]?.stringValue
+    }
+
+    /// The background processes this chat started (Hermes' `/stop`).
+    /// Returns how many stopped.
+    func stopProcesses(sessionId: String) async throws -> Int {
+        let result = try await rpc("process.stop", params: ["session_id": sessionId])
+        return result.objectValue?["killed"]?.intValue ?? 0
     }
 
     func dispatchCommand(sessionId: String, name: String, arg: String) async throws -> AnyCodable {
@@ -3028,6 +3156,18 @@ struct ProviderInfo: Equatable {
     var aliases: [String] = []
     /// Hermes marks the row backing the configured main model.
     var isCurrent = false
+    /// Per-model speed support from the row's `capabilities`, keyed by
+    /// model id. Empty on gateways that don't send it.
+    var speedCapabilities: [String: ModelSpeedCapability] = [:]
+
+    /// Whether `model` offers Ultrafast on this route and account. Nil when
+    /// the row says nothing about the model.
+    func offersUltrafast(_ model: String) -> Bool? {
+        let wanted = Self.normalized(model)
+        let caps = speedCapabilities[model]
+            ?? speedCapabilities.first { Self.normalized($0.key) == wanted }?.value
+        return caps.map(\.ultrafast)
+    }
 
     /// True when `provider` names this row by slug, display name or alias,
     /// mirroring Hermes Desktop's `catalogProviderMatches`.
@@ -3086,6 +3226,13 @@ struct ModelSwitchOutcome: Equatable {
     }
 }
 
+struct ModelSpeedCapability: Equatable {
+    var fast: Bool
+    /// Hermes sets it only when `ultrafast_offered` passes, which on the
+    /// ChatGPT route reads the account's own Codex catalog.
+    var ultrafast: Bool
+}
+
 struct ModelInfo: Equatable {
     let id: String
     let label: String?
@@ -3101,6 +3248,13 @@ extension ProviderInfo {
         self.displayName = object["name"]?.stringValue
         self.aliases = (object["aliases"]?.arrayValue ?? []).compactMap(\.stringValue)
         self.isCurrent = object["is_current"]?.boolValue ?? false
+        self.speedCapabilities = (object["capabilities"]?.objectValue ?? [:]).reduce(into: [:]) { result, entry in
+            guard let caps = entry.value.objectValue else { return }
+            result[entry.key] = ModelSpeedCapability(
+                fast: caps["fast"]?.boolValue ?? false,
+                ultrafast: caps["ultrafast"]?.boolValue ?? false
+            )
+        }
         self.models = (object["models"]?.arrayValue ?? []).compactMap { model in
             if let id = model.stringValue, !id.isEmpty {
                 return ModelInfo(id: id, label: nil, reasoningCapable: false)
@@ -4424,6 +4578,19 @@ enum MessageNormalizer {
     /// The caption the gateway writes when a picture arrives without one.
     private static let defaultImageCaption = "What do you see in this image?"
 
+    /// What Hermes saved in place of a picture before hermes-agent d0f5ef7041
+    /// (v0.21): the model-only description vision wrote for it, then where
+    /// the file is. tui_gateway (`_enrich_with_attached_images`) and the
+    /// chat platform gateway (`_enrich_message_with_vision`) word it
+    /// differently, and each has a wording for a failed analysis. Group 1 is
+    /// the description when there is one, the last group the path.
+    private static let visionEnrichmentPatterns: [NSRegularExpression] = [
+        #"\[The user attached an image:\r?\n(.*?)\]\r?\n\[You can examine it with vision_analyze using image_url: ([^\]\r\n]+)\]"#,
+        #"\[The user attached an image but analysis failed\.\]\r?\n\[You can examine it with vision_analyze using image_url: ([^\]\r\n]+)\]"#,
+        #"\[The user sent an image~ Here's what I can see:\r?\n(.*?)\]\r?\n\[If you need a closer look, use vision_analyze with image_url: (\S+) ~\]"#,
+        #"\[The user sent an image but [^\[\]]*? with vision_analyze using image_url: ([^\]\r\n]+)\]"#,
+    ].compactMap { try? NSRegularExpression(pattern: $0, options: [.dotMatchesLineSeparators]) }
+
     /// What Hermes puts in place of each picture it leaves out of a
     /// transcript read with `inline_images=false` (#652).
     static let inlineImageMarker = "[image]"
@@ -4518,8 +4685,21 @@ enum MessageNormalizer {
         let body = markers.text
         let fullRange = NSRange(body.startIndex..<body.endIndex, in: body)
 
-        var references: [(range: NSRange, path: String)] = []
+        var references: [(range: NSRange, path: String, description: String?)] = []
         var foundHint = false
+        for expression in visionEnrichmentPatterns {
+            for match in expression.matches(in: body, range: fullRange) {
+                guard let pathRange = Range(match.range(at: match.numberOfRanges - 1), in: body) else { continue }
+                let path = String(body[pathRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !path.isEmpty else { continue }
+                var description: String?
+                if match.numberOfRanges > 2, let range = Range(match.range(at: 1), in: body) {
+                    let text = String(body[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    description = text.isEmpty ? nil : text
+                }
+                references.append((match.range, path, description))
+            }
+        }
         for (expression, isHint) in [(imageReferencePattern, false), (imageHintPattern, true)] {
             guard let expression else { continue }
             for match in expression.matches(in: body, range: fullRange) {
@@ -4530,7 +4710,7 @@ enum MessageNormalizer {
                     let path = String(body[swiftRange])
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     if !path.isEmpty {
-                        references.append((match.range, path))
+                        references.append((match.range, path, nil))
                         foundHint = foundHint || isHint
                     }
                     break
@@ -4561,7 +4741,17 @@ enum MessageNormalizer {
             visibleContent = ""
         }
 
-        let paths = references.map(\.path)
+        // One picture named twice (its description and an `@image:` token)
+        // is one attachment, carrying the description.
+        var pictures: [(path: String, description: String?)] = []
+        for reference in references {
+            if let index = pictures.firstIndex(where: { $0.path == reference.path }) {
+                pictures[index].description = pictures[index].description ?? reference.description
+            } else {
+                pictures.append((reference.path, reference.description))
+            }
+        }
+        let paths = pictures.map(\.path)
         let attachments = (0..<max(paths.count, markers.count)).map { index -> Attachment in
             let path = index < paths.count ? paths[index] : nil
             let name = path.map { URL(fileURLWithPath: $0).lastPathComponent } ?? ""
@@ -4580,7 +4770,8 @@ enum MessageNormalizer {
                 uri: path ?? "",
                 mimeType: path.flatMap { imageMimeType(for: $0) },
                 kind: .image,
-                inlineImage: inlineImage
+                inlineImage: inlineImage,
+                imageDescription: index < pictures.count ? pictures[index].description : nil
             )
         }
         return (visibleContent, body, attachments)
