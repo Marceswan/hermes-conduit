@@ -16308,7 +16308,11 @@ final class AppState: ObservableObject {
     /// Someone is looking at Conduit (the phone's screen or CarPlay's): a
     /// returning gateway should show within seconds.
     private var reconnectIsWatched: Bool {
+        #if os(macOS) // MAC: SwiftUI reports the scene inactive whenever another app is active, also while a Conduit window is on screen (side by side, a second display); a visible window is watched, or the reconnect waits up to 60 s (Ruling R41)
+        isSceneActive || isCarPlayVoiceSurfaceActive || MacTransportRecoveryPolicy.windowIsVisible()
+        #else // MAC:
         isSceneActive || isCarPlayVoiceSurfaceActive
+        #endif // MAC:
     }
 
     private func scheduleReconnectAfterFailedSync() {

@@ -27,10 +27,13 @@ final class MacTransportRecoveryTests: XCTestCase {
         fixture.appState.isConnected = false
         fixture.appState.isConnecting = false
         MacTransportRecoveryPolicy.allowsRecoveryWhileInactive = true
+        // A hosted test run can have a visible window: the tests decide it, none reads the screen.
+        MacTransportRecoveryPolicy.windowIsVisible = { false }
     }
 
     override func tearDown() async throws {
         MacTransportRecoveryPolicy.allowsRecoveryWhileInactive = true
+        MacTransportRecoveryPolicy.windowIsVisible = MacTransportRecoveryPolicy.systemWindowIsVisible
         fixture.tearDown()
         fixture = nil
     }
@@ -121,6 +124,53 @@ final class MacTransportRecoveryTests: XCTestCase {
             "the second wait is the second step of upstream's backoff"
         )
         XCTAssertGreaterThan(recorder.delays.last ?? 0, recorder.delays.first ?? 0)
+    }
+
+    // MARK: - A visible window is watched (Ruling R41)
+
+    /// SwiftUI reports the scene `.inactive` whenever another app is active, also while a Conduit
+    /// window is on screen (side by side, a second display). Upstream's `reconnectIsWatched` reads
+    /// only `isSceneActive`, so the re-arm would use the off-screen backoff (up to 60 s, no
+    /// readiness probe). A visible window counts as watched on Mac.
+    func testRearmUsesTheOnScreenStepWhileAWindowIsVisibleButTheAppIsInactive() {
+        fixture.appState.reconnectJitter = { 0.75 }
+        fixture.appState.deviceConditions = { DeviceConditions() }
+        MacTransportRecoveryPolicy.windowIsVisible = { true }
+        _ = fixture.appState.handleScenePhase(.active)
+        _ = fixture.appState.handleScenePhase(.inactive)
+        XCTAssertFalse(fixture.appState.isSceneActive, "precondition: another app is active")
+        let onScreen = PollCadence.reconnectDelay(attempt: 0, random: 0.75, onScreen: true)
+        let offScreen = PollCadence.reconnectDelay(attempt: 0, random: 0.75, onScreen: false)
+        XCTAssertNotEqual(onScreen, offScreen, "precondition: the two steps differ for this jitter")
+        XCTAssertEqual(recorder.delays, [onScreen], "a visible window gets the on-screen step")
+    }
+
+    func testRearmStaysWithinTheOnScreenCapWhileAWindowIsVisible() async {
+        fixture.appState.reconnectJitter = { 0.99 }
+        fixture.appState.deviceConditions = { DeviceConditions() }
+        MacTransportRecoveryPolicy.windowIsVisible = { true }
+        _ = fixture.appState.handleScenePhase(.active)
+        _ = fixture.appState.handleScenePhase(.inactive)
+        // Each cycle runs and does not connect: five steps are consumed.
+        for _ in 0..<5 {
+            await recorder.operations.last?()
+            _ = fixture.appState.handleScenePhase(.background)
+        }
+        XCTAssertEqual(recorder.delays.count, 6)
+        XCTAssertLessThanOrEqual(
+            recorder.delays.max() ?? 0, PollCadence.reconnectCapOnScreen,
+            "no step is longer than the on-screen cap of 8 s (the off-screen step 5 would be about 31 s)")
+        XCTAssertEqual(
+            recorder.delays.last, PollCadence.reconnectDelay(attempt: 5, random: 0.99, onScreen: true))
+    }
+
+    func testRearmUsesTheOffScreenStepWhenNoWindowIsVisible() {
+        fixture.appState.reconnectJitter = { 0.75 }
+        fixture.appState.deviceConditions = { DeviceConditions() }
+        MacTransportRecoveryPolicy.windowIsVisible = { false }
+        _ = fixture.appState.handleScenePhase(.active)
+        _ = fixture.appState.handleScenePhase(.inactive)
+        XCTAssertEqual(recorder.delays, [PollCadence.reconnectDelay(attempt: 0, random: 0.75, onScreen: false)])
     }
 
     func testRearmIsOffWhenThePolicyIsOff() {
