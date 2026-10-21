@@ -335,6 +335,7 @@ targets:
           - "CarPlay/CarPlayVoiceArtwork.swift"
           # UIKit-backed views (R2): Mac twins in ConduitMac/Chat and ConduitMac/Views.
           - "Views/Components/SelectableTextView.swift"
+          - "Views/Components/SelectableTextCanvas.swift"
           - "Views/Components/ComposerPasteTextView.swift"
           - "Views/Components/MarkdownSelectionHandles.swift"
           - "Views/Components/ImagePicker.swift"
@@ -342,6 +343,14 @@ targets:
           - "Views/ChatScrollSurfaceLocator.swift"
           # DEBUG-only iOS selection fixture (UIView animations); only ConduitApp uses it.
           - "Views/SelectionFixtureView.swift"
+          # Current Mac sign-in and Connection Setup kept (R2, user decision 2026-10-21 item 2B):
+          # frozen copies in ConduitMac/Login. Views/Login/* stays compiled (RootView, SavedDashboardsView use it).
+          - "Views/LoginView.swift"
+          - "Views/ConnectionSetupView.swift"
+          - "Views/ConnectionSetupForm.swift"
+          - "Views/ConnectionSetupComponents.swift"
+          # ActivityKit is unavailable on macOS (R2): stub in ConduitMac/Stubs/LiveTurnActivitiesStub.swift.
+          - "Services/LiveTurnActivities.swift"
     settings:
       base:
         PRODUCT_NAME: Conduit
@@ -386,6 +395,8 @@ targets:
           - "Info.plist"
           - "ConduitWidgets.entitlements"
           - "Resources/**"
+          # ActivityKit is unavailable on macOS (R2): the Live Activity widget is not in the Mac bundle.
+          - "HermesTurnLiveActivity.swift"
       - path: ConduitWidgets/Resources/Assets.xcassets
         buildPhase: resources
       - path: Shared/Widgets

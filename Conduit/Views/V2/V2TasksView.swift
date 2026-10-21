@@ -199,7 +199,11 @@ struct V2ScheduledList: View {
                         .id("jobs")
                     }
                 }
+                #if os(iOS) // MAC: .insetGrouped is unavailable on macOS (R4)
                 .listStyle(.insetGrouped)
+                #else // MAC:
+                .listStyle(.inset)
+                #endif // MAC:
                 .scrollContentBackground(.hidden)
                 .environment(\.defaultMinListRowHeight, 1)
                 .animation(ConduitMotion.ease(reduceMotion: reduceMotion), value: pinnedRaw)

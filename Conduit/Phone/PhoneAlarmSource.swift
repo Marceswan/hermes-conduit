@@ -80,7 +80,7 @@ enum PhoneAlarmSources {
     /// AlarmKit on iOS 26, a source that can't set anything before it.
     static func system(defaults: UserDefaults = .standard) -> PhoneAlarmSource {
         #if canImport(AlarmKit)
-        if #available(iOS 26.0, *) { return AlarmKitPhoneSource(defaults: defaults) }
+        if #available(iOS 26.0, macOS 26.0, *) { return AlarmKitPhoneSource(defaults: defaults) } // MAC: name the macOS release (R4-widen)
         #endif
         return UnsupportedPhoneAlarmSource()
     }
@@ -114,10 +114,10 @@ final class UnsupportedPhoneAlarmSource: PhoneAlarmSource {
 
 #if canImport(AlarmKit)
 /// AlarmKit needs a metadata type; Conduit's alarms carry none.
-@available(iOS 26.0, *)
+@available(iOS 26.0, macOS 26.0, *) // MAC: name the macOS release (R4-widen)
 struct ConduitAlarmMetadata: AlarmMetadata {}
 
-@available(iOS 26.0, *)
+@available(iOS 26.0, macOS 26.0, *) // MAC: name the macOS release (R4-widen)
 final class AlarmKitPhoneSource: PhoneAlarmSource {
     private let manager = AlarmManager.shared
     private let defaults: UserDefaults

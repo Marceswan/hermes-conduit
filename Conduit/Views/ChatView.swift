@@ -3732,7 +3732,7 @@ struct V2SoftTopScrollEdge: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(iOS 26.0, *), isOn {
+        if #available(iOS 26.0, macOS 26.0, *), isOn { // MAC: name the macOS release (R4-widen)
             content.scrollEdgeEffectStyle(.soft, for: .top)
         } else {
             content

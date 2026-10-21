@@ -336,7 +336,12 @@ struct HTMLPreviewTheme: Equatable {
 
     static func css(_ color: UIColor) -> String {
         var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        #if os(macOS) // MAC: NSColor.getRed returns Void and needs an RGB colour space
+        guard let rgb = color.usingColorSpace(.sRGB) else { return "currentColor" }
+        rgb.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        #else // MAC:
         guard color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return "currentColor" }
+        #endif // MAC:
         func channel(_ value: CGFloat) -> Int { Int((min(max(value, 0), 1) * 255).rounded()) }
         let opacity = String(format: "%.3f", Double(min(max(alpha, 0), 1)))
         return "rgba(\(channel(red)),\(channel(green)),\(channel(blue)),\(opacity))"
@@ -444,6 +449,7 @@ enum HTMLPreviewPage {
     }
 }
 
+#if os(iOS) // MAC: Mac twin in ConduitMac/WebViews/HTMLPreviewWebViewTwin.swift (R3)
 /// The page an agent's HTML draws in. Nothing it stores outlives it, and
 /// its only message to the app is its height.
 struct HTMLPreviewWebView: UIViewRepresentable {
@@ -549,6 +555,7 @@ struct HTMLPreviewWebView: UIViewRepresentable {
         }
     }
 }
+#endif // MAC:
 
 /// An agent's page full screen, where it can be touched, scrolled and
 /// zoomed.

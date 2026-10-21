@@ -433,7 +433,7 @@ final class ChatAttachmentDropTests: XCTestCase {
         let window = HostedTestSupport.host(
             VStack(spacing: 0) {
                 SinkProbe(box: box)
-                ComposerBar()
+                ComposerBar(appState: appState)
             }
             .macChatAttachmentDrop()
             .environmentObject(appState),

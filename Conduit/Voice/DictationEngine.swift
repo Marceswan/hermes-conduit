@@ -51,7 +51,7 @@ enum DictationEngine: String, CaseIterable, Identifiable {
         switch self {
         case .apple, .hermes: return true
         case .appleSpeechAnalyzer:
-            if #available(iOS 26.0, *) { return SpeechTranscriber.isAvailable }
+            if #available(iOS 26.0, macOS 26.0, *) { return SpeechTranscriber.isAvailable } // MAC: name the macOS release (R4-widen)
             return false
         }
     }

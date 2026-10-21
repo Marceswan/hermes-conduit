@@ -158,7 +158,7 @@ final class ComposerDictationService: ObservableObject {
             guard await AppleSpeechWakeWordService.requestPermissions() else {
                 throw DictationError.message(AppLocalization.string("Dictation needs microphone and speech recognition access. You can allow them in Settings."))
             }
-            if choice == .appleSpeechAnalyzer, #available(iOS 26.0, *), SpeechTranscriber.isAvailable {
+            if choice == .appleSpeechAnalyzer, #available(iOS 26.0, macOS 26.0, *), SpeechTranscriber.isAvailable { // MAC: name the macOS release (R4-widen)
                 return try await SpeechAnalyzerDictationRecognizer.make(words: words)
             }
             return try AppleSpeechDictationRecognizer(words: words)

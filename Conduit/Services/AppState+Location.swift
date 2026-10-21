@@ -18,7 +18,11 @@ extension AppState {
     /// Settings shows Location once the host's plugin serves it, or while
     /// sharing is on (so it can be turned off when the plugin went away).
     var showsLocationSettings: Bool {
+        #if os(macOS) // MAC: Location sharing is kept off on Mac (G2)
+        false
+        #else // MAC:
         notifierPlugin.reports(LocationSharingController.capability) || LocationSharingController.shared.settings.isOn
+        #endif // MAC:
     }
 
     /// The binding for the dashboard and profile in use, for turning on.

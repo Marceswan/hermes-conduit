@@ -7,6 +7,7 @@
 //  it). Under the camera, the prompt that asks Hermes for a code.
 //
 
+#if os(iOS) // MAC: VisionKit DataScannerViewController is unavailable on macOS (R3)
 import AVFoundation
 import os
 import SwiftUI
@@ -238,3 +239,4 @@ struct DashboardCodeScanner: UIViewControllerRepresentable {
         }
     }
 }
+#endif // MAC:

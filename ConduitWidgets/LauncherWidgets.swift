@@ -37,7 +37,9 @@ struct ConduitWidgets: WidgetBundle {
     var body: some Widget {
         NativeLauncherWidget()
         CharacterLauncherWidget()
+        #if os(iOS) // MAC: Live Activities need ActivityKit, unavailable on macOS (R4)
         HermesTurnLiveActivity()
+        #endif // MAC:
     }
 }
 

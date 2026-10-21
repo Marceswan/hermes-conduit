@@ -133,7 +133,7 @@ enum RichPlaceLookup {
     }
 
     private static func find(_ place: RichPlace) async -> RichPlaceMatch? {
-        if let id = place.placeID, #available(iOS 18.0, *), let item = try? await MapsKit.item(placeID: id) {
+        if let id = place.placeID, #available(iOS 18.0, macOS 15.0, *), let item = try? await MapsKit.item(placeID: id) { // MAC: name the macOS release (R4-widen)
             return RichPlaceMatch(item: item, fallbackName: place.name, isVerified: true)
         }
         let given = place.givenCoordinate
@@ -264,7 +264,11 @@ enum RichMapSnapshot {
         let options = MKMapSnapshotter.Options()
         options.region = region(fitting: coordinates, route: route)
         options.size = size
+        #if os(macOS) // MAC: MKMapSnapshotter.Options has `appearance` on macOS, not `traitCollection` (R4)
+        options.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        #else // MAC:
         options.traitCollection = UITraitCollection(userInterfaceStyle: dark ? .dark : .light)
+        #endif // MAC:
         options.pointOfInterestFilter = .includingAll
         guard let snapshot = try? await MKMapSnapshotter(options: options).start() else { return nil }
         let image = draw(snapshot, coordinates: coordinates, route: route, accent: accent)

@@ -293,7 +293,7 @@ struct SendToHermesIntent: AppIntent {
     @available(iOS, deprecated: 26.0, message: "Use supportedModes on iOS 26+; retained for iOS 17–25.")
     static var openAppWhenRun: Bool = false
 
-    @available(iOS 26.0, *)
+    @available(iOS 26.0, macOS 26.0, *) // MAC: name the macOS release (R4-widen)
     static var supportedModes: IntentModes {
         .background
     }

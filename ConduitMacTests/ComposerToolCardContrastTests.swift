@@ -117,7 +117,7 @@ final class ComposerToolCardContrastTests: XCTestCase {
 
         for dark in [false, true] {
             let rep = try bitmap(
-                ComposerBar().environmentObject(appState)
+                ComposerBar(appState: appState).environmentObject(appState)
                     .background(dark ? Color(white: 0.12) : Color.white),
                 size: CGSize(width: 720, height: 140), dark: dark)
             let name = dark ? "reasoning-dark" : "reasoning-light"

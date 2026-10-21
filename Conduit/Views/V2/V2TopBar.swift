@@ -66,7 +66,7 @@ extension View {
     @ViewBuilder
     func v2EdgeBar<Bar: View>(_ edge: VerticalEdge, @ViewBuilder bar: () -> Bar) -> some View {
         let content = bar()
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, macOS 26.0, *) { // MAC: name the macOS release (R4-widen)
             scrollEdgeEffectStyle(.soft, for: edge == .top ? .top : .bottom)
                 .safeAreaBar(edge: edge, spacing: 0) { content }
         } else {
@@ -83,7 +83,7 @@ struct V2LegacyScrollEdge: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, macOS 26.0, *) { // MAC: name the macOS release (R4-widen)
             content
         } else {
             content.background { V2ScrollEdgeBackground(edge: edge) }

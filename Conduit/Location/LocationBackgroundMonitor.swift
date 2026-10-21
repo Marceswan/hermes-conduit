@@ -144,6 +144,9 @@ final class LocationBackgroundMonitor: NSObject, CLLocationManagerDelegate {
     // MARK: On-demand locate
 
     private func setLocationPushes(_ on: Bool) {
+        #if os(macOS) // MAC: location pushes are unavailable on macOS; location sharing is kept off on Mac (G2)
+        return
+        #else // MAC:
         guard on != pushesOn else { return }
         pushesOn = on
         if on {
@@ -161,6 +164,7 @@ final class LocationBackgroundMonitor: NSObject, CLLocationManagerDelegate {
             manager.stopMonitoringLocationPushes()
             locationPushToken?(nil)
         }
+        #endif // MAC:
     }
 
     // MARK: Calls
@@ -169,7 +173,11 @@ final class LocationBackgroundMonitor: NSObject, CLLocationManagerDelegate {
     func startCallUpdates() {
         guard callManager == nil else { return }
         let status = manager.authorizationStatus
+        #if os(macOS) // MAC: macOS has no When In Use status (R4)
+        guard status == .authorizedAlways else { return }
+        #else // MAC:
         guard status == .authorizedWhenInUse || status == .authorizedAlways else { return }
+        #endif // MAC:
         let callManager = CLLocationManager()
         callManager.delegate = self
         callManager.desiredAccuracy = kCLLocationAccuracyHundredMeters

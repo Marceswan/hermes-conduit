@@ -128,6 +128,7 @@ enum ConduitAccentChoice: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+#if os(iOS) // MAC: UITraitDefinition and UIMutableTraits are UIKit-only (R4)
 /// Carries the accent choice through UIKit traits, so the dynamic accent
 /// colours resolve it wherever they draw, SwiftUI and UIKit alike.
 struct ConduitAccentTrait: UITraitDefinition {
@@ -146,11 +147,21 @@ extension UIMutableTraits {
         set { self[ConduitAccentTrait.self] = newValue }
     }
 }
+#else // MAC:
+extension UITraitCollection {
+    /// macOS has no custom UIKit traits, so the dynamic accent reads the saved pick itself.
+    var conduitAccent: ConduitAccentChoice {
+        UserDefaults.standard.string(forKey: ConduitAccentChoice.storageKey)
+            .flatMap(ConduitAccentChoice.init(rawValue:)) ?? .defaultChoice
+    }
+}
+#endif // MAC:
 
 private struct ConduitAccentEnvironmentKey: EnvironmentKey {
     static let defaultValue = ConduitAccentChoice.defaultChoice
 }
 
+#if os(iOS) // MAC: UITraitBridgedEnvironmentKey is UIKit-only (R4)
 extension ConduitAccentEnvironmentKey: UITraitBridgedEnvironmentKey {
     static func read(from traitCollection: UITraitCollection) -> ConduitAccentChoice {
         traitCollection.conduitAccent
@@ -160,6 +171,7 @@ extension ConduitAccentEnvironmentKey: UITraitBridgedEnvironmentKey {
         mutableTraits.conduitAccent = value
     }
 }
+#endif // MAC:
 
 extension EnvironmentValues {
     /// Set once at the root from the saved choice.
@@ -182,7 +194,12 @@ extension UIColor {
     /// WCAG relative luminance of an sRGB colour.
     var conduitRelativeLuminance: CGFloat {
         var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        #if os(macOS) // MAC: NSColor.getRed returns Void and needs an RGB colour space
+        guard let rgb = usingColorSpace(.sRGB) else { return 0 }
+        rgb.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        #else // MAC:
         guard getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return 0 }
+        #endif // MAC:
         func linear(_ value: CGFloat) -> CGFloat {
             value <= 0.03928 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
         }

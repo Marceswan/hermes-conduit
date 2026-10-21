@@ -86,7 +86,7 @@ struct DictationSettingsSection: View {
 
     private func select(_ raw: String) {
         engineRaw = raw
-        if #available(iOS 26.0, *), raw == DictationEngine.appleSpeechAnalyzer.rawValue {
+        if #available(iOS 26.0, macOS 26.0, *), raw == DictationEngine.appleSpeechAnalyzer.rawValue { // MAC: name the macOS release (R4-widen)
             // The model for your language, before the first dictation.
             Task { await SpeechAnalyzerDictationRecognizer.prepare() }
         }

@@ -306,6 +306,8 @@ final class MarkdownSelectionCoordinator: ObservableObject {
         }
     }
 
+#endif // MAC:
+
     /// A segment that will register its text view once it has one; until
     /// then a selection can't reach it, so a selection that becomes visible
     /// mounts every deferred segment first (`mountDeferredSegments`).
@@ -333,6 +335,7 @@ final class MarkdownSelectionCoordinator: ObservableObject {
         mounts.forEach { $0() }
     }
 
+#if os(iOS) // MAC: UITextView registration; Mac twins do not register (the deferred-mount block above has no UIKit and stays compiled)
     func unregister(segmentID: String, textView: UITextView) {
         guard let current = recordsByID[segmentID]?.textView, current === textView else { return }
         let before = visibleSelectionSnapshot()

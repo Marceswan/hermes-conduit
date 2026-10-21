@@ -470,7 +470,7 @@ private final class MapsRun {
             guard let item = found.first else { throw MapsFailure.notFound("Nothing matched \(text).") }
             return Resolved(item: item, coordinate: item.placemark.coordinate, json: placeJSON(item, from: nil), isMe: false)
         case .placeID(let id):
-            guard #available(iOS 18.0, *) else {
+            guard #available(iOS 18.0, macOS 15.0, *) else { // MAC: name the macOS release (R4-widen)
                 throw MapsFailure.notFound("Place ids need iOS 18 on the iPhone; look it up by name instead.")
             }
             let item = try await MapsKit.item(placeID: id)
@@ -515,7 +515,7 @@ private final class MapsRun {
         if let url = item.url, let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http" {
             json["url"] = String(url.absoluteString.prefix(300))
         }
-        if #available(iOS 18.0, *), let identifier = item.identifier {
+        if #available(iOS 18.0, macOS 15.0, *), let identifier = item.identifier { // MAC: name the macOS release (R4-widen)
             json["place_id"] = String(identifier.rawValue.prefix(200))
         }
         if let zone = item.timeZone?.identifier { json["time_zone"] = zone }
@@ -858,7 +858,7 @@ enum MapsKit {
         }
     }
 
-    @available(iOS 18.0, *)
+    @available(iOS 18.0, macOS 15.0, *) // MAC: name the macOS release (R4-widen)
     static func item(placeID: String) async throws -> MKMapItem {
         let identifier: MKMapItem.Identifier? = MKMapItem.Identifier(rawValue: placeID)
         guard let identifier else { throw MapsFailure.notFound("That place id isn't one Apple Maps knows.") }

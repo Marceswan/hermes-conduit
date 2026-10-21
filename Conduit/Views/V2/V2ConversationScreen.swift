@@ -96,7 +96,9 @@ struct V2ConversationScreen: View {
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
+        #if os(iOS) // MAC: ToolbarPlacement.tabBar is unavailable on macOS (R4)
         .toolbar(.hidden, for: .tabBar)
+        #endif // MAC:
         .toolbar {
             // Session-only controls: an open room owns the title and actions.
             if appState.activeRoomSurface == nil {
@@ -191,7 +193,7 @@ struct V2ConversationScreen: View {
 private struct V2FadingBarBackdrop: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, macOS 26.0, *) { // MAC: name the macOS release (R4-widen)
             content
         } else {
             content.overlay(alignment: .top) {
@@ -324,7 +326,7 @@ private struct V2ConversationMenu: View {
 private struct V2PreGlassToolbarControl: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, macOS 26.0, *) { // MAC: name the macOS release (R4-widen)
             content
         } else {
             content.conduitGlassControl(cornerRadius: 20, tint: .conduitAccent.opacity(0.10))

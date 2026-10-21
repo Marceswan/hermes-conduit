@@ -9,6 +9,9 @@ public final class UIGraphicsImageRendererFormat {
 public final class UIGraphicsImageRendererContext {
     public let cgContext: CGContext
     init(cgContext: CGContext) { self.cgContext = cgContext }
+
+    /// UIGraphicsRendererContext.fill(_:): fills with the current fill colour.
+    public func fill(_ rect: CGRect) { cgContext.fill(rect) }
 }
 
 /// Offscreen bitmap rendering. The origin is bottom-left (AppKit's), unlike

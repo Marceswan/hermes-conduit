@@ -18,6 +18,8 @@ struct SelectableTextView: NSViewRepresentable {
     let selfSizingWidthRange: ClosedRange<CGFloat>?
     let selectionCoordinator: MarkdownSelectionCoordinator?
     let selectionSegment: MarkdownSelectionSegmentDescriptor?
+    /// Keeps the line spacing and alignment the text's own paragraph styles carry.
+    let keepsParagraphStyles: Bool
 
     init(
         attributedText: NSAttributedString,
@@ -30,7 +32,8 @@ struct SelectableTextView: NSViewRepresentable {
         textAlignment: NSTextAlignment = .natural,
         selfSizingWidthRange: ClosedRange<CGFloat>? = nil,
         selectionCoordinator: MarkdownSelectionCoordinator? = nil,
-        selectionSegment: MarkdownSelectionSegmentDescriptor? = nil
+        selectionSegment: MarkdownSelectionSegmentDescriptor? = nil,
+        keepsParagraphStyles: Bool = false
     ) {
         self.attributedText = attributedText
         self.font = font
@@ -43,6 +46,7 @@ struct SelectableTextView: NSViewRepresentable {
         self.selfSizingWidthRange = selfSizingWidthRange
         self.selectionCoordinator = selectionCoordinator
         self.selectionSegment = selectionSegment
+        self.keepsParagraphStyles = keepsParagraphStyles
     }
 
     init(
@@ -56,7 +60,8 @@ struct SelectableTextView: NSViewRepresentable {
         textAlignment: NSTextAlignment = .natural,
         selfSizingWidthRange: ClosedRange<CGFloat>? = nil,
         selectionCoordinator: MarkdownSelectionCoordinator? = nil,
-        selectionSegment: MarkdownSelectionSegmentDescriptor? = nil
+        selectionSegment: MarkdownSelectionSegmentDescriptor? = nil,
+        keepsParagraphStyles: Bool = false
     ) {
         self.init(
             attributedText: Self.bridge(attributedText, defaultFont: font, defaultColor: textColor, linkColor: linkColor),
@@ -69,7 +74,8 @@ struct SelectableTextView: NSViewRepresentable {
             textAlignment: textAlignment,
             selfSizingWidthRange: selfSizingWidthRange,
             selectionCoordinator: selectionCoordinator,
-            selectionSegment: selectionSegment
+            selectionSegment: selectionSegment,
+            keepsParagraphStyles: keepsParagraphStyles
         )
     }
 
@@ -84,7 +90,8 @@ struct SelectableTextView: NSViewRepresentable {
         textAlignment: NSTextAlignment = .natural,
         selfSizingWidthRange: ClosedRange<CGFloat>? = nil,
         selectionCoordinator: MarkdownSelectionCoordinator? = nil,
-        selectionSegment: MarkdownSelectionSegmentDescriptor? = nil
+        selectionSegment: MarkdownSelectionSegmentDescriptor? = nil,
+        keepsParagraphStyles: Bool = false
     ) {
         self.init(
             attributedText: NSAttributedString(
@@ -100,7 +107,8 @@ struct SelectableTextView: NSViewRepresentable {
             textAlignment: textAlignment,
             selfSizingWidthRange: selfSizingWidthRange,
             selectionCoordinator: selectionCoordinator,
-            selectionSegment: selectionSegment
+            selectionSegment: selectionSegment,
+            keepsParagraphStyles: keepsParagraphStyles
         )
     }
 }
@@ -189,8 +197,10 @@ extension SelectableTextView {
         }
         for (subrange, existing) in paragraphRuns {
             let paragraph = (existing?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
-            paragraph.lineSpacing = lineSpacing
-            paragraph.alignment = textAlignment
+            if !keepsParagraphStyles || existing == nil {
+                paragraph.lineSpacing = lineSpacing
+                paragraph.alignment = textAlignment
+            }
             paragraph.lineBreakMode = wrapsLines ? .byWordWrapping : .byTruncatingTail
             styled.addAttribute(.paragraphStyle, value: paragraph, range: subrange)
         }
@@ -398,5 +408,30 @@ extension UIFont {
     func withTraits(_ traits: UIFontDescriptor.SymbolicTraits) -> UIFont {
         let descriptor = fontDescriptor.withSymbolicTraits(fontDescriptor.symbolicTraits.union(traits))
         return UIFont(descriptor: descriptor, size: pointSize) ?? self
+    }
+}
+
+// keep in sync: Conduit/Views/Components/SelectableTextView.swift (a chat sets it so text draws
+// without a text view until touched). The Mac text view ignores it.
+private struct SelectableTextDrawsUntilTouchedKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var selectableTextDrawsUntilTouched: Bool {
+        get { self[SelectableTextDrawsUntilTouchedKey.self] }
+        set { self[SelectableTextDrawsUntilTouchedKey.self] = newValue }
+    }
+}
+
+private struct TextSelectionTintKey: EnvironmentKey {
+    static let defaultValue: UIColor? = nil
+}
+
+extension EnvironmentValues {
+    /// The selection tint for chat text on a coloured surface (#697). The Mac text view ignores it.
+    var textSelectionTint: UIColor? {
+        get { self[TextSelectionTintKey.self] }
+        set { self[TextSelectionTintKey.self] = newValue }
     }
 }

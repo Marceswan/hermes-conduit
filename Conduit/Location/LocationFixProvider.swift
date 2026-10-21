@@ -34,7 +34,11 @@ final class LocationFixProvider: NSObject, CLLocationManagerDelegate {
     var authorizationStatus: CLAuthorizationStatus { manager.authorizationStatus }
     var isApproximate: Bool { manager.accuracyAuthorization == .reducedAccuracy }
     var canLocate: Bool {
+        #if os(macOS) // MAC: macOS has no When In Use status (R4)
+        manager.authorizationStatus == .authorizedAlways
+        #else // MAC:
         manager.authorizationStatus == .authorizedWhenInUse || manager.authorizationStatus == .authorizedAlways
+        #endif // MAC:
     }
 
     // MARK: Fixes
@@ -129,6 +133,9 @@ final class LocationFixProvider: NSObject, CLLocationManagerDelegate {
     /// Asks for Always (after When In Use). iOS shows its prompt only once;
     /// after that the user changes it in the Settings app.
     func requestAlways() async -> CLAuthorizationStatus {
+        #if os(macOS) // MAC: macOS has no When In Use step; location sharing is kept off on Mac (G2)
+        return await requestWhenInUse()
+        #else // MAC:
         let first = await requestWhenInUse()
         guard first == .authorizedWhenInUse else { return first }
         // The first ask shows iOS's prompt, so wait for the answer; later
@@ -137,6 +144,7 @@ final class LocationFixProvider: NSObject, CLLocationManagerDelegate {
         UserDefaults.standard.set(true, forKey: Self.askedAlwaysKey)
         manager.requestAlwaysAuthorization()
         return await waitForAnswer(from: .authorizedWhenInUse, promptCertain: firstAsk)
+        #endif // MAC:
     }
 
     /// Waits for the user's answer. A prompt makes Conduit inactive, and

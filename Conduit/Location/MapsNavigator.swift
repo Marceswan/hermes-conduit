@@ -10,7 +10,9 @@
 //  foreground. Directions start from wherever the user is.
 //
 
+#if canImport(CarPlay) // MAC: CarPlay is not in the macOS SDK (R4)
 import CarPlay
+#endif // MAC:
 import CoreLocation
 import MapKit
 import UIKit
@@ -42,9 +44,11 @@ enum MapsNavigator {
         let name = MapsText.cleanOrNil(item.name, limit: 120)
             ?? String(format: "%.4f, %.4f", locale: posix, coordinate.latitude, coordinate.longitude)
         guard let url = mapsURL(to: coordinate, mode: mode) else { return .failed(.failed("Apple Maps couldn't be opened.")) }
+        #if canImport(CarPlay) // MAC: CarPlay is not in the macOS SDK (R4)
         if let scene = CarPlayMapsHandoff.scene, await openInCar(url, scene: scene) {
             return .openedInCar(name)
         }
+        #endif // MAC:
         if UIApplication.shared.applicationState == .active {
             // In front, a notification wouldn't show: Maps opens or it failed.
             let opened = item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: directionsMode(mode)])
@@ -89,6 +93,7 @@ enum MapsNavigator {
         return url
     }
 
+    #if canImport(CarPlay) // MAC: CarPlay is not in the macOS SDK (R4)
     /// Whether the car screen opened it; a scene that never answers counts
     /// as no after a few seconds, and the phone is tried next.
     private static func openInCar(_ url: URL, scene: CPTemplateApplicationScene) async -> Bool {
@@ -98,6 +103,7 @@ enum MapsNavigator {
             }
         }
     }
+    #endif // MAC:
 
     /// Whether the notification was posted (notifications may be off).
     private static func notify(name: String, url: URL) async -> Bool {
@@ -120,8 +126,10 @@ enum MapsNavigator {
     }
 }
 
+#if canImport(CarPlay) // MAC: CarPlay is not in the macOS SDK (R4)
 /// The connected CarPlay scene, so Maps can open on the car screen.
 @MainActor
 enum CarPlayMapsHandoff {
     static weak var scene: CPTemplateApplicationScene?
 }
+#endif // MAC:

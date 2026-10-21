@@ -12,7 +12,9 @@
 //  dashboard's own connection: never through the push relay.
 //
 
+#if os(iOS) // MAC: BackgroundTasks is unavailable on macOS (G5, R4)
 import BackgroundTasks
+#endif // MAC:
 import Foundation
 import OSLog
 import UIKit
@@ -43,7 +45,11 @@ extension AppState {
     /// Settings shows the page once the host's plugin serves it, or while
     /// sharing is on (so it can be turned off when the plugin went away).
     var showsPhoneSettings: Bool {
+        #if os(macOS) // MAC: Calendar and phone sharing is kept off on Mac (G2)
+        false
+        #else // MAC:
         notifierPlugin.reports(Self.phoneSyncCapability) || phoneSync.preferences.isOn
+        #endif // MAC:
     }
 
     /// Runs a pass when sharing is on and its dashboard is the one in use.
@@ -182,7 +188,9 @@ extension AppState {
         phoneSync.savePreferences(PhoneSyncPreferences())
         HealthVoiceReadLog.clear(key: HealthVoiceReadLog.phoneStorageKey)
         let deleted = await phoneSync.turnOff(deleteFromHost: request)
+#if os(iOS) // MAC: BackgroundTasks is unavailable on macOS (G5, R4)
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.phoneSyncTaskIdentifier)
+#endif // MAC:
         if deleteFromHost, !deleted, let destination, let deviceID {
             PhoneSyncPendingDeletion(dashboardID: destination.dashboardID, profile: destination.profile,
                                      deviceID: deviceID).save()
@@ -250,6 +258,7 @@ extension AppState {
     }
 
     static func registerPhoneSyncTask() {
+        #if os(iOS) // MAC: BackgroundTasks is unavailable on macOS (G5, R4)
         BGTaskScheduler.shared.register(forTaskWithIdentifier: phoneSyncTaskIdentifier, using: nil) { task in
             Task { @MainActor in
                 schedulePhoneSyncRefresh()
@@ -267,13 +276,16 @@ extension AppState {
                 }
             }
         }
+        #endif // MAC:
     }
 
     static func schedulePhoneSyncRefresh() {
+        #if os(iOS) // MAC: BackgroundTasks is unavailable on macOS (G5, R4)
         guard PhoneSyncPreferences.load().isOn else { return }
         let request = BGAppRefreshTaskRequest(identifier: phoneSyncTaskIdentifier)
         request.earliestBeginDate = Date().addingTimeInterval(3600)
         try? BGTaskScheduler.shared.submit(request)
+        #endif // MAC:
     }
 
     func resumePhoneSyncAtLaunch() {

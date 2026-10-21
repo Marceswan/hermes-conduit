@@ -1,6 +1,9 @@
+#if os(iOS) // MAC: ActivityKit is unavailable on macOS (R3); the attributes are iOS-only
 import ActivityKit
+#endif // MAC:
 import Foundation
 
+#if os(iOS) // MAC: ActivityKit is unavailable on macOS (R3)
 /// A running Hermes turn on the Lock Screen and in the Dynamic Island
 /// (#605). Conduit starts one when it sends a turn and updates it from the
 /// chat's stream while it runs; once Conduit is in the background the
@@ -63,6 +66,7 @@ struct HermesTurnAttributes: ActivityAttributes {
         return (Double((value >> 16) & 0xff) / 255, Double((value >> 8) & 0xff) / 255, Double(value & 0xff) / 255)
     }
 }
+#endif // MAC:
 
 enum HermesTurnPhase: String, Codable, CaseIterable {
     case thinking
@@ -113,6 +117,7 @@ enum HermesToolCategory: String, Codable, CaseIterable {
 /// The words the activity shows, in the app's language. Every key here is
 /// in Conduit/Localizable.xcstrings (the widget extension bundles it).
 enum HermesTurnCopy {
+#if os(iOS) // MAC: these two read `HermesTurnAttributes.ContentState` (R3)
     static func status(_ state: HermesTurnAttributes.ContentState, language: String) -> String {
         WidgetLocalization.string(statusKey(state), language: language)
     }
@@ -129,6 +134,7 @@ enum HermesTurnCopy {
         case .tool: toolKey(state.toolCategory ?? .tool)
         }
     }
+#endif // MAC:
 
     static func toolKey(_ category: HermesToolCategory) -> String {
         switch category {

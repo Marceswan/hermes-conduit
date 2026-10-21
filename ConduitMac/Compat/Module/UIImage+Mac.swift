@@ -21,6 +21,11 @@ public extension NSImage {
         cgImage(forProposedRect: nil, context: nil, hints: nil)
     }
 
+    /// UIImage.draw(at:): the image at its natural size, origin at `point`.
+    func draw(at point: CGPoint) {
+        draw(in: CGRect(origin: point, size: size))
+    }
+
     func pngData() -> Data? {
         bitmapRepresentation?.representation(using: .png, properties: [:])
     }

@@ -565,7 +565,9 @@ struct V2ChatsView: View, Equatable {
         )) {
             Label("\(option.title) \(String(filterRows(selection.facet(option), searching: false).count))", systemImage: option.symbol)
         }
+        #if os(iOS) // MAC: MenuActionDismissBehavior.disabled is unavailable on macOS (R4)
         .menuActionDismissBehavior(option == .all ? .automatic : .disabled)
+        #endif // MAC:
     }
 
     private var statusFilters: [V2SessionFilter] {

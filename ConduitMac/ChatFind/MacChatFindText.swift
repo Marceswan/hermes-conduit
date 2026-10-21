@@ -70,7 +70,8 @@ enum MacChatFindText {
             case .code(let language, let code):
                 // Mermaid draws a diagram, not text.
                 if MarkdownLanguage.normalized(language) != "mermaid" { lines.append(code) }
-            case .image, .math, .divider:
+            case .image, .math, .divider, .htmlPreview:
+                // An HTML preview (#611) draws a web view or file card, not find text.
                 break
             }
         }

@@ -466,9 +466,15 @@ final class LocationSharingController: ObservableObject {
         }
         refreshAuthorization()
         // Background without Always stays on and says it needs Always.
+        #if os(macOS) // MAC: macOS has no When In Use status (R4)
+        guard status == .authorizedAlways else {
+            throw LocationSharingError.permissionDenied
+        }
+        #else // MAC:
         guard status == .authorizedWhenInUse || status == .authorizedAlways else {
             throw LocationSharingError.permissionDenied
         }
+        #endif // MAC:
         if config.binding == nil || (!settings.isOn && config.binding != destination) {
             if config.binding != destination { engine.forgetHost() }
             save { $0.binding = destination }

@@ -133,7 +133,7 @@ private final class SpeechRequestAudioInput: DictationAudioInput, @unchecked Sen
 
 // MARK: - Apple's new model (SpeechAnalyzer, iOS 26)
 
-@available(iOS 26.0, *)
+@available(iOS 26.0, macOS 26.0, *) // MAC: name the macOS release (R4-widen)
 @MainActor
 final class SpeechAnalyzerDictationRecognizer: DictationRecognizer {
     let settleTimeout: Duration = .seconds(3)
@@ -275,7 +275,7 @@ struct AnalyzerTranscript: Equatable {
     }
 }
 
-@available(iOS 26.0, *)
+@available(iOS 26.0, macOS 26.0, *) // MAC: name the macOS release (R4-widen)
 private final class AnalyzerAudioInput: DictationAudioInput, @unchecked Sendable {
     private let input: AsyncStream<AnalyzerInput>.Continuation
     private let converter: DictationAudioConverter

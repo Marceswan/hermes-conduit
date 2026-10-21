@@ -10,7 +10,9 @@
 //  that dashboard's own connection: never through the push relay.
 //
 
+#if os(iOS) // MAC: BackgroundTasks is unavailable on macOS (G5, R4)
 import BackgroundTasks
+#endif // MAC:
 import Foundation
 import OSLog
 import UIKit
@@ -34,7 +36,11 @@ extension AppState {
     /// Settings shows Health once the host's plugin serves it, or while
     /// sharing is on (so it can be turned off when the plugin went away).
     var showsHealthSettings: Bool {
+        #if os(macOS) // MAC: Health sharing is kept off on Mac (G2)
+        false
+        #else // MAC:
         notifierPlugin.reports(Self.healthSyncCapability) || healthSyncPreferences.isOn
+        #endif // MAC:
     }
 
     /// Runs a pass when sharing is on and its dashboard is the one in use.
@@ -173,7 +179,9 @@ extension AppState {
         saveHealthSyncPreferences(HealthSyncPreferences())
         HealthVoiceReadLog.clear()
         let deleted = await healthSync.turnOff(deleteFromHost: request)
+#if os(iOS) // MAC: BackgroundTasks is unavailable on macOS (G5, R4)
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.healthSyncTaskIdentifier)
+#endif // MAC:
         if deleteFromHost, !deleted, let destination, let deviceID {
             HealthSyncPendingDeletion(dashboardID: destination.dashboardID, profile: destination.profile,
                                       deviceID: deviceID).save()
@@ -237,6 +245,7 @@ extension AppState {
 
     /// Registered before launch finishes, as BGTaskScheduler requires.
     static func registerHealthSyncTask() {
+        #if os(iOS) // MAC: BackgroundTasks is unavailable on macOS (G5, R4)
         BGTaskScheduler.shared.register(forTaskWithIdentifier: healthSyncTaskIdentifier, using: nil) { task in
             Task { @MainActor in
                 scheduleHealthSyncRefresh()
@@ -251,13 +260,16 @@ extension AppState {
                 }
             }
         }
+        #endif // MAC:
     }
 
     static func scheduleHealthSyncRefresh() {
+        #if os(iOS) // MAC: BackgroundTasks is unavailable on macOS (G5, R4)
         guard HealthSyncPreferences.load().isOn else { return }
         let request = BGAppRefreshTaskRequest(identifier: healthSyncTaskIdentifier)
         request.earliestBeginDate = Date().addingTimeInterval(2 * 3600)
         try? BGTaskScheduler.shared.submit(request)
+        #endif // MAC:
     }
 
     /// At launch: observers and the refresh, when sharing is on.

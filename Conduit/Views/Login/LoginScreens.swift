@@ -157,6 +157,7 @@ struct LoginAddressStep: View {
                 .labelStyle(.titleAndIcon)
                 .tint(.conduitAccent)
                 .accessibilityIdentifier("\(prefix).paste")
+                #if os(iOS) // MAC: Scan Code needs VisionKit's DataScannerViewController, unavailable on macOS (R4)
                 // A sign-in code from Hermes, or an address on another screen.
                 Button {
                     Haptics.selection()
@@ -170,6 +171,7 @@ struct LoginAddressStep: View {
                 .tint(.conduitAccent)
                 .disabled(flow.isWorking)
                 .accessibilityIdentifier("\(prefix).scan")
+                #endif // MAC:
             }
             .padding(.top, 2)
         }
@@ -1146,11 +1148,13 @@ struct LoginFlowPresentations: ViewModifier {
                     }
                 )
             }
+            #if os(iOS) // MAC: Scan Code needs VisionKit's DataScannerViewController, unavailable on macOS (R4)
             .sheet(isPresented: $flow.showsScanner, onDismiss: { flow.scannerDismissed() }) {
                 DashboardCodeScannerSheet { text in
                     flow.scanned(text)
                 }
             }
+            #endif // MAC:
             .sheet(item: $flow.pendingLink) { link in
                 ConnectLinkSheet(link: link) {
                     flow.onSignedIn()

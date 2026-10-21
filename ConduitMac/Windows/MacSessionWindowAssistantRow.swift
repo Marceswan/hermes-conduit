@@ -31,8 +31,9 @@ struct MacWindowAssistantRow: View {
         VStack(alignment: .leading, spacing: 6) {
             SettledAssistantMessageContent(
                 message: message,
-                displayName: appState.profileDisplayName(profile),
-                avatarURL: appState.profileAvatarURL(for: profile),
+                identity: .workspace(
+                    name: appState.profileDisplayName(profile),
+                    photoURL: appState.profileAvatarURL(for: profile)),
                 gatewayResolver: gatewayResolver,
                 sizeCategory: sizeCategory,
                 chatTextSize: chatTextSize)

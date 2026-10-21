@@ -312,7 +312,8 @@ struct VoiceSettingsView: View {
         _continuousConversation = State(initialValue: continuousConversation)
     }
 
-    var body: some View {
+    // MAC: the body's modifier chain is split in two (`bodyHead`); the Mac type checker times out on one expression (R4)
+    private var bodyHead: some View {
         ZStack {
             SettingsBackdrop()
             ScrollViewReader { proxy in
@@ -374,6 +375,10 @@ struct VoiceSettingsView: View {
         .onChange(of: classicSpeechNeedsAttention, initial: true) { _, needsAttention in
             if needsAttention { advancedExpanded = true }
         }
+    }
+
+    var body: some View {
+        bodyHead
         // A profile switch or an app language change re-renders the host
         // with other lists.
         .onChange(of: spokenStopPhrases) { _, phrases in

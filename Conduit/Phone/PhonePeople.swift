@@ -165,6 +165,7 @@ enum PhonePeopleStore {
     }
 }
 
+#if os(iOS) // MAC: CNContactPickerViewController is unavailable on macOS; Mac twin in ConduitMac/Stubs/PhoneStubs.swift (R3)
 /// The system contact picker, shown from UIKit: it runs outside Conduit's
 /// process, so it needs no contacts permission.
 @MainActor
@@ -210,3 +211,4 @@ final class PhoneContactPicker: NSObject, CNContactPickerDelegate {
         return top
     }
 }
+#endif // MAC:

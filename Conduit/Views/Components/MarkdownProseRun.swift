@@ -143,6 +143,7 @@ enum MarkdownProseRun {
         return result
     }
 
+    #if os(iOS) // MAC: UITextView; the Mac text view copies natively (R4)
     /// What copying a text view's own selection gives, when it holds a run.
     @MainActor
     static func copiedSelection(in textView: UITextView) -> NSAttributedString? {
@@ -153,6 +154,7 @@ enum MarkdownProseRun {
         let copied = copyableText(selected)
         return copied === selected ? nil : copied
     }
+    #endif // MAC:
 
     private struct Paragraph {
         let content: NSAttributedString

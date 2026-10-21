@@ -23,6 +23,7 @@ protocol PhoneStatusSource: AnyObject {
     func requestMotionAccess() async
 }
 
+#if os(iOS) // MAC: battery, CoreMotion and AVAudioSession ports are iOS-only; Mac twin in ConduitMac/Stubs/PhoneStubs.swift (R3)
 @MainActor
 final class DevicePhoneStatusSource: PhoneStatusSource {
     private let motion = CMMotionActivityManager()
@@ -136,3 +137,4 @@ final class DevicePhoneStatusSource: PhoneStatusSource {
         }
     }
 }
+#endif // MAC:
