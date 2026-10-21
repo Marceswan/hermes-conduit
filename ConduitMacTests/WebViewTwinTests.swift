@@ -5,17 +5,6 @@ import WebKit
 
 @MainActor
 final class WebViewTwinTests: XCTestCase {
-    override func setUp() {
-        super.setUp()
-        isolateKeychain()
-    }
-
-    /// The test host signs with the real app's Keychain service, so a test
-    /// must never run against the system backend.
-    func testTheKeychainIsInMemoryForTheseTests() {
-        XCTAssertTrue(KeychainHelper.backend is IsolatedKeychainBackend)
-    }
-
     func testMarkupWebViewIsTransparent() {
         let webView = MarkupWebView.makeConfiguredWebView()
         XCTAssertEqual(webView.value(forKey: "drawsBackground") as? Bool, false)

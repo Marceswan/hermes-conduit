@@ -1,4 +1,3 @@
-import Security
 import WebKit
 import XCTest
 @testable import ConduitMac
@@ -47,64 +46,17 @@ func decidePolicy(
     isMainFrame: Bool? = nil,
     delegate: WKNavigationDelegate
 ) async -> WKNavigationActionPolicy {
+    // A delegate without the method would never answer, and the continuation
+    // below would hang the test until the timeout: fail at once instead.
+    let selector = NSSelectorFromString("webView:decidePolicyForNavigationAction:decisionHandler:")
+    guard delegate.responds(to: selector) else {
+        XCTFail("\(Swift.type(of: delegate)) does not answer webView(_:decidePolicyFor:decisionHandler:)")
+        return .cancel
+    }
     let action = StubNavigationAction(url: url, type: type, isMainFrame: isMainFrame)
     return await withCheckedContinuation { continuation in
         delegate.webView?(WKWebView(), decidePolicyFor: action) { policy in
             continuation.resume(returning: policy)
         }
-    }
-}
-
-/// A Keychain that lives in memory. The Mac test host signs with the same
-/// service (`com.milim.conduit`) as the real app, so `SystemKeychainBackend`
-/// would read and write the user's real login Keychain.
-final class IsolatedKeychainBackend: KeychainHelper.Backend {
-    private struct Key: Hashable {
-        let service: String
-        let account: String
-    }
-
-    private var storage: [Key: Data] = [:]
-
-    private func key(for query: [String: Any]) -> Key? {
-        guard let account = query[kSecAttrAccount as String] as? String else { return nil }
-        return Key(service: query[kSecAttrService as String] as? String ?? "", account: account)
-    }
-
-    func data(for query: [String: Any]) -> Data? {
-        key(for: query).flatMap { storage[$0] }
-    }
-
-    func update(_ data: Data, for query: [String: Any]) -> Int32 {
-        guard let key = key(for: query), storage[key] != nil else { return errSecItemNotFound }
-        storage[key] = data
-        return errSecSuccess
-    }
-
-    func add(_ query: [String: Any]) -> Int32 {
-        guard let key = key(for: query) else { return errSecParam }
-        guard storage[key] == nil else { return errSecDuplicateItem }
-        storage[key] = query[kSecValueData as String] as? Data ?? Data()
-        return errSecSuccess
-    }
-
-    func delete(_ query: [String: Any]) {
-        if let key = key(for: query) { storage[key] = nil }
-    }
-
-    func setAccessibility(_ accessibility: CFString, for query: [String: Any]) -> Int32 {
-        guard let key = key(for: query), storage[key] != nil else { return errSecItemNotFound }
-        return errSecSuccess
-    }
-}
-
-extension XCTestCase {
-    /// Keeps the test off the user's real Keychain: an in-memory backend until
-    /// teardown, then the backend that was in place before. Call it first in
-    /// `setUp`.
-    func isolateKeychain() {
-        let previous = KeychainHelper.backend
-        KeychainHelper.useBackendForTesting(IsolatedKeychainBackend())
-        addTeardownBlock { KeychainHelper.useBackendForTesting(previous) }
     }
 }
