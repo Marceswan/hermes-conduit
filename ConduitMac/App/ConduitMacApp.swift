@@ -108,7 +108,8 @@ struct ConduitMacApp: App {
                 MacNotificationRuntime.shared.languageDidChange()
             }
             .preferredColorScheme(appState.themePreference.colorScheme)
-            .tint(.conduitAccent)
+            // The tint and the accent environment (#697, #702, #750): a new pick redraws at once.
+            .macAccentEnvironment()
             // Cmd-Shift-D saved-dashboards sheet (D22): after the environment and tint it inherits.
             .macDashboardSwitcher(appState: appState)
             // Links Conduit writes into chats (a voice call's job link)

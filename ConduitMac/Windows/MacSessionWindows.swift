@@ -135,7 +135,7 @@ struct MacSessionWindowScene: View {
         .environmentObject(appState)
         .environment(\.locale, appLanguage.resolvedLocale)
         .preferredColorScheme(appState.themePreference.colorScheme)
-        .tint(.conduitAccent)
+        .macAccentEnvironment()
         // The same link policy as the main window (R11).
         .macLinkPolicy(appState: appState)
         .background(MacSessionWindowReader { window in
