@@ -424,6 +424,9 @@ targets:
           # The passkey notice is iOS wording (R2): the iOS sign-in WebView refuses passkeys. Mac twin of
           # AuthWebSignInSheet (without the notice) in ConduitMac/Login/AuthWebSignInSheet.swift.
           - "Views/Login/AuthWebPasskeyNotice.swift"
+          # Usage descriptions in the iOS catalog say "iPhone" and name iOS-only keys (R2): the Mac twin
+          # ConduitMac/Resources/InfoPlist.xcstrings holds the keys of the Mac Info.plist only.
+          - "InfoPlist.xcstrings"
           # ActivityKit is unavailable on macOS (R2): stub in ConduitMac/Stubs/LiveTurnActivitiesStub.swift.
           - "Services/LiveTurnActivities.swift"
           - "Services/LiveActivityUpdateThrottle.swift"
