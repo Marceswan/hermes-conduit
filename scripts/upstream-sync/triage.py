@@ -2,11 +2,14 @@
 """Classify upstream commits for the /upstream-sync skill (pure logic, stdlib only)."""
 # No "from __future__ import annotations": load_module() does not register the module in
 # sys.modules, and dataclasses fails on string annotations then. typing types suffice on 3.9.
+import argparse
 import fnmatch
+import json
 import re
+import subprocess
 import sys
-from dataclasses import dataclass, field
-from typing import List, Optional, Set, Tuple
+from dataclasses import asdict, dataclass, field
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 GROUPS = ("risk", "mac-port", "gate-off", "ios-only", "comes-along")
 
@@ -235,3 +238,213 @@ def classify(commit: Commit, ctx: Context) -> Commit:
                    or bool(RICH_SUBJECT.search(commit.subject)))
     return commit
 
+
+
+# ---- git collection, merge steps, report, CLI ----
+
+Git = Callable[[List[str]], str]
+
+LEDGER_PATH = "docs/macos/PORTING_LEDGER.md"
+PROJECT_PATH = "project.yml"
+IMPORT_LINE = re.compile(
+    r"^\+\s*(?:@\w+\s+)?import\s+(?:(?:class|struct|enum|protocol|func|var|let|typealias)\s+)?([A-Za-z0-9_]+)")
+
+
+@dataclass
+class Step:
+    label: str
+    sha: str
+    count: int
+
+
+def run_git(repo: str) -> Git:
+    def git(args: List[str]) -> str:
+        proc = subprocess.run(["git", "-C", repo] + list(args), stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE)
+        out = proc.stdout.decode("utf-8", errors="replace")
+        if proc.returncode == 0:
+            return out
+        if proc.returncode == 1 and args and args[0] == "grep":
+            return ""
+        raise RuntimeError("git %s failed (%d): %s" % (
+            " ".join(args), proc.returncode, proc.stderr.decode("utf-8", errors="replace").strip()))
+    return git
+
+
+def _parse_name_status(text: str) -> List[Tuple[str, str]]:
+    files: List[Tuple[str, str]] = []
+    for line in text.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        status = parts[0]
+        if status[:1] == "R" and len(parts) >= 3:
+            files.append((status, parts[1]))      # the old path is gone
+            files.append(("A", parts[2]))         # the new path appears
+        elif status[:1] == "C" and len(parts) >= 3:
+            files.append(("A", parts[2]))
+        else:
+            files.append((status, parts[-1]))
+    return files
+
+
+def _parse_added_imports(diff: str) -> List[Tuple[str, str]]:
+    found: List[Tuple[str, str]] = []
+    current = ""
+    for line in diff.splitlines():
+        if line.startswith("+++ "):
+            target = line[4:].strip()
+            current = target[2:] if target.startswith("b/") else ""
+        elif line.startswith("+") and current:
+            m = IMPORT_LINE.match(line)
+            if m:
+                found.append((current, m.group(1)))
+    return found
+
+
+def collect_commits(git: Git, base: str, head: str) -> List[Commit]:
+    log = git(["log", "--no-merges", "--reverse", "--format=%H%x1f%s", "%s..%s" % (base, head)])
+    commits: List[Commit] = []
+    for line in log.splitlines():
+        if "\x1f" not in line:
+            continue
+        sha, subject = line.split("\x1f", 1)
+        files = _parse_name_status(git(["show", "--name-status", "--format=", sha]))
+        imports = _parse_added_imports(git(["show", "--format=", "-U0", sha]))
+        commits.append(Commit(sha=sha, subject=subject, pr=parse_pr(subject),
+                              files=files, added_imports=imports))
+    return commits
+
+
+def build_context(git: Git, mac_ref: str) -> Context:
+    ledger = git(["show", "%s:%s" % (mac_ref, LEDGER_PATH)])
+    project = git(["show", "%s:%s" % (mac_ref, PROJECT_PATH)])
+    prefix = mac_ref + ":"
+    marker_files = set()
+    for line in git(["grep", "-l", "// MAC:", mac_ref, "--", "Conduit", "Shared", "ConduitWidgets"]).splitlines():
+        line = line.strip()
+        if line.startswith(prefix):
+            line = line[len(prefix):]
+        if line:
+            marker_files.add(line)
+    sync_lines = []
+    for line in git(["grep", "-n", "keep in sync", mac_ref, "--", "ConduitMac"]).splitlines():
+        sync_lines.append(line[len(prefix):] if line.startswith(prefix) else line)
+    return Context(
+        ledger_patterns=parse_ledger_paths(ledger),
+        mac_excludes=parse_mac_excludes(project),
+        sync_basenames=parse_sync_basenames(sync_lines),
+        mac_marker_files=marker_files,
+        keep_off_patterns=parse_keep_off_patterns(ledger),
+    )
+
+
+def _count(git: Git, base: str, tip: str) -> int:
+    return int(git(["rev-list", "--count", "%s..%s" % (base, tip)]).strip() or "0")
+
+
+def release_steps(git: Git, base: str, head: str, tag_glob: str = "ios/v*") -> List[Step]:
+    base_sha = git(["rev-parse", base]).strip()
+    head_sha = git(["rev-parse", head]).strip()
+    tags = git(["tag", "-l", "--sort=creatordate", tag_glob]).split()
+    cut_label: Dict[str, str] = {}
+    for tag in tags:           # creatordate order: the last tag of a cut names it
+        try:
+            cut = git(["merge-base", tag, head_sha]).strip()
+        except RuntimeError:
+            continue
+        if cut == base_sha:
+            continue
+        try:
+            git(["merge-base", "--is-ancestor", base_sha, cut])
+        except RuntimeError:
+            continue
+        cut_label[cut] = tag
+    ordered = sorted(cut_label, key=lambda c: _count(git, base_sha, c))
+    stops = [(cut_label[c], c) for c in ordered]
+    if not stops or stops[-1][1] != head_sha:
+        stops.append((head, head_sha))
+    steps: List[Step] = []
+    prev = base_sha
+    for label, sha in stops:
+        steps.append(Step(label=label, sha=sha, count=_count(git, prev, sha)))
+        prev = sha
+    return steps
+
+
+def _commit_line(c: Commit) -> str:
+    pr = " #%d" % c.pr if c.pr is not None else ""
+    return "- `%s`%s %s -- %s" % (c.sha[:8], pr, c.subject, "; ".join(c.reasons))
+
+
+def _section(title: str, commits: List[Commit]) -> List[str]:
+    lines = ["## " + title, ""]
+    lines.extend(_commit_line(c) for c in commits) if commits else lines.append("None.")
+    lines.append("")
+    return lines
+
+
+def render_report(commits: List[Commit], steps: List[Step], base: str, head: str,
+                  baseline_failures: List[str]) -> str:
+    total = sum(s.count for s in steps)
+    out = ["# Upstream triage", "", "## Range", "",
+           "- Base: `%s`" % base[:8],
+           "- Head: `%s`" % head,
+           "- Commits in range (including merges): %d" % total,
+           "- Non-merge commits listed below: %d" % len(commits), "",
+           "## Merge steps", "", "| Step | Commit | Commits |", "|---|---|---|"]
+    # The head row shows no sha: the head commit is also a commit line in its group section.
+    out.extend("| %s | %s | %d |" % (s.label, "-" if s.label == head else "`%s`" % s.sha[:8], s.count)
+               for s in steps)
+    out.append("")
+    for group in GROUPS:
+        out.extend(_section(GROUP_TITLES[group], [c for c in commits if c.group == group]))
+        if group == "gate-off":
+            out.extend(_section("Needs a Mac entry point (candidates)",
+                                [c for c in commits if c.new_v2_surface]))
+    out.extend(_section("Live check list", [c for c in commits if c.rich]))
+    out.extend(["## Baseline failures", ""])
+    out.extend("- %s" % f for f in baseline_failures) if baseline_failures else out.append("None.")
+    out.extend(["", "## Decisions for the user", ""])
+    return "\n".join(out)
+
+
+def _load_baseline(path: Optional[str]) -> List[str]:
+    if not path:
+        return []
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    if isinstance(data, dict):
+        data = data.get("failures", [])
+    return [str(x) for x in data]
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    ap = argparse.ArgumentParser(description="Triage upstream commits for the Mac port.")
+    ap.add_argument("--repo", required=True)
+    ap.add_argument("--mac-ref", required=True)
+    ap.add_argument("--head", required=True)
+    ap.add_argument("--json", required=True, dest="json_out")
+    ap.add_argument("--report", required=True)
+    ap.add_argument("--baseline")
+    args = ap.parse_args(argv)
+
+    git = run_git(args.repo)
+    base = git(["merge-base", args.mac_ref, args.head]).strip()
+    ctx = build_context(git, args.mac_ref)
+    commits = [classify(c, ctx) for c in collect_commits(git, base, args.head)]
+    steps = release_steps(git, base, args.head)
+    failures = _load_baseline(args.baseline)
+
+    with open(args.json_out, "w", encoding="utf-8") as fh:
+        json.dump({"base": base, "head": args.head, "steps": [asdict(s) for s in steps],
+                   "commits": [asdict(c) for c in commits], "baseline_failures": failures},
+                  fh, indent=2)
+        fh.write("\n")
+    with open(args.report, "w", encoding="utf-8") as fh:
+        fh.write(render_report(commits, steps, base, args.head, failures))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
