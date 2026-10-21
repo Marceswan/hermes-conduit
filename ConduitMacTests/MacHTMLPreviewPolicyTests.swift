@@ -86,6 +86,41 @@ final class MacHTMLPreviewPolicyTests: XCTestCase {
         }
     }
 
+    // The delegate WebKit really asks is the coordinator, which forwards.
+    func testPreviewCoordinatorAppliesTheSameDecision() async {
+        let opened = OpenRecorder()
+        let coordinator = HTMLPreviewWebView.Coordinator(navigation: MacHTMLPreviewNavigationDelegate(open: opened.record))
+
+        let scripted = await decidePolicy("https://evil.example/x", type: .other, delegate: coordinator)
+        XCTAssertEqual(scripted, .cancel)
+        let blank = await decidePolicy("about:blank", type: .other, delegate: coordinator)
+        XCTAssertEqual(blank, .allow)
+        let phone = await decidePolicy("tel:123", type: .linkActivated, delegate: coordinator)
+        XCTAssertEqual(phone, .cancel)
+        XCTAssertEqual(opened.urls, [])
+        let tapped = await decidePolicy("https://example.com", type: .linkActivated, delegate: coordinator)
+        XCTAssertEqual(tapped, .cancel)
+        XCTAssertEqual(opened.urls, [URL(string: "https://example.com")!])
+    }
+
+    func testPreviewCoordinatorNewWindowRequestOpensOnlyATappedWebLink() {
+        let opened = OpenRecorder()
+        let coordinator = HTMLPreviewWebView.Coordinator(navigation: MacHTMLPreviewNavigationDelegate(open: opened.record))
+        func request(_ url: String, _ type: WKNavigationType) -> WKWebView? {
+            coordinator.webView(
+                WKWebView(),
+                createWebViewWith: WKWebViewConfiguration(),
+                for: StubNavigationAction(url: url, type: type),
+                windowFeatures: WKWindowFeatures()
+            )
+        }
+        XCTAssertNil(request("https://example.com/new", .other))
+        XCTAssertNil(request("file:///etc/hosts", .linkActivated))
+        XCTAssertEqual(opened.urls, [])
+        XCTAssertNil(request("https://example.com/new", .linkActivated))
+        XCTAssertEqual(opened.urls, [URL(string: "https://example.com/new")!])
+    }
+
     // MARK: - The page
 
     func testFramedDocumentCarriesUpstreamCSP() {
@@ -105,6 +140,43 @@ final class MacHTMLPreviewPolicyTests: XCTestCase {
         for presentation in [HTMLPreviewPage.Presentation.inline, .fullScreen] {
             let page = HTMLPreviewPage.framed("<html><head></head><body>x</body></html>", theme: HTMLPreviewTheme(light: true), presentation: presentation)
             XCTAssertTrue(page.hasPrefix("<meta http-equiv=\"Content-Security-Policy\" content=\"\(policy)\">"))
+        }
+    }
+
+    // MARK: - The policy comes first (#1011)
+
+    /// Only HTML whitespace may precede the doctype. Another Unicode space
+    /// starts the body, where a policy meta tag would be ignored, so the
+    /// policy goes first, once.
+    func testUnicodeWhitespaceCannotPrecedeThePolicy() {
+        let policyTag = "<meta http-equiv=\"Content-Security-Policy\""
+        for prefix in ["\u{00A0}", "\u{2003}", "\u{2028}", " \u{00A0}", "\t\n\u{00A0}"] {
+            let document = prefix + "<!doctype html><html><head></head><body><script>1</script></body></html>"
+            for presentation in [HTMLPreviewPage.Presentation.inline, .fullScreen] {
+                let page = HTMLPreviewPage.framed(document, theme: HTMLPreviewTheme(light: true), presentation: presentation)
+                XCTAssertTrue(page.hasPrefix(policyTag), page)
+                XCTAssertEqual(page.components(separatedBy: policyTag).count - 1, 1, "the policy is inserted once")
+            }
+        }
+    }
+
+    // A `<head>` after the file's first script, or inside a string or
+    // comment, must not let that script run before the policy.
+    func testPolicyComesBeforeAnyScriptOfTheFile() {
+        let policyTag = "<meta http-equiv=\"Content-Security-Policy\""
+        let hostile = [
+            "<script>fetch('https://evil.example/')</script><html><head></head><body>chart</body></html>",
+            "<script>var s = \"<head>\";</script><body>chart</body>",
+            "<!-- <head> --><script>1</script><p>chart</p>",
+            "<!doctype html><script>1</script><html><head></head><body>x</body></html>",
+        ]
+        for document in hostile {
+            let page = HTMLPreviewPage.framed(document, theme: HTMLPreviewTheme(light: true), presentation: .inline)
+            guard let policy = page.range(of: policyTag), let script = page.range(of: "<script") else {
+                XCTFail(page)
+                continue
+            }
+            XCTAssertLessThan(policy.lowerBound, script.lowerBound, page)
         }
     }
 

@@ -121,6 +121,7 @@ struct HTMLPreviewWebView: NSViewRepresentable {
         coordinator.onFailed = nil
     }
 
+    @MainActor
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         var onHeight: ((CGFloat) -> Void)?
         var onFailed: (() -> Void)?
@@ -128,7 +129,14 @@ struct HTMLPreviewWebView: NSViewRepresentable {
         private var reloads = MarkupReloads()
         /// Decides every navigation and window request; the web view holds its
         /// delegates weakly, so this object keeps it alive.
-        private let navigation = MacHTMLPreviewNavigationDelegate()
+        private let navigation: MacHTMLPreviewNavigationDelegate
+
+        /// `navigation` is a seam for tests; a default argument could not make
+        /// the main-actor delegate.
+        init(navigation: MacHTMLPreviewNavigationDelegate? = nil) {
+            self.navigation = navigation ?? MacHTMLPreviewNavigationDelegate()
+            super.init()
+        }
 
         /// Loads once per page; SwiftUI calls this on every update.
         func load(_ html: String, into view: WKWebView) {
