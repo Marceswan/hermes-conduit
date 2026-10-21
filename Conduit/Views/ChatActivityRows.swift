@@ -550,13 +550,21 @@ private struct ChatStepGroupHeader: View {
                 }
                 Text(title.shown)
                     .font(expanded ? .subheadline.weight(.semibold) : .subheadline)
+                    #if os(macOS) // MAC: secondary renders as faded gold in a button label (3.05:1 light); primary 85% clears 4.5:1
+                    .foregroundStyle(Color.primary.opacity(0.85))
+                    #else // MAC:
                     .foregroundStyle(.secondary)
+                    #endif // MAC:
                     .monospacedDigit()
                     .accessibilityLabel(title.spoken)
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.down")
                     .font(.caption.weight(.semibold))
+                    #if os(macOS) // MAC: tertiary is 1.65:1 light, 2.48:1 dark; primary 60% clears 3:1
+                    .foregroundStyle(Color.primary.opacity(0.6))
+                    #else // MAC:
                     .foregroundStyle(.conduitTertiary)
+                    #endif // MAC:
                     .rotationEffect(.degrees(expanded ? 180 : 0))
                     .accessibilityHidden(true)
             }
