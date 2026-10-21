@@ -1,0 +1,3 @@
+# Upstream sync reports
+
+This folder holds the reports of the `/upstream-sync` skill (`.claude/skills/upstream-sync/SKILL.md`). Each run of the skill writes one report, named `YYYY-MM-DD.md` after the day of the run. The report lists the upstream range, the planned merge steps, and every upstream commit in one group. It also lists the Mac ports and gate-offs, the baseline test failures, the live-check list and the decisions that the user must make. The skill stops after it writes the report and waits for the user to approve it. After the merge, the skill adds the results to the same report: the steps merged, the ports and gates, the gate results, the live-check table and anything deferred.
