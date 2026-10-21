@@ -328345,6 +328345,182 @@
           }
         }
       }
+    },
+    "Mac.GeminiLive.TalkOverNote" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Experimentell. Hält das Mikrofon offen, während Gemini über die Lautsprecher des Mac spricht, mit Echounterdrückung, damit du durch Sprechen unterbrechen kannst. Mit Kopfhörern und AirPods geht das immer. Schalte es aus, wenn Gemini sich ständig selbst unterbricht. Gilt gemeinsam für Gemini Live, Grok Live und den klassischen Sprachmodus. Gilt ab der nächsten Unterhaltung."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Experimental. Keeps the microphone open while Gemini talks on the Mac's speakers, with echo cancellation, so you can cut in by speaking. Headphones and AirPods always allow this. Turn it off if Gemini keeps cutting itself off. Shared by Gemini Live, Grok Live and Classic voice. Applies to the next conversation."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Experimental. Mantiene el micrófono abierto mientras Gemini habla por los altavoces del Mac, con cancelación de eco, para que puedas interrumpir hablando. Con auriculares y AirPods siempre es posible. Desactívalo si Gemini se corta solo una y otra vez. Compartido por Gemini Live, Grok Live y la voz clásica. Se aplica a la próxima conversación."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Expérimental. Garde le micro ouvert pendant que Gemini parle sur les haut-parleurs du Mac, avec l'annulation d'écho, pour que vous puissiez l'interrompre en parlant. C'est toujours possible avec des écouteurs et des AirPods. Désactivez cette option si Gemini n'arrête pas de se couper la parole. Partagé par Gemini Live, Grok Live et la voix Classique. S'applique à la prochaine conversation."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eksperimental. Mikrofon tetap terbuka saat Gemini berbicara melalui speaker Mac, dengan peredam gema, sehingga Anda dapat menyela dengan berbicara. Headphone dan AirPods selalu mengizinkan ini. Matikan jika Gemini terus memotong ucapannya sendiri. Digunakan bersama oleh Gemini Live, Grok Live, dan suara Klasik. Berlaku mulai percakapan berikutnya."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sperimentale. Tiene aperto il microfono mentre Gemini parla dagli altoparlanti del Mac, con la cancellazione dell'eco, così puoi interromperlo parlando. Con cuffie e AirPods è sempre possibile. Disattiva l'opzione se Gemini continua a interrompersi da solo. Condiviso da Gemini Live, Grok Live e voce Classica. Vale dalla prossima conversazione."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "試験的な機能です。GeminiがMacのスピーカーで話している間もマイクをオンのままにし、エコーキャンセルを使って、話しかけるだけで割り込めるようにします。ヘッドフォンとAirPodsでは常に割り込めます。Geminiの発話が勝手に途切れる場合はオフにしてください。Gemini Live、Grok Live、クラシック音声で共通の設定です。次の会話から適用されます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "실험적 기능이에요. Gemini가 Mac 스피커로 말하는 동안에도 에코 제거를 사용해 마이크를 켜 두므로 말해서 끼어들 수 있어요. 헤드폰과 AirPods에서는 항상 가능해요. Gemini가 계속 스스로 말을 끊는다면 끄세요. Gemini Live, Grok Live, 클래식 음성에 공통으로 적용돼요. 다음 대화부터 적용돼요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Funkcja eksperymentalna. Mikrofon pozostaje włączony, gdy Gemini mówi przez głośniki Maca (z redukcją echa), więc możesz mu przerwać, mówiąc. Ze słuchawkami i AirPods jest to zawsze możliwe. Wyłącz, jeśli Gemini ciągle sam sobie przerywa. Wspólne dla Gemini Live, Grok Live i klasycznego trybu głosowego. Obowiązuje od następnej rozmowy."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Experimental. Mantém o microfone aberto enquanto o Gemini fala pelos alto-falantes do Mac, com cancelamento de eco, para você poder interromper falando. Fones de ouvido e AirPods sempre permitem isso. Desative se o Gemini ficar se interrompendo. Compartilhado pelo Gemini Live, Grok Live e modo de voz Clássico. Vale a partir da próxima conversa."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Экспериментальная функция. Микрофон остаётся включённым, пока Gemini говорит через динамики Mac, с подавлением эха — так можно перебить, просто заговорив. В наушниках и AirPods это работает всегда. Выключите, если Gemini постоянно прерывает сам себя. Общая настройка для Gemini Live, Grok Live и классического голосового режима. Действует со следующего разговора."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Deneysel. Gemini Mac’in hoparlörlerinden konuşurken yankı engellemesiyle mikrofonu açık tutar; böylece konuşarak araya girebilirsiniz. Kulaklıklarda ve AirPods'ta bu her zaman mümkündür. Gemini kendi sözünü kesip duruyorsa bunu kapatın. Gemini Live, Grok Live ve Klasik ses için ortaktır. Sonraki konuşmada geçerli olur."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实验功能。Gemini 通过 Mac 扬声器说话时保持麦克风开启，并使用回声消除，让你可以直接开口打断。耳机和 AirPods 始终支持此功能。如果 Gemini 不断打断自己，请关闭此选项。Gemini Live、Grok Live 与经典语音共用此设置。从下一次对话开始生效。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "實驗性功能。Gemini 透過 Mac 揚聲器說話時，麥克風會保持開啟並使用回音消除，讓你可以直接開口插話。使用耳機和 AirPods 時一律可以這樣做。若 Gemini 一直打斷自己，請關閉此選項。Gemini Live、Grok Live 和經典語音共用此設定。下次對話起生效。"
+          }
+        }
+      }
+    },
+    "Mac.GrokLive.TalkOverNote" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Experimentell. Hält das Mikrofon offen, während Grok über die Lautsprecher des Mac spricht, mit Echounterdrückung, damit du durch Sprechen unterbrechen kannst. Mit Kopfhörern und AirPods geht das immer. Schalte es aus, wenn Grok sich ständig selbst unterbricht. Gilt gemeinsam für Gemini Live, Grok Live und den klassischen Sprachmodus. Gilt ab der nächsten Unterhaltung."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Experimental. Keeps the microphone open while Grok talks on the Mac's speakers, with echo cancellation, so you can cut in by speaking. Headphones and AirPods always allow this. Turn it off if Grok keeps cutting itself off. Shared by Gemini Live, Grok Live and Classic voice. Applies to the next conversation."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Experimental. Mantiene el micrófono abierto mientras Grok habla por los altavoces del Mac, con cancelación de eco, para que puedas interrumpir hablando. Con auriculares y AirPods siempre es posible. Desactívalo si Grok se corta solo una y otra vez. Compartido por Gemini Live, Grok Live y la voz clásica. Se aplica a la próxima conversación."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Expérimental. Garde le micro ouvert pendant que Grok parle sur les haut-parleurs du Mac, avec l'annulation d'écho, pour que vous puissiez l'interrompre en parlant. C'est toujours possible avec des écouteurs et des AirPods. Désactivez cette option si Grok n'arrête pas de se couper la parole. Partagé par Gemini Live, Grok Live et la voix Classique. S'applique à la prochaine conversation."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eksperimental. Mikrofon tetap terbuka saat Grok berbicara melalui speaker Mac, dengan peredam gema, sehingga Anda dapat menyela dengan berbicara. Headphone dan AirPods selalu mengizinkan ini. Matikan jika Grok terus memotong ucapannya sendiri. Digunakan bersama oleh Gemini Live, Grok Live, dan suara Klasik. Berlaku mulai percakapan berikutnya."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sperimentale. Tiene aperto il microfono mentre Grok parla dagli altoparlanti del Mac, con la cancellazione dell'eco, così puoi interromperlo parlando. Con cuffie e AirPods è sempre possibile. Disattiva l'opzione se Grok continua a interrompersi da solo. Condiviso da Gemini Live, Grok Live e voce Classica. Vale dalla prossima conversazione."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "試験的な機能です。GrokがMacのスピーカーで話している間もマイクをオンのままにし、エコーキャンセルを使って、話しかけるだけで割り込めるようにします。ヘッドフォンとAirPodsでは常に割り込めます。Grokの発話が勝手に途切れる場合はオフにしてください。Gemini Live、Grok Live、クラシック音声で共通の設定です。次の会話から適用されます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "실험적 기능이에요. Grok이 Mac 스피커로 말하는 동안에도 에코 제거를 사용해 마이크를 켜 두므로 말해서 끼어들 수 있어요. 헤드폰과 AirPods에서는 항상 가능해요. Grok이 계속 스스로 말을 끊는다면 끄세요. Gemini Live, Grok Live, 클래식 음성에 공통으로 적용돼요. 다음 대화부터 적용돼요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Funkcja eksperymentalna. Mikrofon pozostaje włączony, gdy Grok mówi przez głośniki Maca (z redukcją echa), więc możesz mu przerwać, mówiąc. Ze słuchawkami i AirPods jest to zawsze możliwe. Wyłącz, jeśli Grok ciągle sam sobie przerywa. Wspólne dla Gemini Live, Grok Live i klasycznego trybu głosowego. Obowiązuje od następnej rozmowy."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Experimental. Mantém o microfone aberto enquanto o Grok fala pelos alto-falantes do Mac, com cancelamento de eco, para você poder interromper falando. Fones de ouvido e AirPods sempre permitem isso. Desative se o Grok ficar se interrompendo. Compartilhado pelo Gemini Live, Grok Live e modo de voz Clássico. Vale a partir da próxima conversa."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Экспериментальная функция. Микрофон остаётся включённым, пока Grok говорит через динамики Mac, с подавлением эха — так можно перебить, просто заговорив. В наушниках и AirPods это работает всегда. Выключите, если Grok постоянно прерывает сам себя. Общая настройка для Gemini Live, Grok Live и классического голосового режима. Действует со следующего разговора."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Deneysel. Grok Mac’in hoparlörlerinden konuşurken yankı engellemesiyle mikrofonu açık tutar; böylece konuşarak araya girebilirsiniz. Kulaklıklarda ve AirPods'ta bu her zaman mümkündür. Grok kendi sözünü kesip duruyorsa bunu kapatın. Gemini Live, Grok Live ve Klasik ses için ortaktır. Sonraki konuşmada geçerli olur."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实验功能。Grok 通过 Mac 扬声器说话时保持麦克风开启，并使用回声消除，让你可以直接开口打断。耳机和 AirPods 始终支持此功能。如果 Grok 不断打断自己，请关闭此选项。Gemini Live、Grok Live 与经典语音共用此设置。从下一次对话开始生效。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "實驗性功能。Grok 透過 Mac 揚聲器說話時，麥克風會保持開啟並使用回音消除，讓你可以直接開口插話。使用耳機和 AirPods 時一律可以這樣做。若 Grok 一直打斷自己，請關閉此選項。Gemini Live、Grok Live 和經典語音共用此設定。下次對話起生效。"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

@@ -119,9 +119,15 @@ struct GrokLiveSettingsSection: View {
                         model.setSpeakerBargeIn(requested)
                     }
                 ))
+                #if os(macOS) // MAC: the Mac's speakers; no car, no iOS (Task 9b, fix round 1)
+                Text("Mac.GrokLive.TalkOverNote")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                #else // MAC:
                 Text("Experimental. Keeps the microphone open while Grok talks on the phone's speaker or in the car, with iOS echo cancellation, so you can cut in by speaking. Headphones and AirPods always allow this. Turn it off if Grok keeps cutting itself off. Shared by Gemini Live, Grok Live and Classic voice. Applies to the next conversation.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                #endif // MAC:
                 Toggle("Save calls to Sessions", isOn: Binding(
                     get: { saveCalls },
                     set: { requested in
