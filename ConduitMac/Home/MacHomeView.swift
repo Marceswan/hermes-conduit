@@ -57,7 +57,7 @@ struct MacHomeView: View {
 
     private func header(_ snapshot: MacHomeSnapshot) -> some View {
         let subtitle = Self.subtitle(snapshot.connection)
-        return MacPaneHeader(title: AppLocalization.string("Home"), subtitle: subtitle.isEmpty ? nil : subtitle) {
+        return MacPaneHeader(title: AppLocalization.string("Mac.Pane.Home"), subtitle: subtitle.isEmpty ? nil : subtitle) {
             MacHomeConnectionPill(state: snapshot.connection.state)
         }
         .macHomeFrame("header")

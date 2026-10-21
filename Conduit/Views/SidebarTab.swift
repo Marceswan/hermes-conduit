@@ -20,8 +20,8 @@ enum SidebarTab: String, CaseIterable, Identifiable {
         case .bots: return AppLocalization.string("Bots")
         case .cron: return AppLocalization.string("Cron")
         case .kanban: return AppLocalization.string("Kanban")
-        #if os(macOS) // MAC: Home pane (D24)
-        case .home: return AppLocalization.string("Home")
+        #if os(macOS) // MAC: Home pane (D24); own key, because "Home" is upstream's saved-place word (R18)
+        case .home: return AppLocalization.string("Mac.Pane.Home")
         #endif // MAC:
         }
     }
