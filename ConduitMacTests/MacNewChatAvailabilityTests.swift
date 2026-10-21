@@ -1,29 +1,18 @@
 import XCTest
 @testable import ConduitMac
 
-/// The sidebar New Chat button on Mac follows upstream's `canTapNewChat`
-/// (R21): it can queue a chat while Conduit connects or synchronizes, shows a
-/// chat already on its way, and is off while the app's own New Chat is
-/// creating its chat. The Mac keeps one reason of its own: with the saved
-/// copy up and no live gateway the button queues no chat.
-/// `macNewChatDisabled` (the guard of callers that create at once) is not
-/// changed; `MissingSessionRecoveryTests` pins it.
+/// New Chat on Mac.
+///
+/// The sidebar button is upstream's own: `.disabled(!appState.canTapNewChat)`, with no Mac region
+/// (Ruling R39). It can queue a chat while Conduit connects or synchronizes, also at a cold launch
+/// with the saved copy on screen, shows a chat already on its way, and is off while the app's own
+/// New Chat is creating its chat. The tests below pin that state table in the Mac fixtures, so a
+/// later upstream change to `canTapNewChat` shows here.
+///
+/// `macNewChatDisabled` is the stricter gate of the callers that create a chat at once (the Notch
+/// menu and Home). `MissingSessionRecoveryTests` pins its saved-copy and synchronizing rules.
 @MainActor
 final class MacNewChatAvailabilityTests: XCTestCase {
-    // The test host shares the Keychain service with the user's real app: these tests build an
-    // `AppState`, so they run on an in-memory Keychain (see MacMemoryKeychainBackend).
-    override func setUp() async throws {
-        MacMemoryKeychainBackend.install()
-    }
-
-    override func tearDown() async throws {
-        MacMemoryKeychainBackend.restore()
-    }
-
-    func testTheseTestsRunOnAnInMemoryKeychain() {
-        XCTAssertTrue(KeychainHelper.backend is MacMemoryKeychainBackend)
-    }
-
     private func makeAppState(connected: Bool = false, connecting: Bool = false) throws -> (AppState, SavedDashboard) {
         let suite = "MacNewChatAvailabilityTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -57,21 +46,21 @@ final class MacNewChatAvailabilityTests: XCTestCase {
         appState.presentOfflineChatIfAvailable(dashboardID: dashboard.id)
     }
 
-    // MARK: - Upstream's rule
+    // MARK: - The sidebar button (upstream's canTapNewChat)
 
     func testNothingToWaitForKeepsTheButtonOff() throws {
         let (appState, _) = try makeAppState()
-        XCTAssertTrue(appState.macNewChatButtonDisabled, "no connection is on its way")
+        XCTAssertFalse(appState.canTapNewChat, "no connection is on its way")
     }
 
     func testButtonIsOnWhileConduitConnects() throws {
         let (appState, _) = try makeAppState(connecting: true)
-        XCTAssertFalse(appState.macNewChatButtonDisabled, "a New Chat can wait for the connection")
+        XCTAssertTrue(appState.canTapNewChat, "a New Chat can wait for the connection")
     }
 
     func testButtonIsOnWhileConnected() throws {
         let (appState, _) = try makeAppState(connected: true)
-        XCTAssertFalse(appState.macNewChatButtonDisabled)
+        XCTAssertTrue(appState.canTapNewChat)
         XCTAssertFalse(appState.macNewChatDisabled)
     }
 
@@ -90,7 +79,7 @@ final class MacNewChatAvailabilityTests: XCTestCase {
         }
         XCTAssertEqual(appState.turnState, .synchronizing, "precondition")
         XCTAssertFalse(appState.isStartingNewChat)
-        XCTAssertFalse(appState.macNewChatButtonDisabled, "upstream queues a New Chat while Conduit synchronizes")
+        XCTAssertTrue(appState.canTapNewChat, "upstream queues a New Chat while Conduit synchronizes")
         XCTAssertTrue(appState.macNewChatDisabled, "the Notch menu and Home would start a second create")
         release.continuation.yield()
         await creating.value
@@ -98,12 +87,12 @@ final class MacNewChatAvailabilityTests: XCTestCase {
 
     func testAChatOnItsWayKeepsTheButtonOn() throws {
         let (appState, dashboard) = try makeAppState()
-        XCTAssertTrue(appState.macNewChatButtonDisabled, "precondition: nothing to wait for")
+        XCTAssertFalse(appState.canTapNewChat, "precondition: nothing to wait for")
         let workspace = WidgetWorkspaceID(dashboardID: dashboard.id, profile: "default")
         let link = try XCTUnwrap(WidgetLaunchLink(action: .newChat, workspace: workspace, reference: nil))
         appState.widgetLaunchPendingLinkChanged(link)
         XCTAssertTrue(appState.showsPendingNewChat)
-        XCTAssertFalse(appState.macNewChatButtonDisabled, "a tap shows the chat already on its way")
+        XCTAssertTrue(appState.canTapNewChat, "a tap shows the chat already on its way")
     }
 
     func testButtonIsOffWhileTheAppsOwnNewChatCreatesItsChat() async throws {
@@ -113,69 +102,72 @@ final class MacNewChatAvailabilityTests: XCTestCase {
             for await _ in release.stream { break }
             return (sessionId: "new-1", storedSessionId: "new-1", profile: "default")
         }
-        XCTAssertFalse(appState.macNewChatButtonDisabled, "precondition")
+        XCTAssertTrue(appState.canTapNewChat, "precondition")
+        XCTAssertFalse(appState.macNewChatDisabled, "precondition")
 
         appState.startNewChat()
 
         XCTAssertTrue(appState.isStartingNewChat)
-        XCTAssertTrue(appState.macNewChatButtonDisabled, "a second tap must not start a second chat")
+        XCTAssertFalse(appState.canTapNewChat, "a second tap must not start a second chat")
+        // The task that sets `.synchronizing` has not run yet: only `isStartingNewChat` closes the
+        // Notch and Home gate in this gap.
+        XCTAssertNotEqual(appState.turnState, .synchronizing, "precondition: the gap")
+        XCTAssertTrue(appState.macNewChatDisabled, "a Notch or Home click in the gap would start a second create")
 
         release.continuation.yield()
         for _ in 0..<200 where appState.isStartingNewChat {
             try await Task.sleep(nanoseconds: 25_000_000)
         }
         XCTAssertFalse(appState.isStartingNewChat)
-        XCTAssertFalse(appState.macNewChatButtonDisabled)
+        XCTAssertTrue(appState.canTapNewChat)
+        XCTAssertFalse(appState.macNewChatDisabled)
     }
 
-    // MARK: - The Mac reason: the saved copy
+    // MARK: - The saved copy (Ruling R39)
 
-    func testSavedCopyWithoutALiveGatewayQueuesNoChat() throws {
+    /// Decision (R39): at a cold launch the Mac shows the saved copy while Conduit connects. The
+    /// button still queues a chat, as upstream's does. The earlier Mac rule kept it off there.
+    func testSavedCopyWhileConduitConnectsStillQueuesAChat() throws {
         let (appState, dashboard) = try makeAppState(connecting: true)
         showSavedCopy(appState, dashboard: dashboard)
         XCTAssertNotNil(appState.offlineChatPresentation, "precondition: the saved copy is on screen")
         XCTAssertFalse(appState.isConnected)
-        XCTAssertTrue(appState.canTapNewChat, "upstream would queue a chat while connecting")
-        XCTAssertTrue(appState.macNewChatButtonDisabled, "Mac: the copy has no live gateway to create a chat on")
-    }
-
-    func testConnectedFlagWithoutAClientIsNotALiveGateway() throws {
-        let (appState, dashboard) = try makeAppState(connected: true)
-        showSavedCopy(appState, dashboard: dashboard)
-        appState.client = nil
-        XCTAssertTrue(appState.macNewChatButtonDisabled)
+        XCTAssertTrue(appState.canTapNewChat, "the chat is queued while Conduit connects")
+        XCTAssertTrue(appState.macNewChatDisabled, "a caller that creates at once has no live gateway to create on")
     }
 
     func testSavedCopyDoesNotBlockOnceTheClientIsLive() throws {
         let (appState, dashboard) = try makeAppState(connected: true)
         showSavedCopy(appState, dashboard: dashboard)
         XCTAssertNotNil(appState.offlineChatPresentation)
-        XCTAssertFalse(appState.macNewChatButtonDisabled)
+        XCTAssertTrue(appState.canTapNewChat)
+        XCTAssertFalse(appState.macNewChatDisabled)
     }
 
-    func testSavedCopyWithAChatOnItsWayStaysReachable() {
-        XCTAssertFalse(AppState.macNewChatButtonDisabled(
-            canTapNewChat: true, showsPendingNewChat: true, hasSavedCopy: true, hasLiveGateway: false))
+    func testConnectedFlagWithoutAClientStillLetsTheButtonQueue() throws {
+        let (appState, dashboard) = try makeAppState(connected: true)
+        showSavedCopy(appState, dashboard: dashboard)
+        appState.client = nil
+        XCTAssertTrue(appState.canTapNewChat)
+        XCTAssertTrue(appState.macNewChatDisabled, "the connected flag without a client is not a live gateway")
     }
 
-    // MARK: - The pure rule
+    // MARK: - The strict gate of the creating callers
 
-    func testPureRule() {
-        func disabled(tap: Bool, pending: Bool, copy: Bool, live: Bool) -> Bool {
-            AppState.macNewChatButtonDisabled(
-                canTapNewChat: tap, showsPendingNewChat: pending, hasSavedCopy: copy, hasLiveGateway: live)
+    func testStrictGatePureRule() {
+        func disabled(
+            _ turn: TurnState = .idle, copy: Bool = false, live: Bool = true, switching: Bool = false,
+            starting: Bool = false
+        ) -> Bool {
+            AppState.macNewChatDisabled(
+                turnState: turn, hasSavedCopy: copy, hasLiveGateway: live,
+                isProfileSwitching: switching, isStartingNewChat: starting)
         }
-        for pending in [false, true] {
-            for copy in [false, true] {
-                for live in [false, true] {
-                    XCTAssertTrue(disabled(tap: false, pending: pending, copy: copy, live: live),
-                                  "upstream's rule off always wins")
-                }
-            }
-        }
-        XCTAssertFalse(disabled(tap: true, pending: false, copy: false, live: false))
-        XCTAssertFalse(disabled(tap: true, pending: false, copy: false, live: true))
-        XCTAssertFalse(disabled(tap: true, pending: false, copy: true, live: true))
-        XCTAssertTrue(disabled(tap: true, pending: false, copy: true, live: false))
+        XCTAssertFalse(disabled())
+        XCTAssertTrue(disabled(starting: true), "the app's own New Chat is creating its chat")
+        XCTAssertTrue(disabled(.synchronizing))
+        XCTAssertTrue(disabled(switching: true))
+        XCTAssertTrue(disabled(copy: true, live: false))
+        XCTAssertFalse(disabled(copy: true, live: true))
     }
 }

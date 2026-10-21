@@ -185,9 +185,10 @@ enum MacHomeBinding {
                 contextPercent: runtime.contextPercent, contextUsed: runtime.contextUsed, contextMax: runtime.contextMax
             ),
             subAgents: appState.activeAgents,
-            // Stricter than the sidebar button (`macNewChatDisabled` alone): `createNewSession`
-            // is a silent no-op without a live client, so Home does not offer a dead button.
-            // The live-client rule is the one `macNewChatDisabled` itself uses (hasLiveGateway).
+            // Stricter than the sidebar button (upstream's `canTapNewChat`, which can queue a chat):
+            // Home calls `createNewSession` at once, a silent no-op without a live client, so Home
+            // does not offer a dead button. `macNewChatDisabled` is the gate for such callers; its
+            // live-client rule is `hasLiveGateway`, repeated here.
             canStartChat: !appState.macNewChatDisabled
                 && appState.isConnected && !appState.isConnecting && appState.client != nil
         )
