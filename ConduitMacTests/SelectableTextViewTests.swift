@@ -107,4 +107,79 @@ final class SelectableTextViewTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - Prose runs
+
+    /// The unrounded height TextKit 1 lays `text` out to, which is what the
+    /// view measures before it rounds up.
+    private func rawHeight(of text: NSAttributedString, width: CGFloat) -> CGFloat {
+        let storage = NSTextStorage(attributedString: text)
+        let container = NSTextContainer(size: NSSize(width: width, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        let layout = NSLayoutManager()
+        layout.addTextContainer(container)
+        storage.addLayoutManager(layout)
+        layout.ensureLayout(for: container)
+        return layout.usedRect(for: container).height
+    }
+
+    private func proseHeight(of blocks: ArraySlice<MarkdownBlock>, width: CGFloat) -> CGFloat {
+        let text = MarkdownProseRun.attributedText(
+            for: blocks,
+            references: .empty,
+            foregroundStyle: .primary,
+            usesAccentSurface: false,
+            chatTextSize: .default
+        )
+        return rawHeight(of: SelectableTextView(attributedText: text, keepsParagraphStyles: true).styledText(), width: width)
+    }
+
+    /// A run is one text view where a stack of block views stood. Each block
+    /// view was a paragraph's own height, and the stack spaced them apart:
+    /// `Spacing.betweenBlocks` (and a heading's own space above) between
+    /// blocks, `Spacing.betweenListItems` between list items. The run's single
+    /// text has to add up to the same, whatever the layout engine does with
+    /// line spacing between paragraphs: upstream's `gap(_:above:)` assumes
+    /// UIKit adds the next paragraph's line spacing above its first line,
+    /// where AppKit adds the previous paragraph's under its last line. Checked
+    /// pair by pair, so that one gap that is off by a few points cannot hide
+    /// behind another. AppKit also lays out a line with line spacing up to a
+    /// font `leading` (under 1 pt) short of the line height it gives without
+    /// it, which stays inside the 1 pt.
+    @MainActor
+    func testProseRunHeightMatchesTheBlocksItReplaces() {
+        let long = "Bravo paragraph has enough words in it to wrap onto a second line of the chat column at this width, and then some more."
+        let item = "Delta item is long enough that it wraps onto another line in the chat column at this width as well"
+        let betweenBlocks = MarkdownProseRun.Spacing.betweenBlocks
+        let headingGap = betweenBlocks + MarkdownProseRun.Spacing.aboveHeading(level: 3)
+        let pairs: [(name: String, first: MarkdownBlock, second: MarkdownBlock, gap: CGFloat)] = [
+            ("heading, paragraph", .heading(level: 2, text: "Alpha heading"), .paragraph(long), betweenBlocks),
+            ("paragraph, paragraph", .paragraph(long), .paragraph("Hotel closing paragraph."), betweenBlocks),
+            ("paragraph, bullet item", .paragraph(long), .unorderedList(["Charlie item"]), betweenBlocks),
+            ("paragraph, numbered item", .paragraph("Short."), .orderedList([item]), betweenBlocks),
+            ("bullet item, paragraph", .unorderedList([item]), .paragraph(long), betweenBlocks),
+            ("numbered item, paragraph", .orderedList(["Foxtrot first"]), .paragraph("Hotel."), betweenBlocks),
+            ("bullet item, level 3 heading", .unorderedList([item]), .heading(level: 3, text: "Golf heading"), headingGap),
+            ("paragraph, level 3 heading", .paragraph(long), .heading(level: 3, text: "Golf heading"), headingGap),
+            ("heading, bullet item", .heading(level: 2, text: "Alpha heading"), .unorderedList(["Charlie item"]), betweenBlocks),
+            ("heading, heading", .heading(level: 2, text: "Alpha"), .heading(level: 3, text: "Golf heading"), headingGap),
+        ]
+        for width in [260, 320, 480] as [CGFloat] {
+            for pair in pairs {
+                let run = proseHeight(of: [pair.first, pair.second][...], width: width)
+                let expected = proseHeight(of: [pair.first][...], width: width)
+                    + proseHeight(of: [pair.second][...], width: width)
+                    + pair.gap
+                XCTAssertEqual(run, expected, accuracy: 1, "\(pair.name) at width \(width): run \(run) pt, blocks \(expected) pt")
+            }
+            for ordered in [false, true] {
+                func list(_ items: [String]) -> MarkdownBlock { ordered ? .orderedList(items) : .unorderedList(items) }
+                let run = proseHeight(of: [list(["Charlie item", item])][...], width: width)
+                let expected = proseHeight(of: [list(["Charlie item"])][...], width: width)
+                    + proseHeight(of: [list([item])][...], width: width)
+                    + MarkdownProseRun.Spacing.betweenListItems
+                XCTAssertEqual(run, expected, accuracy: 1, "\(ordered ? "numbered" : "bullet") items at width \(width): run \(run) pt, items \(expected) pt")
+            }
+        }
+    }
 }

@@ -267,7 +267,11 @@ enum MarkdownProseRun {
             }
             guard let first = blockParagraphs.first else { continue }
             if let above = paragraphs.indices.last {
+                #if os(macOS) // MAC: AppKit adds the line spacing of the paragraph above under its last line; UIKit adds the next paragraph's above its first line (R4)
+                paragraphs[above].spacingAfter = gap(gapAbove, above: paragraphs[above].style.lineSpacing)
+                #else // MAC:
                 paragraphs[above].spacingAfter = gap(gapAbove, above: first.style.lineSpacing)
+                #endif // MAC:
                 paragraphs[above].endsBlock = true
             }
             paragraphs.append(contentsOf: blockParagraphs)
