@@ -114,6 +114,43 @@ struct SelectableTextView: NSViewRepresentable {
 }
 
 extension SelectableTextView {
+    /// The text view. A chat answer's prose run (`MarkdownProseRun`) keeps a
+    /// tab after each list marker and one line break between blocks, marked
+    /// with `MarkdownProseRun.copiesAs`; upstream copies them as a space and a
+    /// blank line. A plain NSTextView would copy the raw characters, so Copy,
+    /// drag and Services read the selection through `copyableText` here. Text
+    /// with no marks copies as NSTextView does.
+    final class ProseCopyTextView: NSTextView {
+        /// Where Copy writes a marked selection. Tests replace it.
+        var pasteboard: NSPasteboard = .general
+
+        /// What copying the selection gives, when it holds marked characters.
+        func copiedSelection() -> NSAttributedString? {
+            let range = NSIntersectionRange(selectedRange(), NSRange(location: 0, length: textStorage?.length ?? 0))
+            guard range.length > 0, let text = textStorage?.attributedSubstring(from: range) else { return nil }
+            let copied = MarkdownProseRun.copyableText(text)
+            return copied === text ? nil : copied
+        }
+
+        override func copy(_ sender: Any?) {
+            guard let copied = copiedSelection() else {
+                super.copy(sender)
+                return
+            }
+            // String-only, as upstream's UITextView copy writes it.
+            pasteboard.clearContents()
+            pasteboard.setString(copied.string, forType: .string)
+        }
+
+        override func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
+            guard let copied = copiedSelection() else {
+                return super.writeSelection(to: pboard, types: types)
+            }
+            pboard.declareTypes([.string], owner: nil)
+            return pboard.setString(copied.string, forType: .string)
+        }
+    }
+
     static func makeTextView(delegate: NSTextViewDelegate? = nil) -> NSTextView {
         // TextKit 1 on purpose. `measuredHeight` (what `sizeThatFits` returns)
         // lays text out with an NSLayoutManager; a plain `NSTextView(frame:)`
@@ -121,7 +158,7 @@ extension SelectableTextView {
         // includes the trailing line spacing), so the SwiftUI frame came out
         // short and the final line was clipped (D13). One engine for measuring
         // and drawing keeps the two equal by construction.
-        let textView = NSTextView(usingTextLayoutManager: false)
+        let textView = ProseCopyTextView(usingTextLayoutManager: false)
         textView.delegate = delegate
         textView.isEditable = false
         textView.isSelectable = true
@@ -136,6 +173,36 @@ extension SelectableTextView {
         textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return textView
+    }
+
+    /// How much of the tint a selection on an accent surface shows: enough to
+    /// read against the bubble, not so much that it hides the text.
+    private static let selectionTintAlpha: CGFloat = 0.3
+
+    private static let systemSelectedTextAttributes = makeTextView().selectedTextAttributes
+
+    /// A selection on a sent bubble would take the bubble's own colour, the
+    /// accent, and disappear (#697, #702). `MarkdownText` puts a contrasting
+    /// tint in the environment (`textSelectionTint`); a view that gets one
+    /// highlights its selection in it, and one that gets none uses the system
+    /// colour again. Static so `Context` is not needed to test it.
+    static func applySelectionTint(_ tint: NSColor?, to textView: NSTextView) {
+        guard let tint else {
+            if !NSDictionary(dictionary: textView.selectedTextAttributes).isEqual(to: systemSelectedTextAttributes) {
+                textView.selectedTextAttributes = systemSelectedTextAttributes
+            }
+            return
+        }
+        // A dynamic colour is resolved for the view's own appearance.
+        var resolved = tint
+        textView.effectiveAppearance.performAsCurrentDrawingAppearance {
+            resolved = tint.usingColorSpace(.sRGB) ?? tint
+        }
+        let background = resolved.withAlphaComponent(selectionTintAlpha)
+        guard (textView.selectedTextAttributes[.backgroundColor] as? NSColor) != background else { return }
+        var attributes = systemSelectedTextAttributes
+        attributes[.backgroundColor] = background
+        textView.selectedTextAttributes = attributes
     }
 
     /// The one TextKit 1 layout setup that measuring and baseline lookup share.
@@ -189,18 +256,24 @@ extension SelectableTextView {
         let styled = NSMutableAttributedString(attributedString: attributedText)
         let fullRange = NSRange(location: 0, length: styled.length)
         guard fullRange.length > 0 else { return styled }
-        // Paragraph styles the caller set (list hanging indents) are kept;
-        // the view's spacing, alignment and wrapping fill in on top.
+        // With `keepsParagraphStyles`, a paragraph that has a style stays exactly
+        // as the caller made it (upstream `applyParagraphStyle`): a prose run
+        // sets its own spacing, indents and tab stops. One that has none gets
+        // the view's line spacing, alignment and wrapping.
+        // Mac difference, without the flag: upstream replaces the whole style;
+        // here a caller's style is copied and only the line spacing,
+        // alignment and wrapping are set on it, because the Mac list region of
+        // `MarkdownSelectionFormatter.list` (MarkdownText.swift) sets a
+        // hanging indent that must survive.
         var paragraphRuns: [(NSRange, NSParagraphStyle?)] = []
         styled.enumerateAttribute(.paragraphStyle, in: fullRange, options: []) { value, subrange, _ in
             paragraphRuns.append((subrange, value as? NSParagraphStyle))
         }
         for (subrange, existing) in paragraphRuns {
+            if keepsParagraphStyles, existing != nil { continue }
             let paragraph = (existing?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
-            if !keepsParagraphStyles || existing == nil {
-                paragraph.lineSpacing = lineSpacing
-                paragraph.alignment = textAlignment
-            }
+            paragraph.lineSpacing = lineSpacing
+            paragraph.alignment = textAlignment
             paragraph.lineBreakMode = wrapsLines ? .byWordWrapping : .byTruncatingTail
             styled.addAttribute(.paragraphStyle, value: paragraph, range: subrange)
         }
@@ -235,6 +308,7 @@ extension SelectableTextView {
         }
         view.textContainer?.maximumNumberOfLines = maximumNumberOfLines
         view.linkTextAttributes = [.foregroundColor: linkColor, .cursor: NSCursor.pointingHand]
+        Self.applySelectionTint(context.environment.textSelectionTint, to: view)
         context.coordinator.openURL = context.environment.openURL
         // D23: whole-chat find registers each message text view under its row id.
         context.coordinator.attachFind(
@@ -429,7 +503,8 @@ private struct TextSelectionTintKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
-    /// The selection tint for chat text on a coloured surface (#697). The Mac text view ignores it.
+    /// The selection tint for chat text on a coloured surface (#697). The Mac text view
+    /// highlights its selection in it (`SelectableTextView.applySelectionTint`).
     var textSelectionTint: UIColor? {
         get { self[TextSelectionTintKey.self] }
         set { self[TextSelectionTintKey.self] = newValue }
