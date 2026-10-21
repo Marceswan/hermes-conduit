@@ -743,7 +743,11 @@ private struct V2CapsuleTabBar: View {
 /// The switch between V2's tab shell and the drawer shell it replaces.
 enum V2ShellPreference {
     static let key = "conduit.useV2Shell"
+    #if os(macOS) // MAC: V2 shell kept off; the Mac keeps its own UI (Kept off on Mac)
+    static let defaultValue = false
+    #else
     static let defaultValue = true
+    #endif // MAC:
 
     /// The same value the views read through `@AppStorage`.
     static var isOn: Bool {
@@ -805,7 +809,7 @@ private struct V2TabBarClearance: ViewModifier {
 private struct V2LegacyTabBarEdge: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, macOS 26.0, *) { // MAC: name the macOS release (R4-widen)
             content
         } else {
             content.background { V2ScrollEdgeBackground(edge: .bottom).padding(.top, -14) }
