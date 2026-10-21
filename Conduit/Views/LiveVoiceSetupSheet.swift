@@ -51,8 +51,13 @@ struct LiveVoiceSetupSheet: View {
                 }
                 .accessibilityHint(AppLocalization.string("Opens the notifier project on GitHub"))
 
+                #if os(macOS) // MAC: click, not tap (Task 9b)
+                let checkHint = AppLocalization.string("Return to Voice settings, enable this mode if it is off, and click \(mode.checkTitle) to check availability.")
+                #else // MAC:
+                let checkHint = AppLocalization.string("Return to Voice settings, enable this mode if it is off, and tap \(mode.checkTitle) to check availability.")
+                #endif // MAC:
                 Label(
-                    AppLocalization.string("Return to Voice settings, enable this mode if it is off, and tap \(mode.checkTitle) to check availability."),
+                    checkHint, // MAC: reads the Mac or iPhone text chosen above
                     systemImage: "arrow.uturn.backward"
                 )
                 .font(.footnote)

@@ -299,9 +299,15 @@ private struct LegacySettingsView: View {
             Text("Choose what a typed message does while Hermes is still working.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+            #if os(macOS) // MAC: right-click, not touch and hold (Task 9b)
+            Text("Mac.Chat.SendButtonHint")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            #else // MAC:
             Text("Touch and hold the send button to choose another way for one message.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+            #endif // MAC:
 
             ConduitGlassGroup(spacing: 10) {
                 AdaptiveStack(spacing: 10) {
@@ -1125,9 +1131,11 @@ private struct SettingsHome: View {
                         settingsLink(.model, icon: "cpu", title: AppLocalization.string("Model"), detail: AppLocalization.string("Default model and reasoning"))
                         settingsLink(.chat, icon: "bubble.left.and.bubble.right", title: AppLocalization.string("Chat"), detail: AppLocalization.string("Response behavior, visibility, and timezone"))
                         settingsLink(.voice, icon: "mic.and.signal.meter", title: AppLocalization.string("Voice"), detail: AppLocalization.string("Speech providers, credentials, and device opt-in"))
+                        #if !os(macOS) // MAC: Hermes calls reach the iPhone through push (APNs); the Mac uses local notifications only (D20, Ruling R45, ledger: Kept off on Mac)
                         if appState.supportsHermesCalls {
                             settingsLink(.hermesCalls, icon: "phone.arrow.down.left", title: AppLocalization.string("Calls from Hermes"), detail: AppLocalization.string("When Hermes may phone you"), identifier: "settings.hermes-calls")
                         }
+                        #endif // MAC:
                         settingsLink(.workspace, icon: "folder", title: AppLocalization.string("Workspace & safety"), detail: AppLocalization.string("Working directory, approvals, and privacy"))
                         settingsLink(.memory, icon: "brain.head.profile", title: AppLocalization.string("Memory & delegation"), detail: AppLocalization.string("Memory, compression, and child agents"))
                         settingsLink(.advanced, icon: "wrench.and.screwdriver", title: AppLocalization.string("Advanced"), detail: AppLocalization.string("Turn limits, terminal, and tool output"))
@@ -1158,7 +1166,9 @@ private struct SettingsHome: View {
                         if appState.showsPhoneSettings {
                             settingsLink(.phone, icon: "calendar", title: AppLocalization.string("Calendar & phone"), detail: AppLocalization.string("Share your calendar, reminders, Focus and phone status with Hermes"), identifier: "settings.phone")
                         }
+                        #if !os(macOS) // MAC: the page teaches the Action Button and Home Screen shortcuts; the Mac has its own Ask About Window (D17, Task 9b, ledger: Kept off on Mac)
                         settingsLink(.screenQuestion, icon: "camera.viewfinder", title: AppLocalization.string("Ask Hermes About Screen"), detail: AppLocalization.string("Action Button shortcut for screenshots"), identifier: "settings.screen-question")
+                        #endif // MAC:
                         settingsLink(.about, icon: "shield", title: AppLocalization.string("About & privacy"), detail: AppLocalization.string("App information and data handling"))
                         #if os(macOS) // MAC: Spotlight opt-in (D19)
                         MacSpotlightSettingsRow()
@@ -1294,9 +1304,11 @@ private struct SettingsHome: View {
         }
         v2Group(AppLocalization.string("Voice"), symbol: "waveform") {
             v2Link(.voice, icon: "mic.and.signal.meter", title: AppLocalization.string("Voice"), detail: AppLocalization.string("Speech providers, credentials, and device opt-in"), first: true)
+            #if !os(macOS) // MAC: same gate as the Settings home row (D20, Ruling R45, ledger: Kept off on Mac)
             if appState.supportsHermesCalls {
                 v2Link(.hermesCalls, icon: "phone.arrow.down.left", title: AppLocalization.string("Calls from Hermes"), detail: AppLocalization.string("When Hermes may phone you"), identifier: "settings.hermes-calls")
             }
+            #endif // MAC:
         }
         v2Group(AppLocalization.string("Hermes"), symbol: "gearshape.2") {
             v2Link(.model, icon: "cpu", title: AppLocalization.string("Model"), detail: AppLocalization.string("Default model and reasoning"), first: true)
@@ -1317,7 +1329,9 @@ private struct SettingsHome: View {
             }
             v2Link(.appearance, icon: "circle.lefthalf.filled", title: AppLocalization.string("Appearance"), detail: AppLocalization.string("Theme and interface preferences"))
             v2Link(.notifications, icon: "bell", title: AppLocalization.string("Notifications"), detail: AppLocalization.string("Delivery status and setup"))
+            #if !os(macOS) // MAC: same gate as the Settings home link (Task 9b, ledger: Kept off on Mac)
             v2Link(.screenQuestion, icon: "camera.viewfinder", title: AppLocalization.string("Ask Hermes About Screen"), detail: AppLocalization.string("Action Button shortcut for screenshots"), identifier: "settings.screen-question")
+            #endif // MAC:
         }
         if appState.showsHealthSettings || appState.showsLocationSettings || appState.showsPhoneSettings {
             v2Group(AppLocalization.string("On this device"), symbol: "iphone") {
@@ -2815,8 +2829,13 @@ struct ProfileConfigSettingsPage: View {
                     drafts[field.key] = id
                     commitText(field, value: id)
                 } label: {
+                    #if os(macOS) // MAC: Task 9b
+                    Label(AppLocalization.string("Use this Mac's time zone (\(id))"), systemImage: "location")
+                        .font(.subheadline.weight(.medium))
+                    #else // MAC:
                     Label(AppLocalization.string("Use this iPhone's time zone (\(id))"), systemImage: "location")
                         .font(.subheadline.weight(.medium))
+                    #endif // MAC:
                 }
                 .disabled(savingKey != nil)
             }
@@ -3061,6 +3080,7 @@ private struct AppearanceSettingsDetail: View {
                     }
                 }
             }
+            #if !os(macOS) // MAC: alternate Home Screen icons are an iPhone-only feature; the Mac target ships no AlternateIcons (Task 9b, ledger: Kept off on Mac)
             ConduitSettingsSection(title: AppLocalization.string("App icon"), symbol: "app.badge", tint: .conduitAura) {
                 Text("Choose the icon shown on your Home Screen.")
                     .font(.footnote)
@@ -3107,6 +3127,7 @@ private struct AppearanceSettingsDetail: View {
                     }
                 }
             }
+            #endif // MAC:
 
             // The gold button beside V2's tabs: voice, or New chat for
             // people who'd rather not talk. A chat keeps its voice button.
@@ -3243,6 +3264,7 @@ private struct NotificationsSettingsDetail: View {
             #if os(macOS) // MAC: local notifications section (D20)
             MacNotificationSettingsView()
             #endif // MAC:
+            #if !os(macOS) // MAC: push (APNs) registration; the Mac uses local notifications only (D20, Ruling R45, ledger: Kept off on Mac)
             ConduitSettingsSection(title: AppLocalization.string("This iPhone"), symbol: "bell.badge", tint: .conduitAura) {
                 SettingsMetricRow(
                     label: AppLocalization.string("Status"),
@@ -3288,6 +3310,7 @@ private struct NotificationsSettingsDetail: View {
                         .foregroundStyle(.red)
                 }
             }
+            #endif // MAC:
 
             #if !os(macOS) // MAC: Live Activities need ActivityKit, unavailable on macOS (G3, R4)
             // #605: a running turn on the Lock Screen and in the Dynamic
@@ -3314,6 +3337,7 @@ private struct NotificationsSettingsDetail: View {
             }
             #endif // MAC:
 
+            #if !os(macOS) // MAC: relay pairing and the Push relay field; the Mac has no relay or APNs (D20, Ruling R45, ledger: Kept off on Mac)
             if notifications.isEnabled {
                 ConduitSettingsSection(title: AppLocalization.string("Notify me when"), symbol: "slider.horizontal.3", tint: .conduitAccent) {
                     // The relay keeps one set of preferences per iPhone.
@@ -3569,12 +3593,15 @@ private struct NotificationsSettingsDetail: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            #endif // MAC:
         }
         .navigationTitle("Notifications")
+        #if !os(macOS) // MAC: refresh reads the push state and the relay's metadata; the Mac calls no relay (D20, Ruling R45)
         .task {
             await notifications.refresh()
             await notifications.refreshMeta()
         }
+        #endif // MAC:
     }
 
     /// A row that opens Settings > Conduit plugin.

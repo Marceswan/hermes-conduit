@@ -325,9 +325,17 @@ extension ConnectionFailure {
         case .timedOut:
             return AppLocalization.string("The dashboard did not respond in time. Check the address, the network connection, and whether the Hermes dashboard is running.")
         case .offline:
+            #if os(macOS) // MAC: Wi-Fi or Ethernet; a Mac has no cellular (Task 9b, fix round 1)
+            return AppLocalization.string("Mac.ConnectionFailure.Offline")
+            #else // MAC:
             return AppLocalization.string("This device doesn’t appear to have a network connection. Reconnect to Wi-Fi or cellular and try again.")
+            #endif // MAC:
         case .tlsUntrusted:
+            #if os(macOS) // MAC: macOS, not iOS, does not trust the certificate (Task 9b, fix round 1)
+            return AppLocalization.string("Mac.ConnectionFailure.TLSUntrusted")
+            #else // MAC:
             return AppLocalization.string("Conduit reached the server, but iOS does not trust its TLS certificate. If you use your own certificate authority, make sure its root certificate is installed and trusted on this device.")
+            #endif // MAC:
         case .tlsBadDate:
             return AppLocalization.string("The dashboard certificate is expired or not yet valid. Check the certificate dates and this device’s date and time.")
         case .tlsFailure:

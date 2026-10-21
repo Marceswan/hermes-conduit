@@ -426,9 +426,15 @@ final class VoiceConversationController: ObservableObject {
             // iOS can still refuse the microphone in the background (a route
             // change or another app took it while locked); its raw avfaudio
             // error means nothing on the lock screen or after unlocking.
+            #if os(macOS) // MAC: the Mac names itself and clicks (Task 9b)
+            state = .failed(isBackgroundListeningRequested
+                ? AppLocalization.string("Mac.VoiceConversation.ListeningStoppedLocked")
+                : UserFacingError.message(for: error))
+            #else // MAC:
             state = .failed(isBackgroundListeningRequested
                 ? AppLocalization.string("Listening stopped while your phone was locked. Tap Listen to continue.")
                 : UserFacingError.message(for: error))
+            #endif // MAC:
         }
     }
 

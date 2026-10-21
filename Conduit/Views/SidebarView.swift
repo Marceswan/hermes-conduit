@@ -733,9 +733,15 @@ struct SessionList: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    #if os(macOS) // MAC: right-click, not swipe or touch and hold (Task 9b)
+                    .accessibilityHint(appState.isProjectEditable(project)
+                        ? AppLocalization.string("Mac.Sidebar.ProjectRowHint")
+                        : AppLocalization.string("Opens the conversations in this project."))
+                    #else // MAC:
                     .accessibilityHint(appState.isProjectEditable(project)
                         ? AppLocalization.string("Opens the conversations in this project. Swipe or touch and hold to rename or delete it.")
                         : AppLocalization.string("Opens the conversations in this project."))
+                    #endif // MAC:
                     .projectActionsMenu(isEnabled: appState.isProjectEditable(project)) {
                         Button {
                             Haptics.selection()
@@ -969,7 +975,11 @@ struct SessionList: View {
         }
         .buttonStyle(.plain)
         .accessibilityValue(Text(nestParentTitle.map { AppLocalization.string("From \($0)") } ?? ""))
+        #if os(macOS) // MAC: right-click, not swipe or touch and hold (Task 9b)
+        .accessibilityHint("Mac.Sidebar.SessionRowHint")
+        #else // MAC:
         .accessibilityHint("Swipe or touch and hold for conversation actions.")
+        #endif // MAC:
     }
 
     /// What every row of the sessions list carries — the touch-and-hold
@@ -1769,7 +1779,11 @@ private struct ProjectSessionsSheet: View {
                                             .contentShape(Rectangle())
                                     }
                                     .buttonStyle(.plain)
+                                    #if os(macOS) // MAC: right-click, not swipe or touch and hold (Task 9b)
+                                    .accessibilityHint(AppLocalization.string("Mac.Sidebar.SessionRowHint"))
+                                    #else // MAC:
                                     .accessibilityHint(AppLocalization.string("Swipe or touch and hold for conversation actions."))
+                                    #endif // MAC:
                                     .contextMenu {
                                         SessionActionMenuItems(
                                             session: session,
@@ -2192,7 +2206,11 @@ struct CronList: View {
                             SessionRow(session: session, isSelected: session.id == appState.activeSessionId, isPinned: isPinned).contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        #if os(macOS) // MAC: right-click, not swipe or touch and hold (Task 9b)
+                        .accessibilityHint("Mac.Sidebar.SessionRowHint")
+                        #else // MAC:
                         .accessibilityHint("Swipe or touch and hold for conversation actions.")
+                        #endif // MAC:
                         // A pinned run sits at the top of the Sessions list (#485).
                         .contextMenu {
                             pinButton(session, isPinned: isPinned)

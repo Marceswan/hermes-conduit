@@ -180,7 +180,11 @@ final class SpeechAnalyzerDictationRecognizer: DictationRecognizer {
 
     private static func makeTranscriber() async throws -> SpeechTranscriber {
         guard SpeechTranscriber.isAvailable else {
+            #if os(macOS) // MAC: Task 9b
+            throw ComposerDictationService.DictationError.message(AppLocalization.string("Mac.Dictation.SpeechAnalyzerUnavailable"))
+            #else // MAC:
             throw ComposerDictationService.DictationError.message(AppLocalization.string("Apple's new speech model isn't available on this iPhone."))
+            #endif // MAC:
         }
         guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: SpeechRecognitionLocale.preferred()) else {
             throw ComposerDictationService.DictationError.message(AppLocalization.string("Apple's new speech model doesn't support your language yet. Pick Apple in Voice settings."))

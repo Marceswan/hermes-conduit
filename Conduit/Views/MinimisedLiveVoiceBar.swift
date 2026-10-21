@@ -74,7 +74,12 @@ private struct GeminiLiveBarContent: View {
         case .speaking: return AppLocalization.string("Speaking")
         case .paused: return AppLocalization.string("Paused")
         case .ending: return AppLocalization.string("Ending conversation…")
-        case .failed: return AppLocalization.string("Call stopped. Tap to see why.")
+        case .failed:
+            #if os(macOS) // MAC: click, not tap (Task 9b)
+            return AppLocalization.string("Mac.LiveVoiceBar.CallStopped")
+            #else // MAC:
+            return AppLocalization.string("Call stopped. Tap to see why.")
+            #endif // MAC:
         }
     }
 
@@ -138,7 +143,12 @@ private struct GPTLiveBarContent: View {
         case .speaking: return AppLocalization.string("Speaking")
         case .paused: return AppLocalization.string("Paused")
         case .ending: return AppLocalization.string("Ending conversation…")
-        case .failed: return AppLocalization.string("Call stopped. Tap to see why.")
+        case .failed:
+            #if os(macOS) // MAC: click, not tap (Task 9b)
+            return AppLocalization.string("Mac.LiveVoiceBar.CallStopped")
+            #else // MAC:
+            return AppLocalization.string("Call stopped. Tap to see why.")
+            #endif // MAC:
         }
     }
 

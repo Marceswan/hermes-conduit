@@ -427,10 +427,17 @@ struct ModelPickerView: View {
                     }
                 }
                 if shown.isEmpty {
+                    #if os(macOS) // MAC: click, not tap (Task 9b)
+                    Text("Mac.ModelPicker.AllHidden")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(16)
+                    #else // MAC:
                     Text("All providers are hidden. Tap Edit to restore one.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .padding(16)
+                    #endif // MAC:
                 }
             }
         }

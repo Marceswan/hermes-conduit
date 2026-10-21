@@ -31,8 +31,12 @@ extension AppState {
 
     /// Whether the host's notifier plugin takes call watches (plugin 0.13+).
     var supportsHermesCalls: Bool {
+        #if os(macOS) // MAC: a call reaches the iPhone through push (APNs); the Mac uses local notifications only (D20, Ruling R46)
+        return false
+        #else // MAC:
         if case .reported(_, let capabilities) = notifierPlugin.state { return capabilities.contains("hermes-calls") }
         return false
+        #endif // MAC:
     }
 
     /// The active profile's call settings, once read from this dashboard.

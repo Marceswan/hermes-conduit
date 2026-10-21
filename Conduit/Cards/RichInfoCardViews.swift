@@ -714,9 +714,15 @@ struct RichStepsCard: View {
                     RichStepRow(number: index + 1, step: step, key: key, title: card.title)
                 }
                 if memory.notificationsOff, card.steps.contains(where: { $0.timer != nil }) {
+                    #if os(macOS) // MAC: the switch lives in System Settings (Task 9b)
+                    Text("Mac.RichInfoCard.NotificationsOff")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    #else // MAC:
                     Text("Notifications are off for Conduit in iPhone Settings.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    #endif // MAC:
                 }
             }
         }
