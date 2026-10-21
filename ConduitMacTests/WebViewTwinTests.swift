@@ -171,6 +171,7 @@ final class WebViewTwinTests: XCTestCase {
             ("DashboardTicketBridge", DashboardTicketBridge.self),
             ("MarkupWebView.Coordinator", MarkupWebView.Coordinator.self),
             ("SafeMarkupWebView.Coordinator", SafeMarkupWebView.Coordinator.self),
+            ("RemoteImageWebView.Coordinator", RemoteImageWebView.Coordinator.self),
         ]
         for delegate in delegates {
             XCTAssertTrue(class_conformsToProtocol(delegate.type, WKNavigationDelegate.self), "\(delegate.name) is no WKNavigationDelegate")
@@ -254,5 +255,19 @@ final class WebViewTwinTests: XCTestCase {
             XCTAssertFalse(MarkupHTML.allowsNavigation(to: URL(string: refused)), refused)
         }
         XCTAssertFalse(MarkupHTML.allowsNavigation(to: nil))
+    }
+
+    // MARK: - Remote image page
+
+    func testRemoteImageViewLoadsOnlyItsOwnPage() async {
+        let coordinator = RemoteImageWebView.Coordinator(height: .constant(0), failed: .constant(false))
+        let own = await decidePolicy("https://conduit.local/", type: .other, delegate: coordinator)
+        XCTAssertEqual(own, .allow)
+        let blank = await decidePolicy("about:blank", type: .other, delegate: coordinator)
+        XCTAssertEqual(blank, .allow, "a URL with no host is the page's own load")
+        for foreign in ["https://evil.example/image.png", "http://conduit.local.evil.example/", "https://example.com/"] {
+            let policy = await decidePolicy(foreign, type: .other, delegate: coordinator)
+            XCTAssertEqual(policy, .cancel, foreign)
+        }
     }
 }
