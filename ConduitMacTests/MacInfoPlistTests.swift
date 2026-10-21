@@ -18,4 +18,22 @@ final class MacInfoPlistTests: XCTestCase {
         XCTAssertFalse(mac.isEmpty)
         XCTAssertEqual(mac, upstream)
     }
+
+    /// Upstream #940 reworded the iPhone text: dictation in a language without on-device support is recognized
+    /// on Apple's servers (`AppleSpeechDictationRecognizer` sets `requiresOnDeviceRecognition` from
+    /// `supportsOnDeviceRecognition`; the Mac compiles it). The Mac text says the same, for the Mac.
+    func testSpeechRecognitionUsageDescriptionStatesTheServerCase() throws {
+        let key = "NSSpeechRecognitionUsageDescription"
+        let mac = try XCTUnwrap(try plist("ConduitMac/Resources/Info.plist")[key] as? String)
+        let upstream = try XCTUnwrap(try plist("Conduit/Info.plist")[key] as? String)
+        XCTAssertEqual(mac, upstream.replacingOccurrences(of: "iPhone", with: "Mac"))
+        XCTAssertTrue(mac.contains("Apple may process your dictation on its servers"))
+        XCTAssertFalse(mac.contains("iPhone"))
+    }
+
+    /// The microphone key is the Mac's own text and stays.
+    func testMicrophoneUsageDescriptionIsTheMacsOwn() throws {
+        let mac = try XCTUnwrap(try plist("ConduitMac/Resources/Info.plist")["NSMicrophoneUsageDescription"] as? String)
+        XCTAssertEqual(mac, "Conduit uses the microphone for voice conversations with Hermes.")
+    }
 }
