@@ -169,6 +169,8 @@ final class WebViewTwinTests: XCTestCase {
         let delegates: [(name: String, type: AnyClass)] = [
             ("AuthWebView.Coordinator", AuthWebView.Coordinator.self),
             ("DashboardTicketBridge", DashboardTicketBridge.self),
+            ("MarkupWebView.Coordinator", MarkupWebView.Coordinator.self),
+            ("SafeMarkupWebView.Coordinator", SafeMarkupWebView.Coordinator.self),
         ]
         for delegate in delegates {
             XCTAssertTrue(class_conformsToProtocol(delegate.type, WKNavigationDelegate.self), "\(delegate.name) is no WKNavigationDelegate")
@@ -191,5 +193,66 @@ final class WebViewTwinTests: XCTestCase {
         XCTAssertEqual(local, .cancel)
         let script = await decidePolicy("javascript:alert(1)", type: .other, delegate: coordinator)
         XCTAssertEqual(script, .cancel)
+    }
+
+    // MARK: - Markup pages
+
+    /// The page a diagram or formula draws in loads itself and the pinned
+    /// renderer files only.
+    func testMarkupCoordinatorsCancelForeignNavigationAndAllowTheirOwnPage() async {
+        let inline = MarkupWebView.Coordinator()
+        let safe = SafeMarkupWebView.Coordinator(html: "<p>x</p>")
+        for delegate in [inline, safe] as [WKNavigationDelegate] {
+            let foreign = await decidePolicy("https://evil.example/", type: .other, delegate: delegate)
+            XCTAssertEqual(foreign, .cancel)
+            let ownPage = await decidePolicy("https://conduit.local/", type: .other, delegate: delegate)
+            XCTAssertEqual(ownPage, .allow)
+            let blank = await decidePolicy("about:blank", type: .other, delegate: delegate)
+            XCTAssertEqual(blank, .allow)
+            let tapped = await decidePolicy("https://example.com/", type: .linkActivated, delegate: delegate)
+            XCTAssertEqual(tapped, .cancel, "a link in a diagram stays out")
+        }
+    }
+
+    /// A diagram or formula runs a CDN script. Pinned by version and hash,
+    /// a file the CDN serves changed does not run (#777).
+    func testMermaidAndKatexPagesCarryPinnedIntegrityTags() {
+        let diagram = MarkupHTML.page(MarkupDocument(kind: .mermaid, source: "graph TD; A-->B", light: true, fontSize: 0), presentation: .inline)
+        XCTAssertTrue(diagram.contains(MarkupHTML.mermaidScript.scriptTag))
+        let formula = MarkupHTML.page(MarkupDocument(kind: .math, source: "E = mc^2", light: false, fontSize: 17), presentation: .fullScreen)
+        XCTAssertTrue(formula.contains(MarkupHTML.katexScript.scriptTag))
+        XCTAssertTrue(formula.contains(MarkupHTML.katexStylesheet.stylesheetTag))
+        for resource in [MarkupHTML.mermaidScript, MarkupHTML.katexScript, MarkupHTML.katexStylesheet] {
+            XCTAssertTrue(resource.url.hasPrefix("https://cdn.jsdelivr.net/npm/"), resource.url)
+            XCTAssertTrue(resource.url.contains("@"), "no version in \(resource.url)")
+            XCTAssertTrue(resource.integrity.hasPrefix("sha384-"), resource.url)
+        }
+        XCTAssertTrue(MarkupHTML.mermaidScript.scriptTag.contains(#"crossorigin="anonymous""#))
+        XCTAssertTrue(MarkupHTML.katexStylesheet.stylesheetTag.contains(#"crossorigin="anonymous""#))
+    }
+
+    func testRendererNavigationIsLimitedToThePinnedFiles() {
+        let fonts = URL(string: MarkupHTML.katexStylesheet.url)!.deletingLastPathComponent().appendingPathComponent("fonts/KaTeX_Main-Regular.woff2")
+        for allowed in [MarkupHTML.mermaidScript.url, MarkupHTML.katexScript.url, MarkupHTML.katexStylesheet.url, fonts.absoluteString, "https://conduit.local/", "about:blank"] {
+            XCTAssertTrue(MarkupHTML.allowsNavigation(to: URL(string: allowed)), allowed)
+        }
+        for refused in [
+            // Another version or file on the same CDN, so no reference loads around the hashes.
+            "https://cdn.jsdelivr.net/npm/mermaid@11.15.0/dist/mermaid.min.js",
+            "https://cdn.jsdelivr.net/npm/mermaid@11.16.0/dist/other.js",
+            "https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js",
+            "https://cdn.jsdelivr.net/npm/evil@1.0.0/index.js",
+            // Another host, a plain-HTTP copy, and the app's own host beyond its root.
+            "https://evil.example/npm/mermaid@11.16.0/dist/mermaid.min.js",
+            MarkupHTML.mermaidScript.url.replacingOccurrences(of: "https://", with: "http://"),
+            "https://conduit.local/x",
+            "javascript:alert(1)",
+            "data:text/html,<p>x</p>",
+            "file:///etc/hosts",
+            "about:srcdoc",
+        ] {
+            XCTAssertFalse(MarkupHTML.allowsNavigation(to: URL(string: refused)), refused)
+        }
+        XCTAssertFalse(MarkupHTML.allowsNavigation(to: nil))
     }
 }

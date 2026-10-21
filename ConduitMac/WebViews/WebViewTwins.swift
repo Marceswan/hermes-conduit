@@ -14,20 +14,6 @@ struct DashboardTicketBridgeView: NSViewRepresentable {
     func updateNSView(_ nsView: WKWebView, context: Context) {}
 }
 
-/// Mac copy of the file-private `MarkupMessageProxy` in MarkupBlock.swift; keep in sync.
-@MainActor
-private final class MacMarkupMessageProxy: NSObject, WKScriptMessageHandler {
-    private weak var target: WKScriptMessageHandler?
-
-    init(_ target: WKScriptMessageHandler) {
-        self.target = target
-    }
-
-    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        target?.userContentController(userContentController, didReceive: message)
-    }
-}
-
 // Mac twin of MarkupBlock.swift MarkupWebView; keep in sync (PORTING_LEDGER).
 /// The page a block draws in. It takes no touches: the chat scrolls over it
 /// and the block handles taps.
@@ -60,7 +46,7 @@ struct MarkupWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.userContentController.add(
-            MacMarkupMessageProxy(context.coordinator),
+            MarkupMessageProxy(context.coordinator),
             name: MarkupHTML.messageHandlerName
         )
         let view = Self.makeConfiguredWebView(configuration: configuration)
@@ -121,7 +107,7 @@ struct MarkupWebView: NSViewRepresentable {
             }
         }
 
-        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
             decisionHandler(MarkupHTML.allowsNavigation(to: navigationAction.request.url) ? .allow : .cancel)
         }
     }
@@ -166,7 +152,7 @@ struct SafeMarkupWebView: NSViewRepresentable {
             webView.loadHTMLString(html, baseURL: MarkupHTML.baseURL)
         }
 
-        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
             decisionHandler(MarkupHTML.allowsNavigation(to: navigationAction.request.url) ? .allow : .cancel)
         }
     }
