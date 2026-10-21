@@ -1214,6 +1214,29 @@ struct ComposerBar: View, Equatable {
             }
             .accessibilityLabel(accessibilityLabel)
         } else {
+            #if os(macOS) // MAC: right-click lists the other ways to send; a pull-down Menu takes a click, not a right-click
+            Button(action: performComposerAction) {
+                composerActionFace
+            }
+            .buttonStyle(.plain)
+            .contextMenu {
+                ForEach(choices) { choice in
+                    Button {
+                        submit(choice)
+                    } label: {
+                        Label(choice.title, systemImage: choice.symbol)
+                    }
+                }
+            }
+            .modifier(composerActionChrome)
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityHint(AppLocalization.string("Right-click for other ways to send"))
+            .accessibilityActions {
+                ForEach(choices) { choice in
+                    Button(choice.title) { submit(choice) }
+                }
+            }
+            #else // MAC:
             Menu {
                 ForEach(choices) { choice in
                     Button {
@@ -1241,6 +1264,7 @@ struct ComposerBar: View, Equatable {
                     Button(choice.title) { submit(choice) }
                 }
             }
+            #endif // MAC:
         }
     }
 

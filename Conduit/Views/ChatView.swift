@@ -2411,6 +2411,15 @@ struct SettledThinkingCardContent: View, Equatable {
         expanded ?? disclosure?.isExpanded(message.id, default: false) ?? false
     }
 
+    /// The open text's colour.
+    private var textColor: UIColor {
+        #if os(macOS) // MAC: secondaryLabel is 3.9:1 on the light card; the label colour at 72% clears 4.5:1
+        MacStepRowInk.nativeText
+        #else // MAC:
+        .secondaryLabel
+        #endif // MAC:
+    }
+
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.message == rhs.message
             && lhs.sizeCategory == rhs.sizeCategory
@@ -2433,13 +2442,21 @@ struct SettledThinkingCardContent: View, Equatable {
                     AdaptiveStack(spacing: 6) {
                         Text(AppLocalization.string("Thinking"))
                             .font(.body)
+                            #if os(macOS) // MAC: secondary renders as faded gold in a button label (3.05:1 light); MacStepRowInk.text clears 4.5:1
+                            .foregroundStyle(MacStepRowInk.text)
+                            #else // MAC:
                             .foregroundStyle(.secondary)
+                            #endif // MAC:
                         ChatStepTimeLabel(timestamp: message.timestamp, duration: message.stepDuration, grouped: grouped)
                     }
                     Spacer(minLength: 8)
                     Image(systemName: "chevron.down")
                         .font(.caption.weight(.semibold))
+                        #if os(macOS) // MAC: tertiary is 1.65:1 light, 2.48:1 dark; MacStepRowInk.glyph clears 3:1
+                        .foregroundStyle(MacStepRowInk.glyph)
+                        #else // MAC:
                         .foregroundStyle(.conduitTertiary)
+                        #endif // MAC:
                         .rotationEffect(.degrees(isExpanded ? 180 : 0))
                         .accessibilityHidden(true)
                 }
@@ -2454,7 +2471,7 @@ struct SettledThinkingCardContent: View, Equatable {
                 SelectableTextView(
                     text: message.content,
                     font: ChatTypography.font(for: .thinking, chatSize: chatTextSize),
-                    textColor: .secondaryLabel
+                    textColor: textColor // MAC: was `.secondaryLabel`
                 )
                 .padding(.leading, ChatStepStyle.contentInset)
                 .padding(.trailing, ChatStepStyle.rowHorizontalPadding)
@@ -2521,11 +2538,25 @@ private struct ChatStepTimeLabel: View {
         if let text = ChatStepTiming.text(duration) {
             Text(text)
                 .font(.caption2.weight(.medium))
+                #if os(macOS) // MAC: secondary renders as faded gold in a button label (3.05:1 light); MacStepRowInk.text clears 4.5:1
+                .foregroundStyle(MacStepRowInk.text)
+                #else // MAC:
                 .foregroundStyle(.secondary)
+                #endif // MAC:
                 .monospacedDigit()
                 .accessibilityLabel(ChatStepTiming.spokenText(duration) ?? text)
         } else if !grouped {
+            #if os(macOS) // MAC: the accent clock time is 2.4:1 to 2.7:1 light; the same text in MacStepRowInk.text (keep in sync with MessageTimestampLabel)
+            if let label = MessageTimestampFormatter.displayString(for: timestamp) {
+                Text(label)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(MacStepRowInk.text)
+                    .monospacedDigit()
+                    .accessibilityLabel(AppLocalization.string("Sent \(label)"))
+            }
+            #else // MAC:
             MessageTimestampLabel(timestamp: timestamp, tone: tone)
+            #endif // MAC:
         }
     }
 }
@@ -2631,7 +2662,11 @@ private struct SettledToolCardContent: View, Equatable {
                             AdaptiveStack(spacing: 6) {
                                 Text(running ? style.runningTitle : style.doneTitle)
                                     .font(.body)
+                                    #if os(macOS) // MAC: the accent title is 4.01:1 on the light card; MacStepRowInk.accentTextColor keeps the cue and reaches 4.5:1
+                                    .foregroundStyle(running ? MacStepRowInk.accentTextColor : Color.primary)
+                                    #else // MAC:
                                     .foregroundStyle(running ? Color.conduitAccent : Color.primary)
+                                    #endif // MAC:
                                     .lineLimit(sizeCategory.isAccessibilityCategory ? nil : 1)
                                 ChatStepTimeLabel(
                                     timestamp: message.timestamp,
@@ -2644,7 +2679,11 @@ private struct SettledToolCardContent: View, Equatable {
                                 ?? ChatStepSubject.line(from: tool.output) {
                                 Text(subject)
                                     .font(.subheadline)
+                                    #if os(macOS) // MAC: secondary renders as faded gold in a button label (3.05:1 light); MacStepRowInk.text clears 4.5:1
+                                    .foregroundStyle(MacStepRowInk.text)
+                                    #else // MAC:
                                     .foregroundStyle(.secondary)
+                                    #endif // MAC:
                                     .lineLimit(1)
                                     .truncationMode(.tail)
                             }
@@ -2661,8 +2700,8 @@ private struct SettledToolCardContent: View, Equatable {
 
                         Image(systemName: "chevron.down")
                             .font(.caption.weight(.semibold))
-                            #if os(macOS) // MAC: tertiary is nearly invisible on the light card fill (1.65:1); primary 60% clears 3:1
-                            .foregroundStyle(Color.primary.opacity(0.6))
+                            #if os(macOS) // MAC: tertiary is nearly invisible on the light card fill (1.65:1); MacStepRowInk.glyph clears 3:1
+                            .foregroundStyle(MacStepRowInk.glyph)
                             #else // MAC:
                             .foregroundStyle(.conduitTertiary)
                             #endif // MAC:
@@ -2680,7 +2719,11 @@ private struct SettledToolCardContent: View, Equatable {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(tool.name)
                             .font(.system(.caption2, design: .monospaced).weight(.semibold))
+                            #if os(macOS) // MAC: tertiary is 1.65:1 light, 2.27:1 dark on the open box; MacStepRowInk.text clears 4.5:1
+                            .foregroundStyle(MacStepRowInk.text)
+                            #else // MAC:
                             .foregroundStyle(.conduitTertiary)
+                            #endif // MAC:
                         let presentation = self.presentation
                         if let presentation {
                             ToolResultBodyView(presentation: presentation, gatewayResolver: gatewayResolver)
@@ -2754,15 +2797,28 @@ private struct ToolRawTextSection: View {
     let title: String
     let text: String
 
+    /// The raw text's colour.
+    private var textColor: UIColor {
+        #if os(macOS) // MAC: secondaryLabel is 3.8:1 on the light box; the label colour at 72% clears 4.5:1
+        MacStepRowInk.nativeText
+        #else // MAC:
+        .secondaryLabel
+        #endif // MAC:
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(.caption2.bold())
+                #if os(macOS) // MAC: tertiary is 1.65:1 light, 2.27:1 dark on the open box; MacStepRowInk.text clears 4.5:1
+                .foregroundStyle(MacStepRowInk.text)
+                #else // MAC:
                 .foregroundStyle(.conduitTertiary)
+                #endif // MAC:
             SelectableTextView(
                 text: ToolCard.truncateForDisplay(text, maxLines: ToolResultPresentation.displayLineLimit),
                 font: .monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .regular),
-                textColor: .secondaryLabel,
+                textColor: textColor, // MAC: was `.secondaryLabel`
                 maximumNumberOfLines: 0
             )
             .frame(maxWidth: .infinity, alignment: .leading)
