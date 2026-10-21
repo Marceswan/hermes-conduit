@@ -304,6 +304,79 @@ final class ChatStepRowContrastTests: XCTestCase {
         }
     }
 
+    // MARK: Readable result of an open tool row (ToolResultBodyView)
+
+    /// An open tool row with a finished call's stored result. The raw Input and Output blocks below
+    /// the readable part are `SelectableTextView` placeholders in this render.
+    private func result(_ id: String, name: String, input: String?, output: String) -> ChatMessage {
+        var message = tool(id)
+        message.tool?.name = name
+        message.tool?.input = input
+        message.tool?.output = output
+        return message
+    }
+
+    private func openRow(_ message: ChatMessage) -> some View {
+        let disclosure = ChatRowDisclosure()
+        disclosure.willToggle(message.id, to: true)
+        return host(ToolCard(message: message), disclosure: disclosure)
+    }
+
+    // The rectangles are tight on one line of text each (read from the 4x PNGs), with the icon of an
+    // error or notice excluded. The box starts at x 51 and its text at x 62.
+
+    /// A search that partly failed: an error, a fallback notice, a page with its host and snippet, and
+    /// an item Hermes could not read (its own error).
+    func testSearchResultTextInAnOpenToolRow() throws {
+        let output = #"{"data":{"web":[{"title":"Best dinners downtown","url":"https://example.com/dinner","description":"A short list of dinner spots in downtown Asheville."},{"title":"Unreadable","url":"","error":"Could not read this page"}]},"error":"Search partly failed","fallback_warning":"Used the backup search"}"#
+        let message = result("step-result-web", name: "web_search", input: nil, output: output)
+        try verify("result-web", height: 230, elements: [
+            Element(name: "error", ink: CGRect(x: 82, y: 76, width: 94, height: 14), fill: CGPoint(x: 380, y: 83), target: Self.text),
+            Element(name: "notice", ink: CGRect(x: 82, y: 95, width: 117, height: 13), fill: CGPoint(x: 380, y: 102), target: Self.text),
+            Element(name: "link title", ink: CGRect(x: 62, y: 115, width: 122, height: 12), fill: CGPoint(x: 380, y: 121), target: Self.text),
+            Element(name: "link host", ink: CGRect(x: 62, y: 130, width: 65, height: 12), fill: CGPoint(x: 380, y: 136), target: Self.text),
+            Element(name: "link snippet", ink: CGRect(x: 62, y: 144, width: 241, height: 12), fill: CGPoint(x: 380, y: 150), target: Self.text),
+            Element(name: "link error", ink: CGRect(x: 62, y: 180, width: 119, height: 12), fill: CGPoint(x: 380, y: 185), target: Self.text),
+        ]) {
+            openRow(message)
+        }
+    }
+
+    func testTodoResultTextInAnOpenToolRow() throws {
+        let output = #"{"todos":[{"id":"1","content":"Open task","status":"in_progress"},{"id":"2","content":"Done task","status":"completed"},{"id":"3","content":"Waiting task","status":"pending"}]}"#
+        let message = result("step-result-todo", name: "todo_list", input: nil, output: output)
+        try verify("result-todo", height: 140, elements: [
+            Element(name: "completed task", ink: CGRect(x: 81, y: 95, width: 54, height: 13), fill: CGPoint(x: 380, y: 101), target: Self.text),
+        ]) {
+            openRow(message)
+        }
+    }
+
+    func testCommandExitCodeInAnOpenToolRow() throws {
+        let message = result("step-result-exit", name: "terminal", input: #"{"command":"false"}"#,
+                             output: #"{"output":"boom","exit_code":2}"#)
+        try verify("result-exit", height: 130, elements: [
+            Element(name: "exit code", ink: CGRect(x: 62, y: 94, width: 69, height: 13), fill: CGPoint(x: 380, y: 100), target: Self.text),
+        ]) {
+            openRow(message)
+        }
+    }
+
+    /// The link title takes the saved accent, which the user picks from six. Each choice, deepened or
+    /// lightened by `MacStepRowInk.linkTitleInk`, against the open box sampled from the render.
+    func testLinkTitleHasAtLeast4_5ToOneContrastForEveryAccentChoice() throws {
+        let message = result("step-result-accent", name: "web_search", input: nil,
+                             output: #"{"data":{"web":[{"title":"Best dinners downtown","url":"https://example.com/dinner"}]}}"#)
+        for dark in [false, true] {
+            let rep = try bitmap(openRow(message), size: CGSize(width: Self.width, height: 160), dark: dark)
+            let box = try fill(rep, at: CGPoint(x: 380, y: 60))
+            for choice in ConduitAccentChoice.allCases {
+                let ink = MacStepRowInk.linkTitleInk(accent: choice.color(dark: dark), dark: dark)
+                assertInk(ink, over: box, dark: dark, name: "link title, \(choice.rawValue) accent")
+            }
+        }
+    }
+
     // MARK: Text drawn by an NSTextView
 
     // Raw input and output and the open thinking text are `SelectableTextView`s, which `ImageRenderer`
