@@ -114,11 +114,7 @@ struct HermesCallsHowToSection: View {
     var body: some View {
         ConduitSettingsSection(title: AppLocalization.string("How to use calls"), symbol: "text.bubble", tint: .conduitAccent) {
             VStack(alignment: .leading, spacing: 8) {
-                #if os(macOS) // MAC: the Mac never rings (HermesNativeCalls.offersRinging is false); a notification takes its place (Task 9b)
-                Label("Mac.HermesCalls.HowToAsk", systemImage: "phone.arrow.down.left")
-                #else // MAC:
                 Label("Ask in any chat or voice call: “Call me when the tests finish.” Your iPhone rings once the job is done, and answering opens voice in that chat.", systemImage: "phone.arrow.down.left")
-                #endif // MAC:
                 if settings?.decides != nil {
                     Label("To be called when something happens, ask Hermes to watch for it: “Check my homelab every 5 minutes and call me if it's down for more than 10 minutes.” Hermes sets up a scheduled check that calls you.", systemImage: "binoculars")
                 }
@@ -210,15 +206,9 @@ struct HermesCallSettingsSection: View {
             if let status = model.status {
                 Toggle("Hermes can call me", isOn: binding(\.enabled))
                     .disabled(!status.paired)
-                #if os(macOS) // MAC: the Mac never rings; the notification comes instead (Task 9b)
-                Text("Mac.HermesCalls.Explainer")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                #else // MAC:
                 Text("When a job you asked about is done, Hermes calls you so you can talk it through. Your iPhone rings like a phone call; where it can't, a “Hermes wants to talk” notification comes instead: tap Talk to answer.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                #endif // MAC:
                 if !status.paired {
                     Text("Turn on notifications for this profile first, in Settings under Notifications: Hermes calls you through them.")
                         .font(.caption)
@@ -382,15 +372,9 @@ struct HermesCallSettingsSection: View {
             }
             .buttonStyle(.settings)
             .accessibilityIdentifier("settings.hermesCallsTest")
-            #if os(macOS) // MAC: a notification arrives; the Mac never rings (Task 9b)
-            Text(AppLocalization.string("Opens a new chat with “\(HermesCallSettingsFormat.testCallPrompt)” ready to send. Send it, and a notification arrives when Hermes replies."))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            #else // MAC:
             Text(AppLocalization.string("Opens a new chat with “\(HermesCallSettingsFormat.testCallPrompt)” ready to send. Send it, and your iPhone rings when Hermes replies."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            #endif // MAC:
         }
     }
 
@@ -401,15 +385,9 @@ struct HermesCallSettingsSection: View {
             }
             .buttonStyle(.settings)
             .accessibilityIdentifier("settings.hermesCallsWatch")
-            #if os(macOS) // MAC: click, not tap (Task 9b)
-            Text("Mac.HermesCalls.WatchNote")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            #else // MAC:
             Text("Hermes doesn't check for what your note describes on its own. This opens a new chat asking it to set up scheduled checks that call you when it happens. After you change the note, tap it again to bring the checks up to date.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            #endif // MAC:
         }
     }
 

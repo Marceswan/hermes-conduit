@@ -420,7 +420,11 @@ struct MainView: View {
         // A host without calls (or not heard from yet) has no such page:
         // Settings opens at its start.
         switch page {
+        #if os(macOS) // MAC: no Calls from Hermes page on Mac: calls need push (APNs), the Mac uses local notifications only (D20, Ruling R45)
+        case .calls: settingsOpensAt = nil
+        #else // MAC:
         case .calls: settingsOpensAt = appState.supportsHermesCalls ? page : nil
+        #endif // MAC:
         case .voice, .plugin: settingsOpensAt = page
         case .health: settingsOpensAt = appState.showsHealthSettings ? page : nil
         case .location: settingsOpensAt = appState.showsLocationSettings ? page : nil

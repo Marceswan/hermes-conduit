@@ -52,7 +52,11 @@ struct V2SettingsTab: View {
         link = nil
         var fresh = appState.makeSettingsSnapshot()
         switch page {
+        #if os(macOS) // MAC: same as RootView.openSettings: no Calls from Hermes page on Mac (D20, Ruling R45)
+        case .calls: fresh.opensAt = nil
+        #else // MAC:
         case .calls: fresh.opensAt = appState.supportsHermesCalls ? page : nil
+        #endif // MAC:
         case .voice, .plugin: fresh.opensAt = page
         case .health: fresh.opensAt = appState.showsHealthSettings ? page : nil
         case .location: fresh.opensAt = appState.showsLocationSettings ? page : nil
