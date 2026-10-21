@@ -622,7 +622,7 @@ struct LoginView: View {
             switch try await client.authProviderDiscovery() {
             case .interactiveSignInRequired:
                 requiresBrowserSignIn = true
-            case .providers(let providers):
+            case .providers(let providers, _):
                 let supportsPassword = HermesProviderCheck.supportsPassword(providers)
                 let supportsOAuth = HermesProviderCheck.hasNativeOAuthProvider(providers)
                 if supportsOAuth && (!supportsPassword || !credentialsArePresent),

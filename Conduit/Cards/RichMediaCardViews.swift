@@ -454,10 +454,21 @@ private struct RichPersonRow: View {
             }
             actions
         }
+        #if os(iOS) // MAC: the Mac opens the card in Contacts as a vCard (RichContactVCard) instead of a sheet
         .sheet(isPresented: $addsContact) {
             RichNewContactSheet(person: person)
                 .ignoresSafeArea()
         }
+        #endif // MAC:
+    }
+
+    private func addToContacts() {
+        #if os(iOS)
+        addsContact = true
+        #else
+        // MAC: CNContactViewController(forNewContact:) is not in the macOS SDK; Contacts asks the user to confirm.
+        RichContactVCard.openInContacts(person)
+        #endif // MAC:
     }
 
     @ViewBuilder
@@ -505,7 +516,7 @@ private struct RichPersonRow: View {
                     RichPersonAction(title: Text("Website"), symbol: "safari.fill") { openURL(url) }
                 }
                 if known == nil, person.phone != nil || person.email != nil {
-                    RichPersonAction(title: Text("Add to Contacts"), symbol: "person.crop.circle.badge.plus") { addsContact = true }
+                    RichPersonAction(title: Text("Add to Contacts"), symbol: "person.crop.circle.badge.plus") { addToContacts() }
                 }
             }
         }
@@ -536,6 +547,7 @@ private struct RichPersonAction: View {
     }
 }
 
+#if os(iOS) // MAC: Mac twin in ConduitMac/Views/RichContactVCard.swift (a vCard opened in Contacts)
 /// The system's new-contact screen, filled in from the card. It runs
 /// outside Conduit's process, so it needs no contacts permission.
 private struct RichNewContactSheet: UIViewControllerRepresentable {
@@ -579,6 +591,7 @@ private struct RichNewContactSheet: UIViewControllerRepresentable {
         }
     }
 }
+#endif // MAC:
 
 // MARK: - Status
 

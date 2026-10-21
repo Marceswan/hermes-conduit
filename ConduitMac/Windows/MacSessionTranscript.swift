@@ -132,7 +132,7 @@ struct MacSessionTranscript: Equatable {
         case .messageDelta(_, let text):
             streamingText += text
             turn = .running
-        case .messageComplete(_, let messageID, let content, let reasoning):
+        case .messageComplete(_, let messageID, let content, let reasoning, _):
             let text = content ?? streamingText
             streamingText = ""
             let row = ChatMessage(id: messageID ?? nextLocalID("assistant"), role: .assistant,
@@ -253,7 +253,7 @@ struct MacSessionTranscript: Equatable {
         switch event {
         case .messageStart(let id), .messageInterrupted(let id): return id
         case .messageDelta(let id, _), .reasoningDelta(let id, _), .messageError(let id, _), .sessionBusy(let id, _): return id
-        case .messageComplete(let id, _, _, _): return id
+        case .messageComplete(let id, _, _, _, _): return id
         case .toolStart(let id, _, _, _), .toolComplete(let id, _, _, _): return id
         case .approval(let id, _), .clarify(let id, _), .inputPrompt(let id, _): return id
         case .approvalWithdrawn(let id, _, _), .clarifyExpire(let id, _, _), .inputPromptExpire(let id, _, _): return id

@@ -16,6 +16,8 @@ public enum UIAccessibility {
         public static let announcement = Notification(name: "announcement")
         /// Posted for VoiceOver on iOS; macOS has no matching notification, so `post` ignores it.
         public static let layoutChanged = Notification(name: "layoutChanged")
+        /// Posted for VoiceOver on iOS; macOS has no matching notification, so `post` ignores it.
+        public static let screenChanged = Notification(name: "screenChanged")
     }
 
     /// `.announcement` becomes an NSAccessibility announcement. The argument

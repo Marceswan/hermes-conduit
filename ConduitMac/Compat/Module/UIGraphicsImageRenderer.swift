@@ -45,4 +45,11 @@ public final class UIGraphicsImageRenderer {
         image.addRepresentation(rep)
         return image
     }
+
+    /// UIGraphicsImageRenderer.pngData(actions:): the same drawing, encoded as PNG. Empty data when encoding fails.
+    public func pngData(actions: (UIGraphicsImageRendererContext) -> Void) -> Data {
+        let drawn = image(actions: actions)
+        let rep = drawn.representations.lazy.compactMap { $0 as? NSBitmapImageRep }.first
+        return rep?.representation(using: .png, properties: [:]) ?? Data()
+    }
 }

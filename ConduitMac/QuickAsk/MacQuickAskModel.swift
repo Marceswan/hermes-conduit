@@ -131,7 +131,7 @@ struct MacQuickAskModel: Equatable {
             setStreaming(status: status.isEmpty ? nil : status)
         case .toolComplete:
             setStreaming(status: nil)
-        case .messageComplete(_, _, let content, _):
+        case .messageComplete(_, _, let content, _, _):
             if let content {
                 if separatorPending { turnText += "\n\n"; separatorPending = false }
                 turnText = String(turnText.prefix(segmentStart)) + content
@@ -191,7 +191,7 @@ struct MacQuickAskModel: Equatable {
         switch event {
         case .messageStart(let id), .messageInterrupted(let id): return id
         case .messageDelta(let id, _), .messageError(let id, _), .sessionBusy(let id, _): return id
-        case .messageComplete(let id, _, _, _): return id
+        case .messageComplete(let id, _, _, _, _): return id
         case .toolStart(let id, _, _, _), .toolComplete(let id, _, _, _): return id
         case .approval(let id, _), .clarify(let id, _), .inputPrompt(let id, _): return id
         default: return nil

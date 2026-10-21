@@ -280,7 +280,7 @@ struct ConnectionSetupView: View {
             )
             do {
                 let discovery = try await client.authProviderDiscovery()
-                if case .providers(let providers) = discovery,
+                if case .providers(let providers, _) = discovery,
                    HermesProviderCheck.hasNativeOAuthProvider(providers),
                    try await client.supportsNativeOAuth() {
                     guard let dashboardID = appState.resolveDashboardID(

@@ -356,7 +356,7 @@ enum AgentActivityReducer {
                     finish(runtime, outcome: .completed, preview: nil)
                 }
 
-            case .messageComplete(let sid, _, let content, _):
+            case .messageComplete(let sid, _, let content, _, _):
                 let runtime = runtimeID(for: sid)
                 touch(runtime)
                 finish(runtime, outcome: .completed, preview: Self.preview(content))

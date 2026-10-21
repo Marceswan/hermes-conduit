@@ -421,8 +421,12 @@ targets:
           - "Views/ConnectionSetupView.swift"
           - "Views/ConnectionSetupForm.swift"
           - "Views/ConnectionSetupComponents.swift"
+          # The passkey notice is iOS wording (R2): the iOS sign-in WebView refuses passkeys. Mac twin of
+          # AuthWebSignInSheet (without the notice) in ConduitMac/Login/AuthWebSignInSheet.swift.
+          - "Views/Login/AuthWebPasskeyNotice.swift"
           # ActivityKit is unavailable on macOS (R2): stub in ConduitMac/Stubs/LiveTurnActivitiesStub.swift.
           - "Services/LiveTurnActivities.swift"
+          - "Services/LiveActivityUpdateThrottle.swift"
           # A Focus filter that only drives phone sharing, which is off on Mac (R2): nothing else uses the type.
           - "Intents/HermesFocusFilter.swift"
     settings:

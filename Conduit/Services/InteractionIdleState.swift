@@ -1,6 +1,8 @@
 import SwiftUI
 import UIKit
+#if os(iOS) // MAC: the touch probe below needs UIGestureRecognizerSubclass, which macOS lacks
 import UIKit.UIGestureRecognizerSubclass
+#endif // MAC:
 
 /// Whether anyone has used Conduit lately. An iPad left on the chat list all
 /// night (often set to never auto-lock) would otherwise redraw the drifting
@@ -58,11 +60,20 @@ final class InteractionIdleState: ObservableObject {
         lastActivity = now()
         // Coming back to the app counts as using it. Typing counts too: a
         // hardware keyboard on an iPad sends no touches.
+        #if os(iOS)
         let names: [Notification.Name] = [
             UIScene.didActivateNotification,
             UITextField.textDidChangeNotification,
             UITextView.textDidChangeNotification
         ]
+        #else
+        // MAC: the same three signals on AppKit: the app becoming active, and a text field or text view changing
+        let names: [Notification.Name] = [
+            NSApplication.didBecomeActiveNotification,
+            NSControl.textDidChangeNotification,
+            NSText.didChangeNotification
+        ]
+        #endif // MAC:
         for name in names {
             observers.append(notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.noteInteraction() }
@@ -143,6 +154,7 @@ final class InteractionIdleState: ObservableObject {
     }
 }
 
+#if os(iOS) // MAC: the touch probe has no Mac use (ConduitApp, its only caller, is not compiled on Mac); the model above stays
 /// Installs `InteractionIdleTouchRecognizer` on the window it lands in, so
 /// every touch anywhere in the app counts. Draws nothing and takes no touches.
 struct InteractionIdleTouchProbe: UIViewRepresentable {
@@ -233,3 +245,4 @@ final class InteractionIdleTouchRecognizer: UIGestureRecognizer, UIGestureRecogn
         state = .failed
     }
 }
+#endif // MAC:
