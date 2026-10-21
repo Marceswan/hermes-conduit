@@ -346,9 +346,11 @@ def _count(git: Git, base: str, tip: str) -> int:
 def release_steps(git: Git, base: str, head: str, tag_glob: str = "ios/v*") -> List[Step]:
     base_sha = git(["rev-parse", base]).strip()
     head_sha = git(["rev-parse", head]).strip()
-    tags = git(["tag", "-l", "--sort=creatordate", tag_glob]).split()
-    cut_label: Dict[str, str] = {}
-    for tag in tags:           # creatordate order: the last tag of a cut names it
+    # The last --sort is the primary key; the ref name only breaks creatordate ties.
+    tags = git(["tag", "-l", "--sort=refname", "--sort=creatordate", tag_glob]).split()
+    group_cut: Dict[str, str] = {}     # group key -> cut of the group's latest tag
+    group_label: Dict[str, str] = {}   # group key -> latest tag
+    for tag in tags:           # creatordate order: later tags overwrite earlier ones
         try:
             cut = git(["merge-base", tag, head_sha]).strip()
         except RuntimeError:
@@ -359,7 +361,11 @@ def release_steps(git: Git, base: str, head: str, tag_glob: str = "ios/v*") -> L
             git(["merge-base", "--is-ancestor", base_sha, cut])
         except RuntimeError:
             continue
-        cut_label[cut] = tag
+        m = re.search(r"v(\d+)\.(\d+)", tag)
+        key = "v%s.%s" % (m.group(1), m.group(2)) if m else "cut:" + cut
+        group_cut[key] = cut
+        group_label[key] = tag
+    cut_label = {group_cut[k]: group_label[k] for k in group_cut}
     ordered = sorted(cut_label, key=lambda c: _count(git, base_sha, c))
     stops = [(cut_label[c], c) for c in ordered]
     if not stops or stops[-1][1] != head_sha:

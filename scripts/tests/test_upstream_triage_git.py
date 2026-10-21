@@ -68,6 +68,11 @@ class GitFixture(unittest.TestCase):
         cls._g("checkout", "-q", "rel")
         cls._commit("r1", {"rel.txt": "r\n"})
         cls._g("tag", "ios/v1.0.0-build-1")
+        cls._g("tag", "odd/a")
+        cls._g("checkout", "-q", "-b", "rel2", cls.c3)
+        cls._commit("r2", {"rel2.txt": "r\n"})
+        cls._g("tag", "ios/v1.0.1-build-2")
+        cls._g("tag", "odd/b")
         cls._g("checkout", "-q", "mac")
         cls._commit("mac files", {"docs/macos/PORTING_LEDGER.md": LEDGER_ONE_ROW, "project.yml": PROJECT,
                                   "Conduit/Views/Mac.swift": "// MAC: x\n",
@@ -78,9 +83,20 @@ class GitFixture(unittest.TestCase):
 class ReleaseStepTests(GitFixture):
     def test_steps_use_cut_commit_and_end_at_head(self):
         steps = t.release_steps(self.git, self.c1, "main")
-        self.assertEqual([s.label for s in steps], ["ios/v1.0.0-build-1", "main"])
-        self.assertEqual(steps[0].sha, self.c2)
-        self.assertEqual([s.count for s in steps], [1, 2])
+        self.assertEqual([s.label for s in steps], ["ios/v1.0.1-build-2", "main"])
+        self.assertEqual(steps[0].sha, self.c3)
+        self.assertEqual([s.count for s in steps], [2, 1])
+
+    def test_tags_group_by_major_minor_into_one_step(self):
+        steps = t.release_steps(self.git, self.c1, "main", tag_glob="ios/v1.0*")
+        self.assertEqual(len(steps), 2)
+        self.assertEqual(steps[0].sha, self.c3)
+
+    def test_tags_without_version_group_by_cut(self):
+        steps = t.release_steps(self.git, self.c1, "main", tag_glob="odd/*")
+        self.assertEqual([s.label for s in steps], ["odd/a", "odd/b", "main"])
+        self.assertEqual([s.sha for s in steps[:2]], [self.c2, self.c3])
+        self.assertEqual([s.count for s in steps], [1, 1, 1])
 
     def test_no_tags_gives_single_step(self):
         self.assertEqual([s.label for s in t.release_steps(self.git, self.c1, "main", tag_glob="none/*")], ["main"])
