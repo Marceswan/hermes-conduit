@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Mac sidebar tab strip (Home | Sessions | Bots | Cron | Kanban, `MacSidebarTabOrder`). A glass container
+/// Mac sidebar tab strip (Home | Sessions | Bots | Cron | Kanban | Artifacts, `MacSidebarTabOrder`). A glass container
 /// holds equal-width segments; the selected one carries an accent indicator
 /// inset uniformly inside the container, with a radius concentric to the
 /// container's (`MacTabStripMetrics`). Icon and label are centred in each
@@ -13,8 +13,10 @@ struct MacSidebarTabStrip: View {
     private var selected: SidebarTab { SidebarTab.migrated(rawValue: selectedRaw) }
 
     /// Chosen from the strip's own width by `MacTabStripMetrics.ladder` (pure,
-    /// so tests pin the steps without hosting): five names; the four existing
-    /// names with Home as a compact icon; icons only.
+    /// so tests pin the steps without hosting): every name; every name except
+    /// Home's, which is a compact icon; icons only. With six tabs the second
+    /// step needs more than the widest sidebar column gives (D26), so the live
+    /// strip shows icons at every column width.
     var body: some View {
         GeometryReader { proxy in
             content(MacTabStripMetrics.ladder(availableWidth: proxy.size.width,

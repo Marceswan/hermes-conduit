@@ -116,6 +116,19 @@ final class MacQuickAskCommandsTests: XCTestCase {
         XCTAssertFalse(lines[index + 1].contains("keyboardShortcut"), "no modifier chained on the next line either")
     }
 
+    func testArtifactsMenuItemSitsAfterAskAboutWindowWithoutAKeyEquivalent() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("ConduitMac/App/ConduitCommands.swift"), encoding: .utf8)
+        let lines = source.split(separator: "\n", omittingEmptySubsequences: false)
+        let ask = try XCTUnwrap(lines.firstIndex { $0.contains("Button(\"Ask About Window") })
+        let artifacts = try XCTUnwrap(lines.firstIndex { $0.contains("Button(\"Artifacts\\u{2026}\")") })
+        XCTAssertGreaterThan(artifacts, ask)
+        XCTAssertLessThan(artifacts - ask, 8, "the next item of the Chat menu")
+        XCTAssertFalse(lines[artifacts].contains("keyboardShortcut"))
+        XCTAssertFalse(lines[artifacts + 1].contains("keyboardShortcut"), "no modifier chained on the next line either")
+    }
+
     func testMenuHasTheShortcutToggleBoundToTheDefaultsKey() throws {
         let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()

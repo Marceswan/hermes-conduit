@@ -17,10 +17,11 @@ final class MacSidebarShortcutTests: XCTestCase {
         XCTAssertEqual(MacSidebarShortcut.tab(forKey: "3"), .cron)
         XCTAssertEqual(MacSidebarShortcut.tab(forKey: "4"), .kanban)
         XCTAssertEqual(MacSidebarShortcut.tab(forKey: "5"), .home)
+        XCTAssertEqual(MacSidebarShortcut.tab(forKey: "6"), .artifacts)
     }
 
     func testOtherKeysMapToNothing() {
-        for key in ["0", "6", "9", "a", "[", " "] as [Character] {
+        for key in ["0", "7", "9", "a", "[", " "] as [Character] {
             XCTAssertNil(MacSidebarShortcut.tab(forKey: key), "\(key)")
         }
     }
@@ -31,9 +32,10 @@ final class MacSidebarShortcutTests: XCTestCase {
         XCTAssertEqual(tabs.count, SidebarTab.allCases.count)
         let keys = MacSidebarShortcut.allCases.map(\.key.character)
         XCTAssertEqual(Set(keys).count, keys.count)
-        XCTAssertEqual(tabs, SidebarTab.allCases, "numbered in SidebarTab order: Home is Ctrl-Cmd-5 and last in Go, though the strip shows it first (D24)")
-        XCTAssertEqual(MacSidebarShortcut.allCases.map(\.key.character), ["1", "2", "3", "4", "5"])
+        XCTAssertEqual(tabs, SidebarTab.allCases, "numbered in SidebarTab order: Home is Ctrl-Cmd-5 and Artifacts Ctrl-Cmd-6, last in Go, though the strip shows Home first (D24, D26)")
+        XCTAssertEqual(MacSidebarShortcut.allCases.map(\.key.character), ["1", "2", "3", "4", "5", "6"])
         XCTAssertEqual(MacSidebarShortcut.tab(forKey: "5"), .home)
+        XCTAssertEqual(MacSidebarShortcut.tab(forKey: "6"), .artifacts)
         XCTAssertEqual(MacSidebarShortcut.tab(forKey: "1"), .sessions)
     }
 
@@ -487,6 +489,17 @@ final class MacKeyboardMenuTests: XCTestCase {
             ("/Go/Switch Dashboard\u{2026}", "d", [.shift, .command]),
         ]
         return table
+    }
+
+    /// Chat > Artifacts... (Task 13): in the Chat menu right after Ask About Window, with no key equivalent.
+    func testMenuTableHasChatArtifacts() throws {
+        let main = try XCTUnwrap(NSApp.mainMenu, "SwiftUI has not built the main menu")
+        let all = entries(main)
+        let paths = all.map(\.path)
+        let artifacts = try XCTUnwrap(all.first { $0.path == "/Chat/Artifacts\u{2026}" }, "\(paths)")
+        XCTAssertEqual(artifacts.item.keyEquivalent, "")
+        let ask = try XCTUnwrap(paths.firstIndex(of: "/Chat/Ask About Window\u{2026}"))
+        XCTAssertEqual(paths.firstIndex(of: "/Chat/Artifacts\u{2026}"), ask + 1)
     }
 
     func testEveryShortcutIsInTheMenuAndWinsItsKey() throws {

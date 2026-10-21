@@ -5,11 +5,11 @@ import SwiftUI
 // here so the menu (ConduitCommands), the sidebar list modifier and the
 // composer twin share one definition and tests can reach it headlessly.
 
-/// Ctrl-Cmd-1 ... Ctrl-Cmd-5: one shortcut per sidebar tab, in `SidebarTab` order (Sessions to
-/// Kanban, then Home). The Mac strip shows Home first (`MacSidebarTabOrder`, D24); the numbers
-/// and the Go menu keep their order so muscle memory does not move.
+/// Ctrl-Cmd-1 ... Ctrl-Cmd-6: one shortcut per sidebar tab, in `SidebarTab` order (Sessions to
+/// Kanban, then Home, then Artifacts). The Mac strip shows Home first (`MacSidebarTabOrder`,
+/// D24); the numbers and the Go menu keep their order so muscle memory does not move.
 enum MacSidebarShortcut: CaseIterable, Identifiable {
-    case sessions, bots, cron, kanban, home
+    case sessions, bots, cron, kanban, home, artifacts
 
     var id: Self { self }
 
@@ -20,6 +20,7 @@ enum MacSidebarShortcut: CaseIterable, Identifiable {
         case .cron: return .cron
         case .kanban: return .kanban
         case .home: return .home
+        case .artifacts: return .artifacts
         }
     }
 
@@ -31,6 +32,7 @@ enum MacSidebarShortcut: CaseIterable, Identifiable {
         case .cron: return "3"
         case .kanban: return "4"
         case .home: return "5"
+        case .artifacts: return "6"
         }
     }
 
@@ -554,6 +556,37 @@ enum MacAppActions {
     ) -> Bool {
         guard prepare(window: window, windows: windows, palette: palette, openMainWindow: openMainWindow) else { return false }
         (switcher ?? .shared).present()
+        return true
+    }
+
+    /// Whether Chat > Artifacts... has a chat to show: the main window shows the chat tab and the open
+    /// chat has a row of its own. A popped-out session window (D21) is refused: its chat is not
+    /// `appState`'s active chat, and its controller's ids are not reachable from the window, so the
+    /// item would show the main window's chat for it.
+    static func canShowChatArtifacts(appState: AppState, window: NSWindow?, tabRaw: String?) -> Bool {
+        !MacSessionWindows.isSessionWindow(window)
+            && MacChatRoute.isChatActive(tabRaw: tabRaw)
+            && !appState.activeChatArtifactSessionIDs.isEmpty
+    }
+
+    /// Chat > Artifacts...: the open chat's artifacts in a sheet. With no ids the list would read
+    /// every chat, so nothing is presented. `ids` is for tests; the menu reads the open chat.
+    @discardableResult
+    static func showChatArtifacts(
+        window: NSWindow?,
+        windows: [NSWindow]? = nil,
+        palette: MacPaletteStore? = nil,
+        appState: AppState,
+        store: MacChatArtifactsStore? = nil,
+        ids: [String]? = nil,
+        tabRaw: String? = UserDefaults.standard.string(forKey: MacSidebarState.tabDefaultsKey),
+        openMainWindow: (() -> Void)? = nil
+    ) -> Bool {
+        guard !MacSessionWindows.isSessionWindow(window), MacChatRoute.isChatActive(tabRaw: tabRaw) else { return false }
+        let sessionIDs = ids ?? appState.activeChatArtifactSessionIDs
+        guard !sessionIDs.isEmpty else { return false }
+        guard prepare(window: window, windows: windows, palette: palette, openMainWindow: openMainWindow) else { return false }
+        (store ?? .shared).present(sessionIDs: sessionIDs)
         return true
     }
 }

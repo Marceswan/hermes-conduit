@@ -47,11 +47,11 @@ enum MacSidebarMetrics {
     static let sessionCardPaddingV: CGFloat = 5
 }
 
-/// The order the Mac sidebar tab strip shows its tabs in (D24): Home leftmost, then the four
-/// upstream tabs in their own order. Mac-owned, so upstream's `SidebarTab.allCases` order (and
-/// the Ctrl-Cmd-digit numbering that follows it) is untouched.
+/// The order the Mac sidebar tab strip shows its tabs in (D24, D26): Home leftmost, then the
+/// four upstream tabs in their own order, then Artifacts. Mac-owned, so upstream's
+/// `SidebarTab.allCases` order (and the Ctrl-Cmd-digit numbering that follows it) is untouched.
 enum MacSidebarTabOrder {
-    static let strip: [SidebarTab] = [.home, .sessions, .bots, .cron, .kanban]
+    static let strip: [SidebarTab] = [.home, .sessions, .bots, .cron, .kanban, .artifacts]
 }
 
 /// Geometry of the sidebar tab strip: a rounded container with a uniformly
@@ -64,8 +64,8 @@ enum MacTabStripMetrics {
     static let containerRadius: CGFloat = MacSidebarMetrics.controlRadius
     static var indicatorRadius: CGFloat { concentricRadius(outer: containerRadius, inset: inset) }
 
-    /// A fixed icon-only segment (Home, when five names do not fit): a 32 pt
-    /// glyph square plus the indicator inset on both sides.
+    /// A fixed icon-only segment (Home, when the names of every tab do not fit):
+    /// a 32 pt glyph square plus the indicator inset on both sides.
     static let homeSegmentWidth: CGFloat = 32 + 2 * inset
 
     /// Gap between a segment's icon and its name, and the margin either side

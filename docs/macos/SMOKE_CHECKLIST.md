@@ -144,6 +144,7 @@ Human pass at release time (agents never click or type into the running app, R18
 - Keyboard checks (D10), user (hosted tests send synthetic events only; none of these has run against real hardware keys):
   - [ ] Ctrl-Cmd-1 to Ctrl-Cmd-4 switch Sessions / Bots / Cron / Kanban from the composer and from the sidebar search field.
   - [ ] Ctrl-Cmd-5 shows Home from the composer, the sidebar search field and Bots/Cron/Kanban; Ctrl-Cmd-1 returns to Sessions with the draft intact (D24).
+  - [ ] Ctrl-Cmd-6 shows Artifacts from the composer and the sidebar search field; Ctrl-Cmd-1 returns to Sessions with the draft intact (D26).
   - [ ] Cmd-[ and Cmd-] (and Opt-Cmd-Up / Down) open the previous / next session in the order shown, including with a search filter; greyed at the ends; Cmd-[ in the composer does not type or indent.
   - [ ] Cmd-F focuses "Search sessions" from the sidebar list or search field (also with the sidebar hidden / chat not shown); from the composer or a message it opens the whole-chat find bar (D23); Edit > Find > Find... shows no Cmd-F.
   - [ ] Cmd-F then Cmd-L (or a click in the composer) quickly: the keyboard ends in the composer, not pulled back to the search field. Ctrl-Cmd-1..4, Cmd-1..9, Cmd-]/[, Cmd-W and Cmd-F do nothing while a sheet (model picker, Settings) is open.
@@ -231,7 +232,7 @@ Human pass at release time (agents never click or type into the running app, R18
 - [ ] On macOS 14 or 15 (if available): the picker shows the note that glass needs macOS 26 and the notch is drawn Solid black.
 
 ## Home (D24)
-- [ ] Home: the sidebar tab strip shows the five tabs with Home leftmost (Home, Sessions, Bots, Cron, Kanban). At the default 340 pt column D24 records all icons (names in tooltips and VoiceOver); widen the column past 366 pt and the four names show with Home, still leftmost, an icon; the strip does not flicker while resizing the sidebar. Ctrl-Cmd-1 is still Sessions and Ctrl-Cmd-5 is still Home (Home is last in Go).
+- [ ] Home: the sidebar tab strip shows the six tabs with Home leftmost and Artifacts rightmost (Home, Sessions, Bots, Cron, Kanban, Artifacts). Since D26 the strip shows icons at every column width (names in tooltips and VoiceOver): drag the sidebar from its narrowest to its widest and check that it never clips or flickers. Ctrl-Cmd-1 is still Sessions, Ctrl-Cmd-5 is still Home and Ctrl-Cmd-6 is Artifacts (Artifacts is last in Go).
 - [ ] Home layout: at a wide window the four tiles fill the row to the same right edge as Recent chats; Activity, Kanban and Cron are three equal-width, equal-height cards that start level and span the same width; at a medium window (about 640 pt) tiles go 2 x 2 and Cron spans the full width under Activity and Kanban; at the minimum the cards are one column; nothing clips (light and dark).
 - [ ] Home, connected: header shows the dashboard label, the profile and "Connected"; New Chat, Quick Ask and Kanban work; New Chat is disabled exactly when the sidebar's is (Home is stricter: also disabled while disconnected).
 - [ ] Home: start a turn that needs approval in another session: it appears under Needs you with the command text; clicking it opens that session in Sessions; a running turn appears under Working with its tool name.
@@ -243,6 +244,15 @@ Human pass at release time (agents never click or type into the running app, R18
 - [ ] Home does not run while another pane is shown (Activity Monitor: no periodic Kanban requests after switching to Sessions).
 - [ ] With a D21 session window key, Ctrl-Cmd-5 leaves the main window on its pane; a session window shows no Home tab.
 - [ ] The Home strings in the 13 shipped languages are model-generated: have native speakers review them before a localized release.
+
+## Artifacts (D26)
+- [ ] Artifacts pane against a host whose notifier plugin offers `artifacts` (0.40+): the pane lists the profile's artifacts under day headings, pictures and videos as a 3-column grid with thumbnails, the rest as rows; the chips (All, Images, Pages, Files, Links) filter; scrolling to the end reads the next page; typing in the search pill filters after a short pause.
+- [ ] Open: a picture or file downloads and Finder shows it selected (it carries the quarantine flag); a page opens in a sheet with a Done button that closes it; a page that is not UTF-8 text or is over the size limit is revealed in Finder instead; a link opens in the browser; a file the host no longer has shows the alert with its path; a very large file shows "Too large to open on this Mac".
+- [ ] Right-click an item: Open, Show in Chat (the pane returns to Sessions, opens that chat and scrolls to the message), Copy Link (links) or Copy Path (files).
+- [ ] More menu: Show Missing Files is off at first (missing files hidden; the request carries `missing=hide`); turn it on and the list reads again and missing files appear dimmed with a "Missing" badge on pictures; Refresh reads the list again.
+- [ ] A host whose plugin is older: the pane shows "Update the Conduit plugin" and no spinner; update the plugin, return to the pane, and the list loads.
+- [ ] Switch dashboard with the pane open: the old server's artifacts disappear at once. Light and dark, Reduce Transparency on, VoiceOver reads each tile as name, kind and chat.
+- [ ] Chat > Artifacts... (no key): disabled with no chat open and in a new empty chat; with a chat open it shows a sheet titled Artifacts with that chat's items, padded 20 pt each side, same filters and More menu as the pane. Show in Chat closes the sheet and scrolls to the message. Esc and the close button dismiss it. Light and dark.
 
 ## Session windows (D21)
 - [ ] Right-click a tab > Open in New Window: a window opens with that chat; the main window shows the neighbour tab.
