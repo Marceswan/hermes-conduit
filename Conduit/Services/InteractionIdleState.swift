@@ -60,14 +60,13 @@ final class InteractionIdleState: ObservableObject {
         lastActivity = now()
         // Coming back to the app counts as using it. Typing counts too: a
         // hardware keyboard on an iPad sends no touches.
-        #if os(iOS)
+        #if os(iOS) // MAC: the same three signals on AppKit in the #else branch
         let names: [Notification.Name] = [
             UIScene.didActivateNotification,
             UITextField.textDidChangeNotification,
             UITextView.textDidChangeNotification
         ]
-        #else
-        // MAC: the same three signals on AppKit: the app becoming active, and a text field or text view changing
+        #else // MAC: the app becoming active, and a text field or text view changing
         let names: [Notification.Name] = [
             NSApplication.didBecomeActiveNotification,
             NSControl.textDidChangeNotification,
