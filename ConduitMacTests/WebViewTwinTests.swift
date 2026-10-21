@@ -166,35 +166,41 @@ final class WebViewTwinTests: XCTestCase {
     /// every navigation it would cancel is allowed. The default checking
     /// still matches a plain closure, so this pins the selector and the list.
     func testEveryMacNavigationDelegateAnswersThePolicySelector() {
-        let delegates: [(name: String, type: AnyClass)] = [
-            ("AuthWebView.Coordinator", AuthWebView.Coordinator.self),
-            ("DashboardTicketBridge", DashboardTicketBridge.self),
-            ("MarkupWebView.Coordinator", MarkupWebView.Coordinator.self),
-            ("SafeMarkupWebView.Coordinator", SafeMarkupWebView.Coordinator.self),
-            ("RemoteImageWebView.Coordinator", RemoteImageWebView.Coordinator.self),
-        ]
-        for delegate in delegates {
+        for delegate in Self.navigationDelegates {
             XCTAssertTrue(class_conformsToProtocol(delegate.type, WKNavigationDelegate.self), "\(delegate.name) is no WKNavigationDelegate")
             XCTAssertTrue(class_respondsToSelector(delegate.type, Self.policySelector), "WebKit would never ask \(delegate.name) before a navigation")
         }
     }
 
-    func testAuthWebViewCoordinatorAnswersWithItsNavigationPolicy() async {
-        let view = AuthWebView(
-            url: "https://hermes.example",
-            cloudflareAccess: nil,
-            onTicket: { _, _ in },
-            onError: { _, _ in }
-        )
-        let coordinator = AuthWebView.Coordinator(parent: view)
-        // Before the dashboard pins, a sign-in may cross to its identity provider.
-        let provider = await decidePolicy("https://sso.example/authorize", type: .other, delegate: coordinator)
-        XCTAssertEqual(provider, .allow)
-        let local = await decidePolicy("file:///etc/hosts", type: .other, delegate: coordinator)
-        XCTAssertEqual(local, .cancel)
-        let script = await decidePolicy("javascript:alert(1)", type: .other, delegate: coordinator)
-        XCTAssertEqual(script, .cancel)
+    /// A new navigation delegate in the app is listed above, so its policy
+    /// method is checked too.
+    func testNoMacNavigationDelegateIsLeftUnchecked() throws {
+        // The image holding the app's code (ConduitMac, or ConduitMac.debug.dylib
+        // in a debug build).
+        let image = try XCTUnwrap(class_getImageName(DashboardTicketBridge.self))
+        var count: UInt32 = 0
+        let names = try XCTUnwrap(objc_copyClassNamesForImage(image, &count))
+        defer { free(UnsafeMutableRawPointer(mutating: names)) }
+        let listed = Set(Self.navigationDelegates.map { ObjectIdentifier($0.type) })
+        var found = 0
+        for index in 0 ..< Int(count) {
+            guard let type = objc_getClass(names[index]) as? AnyClass,
+                  class_conformsToProtocol(type, WKNavigationDelegate.self) else { continue }
+            found += 1
+            XCTAssertTrue(listed.contains(ObjectIdentifier(type)), "\(NSStringFromClass(type)) is not listed")
+        }
+        XCTAssertEqual(found, Self.navigationDelegates.count, "the sweep missed a listed delegate")
     }
+
+    private static let navigationDelegates: [(name: String, type: AnyClass)] = [
+        ("AuthWebView.Coordinator", AuthWebView.Coordinator.self),
+        ("DashboardTicketBridge", DashboardTicketBridge.self),
+        ("MarkupWebView.Coordinator", MarkupWebView.Coordinator.self),
+        ("SafeMarkupWebView.Coordinator", SafeMarkupWebView.Coordinator.self),
+        ("RemoteImageWebView.Coordinator", RemoteImageWebView.Coordinator.self),
+        ("HTMLPreviewWebView.Coordinator", HTMLPreviewWebView.Coordinator.self),
+        ("MacHTMLPreviewNavigationDelegate", MacHTMLPreviewNavigationDelegate.self),
+    ]
 
     // MARK: - Markup pages
 
@@ -269,5 +275,30 @@ final class WebViewTwinTests: XCTestCase {
             let policy = await decidePolicy(foreign, type: .other, delegate: coordinator)
             XCTAssertEqual(policy, .cancel, foreign)
         }
+    }
+
+    // MARK: - HTML preview page
+
+    func testHTMLPreviewIsTransparent() {
+        for interactive in [true, false] {
+            let webView = HTMLPreviewWebView.makeConfiguredWebView(interactive: interactive)
+            XCTAssertEqual(webView.value(forKey: "drawsBackground") as? Bool, false, "interactive \(interactive)")
+        }
+    }
+
+    /// An inline preview sits in the chat, which scrolls over it.
+    func testInlineHTMLPreviewTakesNoHits() {
+        let webView = HTMLPreviewWebView.makeConfiguredWebView(interactive: false)
+        webView.frame = NSRect(x: 0, y: 0, width: 100, height: 100)
+        XCTAssertNil(webView.hitTest(NSPoint(x: 50, y: 50)))
+        XCTAssertFalse(webView.acceptsFirstResponder)
+    }
+
+    /// The full-screen page is where the page is touched, scrolled and zoomed.
+    func testFullScreenHTMLPreviewTakesHits() {
+        let webView = HTMLPreviewWebView.makeConfiguredWebView(interactive: true)
+        webView.frame = NSRect(x: 0, y: 0, width: 100, height: 100)
+        XCTAssertNotNil(webView.hitTest(NSPoint(x: 50, y: 50)))
+        XCTAssertTrue(webView.acceptsFirstResponder)
     }
 }

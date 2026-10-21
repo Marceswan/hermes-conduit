@@ -3,13 +3,16 @@ import XCTest
 @testable import ConduitMac
 
 /// A frame that says whether it is the main frame. WebKit builds the real
-/// one; a test cannot.
+/// one; a test cannot. `-[WKFrameInfo dealloc]` releases an object that a
+/// stub never has and traps, so each stub stays alive until the process ends.
 final class StubFrameInfo: WKFrameInfo {
+    private static var kept: [StubFrameInfo] = []
     private let stubIsMainFrame: Bool
 
     init(isMainFrame: Bool) {
         stubIsMainFrame = isMainFrame
         super.init()
+        Self.kept.append(self)
     }
 
     override var isMainFrame: Bool { stubIsMainFrame }
