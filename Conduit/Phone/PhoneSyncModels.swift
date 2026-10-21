@@ -19,6 +19,10 @@ import Foundation
 enum PhoneCalendarAccess: String, CaseIterable, Identifiable, Codable {
     /// Reads events and asks to add or change them.
     case full
+    /// Reads events, never adds, changes or deletes any. Needs the same
+    /// full access from iOS (there's no read-only one): Conduit refuses the
+    /// changes itself, and tells the host so it doesn't ask.
+    case readOnly = "read_only"
     /// Can ask to add events, never reads them (iOS 17's write-only access).
     case writeOnly = "write_only"
     case off
@@ -28,10 +32,16 @@ enum PhoneCalendarAccess: String, CaseIterable, Identifiable, Codable {
     var title: String {
         switch self {
         case .full: return AppLocalization.string("Read and add")
+        case .readOnly: return AppLocalization.string("Read only")
         case .writeOnly: return AppLocalization.string("Add only")
         case .off: return AppLocalization.string("Off")
         }
     }
+
+    /// Hermes reads events.
+    var reads: Bool { self == .full || self == .readOnly }
+    /// Hermes may ask to add events.
+    var adds: Bool { self == .full || self == .writeOnly }
 }
 
 /// How far ahead events are shared. Past events always reach back a week.
@@ -76,6 +86,10 @@ struct PhoneSyncPreferences: Codable, Equatable {
     /// `alarms` and `contacts`.
     var alarmsChoice: Bool?
     var contactsChoice: Bool?
+    /// Hermes reads reminders but never adds, changes, completes or
+    /// deletes one. Optional so preferences saved before it still decode;
+    /// read `remindersReadOnly`.
+    var remindersReadOnlyChoice: Bool?
     /// Live voice modes the user lets read what's shared on a call, answer
     /// Hermes' changes and add events and reminders
     /// (`LiveVoiceModeName.storageID`). Optional so preferences saved before
@@ -95,6 +109,23 @@ struct PhoneSyncPreferences: Codable, Equatable {
         get { contactsChoice ?? false }
         set { contactsChoice = newValue ? true : nil }
     }
+
+    var remindersReadOnly: Bool {
+        get { remindersReadOnlyChoice ?? false }
+        set { remindersReadOnlyChoice = newValue ? true : nil }
+    }
+
+    /// Whether the user lets Hermes make this change at all (before any
+    /// card): nothing in a read-only calendar or reminders, and only
+    /// additions to an add-only calendar.
+    func allows(_ kind: PhoneChange.Kind) -> Bool {
+        if kind.isAlarm { return alarms }
+        if kind.isEvent { return kind.isAddition ? calendar.adds : calendar == .full }
+        return reminders && !remindersReadOnly
+    }
+
+    /// Something Hermes may ask to add or change.
+    var takesChanges: Bool { calendar.adds || (reminders && !remindersReadOnly) || alarms }
 
     var isOn: Bool { destination != nil && sharesAnything }
     var sharesAnything: Bool { calendar != .off || reminders || status || focus || alarms || contacts }
@@ -126,10 +157,15 @@ struct PhoneSyncPreferences: Codable, Equatable {
     }
 
     /// The `sharing` object every upload carries.
+    /// A read-only calendar goes as "full" with `calendar_read_only`, so a
+    /// host from before it still takes the batch (and Conduit still refuses
+    /// the changes it asks for).
     var sharingJSON: [String: Any] {
         [
-            "calendar": calendar.rawValue,
+            "calendar": calendar == .readOnly ? PhoneCalendarAccess.full.rawValue : calendar.rawValue,
+            "calendar_read_only": calendar == .readOnly,
             "reminders": reminders,
+            "reminders_read_only": reminders && remindersReadOnly,
             "details": details,
             "attendee_emails": details && attendeeEmails,
             "status": status,
@@ -417,7 +453,9 @@ enum PhoneDates {
     private static let formattersLock = NSLock()
     nonisolated(unsafe) private static var formatters: [String: ISO8601DateFormatter] = [:]
 
-    static func day(_ date: Date, calendar: Calendar = .current) -> String {
+    /// A wire `YYYY-MM-DD` day: Gregorian whatever the device's calendar,
+    /// or a Japanese-calendar device would send its era year.
+    static func day(_ date: Date, calendar: Calendar = Calendar(identifier: .gregorian)) -> String {
         let parts = calendar.dateComponents([.year, .month, .day], from: date)
         return String(format: "%04d-%02d-%02d", parts.year ?? 2000, parts.month ?? 1, parts.day ?? 1)
     }
@@ -432,7 +470,7 @@ enum PhoneDates {
         if let date = formatter.date(from: text) { return date }
         let parts = text.split(separator: "-").compactMap { Int($0) }
         guard text.count == 10, parts.count == 3 else { return nil }
-        return Calendar.current.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+        return Calendar(identifier: .gregorian).date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
     }
 }
 
@@ -450,4 +488,11 @@ enum PhoneSyncLimits {
     /// Status goes again after this long even when nothing changed, so its
     /// age on the host stays honest.
     static let statusRefresh: TimeInterval = 15 * 60
+    /// The most one upload carries (the notifier's phone_store MAX_ITEMS);
+    /// a larger one goes in parts.
+    static let batchItems = 5_000
+    /// The JSON one upload carries. Sealed, it grows by a third as base64,
+    /// and the notifier refuses bodies over 4 MiB
+    /// (plugin_api PHONE_MAX_INGEST_BODY_BYTES).
+    static let batchBytes = 3_000_000
 }

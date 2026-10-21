@@ -167,6 +167,224 @@ final class AppStateForegroundLifecycleTests: XCTestCase {
         box.client.disconnect()
     }
 
+    /// Operations for a chat Hermes Desktop holds until the takeover route
+    /// answers (#1061): every send before it is refused.
+    private func desktopHeldChatOperations(
+        sends: @escaping (String) -> Void,
+        takenOver: @escaping () -> Bool
+    ) -> ChatResumeLifecycleOperations {
+        ChatResumeLifecycleOperations(
+            loadCatalog: { _, _ in [self.session("stored-a")] },
+            openSession: { _, _, _ in
+                SessionResumeResult(sessionId: "runtime-a", storedSessionId: "stored-a",
+                    messages: [], snapshot: SessionRuntimeSnapshot(object: ["running": .bool(false)]))
+            },
+            refreshContext: { _, _ in },
+            sendPrompt: { _, _, text in
+                sends(text)
+                guard takenOver() else {
+                    throw RpcError(
+                        code: 4090,
+                        message: "This chat is open in another Hermes window/terminal. Use it there, or start a new chat here.\nDetails: session stored-a opened by desktop 3m ago.",
+                        reason: "SESSION_NOT_OWNED"
+                    )
+                }
+                return .accepted
+            },
+            verifyTransportHealth: { _ in }
+        )
+    }
+
+    func testCallRequestRefusedByDesktopIsSentAgainAfterTakeover() async {
+        // #1061: a call's first request in a chat Desktop still holds was
+        // refused, the chat was taken over, and the request was lost. With
+        // Take over automatically on, the call takes the chat over and sends
+        // the same request once more.
+        let defaults = UserDefaults.standard
+        let savedAutomatic = defaults.object(forKey: ChatTakeoverPreference.automaticKey)
+        defaults.set(true, forKey: ChatTakeoverPreference.automaticKey)
+        defer { defaults.set(savedAutomatic, forKey: ChatTakeoverPreference.automaticKey) }
+        var sent: [String] = []
+        var takenOver = false
+        var takeoverBodies: [[String: Any]] = []
+        let harness = makeHarness(lifecycleOperations: desktopHeldChatOperations(
+            sends: { sent.append($0) }, takenOver: { takenOver }
+        ))
+        harness.appState.chatTakeoverClient = ChatTakeoverClient(request: { path, method, body in
+            XCTAssertTrue(path.hasPrefix(ChatTakeoverClient.path))
+            XCTAssertEqual(method, "POST")
+            takeoverBodies.append(body ?? [:])
+            takenOver = true
+            return ["ok": true, "status": "taken_over"]
+        })
+        let box = await installConnectedClient(into: harness)
+        harness.appState.sessions = [session("stored-a", alternateIDs: ["runtime-a"])]
+        let opened = await harness.appState.openSession("stored-a")
+        XCTAssertTrue(opened)
+
+        let submitted = await harness.appState.submitComposerForCall(text: "What's on my calendar")
+
+        XCTAssertTrue(submitted, "The call's request goes through after the takeover")
+        XCTAssertEqual(sent, ["What's on my calendar", "What's on my calendar"])
+        XCTAssertEqual(takeoverBodies.count, 1)
+        let ids = takeoverBodies.first?["session_ids"] as? [String] ?? []
+        XCTAssertTrue(ids.contains("runtime-a") && ids.contains("stored-a"))
+        XCTAssertNil(harness.appState.chatTakeover, "No notice is left for the composer to resend")
+        XCTAssertNil(harness.appState.errorMessage)
+        box.client.disconnect()
+    }
+
+    func testCallRequestTakesOverEvenWithAutomaticTakeoverOff() async {
+        // Starting a call in the chat already says the user wants it here:
+        // the call takes over whatever the composer's setting says.
+        let defaults = UserDefaults.standard
+        let savedAutomatic = defaults.object(forKey: ChatTakeoverPreference.automaticKey)
+        defaults.set(false, forKey: ChatTakeoverPreference.automaticKey)
+        defer { defaults.set(savedAutomatic, forKey: ChatTakeoverPreference.automaticKey) }
+        var sent: [String] = []
+        var takenOver = false
+        let harness = makeHarness(lifecycleOperations: desktopHeldChatOperations(
+            sends: { sent.append($0) }, takenOver: { takenOver }
+        ))
+        harness.appState.chatTakeoverClient = ChatTakeoverClient(request: { _, _, _ in
+            takenOver = true
+            return ["ok": true, "status": "taken_over"]
+        })
+        let box = await installConnectedClient(into: harness)
+        harness.appState.sessions = [session("stored-a", alternateIDs: ["runtime-a"])]
+        let opened = await harness.appState.openSession("stored-a")
+        XCTAssertTrue(opened)
+
+        let submitted = await harness.appState.submitComposerForCall(text: "What's on my calendar")
+
+        XCTAssertTrue(submitted)
+        XCTAssertEqual(sent, ["What's on my calendar", "What's on my calendar"])
+        XCTAssertNil(harness.appState.chatTakeover)
+        box.client.disconnect()
+    }
+
+    func testCallRequestRefusedAgainAfterTakeoverStopsAndALaterOneTriesAgain() async {
+        // Desktop took the chat straight back: one resend, no third send,
+        // and the call says the chat is open there. The next request takes
+        // over again rather than being blocked for the rest of the call.
+        var sent: [String] = []
+        var takeovers = 0
+        let harness = makeHarness(lifecycleOperations: desktopHeldChatOperations(
+            sends: { sent.append($0) }, takenOver: { false }
+        ))
+        harness.appState.chatTakeoverClient = ChatTakeoverClient(request: { _, _, _ in
+            takeovers += 1
+            return ["ok": true, "status": "taken_over"]
+        })
+        let box = await installConnectedClient(into: harness)
+        harness.appState.sessions = [session("stored-a", alternateIDs: ["runtime-a"])]
+        let opened = await harness.appState.openSession("stored-a")
+        XCTAssertTrue(opened)
+
+        let first = await harness.appState.submitComposerForCall(text: "What's on my calendar")
+
+        XCTAssertFalse(first)
+        XCTAssertEqual(sent.count, 2)
+        XCTAssertEqual(takeovers, 1)
+        XCTAssertEqual(
+            harness.appState.callRefusalMessageForOpenChat(),
+            AppLocalization.string("This chat is open in Hermes Desktop. Take it over to send from here.")
+        )
+
+        let second = await harness.appState.submitComposerForCall(text: "Any new email")
+
+        XCTAssertFalse(second)
+        XCTAssertEqual(sent.count, 4)
+        XCTAssertEqual(takeovers, 2)
+        box.client.disconnect()
+    }
+
+    func testCallRequestThatCannotTakeOverSaysWhy() async {
+        // Conduit on another device holds the chat: the host never takes it
+        // from there, and the call says so instead of a bare failure.
+        var sent: [String] = []
+        let harness = makeHarness(lifecycleOperations: desktopHeldChatOperations(
+            sends: { sent.append($0) }, takenOver: { false }
+        ))
+        harness.appState.chatTakeoverClient = ChatTakeoverClient(request: { _, _, _ in
+            ["ok": true, "status": "same_host"]
+        })
+        let box = await installConnectedClient(into: harness)
+        harness.appState.sessions = [session("stored-a", alternateIDs: ["runtime-a"])]
+        let opened = await harness.appState.openSession("stored-a")
+        XCTAssertTrue(opened)
+
+        let submitted = await harness.appState.submitComposerForCall(text: "What's on my calendar")
+
+        XCTAssertFalse(submitted)
+        XCTAssertEqual(sent, ["What's on my calendar"])
+        XCTAssertEqual(harness.appState.chatTakeover?.phase, .heldHere)
+        XCTAssertEqual(harness.appState.callRefusalMessageForOpenChat(), ChatTakeoverState.heldHereMessage)
+        box.client.disconnect()
+    }
+
+    func testCallRequestRefusedAgainAfterTakeoverStopsWithTheReason() async {
+        // Desktop took the chat straight back: one resend, then the call
+        // says the chat is open there instead of the raw refusal.
+        let harness = makeHarness()
+        harness.appState.chatTakeoverClient = ChatTakeoverClient(request: { _, _, _ in
+            ["ok": true, "status": "taken_over"]
+        })
+        var sends = 0
+        do {
+            _ = try await harness.appState.sendCallPromptTakingOver(
+                runtimeID: "runtime-b", otherSessionIDs: [], profile: nil
+            ) {
+                sends += 1
+                throw RpcError(code: 4090, message: "Details: session stored-b opened by desktop 1m ago.", reason: "SESSION_NOT_OWNED")
+            }
+            XCTFail("A second refusal fails the request")
+        } catch {
+            XCTAssertEqual(error as? VoiceAudioError, .unavailable(
+                AppLocalization.string("This chat is open in Hermes Desktop. Take it over to send from here.")
+            ))
+        }
+        XCTAssertEqual(sends, 2)
+    }
+
+    func testTakeOverAutomaticallyIsOnUntilTurnedOff() {
+        let defaults = UserDefaults.standard
+        let savedAutomatic = defaults.object(forKey: ChatTakeoverPreference.automaticKey)
+        defer { defaults.set(savedAutomatic, forKey: ChatTakeoverPreference.automaticKey) }
+        let appState = makeHarness().appState
+        defaults.removeObject(forKey: ChatTakeoverPreference.automaticKey)
+        XCTAssertTrue(appState.takesOverChatsAutomatically)
+        defaults.set(false, forKey: ChatTakeoverPreference.automaticKey)
+        XCTAssertFalse(appState.takesOverChatsAutomatically)
+    }
+
+    func testCallRequestToAChatOffScreenIsSentAgainAfterTakeover() async throws {
+        // The same for a call attached to a chat that isn't on screen.
+        let defaults = UserDefaults.standard
+        let savedAutomatic = defaults.object(forKey: ChatTakeoverPreference.automaticKey)
+        defaults.set(true, forKey: ChatTakeoverPreference.automaticKey)
+        defer { defaults.set(savedAutomatic, forKey: ChatTakeoverPreference.automaticKey) }
+        let harness = makeHarness()
+        var takeoverIDs: [String] = []
+        harness.appState.chatTakeoverClient = ChatTakeoverClient(request: { _, _, body in
+            takeoverIDs = body?["session_ids"] as? [String] ?? []
+            return ["ok": true, "status": "taken_over"]
+        })
+        var sends = 0
+        let outcome = try await harness.appState.sendCallPromptTakingOver(
+            runtimeID: "runtime-b", otherSessionIDs: ["stored-b"], profile: nil
+        ) {
+            sends += 1
+            if sends == 1 {
+                throw RpcError(code: 4090, message: "Details: session stored-b opened by desktop 1m ago.", reason: "SESSION_NOT_OWNED")
+            }
+            return .accepted
+        }
+        XCTAssertEqual(outcome, .accepted)
+        XCTAssertEqual(sends, 2)
+        XCTAssertEqual(takeoverIDs, ["runtime-b", "stored-b"])
+    }
+
     func testComposerSubmissionSurvivesLegitimateRuntimeRotationDuringRecovery() async {
         // Hermes legitimately rotates stored-a: runtime-old → runtime-new
         // during the second send's freshness recovery. The in-flight
@@ -373,6 +591,8 @@ final class AppStateForegroundLifecycleTests: XCTestCase {
         var sends = 0
         /// The dashboard has no bounded history read (a v0.19 gateway).
         var transcriptUnavailable = false
+        /// The chat's stored message count in the catalog.
+        var catalogCount: Int?
         var now = Date(timeIntervalSince1970: 3_000_000)
 
         var payload: [String: Any] {
@@ -392,7 +612,11 @@ final class AppStateForegroundLifecycleTests: XCTestCase {
         let active = session("stored-a")
         let harness = makeHarness(
             lifecycleOperations: ChatResumeLifecycleOperations(
-                loadCatalog: { _, _ in [active] },
+                loadCatalog: { _, _ in
+                    var listed = active
+                    listed.messageCount = server.catalogCount
+                    return [listed]
+                },
                 openSession: { _, sessionID, _ in
                     server.resumes += 1
                     return SessionResumeResult(
@@ -653,6 +877,86 @@ final class AppStateForegroundLifecycleTests: XCTestCase {
 
         await tick(appState, after: 15, server)
         XCTAssertEqual(server.transcriptReads, readsAtOpen + 1, "Nothing new: nothing read")
+        box.client.disconnect()
+    }
+
+    /// #1026: a message sent from the TUI on the gateway's computer runs in
+    /// another process. This gateway's registry row for the chat stays idle
+    /// with its old count, so its checks never see the turn; Hermes'
+    /// `sessions.changed` and the stored count do, and the rows show without
+    /// a pull to refresh.
+    func testATurnTheRegistryNeverSawShowsWhenHermesSaysTheChatMoved() async {
+        let server = TwoDeviceServer()
+        server.catalogCount = 1
+        let harness = twoDeviceHarness(server)
+        let box = await openTwoDeviceChat(harness)
+        let appState = harness.appState
+        let resumesAtOpen = server.resumes
+        let readsAtOpen = server.transcriptReads
+        server.live = [LiveSessionStatus(
+            runtimeSessionId: "runtime-a", storedSessionId: "stored-a", status: "idle", messageCount: 1
+        )]
+        await tick(appState, after: 0, server)
+        server.now += 10
+        appState.handleStreamEvent(.sessionsChanged)
+        await appState.leaveCatalogRefreshTask?.value
+        XCTAssertEqual(server.transcriptReads, readsAtOpen, "Nothing moved yet")
+
+        // The TUI's turn: stored, and never in this gateway's registry.
+        server.rows += [
+            ["id": "2", "role": "user", "content": "Sent from the TUI", "timestamp": "2"],
+            ["id": "3", "role": "assistant", "content": "PAPAYA", "timestamp": "3"],
+        ]
+        server.catalogCount = 3
+        for _ in 0..<4 {
+            await tick(appState, after: 15, server)
+        }
+        XCTAssertEqual(server.transcriptReads, readsAtOpen, "The registry alone never sees it")
+
+        appState.handleStreamEvent(.sessionsChanged)
+        await appState.leaveCatalogRefreshTask?.value
+        await appState.openChatCatalogCheck?.value
+        await appState.openChatSyncRead?.value
+
+        XCTAssertEqual(server.transcriptReads, readsAtOpen + 1)
+        XCTAssertEqual(server.resumes, resumesAtOpen, "A read, not a resume")
+        XCTAssertEqual(appState.messages.map(\.content), ["Question", "Sent from the TUI", "PAPAYA"])
+        XCTAssertEqual(appState.turnState, .idle)
+        box.client.disconnect()
+    }
+
+    /// The same with no live runtime of the chat on this gateway: the TUI's
+    /// turn may still be running in its own process, out of this registry's
+    /// sight, so the rows are read and the chat is never resumed (a resume
+    /// could take it from that process).
+    func testATurnTheRegistryNeverSawIsReadWithoutResumingAChatWithNoLiveRuntime() async {
+        let server = TwoDeviceServer()
+        server.catalogCount = 1
+        let harness = twoDeviceHarness(server)
+        let box = await openTwoDeviceChat(harness)
+        let appState = harness.appState
+        let resumesAtOpen = server.resumes
+        let readsAtOpen = server.transcriptReads
+        await tick(appState, after: 0, server)
+        server.now += 10
+        appState.handleStreamEvent(.sessionsChanged)
+        await appState.leaveCatalogRefreshTask?.value
+
+        server.rows += [
+            ["id": "2", "role": "user", "content": "Sent from the TUI", "timestamp": "2"],
+            ["id": "3", "role": "assistant", "content": "PAPAYA", "timestamp": "3"],
+        ]
+        server.catalogCount = 3
+        server.now += 10
+        appState.handleStreamEvent(.sessionsChanged)
+        await appState.leaveCatalogRefreshTask?.value
+        await appState.openChatCatalogCheck?.value
+        await appState.openChatSyncRead?.value
+
+        XCTAssertEqual(server.transcriptReads, readsAtOpen + 1)
+        XCTAssertEqual(server.resumes, resumesAtOpen, "Never resumed")
+        XCTAssertEqual(appState.messages.map(\.content), ["Question", "Sent from the TUI", "PAPAYA"])
+        XCTAssertEqual(appState.turnState, .idle)
         box.client.disconnect()
     }
 

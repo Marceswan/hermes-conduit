@@ -509,6 +509,8 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+        # MacTestKeychainGuard: every test gets an in-memory Keychain, never the user's.
+        INFOPLIST_KEY_NSPrincipalClass: MacTestKeychainGuard
         DEVELOPMENT_TEAM: 58XKRG9VMA
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "Developer ID Application"

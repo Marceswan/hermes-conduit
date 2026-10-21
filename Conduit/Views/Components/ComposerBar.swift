@@ -194,7 +194,7 @@ struct ComposerBar: View, Equatable {
         isProgrammaticDraftRestore: Bool
     ) -> Bool {
         guard !isProgrammaticDraftRestore else { return false }
-        return slashPrefix(in: text) != nil
+        return slashPrefix(in: text) != nil || slashArgumentQuery(in: text) != nil
     }
 
     private static func slashPrefix(in text: String) -> String? {
@@ -203,6 +203,35 @@ struct ComposerBar: View, Equatable {
         let prefix = String(trimmed.dropFirst())
         guard !prefix.contains(where: { $0.isWhitespace || $0.isNewline }) else { return nil }
         return prefix.lowercased()
+    }
+
+    /// `/fast ul` → ("fast", "ul"): the command typed and the first word of
+    /// its argument so far, while that word is the last thing typed. Hermes'
+    /// subcommands for the command complete it.
+    static func slashArgumentQuery(in text: String) -> (command: String, partial: String)? {
+        let trimmed = text.replacingOccurrences(of: "^\\s+", with: "", options: .regularExpression)
+        guard trimmed.hasPrefix("/"), !trimmed.contains(where: \.isNewline) else { return nil }
+        let body = trimmed.drop(while: { $0 == "/" })
+        guard let space = body.firstIndex(of: " ") else { return nil }
+        let command = body[..<space]
+        let partial = body[space...].drop(while: { $0 == " " })
+        guard !command.isEmpty, !partial.contains(" ") else { return nil }
+        return (command.lowercased(), partial.lowercased())
+    }
+
+    /// Hermes' subcommands for the command being typed that start with what
+    /// is typed so far, as suggestion rows whose name is `command sub`.
+    static func slashArgumentSuggestions(
+        for text: String,
+        commands: [SlashCommand],
+        subcommands: [String: [String]]
+    ) -> [SlashCommand] {
+        guard let query = slashArgumentQuery(in: text),
+              let command = commands.first(where: { $0.name == query.command || $0.aliases.contains(query.command) }),
+              let subs = subcommands[command.name] else { return [] }
+        return subs
+            .filter { $0.lowercased().hasPrefix(query.partial) && $0.lowercased() != query.partial }
+            .map { SlashCommand(name: "\(query.command) \($0)", description: "") }
     }
 
     static func pastedImageAttachmentMetadata(for typeIdentifier: String) -> (name: String, mimeType: String) {
@@ -251,7 +280,13 @@ struct ComposerBar: View, Equatable {
     }
 
     private var filteredSlashCommands: [SlashCommand] {
-        guard let prefix = slashPrefix else { return [] }
+        guard let prefix = slashPrefix else {
+            return Self.slashArgumentSuggestions(
+                for: text,
+                commands: appState.slashCommands,
+                subcommands: appState.slashSubcommands
+            )
+        }
         if prefix.isEmpty {
             return appState.slashCommands
         }
@@ -295,6 +330,7 @@ struct ComposerBar: View, Equatable {
         case .stop: return "stop.fill"
         case .steer: return BusyInputMode.steer.symbol
         case .interrupt: return BusyInputMode.interrupt.symbol
+        case .queue: return BusyInputMode.queue.symbol
         case .send: return "arrow.up"
         case .unavailable: return "lock"
         }
@@ -307,7 +343,7 @@ struct ComposerBar: View, Equatable {
     private var actionTint: Color {
         switch action {
         case .stop: return .red
-        case .steer: return .conduitAura
+        case .steer, .queue: return .conduitAura
         case .interrupt: return .orange
         case .send: return .conduitAccent
         case .unavailable: return .secondary.opacity(0.48)
@@ -537,7 +573,7 @@ struct ComposerBar: View, Equatable {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            if !isShowingSlashSuggestions && !mentionCandidates.isEmpty {
+            if (!isShowingSlashSuggestions || filteredSlashCommands.isEmpty) && !mentionCandidates.isEmpty {
                 MentionSuggestionList(candidates: mentionCandidates) { candidate in
                     replaceComposerText(MentionAutocomplete.completing(text, with: candidate))
                 }
@@ -726,7 +762,7 @@ struct ComposerBar: View, Equatable {
     /// button beside it can start a call while Hermes replies (#762).
     static func turnControlExpandsComposer(action: ComposerAction, restsWhenIdle: Bool) -> Bool {
         switch action {
-        case .steer, .interrupt: return true
+        case .steer, .interrupt, .queue: return true
         case .stop: return !restsWhenIdle
         case .send, .unavailable: return false
         }
@@ -768,6 +804,11 @@ struct ComposerBar: View, Equatable {
     /// neighbours never overlap.
     static var controlHitShape: some Shape { Rectangle().inset(by: -4) }
 
+    /// "42%", for the context ring's large content viewer.
+    private var contextPercentLabel: String {
+        "\(Int(appState.runtime.contextPercent.rounded()))%"
+    }
+
     private var controlsRow: some View {
         HStack(spacing: 8) {
             attachmentButton
@@ -787,6 +828,12 @@ struct ComposerBar: View, Equatable {
                     .contentShape(Self.controlHitShape)
             }
             .buttonStyle(.plain)
+            .accessibilityShowsLargeContentViewer {
+                Label(
+                    AppLocalization.string("Context \(contextPercentLabel)"),
+                    systemImage: "chart.pie"
+                )
+            }
             .accessibilityLabel("Context usage, \(Int(appState.runtime.contextPercent.rounded())) percent")
 
             if appState.activeAgents > 0 {
@@ -801,6 +848,12 @@ struct ComposerBar: View, Equatable {
                         .contentShape(Self.controlHitShape)
                 }
                 .buttonStyle(.plain)
+                .accessibilityShowsLargeContentViewer {
+                    Label(
+                        AppLocalization.string("Delegate agents, \(Int(appState.activeAgents)) active"),
+                        systemImage: "person.2"
+                    )
+                }
                 .accessibilityLabel(AppLocalization.string("Delegate agents, \(Int(appState.activeAgents)) active"))
             }
 
@@ -956,9 +1009,7 @@ struct ComposerBar: View, Equatable {
         case .failed(let message), .unavailable(let message):
             return message
         case .heldHere:
-            return AppLocalization.string(
-                "This chat is open in Conduit on another device or in the Hermes web chat. Send from there, or close it there and try again."
-            )
+            return ChatTakeoverState.heldHereMessage
         }
     }
 
@@ -1098,6 +1149,9 @@ struct ComposerBar: View, Equatable {
         .disabled(!appState.composerIsEnabled || appState.isBusy)
         .conduitGlassControl(cornerRadius: Self.controlSize / 2, tint: .conduitAccent.opacity(0.08))
         .accessibilityLabel("Add attachment") // MAC: a11y
+        .accessibilityShowsLargeContentViewer {
+            Label("Attach", systemImage: "plus")
+        }
     }
 
     /// What the single trailing slot of the input row holds.
@@ -1138,48 +1192,101 @@ struct ComposerBar: View, Equatable {
         }
     }
 
+    /// With other ways to send, a menu whose tap is the action and whose
+    /// touch and hold lists them. A context menu on the button lost the
+    /// hold to the button's large content viewer, so a hold sent like a
+    /// tap; the menu form has no large content viewer (as ChatTitleControl).
+    @ViewBuilder
     private var composerActionButton: some View {
-        Button {
-            if stopOnly {
-                dismissComposer()
-                isShowingFullEditor = false
-                Haptics.warning()
-                Task { await appState.cancelCurrent() }
-            } else {
-                submit()
+        let choices = sendChoices
+        if choices.isEmpty {
+            Button(action: performComposerAction) {
+                composerActionFace
             }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: actionSymbol)
-                    .font(.system(size: stopOnly ? 12 : 14, weight: .semibold))
-                    .contentTransition(.symbolEffect(.replace))
-                if let actionTitle {
-                    Text(actionTitle)
-                        .font(.caption.weight(.semibold))
-                        .transition(.opacity.combined(with: .move(edge: .trailing)))
+            .disabled(action == .unavailable)
+            .modifier(composerActionChrome)
+            .accessibilityShowsLargeContentViewer {
+                Label {
+                    Text(actionTitle ?? accessibilityLabel)
+                } icon: {
+                    Image(systemName: actionSymbol)
                 }
             }
-            .foregroundStyle(action == .unavailable ? Color.secondary.opacity(0.48) : Color.white)
-            .frame(minWidth: actionTitle == nil ? Self.controlSize : 86, minHeight: Self.controlSize)
-            .padding(.horizontal, actionTitle == nil ? 0 : 4)
-            .contentShape(Self.controlHitShape)
-            .animation(ConduitMotion.transition, value: action)
-        }
-        .disabled(action == .unavailable)
-        .conduitGlassControl(
-            cornerRadius: Self.controlSize / 2,
-            tint: actionSurfaceTint,
-            prominent: action == .send,
-            interactive: action != .unavailable
-        )
-        .accessibilityShowsLargeContentViewer {
-            Label {
-                Text(actionTitle ?? accessibilityLabel)
-            } icon: {
-                Image(systemName: actionSymbol)
+            .accessibilityLabel(accessibilityLabel)
+        } else {
+            Menu {
+                ForEach(choices) { choice in
+                    Button {
+                        submit(choice)
+                    } label: {
+                        Label(choice.title, systemImage: choice.symbol)
+                    }
+                }
+            } label: {
+                composerActionFace
+            } primaryAction: {
+                performComposerAction()
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .modifier(composerActionChrome)
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityHint(AppLocalization.string("Touch and hold for other ways to send"))
+            .accessibilityAction(named: Text(accessibilityLabel)) {
+                performComposerAction()
+            }
+            .accessibilityActions {
+                ForEach(choices) { choice in
+                    Button(choice.title) { submit(choice) }
+                }
             }
         }
-        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private func performComposerAction() {
+        if stopOnly {
+            dismissComposer()
+            isShowingFullEditor = false
+            Haptics.warning()
+            Task { await appState.cancelCurrent() }
+        } else {
+            submit()
+        }
+    }
+
+    private var composerActionFace: some View {
+        HStack(spacing: 6) {
+            Image(systemName: actionSymbol)
+                .font(.system(size: stopOnly ? 12 : 14, weight: .semibold))
+                .contentTransition(.symbolEffect(.replace))
+            if let actionTitle {
+                Text(actionTitle)
+                    .font(.caption.weight(.semibold))
+                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+            }
+        }
+        .foregroundStyle(action == .unavailable ? Color.secondary.opacity(0.48) : Color.white)
+        .frame(minWidth: actionTitle == nil ? Self.controlSize : 86, minHeight: Self.controlSize)
+        .padding(.horizontal, actionTitle == nil ? 0 : 4)
+        .contentShape(Self.controlHitShape)
+        .animation(ConduitMotion.transition, value: action)
+    }
+
+    private var composerActionChrome: ComposerActionChrome {
+        ComposerActionChrome(tint: actionSurfaceTint, action: action)
+    }
+
+    /// What touch and hold on the action button offers: the busy modes the
+    /// tap doesn't use and the side agents (ComposerSendChoice).
+    private var sendChoices: [ComposerSendChoice] {
+        guard !appState.composerWaitsForChat, pendingScreenshot == nil else { return [] }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ComposerSendChoice.choices(
+            for: action,
+            hasAttachments: !attachments.isEmpty,
+            isSlashCommand: AppState.parseSlashCommand(trimmed) != nil
+        )
     }
 
     /// The model and effort, truncating first when the row is crowded.
@@ -1297,6 +1404,9 @@ struct ComposerBar: View, Equatable {
 #endif
         // Picks land in order: the next waits for this write.
         .disabled(appState.isWritingReasoningEffort)
+        .accessibilityShowsLargeContentViewer {
+            Text(ReasoningEffortLevel.displayTitle(for: appState.runtime.reasoningEffort))
+        }
         .accessibilityLabel(Text("Reasoning"))
         .accessibilityValue(Text(ReasoningEffortLevel.displayTitle(for: appState.runtime.reasoningEffort)))
     }
@@ -1315,7 +1425,9 @@ struct ComposerBar: View, Equatable {
         return true
     }
 
-    private func submit() {
+    /// `choice` is a long-press pick for this message only; nil keeps the
+    /// action the button shows.
+    private func submit(_ choice: ComposerSendChoice? = nil) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !attachments.isEmpty || pendingScreenshot != nil else { return }
         if appState.composerWaitsForChat {
@@ -1341,12 +1453,14 @@ struct ComposerBar: View, Equatable {
             trimmed,
             hasAttachments: !submittedAttachments.isEmpty
         ) ? replyReference : nil
-        let outboundText = ComposerReplyReference.outboundText(
+        let repliedText = ComposerReplyReference.outboundText(
             trimmed,
             hasAttachments: !submittedAttachments.isEmpty,
             replyingTo: submittedReply
         )
-        let submittedAction = action
+        // A side agent takes the message, quote and all, as its command.
+        let outboundText = choice?.slashCommand.map { "/\($0) \(repliedText)" } ?? repliedText
+        let submittedAction = choice.map { $0.busyInputMode?.composerAction ?? .send } ?? action
         let submittedDraftKey = loadedDraftKey ?? activeDraftKey
         let submittedDraftBucket = draftStore.submissionBucket(for: submittedDraftKey)
         let submissionContext = appState.composerSubmissionContext()
@@ -1355,7 +1469,7 @@ struct ComposerBar: View, Equatable {
 
         switch submittedAction {
         case .send: Haptics.medium()
-        case .steer: Haptics.light()
+        case .steer, .queue: Haptics.light()
         case .interrupt: Haptics.warning()
         case .stop, .unavailable: break
         }
@@ -1364,7 +1478,8 @@ struct ComposerBar: View, Equatable {
             let didSubmit = await appState.submitComposer(
                 text: outboundText,
                 attachments: submittedAttachments,
-                context: submissionContext
+                context: submissionContext,
+                busyMode: choice?.busyInputMode
             )
             guard didSubmit else {
                 restoreSubmittedDraftIfNeeded(
@@ -1381,7 +1496,7 @@ struct ComposerBar: View, Equatable {
             // A prefill the reply asked for (a slash command's) goes in
             // here if its update hasn't put it in yet.
             applyPendingPrefill()
-            isShowingSlashSuggestions = slashPrefix != nil
+            isShowingSlashSuggestions = Self.shouldShowSlashSuggestions(for: text, isProgrammaticDraftRestore: false)
         }
     }
 
@@ -1493,6 +1608,9 @@ struct ComposerBar: View, Equatable {
         .buttonStyle(.plain)
         .disabled(appState.isPreparingVoiceResume || appState.voiceWaitsForRunningTurn)
         .conduitGlassControl(cornerRadius: Self.controlSize / 2, tint: .conduitAura.opacity(0.14), interactive: true)
+        .accessibilityShowsLargeContentViewer {
+            Label(AppLocalization.string("Resume call"), systemImage: "phone.arrow.up.right")
+        }
         .accessibilityLabel(AppLocalization.string("Resume call"))
         .accessibilityHint(AppLocalization.string("Starts a new live call that continues this one"))
     }
@@ -1517,6 +1635,9 @@ struct ComposerBar: View, Equatable {
             tint: appState.canStartPhoneVoiceConversation ? .conduitAura.opacity(0.14) : .secondary.opacity(0.06),
             interactive: canOpenVoice
         )
+        .accessibilityShowsLargeContentViewer {
+            Label("Start voice conversation", systemImage: "waveform")
+        }
         .accessibilityLabel(Text("Start voice conversation"))
         .accessibilityHint(appState.phoneVoiceUnavailableReason
             ?? AppLocalization.string("Starts a voice call; in a chat with messages, the call works in that chat"))
@@ -1562,15 +1683,26 @@ struct ComposerBar: View, Equatable {
             tint: isCapturing ? .red.opacity(0.16) : .primary.opacity(0.025),
             interactive: canDictate || isActive
         )
-        .accessibilityLabel(isCapturing
-            ? Text("Stop dictation")
-            : (dictation.isStarting ? Text("Cancel dictation")
-                : (dictation.isTranscribing ? Text("Transcribing") : Text("Dictate"))))
+        .accessibilityShowsLargeContentViewer {
+            Label {
+                dictateTitle(isCapturing: isCapturing)
+            } icon: {
+                Image(systemName: isCapturing ? "mic.fill" : "mic")
+            }
+        }
+        .accessibilityLabel(dictateTitle(isCapturing: isCapturing))
         .accessibilityHint(isCapturing
             ? AppLocalization.string("Stops dictating; the words stay in the message")
             : (dictation.isStarting || dictation.isTranscribing ? "" : (appState.isVoiceInUse
                 ? AppLocalization.string("Dictation is unavailable while a voice conversation has the microphone")
                 : AppLocalization.string("Types what you say into the message"))))
+    }
+
+    private func dictateTitle(isCapturing: Bool) -> Text {
+        if isCapturing { return Text("Stop dictation") }
+        if dictation.isStarting { return Text("Cancel dictation") }
+        if dictation.isTranscribing { return Text("Transcribing") }
+        return Text("Dictate")
     }
 
     private func openVoiceFromComposer() {
@@ -1955,7 +2087,7 @@ struct ComposerBar: View, Equatable {
         appState.consumeComposerPrefill(appState.composerPrefillToken)
         replaceComposerText(appState.composerPrefillText)
         isFocused = !text.isEmpty
-        isShowingSlashSuggestions = slashPrefix != nil
+        isShowingSlashSuggestions = Self.shouldShowSlashSuggestions(for: text, isProgrammaticDraftRestore: false)
     }
 
     private func rotateAttachmentGeneration() {
@@ -2266,6 +2398,7 @@ struct ComposerBar: View, Equatable {
         case .stop: return AppLocalization.string("Stop response")
         case .steer: return AppLocalization.string("Steer with message")
         case .interrupt: return AppLocalization.string("Interrupt and correct response")
+        case .queue: return AppLocalization.string("Queue message")
         case .send: return AppLocalization.string("Send message")
         case .unavailable: return AppLocalization.string("Composer unavailable")
         }
@@ -2293,6 +2426,7 @@ struct ContextRingView: View {
                 .trim(from: 0, to: min(percent / 100, 1))
                 .stroke(Color.conduitAccent, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                 .rotationEffect(.degrees(-90))
+            // Fixed size: it sits inside the fixed 32 pt ring.
             Text("\(String(Int(percent.rounded())))%")
                 .font(.system(size: 9, weight: .semibold).monospacedDigit())
         }
@@ -2304,6 +2438,7 @@ struct ContextRingView: View {
 private struct SlashSuggestionsOverlay: View {
     let commands: [SlashCommand]
     let onSelected: (SlashCommand) -> Void
+    @ScaledMetric(relativeTo: .caption2) private var categoryBadgeSize: CGFloat = 9
 
     var body: some View {
         ScrollView {
@@ -2337,7 +2472,7 @@ private struct SlashSuggestionsOverlay: View {
                             // Category badge
                             if let category = cmd.category, !category.isEmpty {
                                 Text(category)
-                                    .font(.system(size: 9, weight: .medium))
+                                    .font(.system(size: categoryBadgeSize, weight: .medium))
                                     .foregroundStyle(.conduitAccent)
                                     .padding(.horizontal, 6)
                                     .padding(.vertical, 2)
@@ -2365,5 +2500,20 @@ private struct SlashSuggestionsOverlay: View {
                 .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+}
+
+/// The action button's glass, shared by its button and menu forms.
+private struct ComposerActionChrome: ViewModifier {
+    let tint: Color
+    let action: ComposerAction
+
+    func body(content: Content) -> some View {
+        content.conduitGlassControl(
+            cornerRadius: ComposerBar.controlSize / 2,
+            tint: tint,
+            prominent: action == .send,
+            interactive: action != .unavailable
+        )
     }
 }

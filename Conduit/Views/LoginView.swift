@@ -281,7 +281,16 @@ struct AuthWebView: UIViewRepresentable {
             return webView
         }
         if let request = try? Self.dashboardRequest(normalizedBaseURL: normalized, cloudflareAccess: cloudflareAccess) {
-            webView.load(request)
+            if DashboardCookiePersistence.hasPendingStoreClear(for: websiteDataStoreIdentifier) {
+                // This store's last Sign Out or disconnect is still clearing;
+                // a session minted before it lands would be deleted (#788).
+                Task { @MainActor [weak webView] in
+                    await DashboardCookiePersistence.awaitPendingStoreClear(for: websiteDataStoreIdentifier)
+                    webView?.load(request)
+                }
+            } else {
+                webView.load(request)
+            }
         } else {
             Self.reportConstructionFailure(onError, detail: AppLocalization.string("dashboard sign-in request construction failed"))
         }

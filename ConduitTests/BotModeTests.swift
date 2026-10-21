@@ -2430,6 +2430,54 @@ final class BotModeTests: XCTestCase {
         )
     }
 
+    /// The bounded history reads before a send and on a foreground return
+    /// address the same store the resume does. With only the in-memory
+    /// registry consulted, a restored Bot Chat read the workspace's store,
+    /// got 404 and fell back to a resume carrying the whole transcript.
+    func testPersistedTailReadsFollowTheResumeScopeAfterRegistryLoss() async {
+        let harness = makeBotHarness(
+            configureDefaults: { defaults in
+                ChatResumeStore(defaults: defaults).setLastSession(
+                    .bot(botName: "atlas", label: "Scout", sessionID: "stored-1"),
+                    for: "default"
+                )
+            },
+            lifecycleOperations: ChatResumeLifecycleOperations(
+                loadCatalog: { _, _ in [self.makeSessionSummary(id: "ordinary-1", title: "Design review")] },
+                openSessionWithProfile: { _, id, _, _ in
+                    SessionResumeResult(
+                        sessionId: id,
+                        storedSessionId: id,
+                        messages: [],
+                        snapshot: SessionRuntimeSnapshot(object: ["running": .bool(false)])
+                    )
+                },
+                refreshContext: { _, _ in }
+            )
+        )
+        harness.appState.client = HermesClient(
+            connection: HermesConnection(baseUrl: "https://one.example", ticket: "ticket"),
+            profile: "default"
+        )
+        XCTAssertEqual(harness.appState.activeSessionId, "stored-1")
+        harness.appState.clearBotChatRegistryForTesting()
+
+        XCTAssertNil(
+            harness.appState.botConversationProfileForTesting("stored-1"),
+            "control: the registry alone no longer knows the chat"
+        )
+        XCTAssertEqual(
+            harness.appState.persistedTailProfileForTesting("stored-1"),
+            "atlas",
+            "the history read asks the bot's store, as the resume does"
+        )
+        XCTAssertEqual(
+            harness.appState.persistedTailProfileForTesting("ordinary-1"),
+            "default",
+            "an ordinary chat still reads the workspace's store"
+        )
+    }
+
     /// Bot evidence can live on an ALIAS of the stored id (a compaction tip, a
     /// runtime the rebind minted, a lineage root). Healing and the
     /// missing-saved-session gate are therefore evaluated across the
@@ -3308,6 +3356,67 @@ final class BotModeTests: XCTestCase {
             ordinaryTarget.appState.errorMessage,
             "Could not verify that workspace for this notification. Reconnect and try again.",
             "and it is not refused for missing evidence either"
+        )
+    }
+
+    /// #789: a roster or canonical lookup that failed leaves the workspace
+    /// unverified, not refused: nothing is adopted, the route retries, and
+    /// the error waits for its window to run out instead of showing while
+    /// a retry may still pass. The no-retry open says it at once.
+    func testUnverifiableWorkspaceIsRetriedNotRefused() async {
+        var rosterFails = true
+        var lookupFails = false
+        var resumedIDs: [String] = []
+        let harness = makeBotHarness(lifecycleOperations: ChatResumeLifecycleOperations(
+            loadCatalog: { _, _ in [self.makeSessionSummary(id: "ordinary-1", title: "Design review")] },
+            openSessionWithProfile: { _, id, _, _ in
+                resumedIDs.append(id)
+                return SessionResumeResult(
+                    sessionId: id,
+                    messages: [],
+                    snapshot: SessionRuntimeSnapshot(object: ["running": .bool(false)])
+                )
+            },
+            refreshContext: { _, _ in },
+            botRoster: { _ in
+                if rosterFails { throw RpcError(code: 5000, message: "state.db is locked") }
+                return BotRosterSnapshot(
+                    bots: [self.makeBot(name: "Atlas", canonicalID: "stored-atlas")],
+                    supportsBotProtocol: false
+                )
+            },
+            findBotChat: { _, _ in
+                if lookupFails { throw RpcError(code: 5000, message: "state.db is locked") }
+                return []
+            }
+        ))
+        let connection = HermesConnection(baseUrl: "https://one.example", ticket: "ticket")
+        harness.appState.client = HermesClient(connection: connection, profile: "default")
+        harness.appState.connection = connection
+        let target = ConduitNotificationTarget(profile: "analyst", sessionId: "stored-1", type: "approval")
+        let unverified = AppState.NotificationOpenOutcome.unverified(
+            "Could not verify that workspace for this notification. Reconnect and try again."
+        )
+
+        let rosterOutcome = await harness.appState.openNotificationTargetOutcome(target)
+        XCTAssertEqual(rosterOutcome, unverified)
+        XCTAssertNil(harness.appState.errorMessage, "a retry may still pass")
+        XCTAssertEqual(harness.appState.activeProfile, "default")
+        XCTAssertTrue(resumedIDs.isEmpty)
+
+        rosterFails = false
+        lookupFails = true
+        let lookupOutcome = await harness.appState.openNotificationTargetOutcome(target)
+        XCTAssertEqual(lookupOutcome, unverified)
+        XCTAssertNil(harness.appState.errorMessage)
+        XCTAssertEqual(harness.appState.activeProfile, "default")
+        XCTAssertTrue(resumedIDs.isEmpty)
+
+        let opened = await harness.appState.openNotificationTarget(target)
+        XCTAssertFalse(opened)
+        XCTAssertEqual(
+            harness.appState.errorMessage,
+            "Could not verify that workspace for this notification. Reconnect and try again."
         )
     }
 

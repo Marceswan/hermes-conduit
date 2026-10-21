@@ -64,6 +64,7 @@ final class AVAudioSession: NSObject {
         static let headphones = Port(rawValue: "Headphones")
         static let bluetoothHFP = Port(rawValue: "BluetoothHFP")
         static let bluetoothA2DP = Port(rawValue: "BluetoothA2DPOutput")
+        static let bluetoothLE = Port(rawValue: "BluetoothLE")
         static let usbAudio = Port(rawValue: "USBAudio")
         static let builtInReceiver = Port(rawValue: "Receiver")
         static let carAudio = Port(rawValue: "CarAudio")

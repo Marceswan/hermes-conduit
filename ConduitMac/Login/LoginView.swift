@@ -253,7 +253,7 @@ struct LoginView: View {
                         // OAuth and cloud dashboard logins do not provide a
                         // password credential that Conduit can safely reuse.
                         if let dashboardID = appState.resolveDashboardID(forURL: baseUrl, registerIfMissing: true) {
-                            KeychainHelper.clearCredentials(dashboardID: dashboardID)
+                            appState.clearSavedPassword(dashboardID: dashboardID)
                             KeychainHelper.clearNativeOAuthTokens(dashboardID: dashboardID)
                         }
                         appState.rememberDashboardURL(baseUrl)
@@ -685,7 +685,7 @@ struct LoginView: View {
                         requiresFaceID: useFaceID
                     ), dashboardID: dashboardID)
                 } else {
-                    KeychainHelper.clearCredentials(dashboardID: dashboardID)
+                    appState.clearSavedPassword(dashboardID: dashboardID)
                 }
                 if let access {
                     KeychainHelper.saveCloudflareAccess(access, origin: serverUrl, dashboardID: dashboardID)

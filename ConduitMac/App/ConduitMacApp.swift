@@ -64,6 +64,9 @@ struct ConduitMacApp: App {
     @State private var pendingExternalLink: ConduitAppLink?
 
     init() {
+        #if DEBUG
+        MacXCTestKeychain.isolateIfRunningUnderXCTest()
+        #endif
         MacDefaults.register()
         if !MacDefaults.isRunningUnderXCTest {
             SheetEscape.install()

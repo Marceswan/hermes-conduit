@@ -44,6 +44,9 @@ struct ChatView: View {
     @State private var rowDisclosure = ChatRowDisclosure()
     /// A run of steps opened or closed: its rows join or leave the stack.
     @State private var stepToggleRevision: UInt64 = 0
+    /// The transcript scroll view's identity; a new one builds it again
+    /// (ChatScrollEngineEvent.rebuildTranscript).
+    @State private var transcriptScrollID = 0
     /// Carries the engine's requests to AppState and ScrollViewProxy. Holds
     /// both weakly, so the engine never retains this view.
     @State private var scrollEventRouter = ChatScrollEventRouter()
@@ -458,10 +461,14 @@ struct ChatView: View {
                 }
 
                 // Fallback target for ScrollViewProxy before the engine has
-                // found the scroll view.
+                // found the scroll view. The composer is a bar the scroll
+                // view already insets for (V2's safe-area bar, or the
+                // stack below it), so the latest row ends one row spacing
+                // (plus this row's 1 pt) above it; extra padding here was
+                // empty space over the composer. OfflineChatTranscriptView
+                // ends with the same row.
                 Color.clear
                     .frame(height: 1)
-                    .padding(.bottom, 126)
                     .id(bottomAnchor)
             }
             .coordinateSpace(.named(ChatScrollEngine.coordinateSpaceName))
@@ -482,6 +489,7 @@ struct ChatView: View {
             }
         }
         .scrollDismissesKeyboard(.interactively)
+        .id(transcriptScrollID)
         .modifier(V2SoftTopScrollEdge(isOn: composerFloats))
         .onTapGesture {
             UIApplication.shared.sendAction(
@@ -534,6 +542,7 @@ struct ChatView: View {
                 // Reinstalled on appear; late events go nowhere meanwhile.
                 scrollEngine.onEvent = nil
                 scrollEventRouter.proxy = nil
+                scrollEventRouter.rebuildTranscript = nil
                 backfillViewportTask?.cancel()
                 latestAnimationTask?.cancel()
                 appState.removeChatViewportSnapshotProvider(id: viewportSnapshotProviderID)
@@ -711,6 +720,14 @@ struct ChatView: View {
             appState?.activeChatScrollSessionIdentity ?? .none
         }
         router.proxy = proxy
+        router.rebuildTranscript = { transcriptScrollID &+= 1 }
+        scrollEngine.liveTailShowing = { [weak appState = appState] in
+            guard let appState else { return false }
+            let live = appState.liveTurn
+            return appState.isBusy || appState.activeChatRepliesElsewhere
+                || !live.streamingText.isEmpty || live.reasoningSegment != nil
+                || appState.pendingComposerSendOnScreen != nil
+        }
         scrollEngine.onEvent = { [weak engine = scrollEngine, weak router] event in
             // Requests made while handling a UIKit callback can land in the
             // middle of a SwiftUI update; they run on the next turn.
@@ -732,6 +749,8 @@ private final class ChatScrollEventRouter {
     weak var appState: AppState?
     weak var engine: ChatScrollEngine?
     var proxy: ScrollViewProxy?
+    /// Builds the transcript's scroll view again (`transcriptScrollID`).
+    var rebuildTranscript: (@MainActor () -> Void)?
 
     func handle(_ event: ChatScrollEngineEvent) {
         guard let appState else { return }
@@ -758,6 +777,8 @@ private final class ChatScrollEventRouter {
                 for: ChatView.activeOrFallbackScrollSessionKey(in: appState)
             )
             scrollWithoutAnimation { $0.scrollTo(anchor, anchor: .top) }
+        case .rebuildTranscript:
+            rebuildTranscript?()
         }
     }
 
@@ -1285,6 +1306,29 @@ struct UserMessageContent: View, Equatable {
     }
 }
 
+/// A long press on a picture from older history shows what Hermes' vision
+/// saw in it (#887), which Hermes used to save in the message itself.
+private struct ImageDescriptionMenu: ViewModifier {
+    let description: String?
+
+    func body(content: Content) -> some View {
+        if let description {
+            content.contextMenu {
+                Section("Description") {
+                    Text(description)
+                }
+                Button {
+                    UIPasteboard.general.string = description
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+            }
+        } else {
+            content
+        }
+    }
+}
+
 /// Offers its content no more width than the content would take
 /// unbounded: a view that fills whatever it's offered, as Markdown text
 /// does, takes only its natural width when that is narrower.
@@ -1409,9 +1453,13 @@ private struct UserImageAttachmentPreview: View {
                 imagePreview(image)
             } else if loadsFromHermes && localFileURL == nil && !gatewayLoadFailed {
                 loadingPlaceholder
+                    .modifier(ImageDescriptionMenu(description: attachment.imageDescription))
+                    .modifier(OptionalAccessibilityHint(hint: attachment.imageDescription))
             } else if localFileURL != nil && !localPreviewFailed {
                 // Local file decoding off-main on a cache miss.
                 loadingPlaceholder
+                    .modifier(ImageDescriptionMenu(description: attachment.imageDescription))
+                    .modifier(OptionalAccessibilityHint(hint: attachment.imageDescription))
             } else {
                 Label(
                     (gatewayLoadFailed || localPreviewFailed) ? AppLocalization.string("Image unavailable") : AppLocalization.string("Image attached"),
@@ -1422,6 +1470,8 @@ private struct UserImageAttachmentPreview: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
                 .background(Color.white.opacity(0.13), in: Capsule())
+                .modifier(ImageDescriptionMenu(description: attachment.imageDescription))
+                .modifier(OptionalAccessibilityHint(hint: attachment.imageDescription))
             }
         }
         .task(id: "\(attachment.uri)|\(inlineImageIdentity)|\(gatewayResolver?.imageCacheKey(for: attachment) ?? "")") {
@@ -1561,7 +1611,9 @@ private struct UserImageAttachmentPreview: View {
                     openTask = nil
                     opening = false
                 }
-                .accessibilityLabel("Attached image: \(attachment.name)")
+                .modifier(ImageDescriptionMenu(description: attachment.imageDescription))
+                .accessibilityLabel("Attached image: \(attachment.imageDescription ?? attachment.name)")
+                .accessibilityAddTraits(.isImage)
     }
 
     /// Opens the full-resolution original: the local file when the photo
@@ -2028,14 +2080,14 @@ struct SystemBubble: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: isRuntimeNotice ? "info.circle" : "terminal")
-                .font(.system(size: 13, weight: .medium))
+                .font(.footnote.weight(.medium))
                 .foregroundStyle(.conduitAccent)
                 .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(isRuntimeNotice ? AppLocalization.string("System") : AppLocalization.string("Command"))
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(.conduitAccent)
                         .textCase(.uppercase)
                         .tracking(0.5)
@@ -2317,7 +2369,7 @@ private struct VoiceCallMarkerCard: View {
                 }
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.conduitTertiary)
                     .accessibilityHidden(true)
             }
             .padding(14)
@@ -2387,7 +2439,7 @@ struct SettledThinkingCardContent: View, Equatable {
                     Spacer(minLength: 8)
                     Image(systemName: "chevron.down")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.conduitTertiary)
                         .rotationEffect(.degrees(isExpanded ? 180 : 0))
                         .accessibilityHidden(true)
                 }
@@ -2527,6 +2579,8 @@ private struct SettledToolCardContent: View, Equatable {
     let sizeCategory: ContentSizeCategory
     /// Drawn inside a run's card; see SettledThinkingCardContent.
     var grouped = false
+    /// Resolves a picture or audio file a tool made on the Hermes host.
+    var gatewayResolver: GatewayMediaDataURLResolver?
     @Environment(\.chatRowDisclosure) private var disclosure
     /// Nil until tapped here; see SettledThinkingCardContent.
     @State private var tapped: Bool?
@@ -2543,6 +2597,13 @@ private struct SettledToolCardContent: View, Equatable {
             && lhs.expandToolsByDefault == rhs.expandToolsByDefault
             && lhs.sizeCategory == rhs.sizeCategory
             && lhs.grouped == rhs.grouped
+            && lhs.gatewayResolver === rhs.gatewayResolver
+    }
+
+    /// The readable part of a finished call's result, if Conduit has one.
+    private var presentation: ToolResultPresentation? {
+        guard let tool = message.tool, tool.status == .complete else { return nil }
+        return ToolResultPresentation.cached(toolName: tool.name, output: tool.output)
     }
 
     var body: some View {
@@ -2603,7 +2664,7 @@ private struct SettledToolCardContent: View, Equatable {
                             #if os(macOS) // MAC: tertiary is nearly invisible on the light card fill (1.65:1); primary 60% clears 3:1
                             .foregroundStyle(Color.primary.opacity(0.6))
                             #else // MAC:
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.conduitTertiary)
                             #endif // MAC:
                             .rotationEffect(.degrees(expanded ? 180 : 0))
                             .accessibilityHidden(true)
@@ -2619,34 +2680,24 @@ private struct SettledToolCardContent: View, Equatable {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(tool.name)
                             .font(.system(.caption2, design: .monospaced).weight(.semibold))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.conduitTertiary)
+                        let presentation = self.presentation
+                        if let presentation {
+                            ToolResultBodyView(presentation: presentation, gatewayResolver: gatewayResolver)
+                        }
                         if let input = tool.input, !input.isEmpty {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(AppLocalization.string("Input"))
-                                    .font(.caption2.bold())
-                                    .foregroundStyle(.tertiary)
-                                SelectableTextView(
-                                    text: ToolCard.truncateForDisplay(input, maxLines: 500),
-                                    font: .monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .regular),
-                                    textColor: .secondaryLabel,
-                                    maximumNumberOfLines: 0
-                                )
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
+                            ToolRawTextSection(
+                                title: AppLocalization.string("Input"),
+                                text: ToolResultPresentation.cachedPrettyJSON(input) ?? input
+                            )
                         }
                         if let output = tool.output, !output.isEmpty {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(AppLocalization.string("Output"))
-                                    .font(.caption2.bold())
-                                    .foregroundStyle(.tertiary)
-                                SelectableTextView(
-                                    text: ToolCard.truncateForDisplay(output, maxLines: 500),
-                                    font: .monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .regular),
-                                    textColor: .secondaryLabel,
-                                    maximumNumberOfLines: 0
-                                )
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
+                            // What the tool returned, word for word, under
+                            // the readable part above.
+                            ToolRawTextSection(
+                                title: AppLocalization.string("Output"),
+                                text: ToolResultPresentation.cachedPrettyJSON(output) ?? output
+                            )
                         }
                     }
                     .padding(.horizontal, 11)
@@ -2680,7 +2731,8 @@ struct ToolCard: View {
                 message: message,
                 expandToolsByDefault: rowState.displayPreferences.expandToolsByDefault,
                 sizeCategory: sizeCategory,
-                grouped: grouped
+                grouped: grouped,
+                gatewayResolver: appState.gatewayMediaResolver
             )
             .equatable()
         }
@@ -2694,6 +2746,27 @@ struct ToolCard: View {
         let lines = text.components(separatedBy: "\n")
         guard lines.count > maxLines else { return text }
         return lines.prefix(maxLines).joined(separator: "\n") + AppLocalization.string("\n… (\(lines.count - maxLines) more lines)")
+    }
+}
+
+/// One labeled block of a tool's raw input or result, in monospace.
+private struct ToolRawTextSection: View {
+    let title: String
+    let text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption2.bold())
+                .foregroundStyle(.conduitTertiary)
+            SelectableTextView(
+                text: ToolCard.truncateForDisplay(text, maxLines: ToolResultPresentation.displayLineLimit),
+                font: .monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .regular),
+                textColor: .secondaryLabel,
+                maximumNumberOfLines: 0
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
 
@@ -2819,7 +2892,7 @@ struct ClarifyCard: View {
     private func send(_ answer: String, for question: ClarifyQuestion, in clarify: ClarifyActivity) {
         let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, question.isAnswerable else { return }
-        customAnswers[question.id] = ""
+        // Keep the typed answer available if submission fails.
         Task { await appState.respondToClarify(requestId: clarify.requestId, questionId: question.id, answer: trimmed) }
     }
 
