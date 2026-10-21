@@ -13,140 +13,17 @@ import SwiftUI
 //   - Open reveals the downloaded file in Finder (`MediaPreviewPresenter`, quarantined first);
 //     a page opens `HTMLPreviewSheet` in a sheet.
 //   - The loading state is a plain value (`MacArtifactsListState`) so its paging rules are tested
-//     without a view.
+//     without a view; with `MacArtifactsSource` and `MacArtifactOpen` it is in
+//     MacArtifactsListState.swift (no upstream counterpart).
 //   - The load also runs again when the plugin's capability report lands after the pane opened
 //     (upstream's list waits for the next key change).
-
-/// The list's loading state. Each method is one step of upstream's `reload()` / `loadMore()`;
-/// the view does the awaiting between `begin...` and `finish...`.
-struct MacArtifactsListState {
-    /// Every row read so far, files the host no longer has included (see `visibleItems`).
-    var items: [ArtifactItem] = []
-    /// Nil once the history is read to its start.
-    var nextBefore: Int?
-    /// What the rows were read for.
-    var loadedKey: ArtifactsListKey?
-    /// A reload is reading. A page read does not set this: that swapped a list with nothing to
-    /// show for the centred spinner, which unmounted the pager and cancelled its read (upstream
-    /// #1068).
-    var isLoading = false
-    /// The cursor the next page is being read from. A cursor, not a flag, so a pager restarted
-    /// on a new cursor is not turned away by the old read still unwinding.
-    var loadingBefore: Int?
-    var failure: String?
-    private(set) var generation = 0
-
-    enum Outcome {
-        case page(ArtifactPage)
-        case cancelled
-        case failed(String)
-    }
-
-    /// A page read in flight: its cursor, the key it was read for and the ticket it must present.
-    struct PageRequest: Equatable {
-        let before: Int
-        let key: ArtifactsListKey
-        let ticket: Int
-    }
-
-    /// A file the host no longer has. A link has no file to miss (upstream #1068 makes the model
-    /// say so; this keeps the Mac list right until that merge step lands).
-    static func isMissing(_ item: ArtifactItem) -> Bool {
-        item.source != .link && !item.exists
-    }
-
-    /// The rows to draw. An older plugin lists missing files whatever it was asked.
-    func visibleItems(showMissing: Bool) -> [ArtifactItem] {
-        showMissing ? items : items.filter { !MacArtifactsListState.isMissing($0) }
-    }
-
-    /// Starts reading `key`; the result carries the returned ticket.
-    mutating func beginReload(_ key: ArtifactsListKey) -> Int {
-        generation &+= 1
-        if !key.showsRows(of: loadedKey) {
-            // Another server's list isn't shown, even dimmed, under this one.
-            items = []
-            nextBefore = nil
-            failure = nil
-            loadedKey = nil
-        }
-        isLoading = true
-        return generation
-    }
-
-    mutating func finishReload(_ outcome: Outcome, key: ArtifactsListKey, ticket: Int) {
-        if ticket == generation { isLoading = false }
-        switch outcome {
-        case .cancelled:
-            return
-        case .page(let page):
-            guard ticket == generation else { return }
-            items = page.items
-            nextBefore = page.nextBefore
-            failure = nil
-            loadedKey = key
-        case .failed(let message):
-            // A failed refresh keeps the list it was refreshing (and the end of it keeps paging).
-            guard ticket == generation, loadedKey != key else { return }
-            failure = message
-            items = []
-            nextBefore = nil
-            loadedKey = key
-        }
-    }
-
-    /// The next page to read, or nil when there is none to read now: no cursor, rows read for
-    /// another key, a reload reading, or this cursor already being read.
-    mutating func beginNextPage(current: ArtifactsListKey) -> PageRequest? {
-        guard let before = nextBefore, let key = loadedKey, key == current, !isLoading,
-              loadingBefore != before else { return nil }
-        loadingBefore = before
-        return PageRequest(before: before, key: key, ticket: generation)
-    }
-
-    mutating func finishNextPage(_ outcome: Outcome, request: PageRequest) {
-        if loadingBefore == request.before { loadingBefore = nil }
-        switch outcome {
-        case .cancelled:
-            return
-        case .page(let page):
-            guard request.ticket == generation else { return }
-            items = ArtifactsClient.merged(items, with: page.items)
-            nextBefore = page.nextBefore
-        case .failed(let message):
-            // The end of the list offers Try Again.
-            guard request.ticket == generation else { return }
-            failure = message
-        }
-    }
-}
-
-/// Where the list reads artifacts from. The defaults read the app. A test swaps them: the plugin
-/// report on `AppState` is `private(set)` and its dashboard bridge needs a live host.
-struct MacArtifactsSource {
-    var supported: @MainActor (AppState) -> Bool = { $0.supportsArtifacts }
-    var client: @MainActor (AppState) -> ArtifactsClient = { $0.artifactsClient }
-}
-
-private struct MacArtifactsSourceKey: EnvironmentKey {
-    static let defaultValue = MacArtifactsSource()
-}
-
-extension EnvironmentValues {
-    var macArtifactsSource: MacArtifactsSource {
-        get { self[MacArtifactsSourceKey.self] }
-        set { self[MacArtifactsSourceKey.self] = newValue }
-    }
-}
-
-/// What Open does for an item.
-enum MacArtifactOpen: Equatable {
-    case link(URL)
-    /// The host no longer has the file.
-    case missing
-    case page(path: String)
-    case file(path: String)
-}
+//   - The pager also restarts when a reload ends, and a page that answers with the cursor it was
+//     asked for ends the list (upstream's pager waits on an id that did not change).
+//   - No row of another server is drawn while that server's list loads, and a dashboard change
+//     cancels an open in flight (upstream draws the old rows dimmed for one pass).
+//   - A page that cannot be drawn in the sheet (no data URL, over the size limit, not UTF-8)
+//     opens as a file: download, quarantine, Finder (upstream ends without a message, or says the
+//     file is gone).
 
 struct MacArtifactsList: View {
     @EnvironmentObject private var appState: AppState
@@ -160,11 +37,7 @@ struct MacArtifactsList: View {
     let query: String
     let showInChat: (ArtifactItem) -> Void
 
-    /// Upstream's key (`ArtifactsClient.showMissingKey` once that merge step lands), so the
-    /// setting is one setting.
-    static let showMissingKey = "artifacts.showMissing"
-    static let showMissingDefault = false
-    @AppStorage(MacArtifactsList.showMissingKey) private var showMissing = MacArtifactsList.showMissingDefault
+    @AppStorage(ArtifactsClient.showMissingKey) private var showMissing = false
     @State private var filter: ArtifactFilter = .all
     @State private var state = MacArtifactsListState()
     @State private var openingID: String?
@@ -196,8 +69,18 @@ struct MacArtifactsList: View {
     }
 
     private var currentKey: ArtifactsListKey {
-        ArtifactsListKey(dashboard: appState.activeDashboardID, profile: appState.activeProfile, filter: filter,
-                         query: query.trimmingCharacters(in: .whitespacesAndNewlines))
+        ArtifactsListKey(dashboard: source.dashboardID(appState), profile: appState.activeProfile, filter: filter,
+                         query: query.trimmingCharacters(in: .whitespacesAndNewlines), showMissing: showMissing)
+    }
+
+    /// What restarts the pager: a new cursor, or a reload starting (`generation`) or ending
+    /// (`isLoading`). Without them, a page read that a reload made stale never restarts when the
+    /// reload returns the same cursor: not when it ends before the view draws (generation), not
+    /// when it takes longer (isLoading).
+    private struct PagerID: Equatable {
+        let nextBefore: Int?
+        let generation: Int
+        let isLoading: Bool
     }
 
     var body: some View {
@@ -222,6 +105,11 @@ struct MacArtifactsList: View {
                 .macFormSheetSize(minWidth: 560, idealWidth: 800, minHeight: 420, idealHeight: 640)
         }
         .onDisappear { openTask?.cancel() }
+        .onChange(of: currentKey.dashboard) { _, _ in
+            // A download or page read for the old server must not open its file under the new one.
+            openTask?.cancel()
+            openingID = nil
+        }
         .alert(
             missingIsTooLarge ? Text("Too large to open on this Mac") : Text("This file is no longer on your Hermes host."),
             isPresented: Binding(get: { missing != nil }, set: { if !$0 { missing = nil } })
@@ -287,7 +175,7 @@ struct MacArtifactsList: View {
 
     @ViewBuilder
     private var content: some View {
-        let visible = state.visibleItems(showMissing: showMissing)
+        let visible = state.rows(for: currentKey)
         if !source.supported(appState) {
             unavailable(
                 title: Text("Update the Conduit plugin"),
@@ -347,7 +235,7 @@ struct MacArtifactsList: View {
                     // Reaching the end reads the next page.
                     ProgressView()
                         .frame(maxWidth: .infinity, minHeight: 60)
-                        .task(id: state.nextBefore) { await loadMore() }
+                        .task(id: PagerID(nextBefore: state.nextBefore, generation: state.generation, isLoading: state.isLoading)) { await loadMore() }
                 }
             }
         }
@@ -411,8 +299,8 @@ struct MacArtifactsList: View {
         Button {
             open(item)
         } label: {
-            MacArtifactThumbnail(item: item, resolver: appState.gatewayMediaResolver,
-                                 dashboard: appState.activeDashboardID, profile: appState.activeProfile)
+            MacArtifactThumbnail(item: item, readDataURL: source.reader(appState).dataURL,
+                                 dashboard: source.dashboardID(appState), profile: appState.activeProfile)
                 .aspectRatio(1, contentMode: .fit)
                 .overlay {
                     if openingID == item.id {
@@ -423,11 +311,11 @@ struct MacArtifactsList: View {
                 .overlay {
                     RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08))
                 }
-                .opacity(MacArtifactsListState.isMissing(item) ? 0.45 : 1)
+                .opacity(item.exists ? 1 : 0.45)
                 .overlay(alignment: .topLeading) {
                     // Over the dimming, which alone reads as a dark picture, and clear of the
                     // name along the bottom.
-                    if MacArtifactsListState.isMissing(item) {
+                    if !item.exists {
                         Label("Missing", systemImage: "exclamationmark.circle.fill")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.white)
@@ -476,7 +364,7 @@ struct MacArtifactsList: View {
                 RoundedRectangle(cornerRadius: MacSidebarMetrics.sessionCardRadius, style: .continuous)
                     .strokeBorder(Color.primary.opacity(0.08))
             }
-            .opacity(MacArtifactsListState.isMissing(item) ? 0.55 : 1)
+            .opacity(item.exists ? 1 : 0.55)
             .contentShape(RoundedRectangle(cornerRadius: MacSidebarMetrics.sessionCardRadius, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -514,7 +402,7 @@ struct MacArtifactsList: View {
     private func detail(_ item: ArtifactItem) -> String {
         var parts = [Self.kindLabel(item.kind)]
         if item.source == .attached { parts.append(AppLocalization.string("You sent")) }
-        if MacArtifactsListState.isMissing(item) {
+        if !item.exists {
             parts.append(AppLocalization.string("No longer on the host"))
         } else if let size = item.size, item.kind != .link {
             parts.append(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
@@ -531,7 +419,7 @@ struct MacArtifactsList: View {
     }
 
     private func accessibilityName(_ item: ArtifactItem) -> String {
-        [item.name, Self.kindLabel(item.kind), MacArtifactsListState.isMissing(item) ? AppLocalization.string("No longer on the host") : "",
+        [item.name, Self.kindLabel(item.kind), item.exists ? "" : AppLocalization.string("No longer on the host"),
          chatIsOpen ? "" : item.sessionTitle]
             .filter { !$0.isEmpty }
             .joined(separator: ", ")
@@ -568,7 +456,7 @@ struct MacArtifactsList: View {
     static func openAction(for item: ArtifactItem) -> MacArtifactOpen? {
         if let url = item.url, item.path == nil { return .link(url) }
         guard let path = item.path else { return nil }
-        guard !MacArtifactsListState.isMissing(item) else { return .missing }
+        guard item.exists else { return .missing }
         return item.kind == .page ? .page(path: path) : .file(path: path)
     }
 
@@ -579,7 +467,7 @@ struct MacArtifactsList: View {
             return
         }
         guard openingID == nil else { return }
-        let resolver = appState.gatewayMediaResolver
+        let reader = source.reader(appState)
         switch action {
         case .link:
             break   // opened above
@@ -590,38 +478,50 @@ struct MacArtifactsList: View {
             openingID = item.id
             openTask = Task { @MainActor in
                 defer { openingID = nil }
-                guard let dataURL = await resolver.dataURL(for: path), !Task.isCancelled else { return }
-                guard let html = HTMLPreviewPage.decodedDocument(fromDataURL: dataURL) else {
-                    openFailed(item)
+                if let dataURL = await reader.dataURL(path), !Task.isCancelled,
+                   let html = HTMLPreviewPage.decodedDocument(fromDataURL: dataURL) {
+                    page = OpenPage(name: item.name, html: html)
                     return
                 }
-                page = OpenPage(name: item.name, html: html)
+                // Not drawable in the sheet (no data URL, over the size limit, not UTF-8): open it
+                // like any other file, which also says why when it cannot.
+                guard !Task.isCancelled else { return }
+                await openFile(item, path: path, reader: reader)
             }
         case .file(let path):
             openingID = item.id
             openTask = Task { @MainActor in
                 defer { openingID = nil }
-                switch await resolver.file(for: path) {
-                case .downloaded(let download):
-                    guard !Task.isCancelled else {
-                        MediaPreviewPresenter.removeDirectory(download.directory)
-                        return
-                    }
-                    if MediaPreviewPresenter.shared.present(downloaded: download) { return }
-                case .tooLarge:
-                    openFailed(item, tooLarge: true)
-                    return
-                case .unavailable:
-                    break
-                }
-                // A cancelled download reads as unavailable; no fallback for a list that has gone.
-                guard !Task.isCancelled else { return }
-                guard let dataURL = await resolver.dataURL(for: path), !Task.isCancelled else { return }
-                guard await MediaPreviewPresenter.shared.present(dataURL: dataURL, filename: item.name) else {
-                    openFailed(item)
-                    return
-                }
+                await openFile(item, path: path, reader: reader)
             }
+        }
+    }
+
+    /// Downloads the file and shows it (quarantined, in Finder), else shows it from its data URL.
+    private func openFile(_ item: ArtifactItem, path: String, reader: MacArtifactsReader) async {
+        switch await reader.file(path) {
+        case .downloaded(let download):
+            guard !Task.isCancelled else {
+                MediaPreviewPresenter.removeDirectory(download.directory)
+                return
+            }
+            if source.present(download) { return }
+        case .tooLarge:
+            openFailed(item, tooLarge: true)
+            return
+        case .unavailable:
+            break
+        }
+        // A cancelled download reads as unavailable; no fallback for a list that has gone.
+        guard !Task.isCancelled else { return }
+        guard let dataURL = await reader.dataURL(path) else {
+            openFailed(item)
+            return
+        }
+        guard !Task.isCancelled else { return }
+        guard await source.presentDataURL(dataURL, item.name) else {
+            openFailed(item)
+            return
         }
     }
 
@@ -640,7 +540,8 @@ struct MacArtifactsList: View {
         let outcome: MacArtifactsListState.Outcome
         do {
             outcome = .page(try await source.client(appState).page(
-                profile: key.profile, sessionIDs: scope.sessionIDs, filter: key.filter, query: key.query
+                profile: key.profile, sessionIDs: scope.sessionIDs, filter: key.filter, query: key.query,
+                showMissing: key.showMissing
             ))
         } catch is CancellationError {
             outcome = .cancelled
@@ -656,7 +557,7 @@ struct MacArtifactsList: View {
         do {
             outcome = .page(try await source.client(appState).page(
                 profile: request.key.profile, sessionIDs: scope.sessionIDs, filter: request.key.filter,
-                query: request.key.query, before: request.before
+                query: request.key.query, showMissing: request.key.showMissing, before: request.before
             ))
         } catch is CancellationError {
             outcome = .cancelled
@@ -707,7 +608,7 @@ private struct MacArtifactIcon: View {
 /// tile.
 private struct MacArtifactThumbnail: View {
     let item: ArtifactItem
-    let resolver: GatewayMediaDataURLResolver
+    let readDataURL: @MainActor (String) async -> String?
     let dashboard: UUID?
     let profile: String
     @State private var image: NSImage?
@@ -767,7 +668,7 @@ private struct MacArtifactThumbnail: View {
             return
         }
         image = nil
-        guard let dataURL = await resolver.dataURL(for: path), !Task.isCancelled else { return }
+        guard let dataURL = await readDataURL(path), !Task.isCancelled else { return }
         let thumbnail = await Task.detached(priority: .utility) { () -> NSImage? in
             guard let data = DataURLLimits.decodeBase64DataURL(dataURL),
                   let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }

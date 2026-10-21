@@ -1,56 +1,17 @@
 import AppKit
+import SwiftUI
+import WebKit
 import XCTest
 @testable import ConduitMac
 
-enum ArtifactsTestSupport {
-    /// The construction MacDashboardSwitcherTests uses: no saved connection, no network, nothing in
-    /// the live app's defaults.
-    @MainActor
-    static func isolatedAppState(defaults: UserDefaults, scratch: URL) -> AppState {
-        AppState(
-            defaults: defaults,
-            loadSavedConnection: false,
-            dashboardRegistry: SavedDashboardRegistry(),
-            clearSessionPresentationCache: {},
-            sessionPresentationCache: SessionPresentationCache(defaults: defaults),
-            profileAppearanceStore: ProfileAppearanceStore(
-                defaults: defaults,
-                avatarsRoot: scratch.appendingPathComponent("appearance", isDirectory: true),
-                legacyAvatarDirectories: []
-            )
-        )
-    }
-
-    /// A row as the host's plugin sends it.
-    static func row(_ fields: [String: Any] = [:]) -> [String: Any] {
-        var row: [String: Any] = [
-            "kind": "image", "source": "delivered", "name": "map.png", "path": "/root/out/map.png",
-            "exists": true, "size": 2048, "session_id": "s1", "session_title": "Weekend trip",
-            "message_id": 12, "timestamp": Date().timeIntervalSince1970,
-        ]
-        row.merge(fields) { _, new in new }
-        return row
-    }
-}
-
-/// The Mac Artifacts list's rules: the loading state machine (a Mac twin of upstream's
+/// The Mac Artifacts list's rules: the loading state machine (the Mac side of upstream's
 /// `ArtifactsList` state), what Open does for each kind of item, and the copy actions.
 @MainActor
 final class MacArtifactsListTests: XCTestCase {
     private let key = ArtifactsListKey(dashboard: nil, profile: "default", filter: .all, query: "")
 
     private func item(_ fields: [String: Any] = [:]) throws -> ArtifactItem {
-        var row: [String: Any] = [
-            "kind": "image", "source": "delivered", "name": "map.png", "path": "/root/out/map.png",
-            "exists": true, "size": 2048, "session_id": "s1", "session_title": "Weekend trip",
-            "message_id": 12, "timestamp": 1_760_000_000.0,
-        ]
-        row.merge(fields) { _, new in new }
-        return try XCTUnwrap(ArtifactItem(row))
-    }
-
-    private func gone(_ name: String, message: Int) throws -> ArtifactItem {
-        try item(["exists": false, "path": "/root/\(name)", "kind": "document", "name": name, "message_id": message])
+        try ArtifactsTestSupport.item(fields)
     }
 
     private func loaded(_ items: [ArtifactItem], next: Int?) -> MacArtifactsListState {
@@ -146,8 +107,23 @@ final class MacArtifactsListTests: XCTestCase {
         let second = try XCTUnwrap(state.beginNextPage(current: key), "cursor 8 is a new read")
         XCTAssertEqual(second.before, 8)
         state.finishNextPage(.cancelled, request: first)
-        XCTAssertEqual(state.loadingBefore, 8, "the old read clears only its own cursor")
+        XCTAssertEqual(state.loadingBefore, 8, "the old read does not clear the cursor of the read that replaced it")
         state.finishNextPage(.page(ArtifactPage(items: [], nextBefore: nil)), request: second)
+        XCTAssertNil(state.loadingBefore)
+    }
+
+    func testAReloadThatReturnsTheSameCursorReadsItAgain() throws {
+        var state = loaded([try item()], next: 5)
+        let stale = try XCTUnwrap(state.beginNextPage(current: key))
+        let reload = state.beginReload(key)
+        XCTAssertNil(state.loadingBefore, "the read in flight is stale: the reload drops its cursor")
+        state.finishReload(.page(ArtifactPage(items: [try item()], nextBefore: 5)), key: key, ticket: reload)
+        let again = try XCTUnwrap(state.beginNextPage(current: key), "the same cursor 5 is read again for the new list")
+        XCTAssertEqual(again.before, 5)
+        state.finishNextPage(.cancelled, request: stale)
+        XCTAssertEqual(state.loadingBefore, 5, "the stale read does not clear it")
+        XCTAssertNil(state.beginNextPage(current: key), "so the cursor is not read twice at once")
+        state.finishNextPage(.page(ArtifactPage(items: [], nextBefore: nil)), request: again)
         XCTAssertNil(state.loadingBefore)
     }
 
@@ -182,14 +158,28 @@ final class MacArtifactsListTests: XCTestCase {
         XCTAssertNil(state.loadingBefore)
     }
 
+    func testAHostThatRepeatsTheCursorEndsTheList() throws {
+        var state = loaded([try item()], next: 5)
+        let request = try XCTUnwrap(state.beginNextPage(current: key))
+        // The cursor that was just read comes back: nothing is older, and a pager waiting on an
+        // id that does not change would otherwise show its spinner for ever.
+        state.finishNextPage(.page(ArtifactPage(items: [], nextBefore: 5)), request: request)
+        XCTAssertNil(state.nextBefore)
+        XCTAssertNil(state.beginNextPage(current: key))
+        XCTAssertEqual(state.items.count, 1)
+    }
+
     func testAPageTheFilterEmptiedStillPagesOn() throws {
-        // Every row of the first page is a file the host no longer has.
-        var state = loaded([try gone("a.pdf", message: 9), try gone("b.pdf", message: 8)], next: 5)
-        XCTAssertTrue(state.visibleItems(showMissing: false).isEmpty)
-        XCTAssertNotNil(state.nextBefore, "so the pager reads on")
+        // Every row of the first page is a file the host no longer has, and the page is read
+        // with the missing files hidden: the parse leaves it empty but keeps the cursor.
+        let response = ArtifactsTestSupport.response(
+            [ArtifactsTestSupport.row(["exists": false, "path": "/root/a.pdf", "kind": "document", "name": "a.pdf"])], next: 5)
+        var state = loaded(try ArtifactsClient.parse(response, showMissing: false).items, next: 5)
+        XCTAssertTrue(state.items.isEmpty)
+        XCTAssertEqual(state.nextBefore, 5, "so the pager reads on")
         let request = try XCTUnwrap(state.beginNextPage(current: key))
         state.finishNextPage(.page(ArtifactPage(items: [try item()], nextBefore: nil)), request: request)
-        XCTAssertEqual(state.visibleItems(showMissing: false).map(\.name), ["map.png"])
+        XCTAssertEqual(state.items.map(\.name), ["map.png"])
     }
 
     // MARK: missing files
@@ -197,9 +187,8 @@ final class MacArtifactsListTests: XCTestCase {
     func testALinkIsNeverMissing() throws {
         let link = try item(["kind": "link", "source": "link", "path": NSNull(), "url": "https://curate.example/r",
                              "name": "Curate", "exists": false])
-        XCTAssertFalse(MacArtifactsListState.isMissing(link))
-        XCTAssertTrue(MacArtifactsListState.isMissing(try gone("a.pdf", message: 1)))
-        XCTAssertFalse(MacArtifactsListState.isMissing(try item()))
+        XCTAssertTrue(link.exists, "the model says a link has no file to miss (upstream #1068)")
+        XCTAssertFalse(try ArtifactsTestSupport.gone("a.pdf", message: 1).exists)
     }
 
     // MARK: open
@@ -211,7 +200,7 @@ final class MacArtifactsListTests: XCTestCase {
         let page = try item(["kind": "page", "name": "chart.html", "path": "/root/chart.html"])
         XCTAssertEqual(MacArtifactsList.openAction(for: page), .page(path: "/root/chart.html"))
         XCTAssertEqual(MacArtifactsList.openAction(for: try item()), .file(path: "/root/out/map.png"))
-        XCTAssertEqual(MacArtifactsList.openAction(for: try gone("a.pdf", message: 1)), .missing,
+        XCTAssertEqual(MacArtifactsList.openAction(for: try ArtifactsTestSupport.gone("a.pdf", message: 1)), .missing,
                        "a file the host lost opens the alert, not a download")
     }
 
@@ -246,27 +235,59 @@ final class MacArtifactsListTests: XCTestCase {
 }
 
 /// The list hosted in a window, reading from a fake host. `AppState` cannot be made to report the
-/// `artifacts` capability from a test, so the list's `MacArtifactsSource` is swapped.
+/// `artifacts` capability, to change its dashboard or to open a file from a test, so the list's
+/// `MacArtifactsSource` is swapped.
 @MainActor
 final class MacArtifactsListHostedTests: XCTestCase {
+    /// The fake plugin: records each request and can hold the ones a test picks.
+    @MainActor
     private final class Host {
         var paths: [String] = []
         var pages: [[String: Any]] = []
         var failure: Error?
-        func request(_ path: String) throws -> [String: Any] {
+        var holds: (String) -> Bool = { _ in false }
+        var held: [CheckedContinuation<Void, Never>] = []
+
+        func request(_ path: String) async throws -> [String: Any] {
             paths.append(path)
+            if holds(path) { await withCheckedContinuation { held.append($0) } }
             if let failure { throw failure }
-            guard !pages.isEmpty else { return ["ok": true, "items": [], "next_before": NSNull()] }
+            guard !pages.isEmpty else { return ArtifactsTestSupport.response([]) }
             return pages.count > 1 ? pages.removeFirst() : pages[0]
         }
+
+        func release() {
+            let waiting = held
+            held = []
+            waiting.forEach { $0.resume() }
+        }
+    }
+
+    /// What the swapped source answers; a test changes it, then calls `render()` for the view to
+    /// read the new `supported` and `dashboard`.
+    @MainActor
+    private final class Env {
+        var supported = true
+        var dashboard: UUID?
+        var dataURLs: [String: String] = [:]
+        var file: GatewayMediaFileResult = .unavailable
+        var holdFile = false
+        var heldFile: CheckedContinuation<Void, Never>?
+        var presented: [URL] = []
+        var presentResult = true
+        var presentedDataURLs: [String] = []
+        var presentDataURLResult = true
     }
 
     private var suite: (defaults: UserDefaults, name: String)!
     private var scratch: URL!
     private var appState: AppState!
     private var window: NSWindow?
+    private var hosting: NSHostingView<AnyView>?
     private var boostWasOn = false
     private let host = Host()
+    private let env = Env()
+    private var query = ""
 
     override func setUp() async throws {
         suite = HostedTestSupport.makeSuite()
@@ -277,32 +298,64 @@ final class MacArtifactsListHostedTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        host.release()
+        env.heldFile?.resume()
         AccessibilityTreeBoost.set(boostWasOn)
-        if let window { HostedTestSupport.tearDown(window) }
+        if let window {
+            if let sheet = window.attachedSheet { window.endSheet(sheet) }
+            HostedTestSupport.tearDown(window)
+        }
         window = nil
+        hosting = nil
         appState = nil
         HostedTestSupport.dropSuite(suite)
         try? FileManager.default.removeItem(at: scratch)
     }
 
-    private func page(_ rows: [[String: Any]], next: Any = NSNull()) -> [String: Any] {
-        ["ok": true, "items": rows, "next_before": next]
+    private func makeView() -> AnyView {
+        let host = host, env = env
+        let source = MacArtifactsSource(
+            supported: { _ in env.supported },
+            client: { _ in ArtifactsClient(request: { try await host.request($0) }) },
+            dashboardID: { _ in env.dashboard },
+            reader: { _ in
+                MacArtifactsReader(
+                    dataURL: { env.dataURLs[$0] },
+                    file: { _ in
+                        if env.holdFile { await withCheckedContinuation { env.heldFile = $0 } }
+                        return env.file
+                    })
+            },
+            present: { download in
+                env.presented.append(download.file)
+                return env.presentResult
+            },
+            presentDataURL: { dataURL, _ in
+                env.presentedDataURLs.append(dataURL)
+                return env.presentDataURLResult
+            })
+        return AnyView(
+            MacArtifactsList(scope: .profile, chatIsOpen: false, query: query, showInChat: { _ in })
+                .environment(\.macArtifactsSource, source)
+                .environmentObject(appState)
+                .defaultAppStorage(suite.defaults)
+                .frame(width: 560, height: 640))
     }
 
     private func show(query: String = "", supported: Bool = true) throws -> NSWindow {
         try XCTSkipUnless(AccessibilityTreeBoost.isAvailable)
         AccessibilityTreeBoost.set(true)
-        let source = MacArtifactsSource(
-            supported: { _ in supported },
-            client: { [host] _ in ArtifactsClient(request: { try host.request($0) }) })
-        let view = MacArtifactsList(scope: .profile, chatIsOpen: false, query: query, showInChat: { _ in })
-            .environment(\.macArtifactsSource, source)
-            .environmentObject(appState)
-            .defaultAppStorage(suite.defaults)
-            .frame(width: 560, height: 640)
-        let w = HostedTestSupport.host(view, size: NSSize(width: 560, height: 640))
+        self.query = query
+        env.supported = supported
+        let w = HostedTestSupport.host(makeView(), size: NSSize(width: 560, height: 640))
+        hosting = w.contentView as? NSHostingView<AnyView>
         window = w
         return w
+    }
+
+    /// Hands the view the current `Env`, as a change of a published `AppState` value would.
+    private func render() {
+        hosting?.rootView = makeView()
     }
 
     private func texts(_ w: NSWindow) -> [String] { AccessibilityProbe.texts(in: w) }
@@ -311,10 +364,21 @@ final class MacArtifactsListHostedTests: XCTestCase {
         texts(w).contains { $0.localizedCaseInsensitiveContains(needle) }
     }
 
+    private func press(prefix: String, in w: NSWindow) -> Bool {
+        guard let label = AccessibilityProbe.labels(in: w).first(where: { $0.hasPrefix(prefix) }) else { return false }
+        return AccessibilityProbe.press(label, in: w)
+    }
+
+    private func document(_ name: String, message: Int = 11) -> [String: Any] {
+        ArtifactsTestSupport.row(["kind": "document", "name": name, "path": "/root/\(name)", "message_id": message])
+    }
+
+    // MARK: states
+
     func testLoadedListShowsChipsTilesRowsAndLinks() throws {
-        host.pages = [page([
+        host.pages = [ArtifactsTestSupport.response([
             ArtifactsTestSupport.row(),
-            ArtifactsTestSupport.row(["kind": "document", "name": "notes.pdf", "path": "/root/notes.pdf", "message_id": 11]),
+            document("notes.pdf"),
             ArtifactsTestSupport.row(["kind": "link", "source": "link", "path": NSNull(), "url": "https://curate.example/r",
                                       "name": "Curate", "message_id": 10]),
         ])]
@@ -331,30 +395,36 @@ final class MacArtifactsListHostedTests: XCTestCase {
         XCTAssertEqual(AccessibilityProbe.nodes(in: w).filter { $0.role == "AXMenuButton" }.count, 1,
                        "the More menu is there once the host lists artifacts")
         XCTAssertEqual(host.paths.count, 1)
-        XCTAssertFalse(host.paths[0].contains("missing="), "until the step 3 merge the request carries no missing flag")
+        XCTAssertTrue(host.paths[0].contains("missing=hide"), "Show Missing Files is off by default: \(host.paths[0])")
     }
 
     func testMissingFilesAreHiddenUntilShowMissingFilesIsOn() throws {
-        host.pages = [page([
-            ArtifactsTestSupport.row(["kind": "document", "name": "kept.pdf", "path": "/root/kept.pdf"]),
+        // An older plugin: it lists the gone file whatever it is asked.
+        host.pages = [ArtifactsTestSupport.response([
+            document("kept.pdf"),
             ArtifactsTestSupport.row(["kind": "document", "name": "gone.pdf", "path": "/root/gone.pdf", "exists": false,
                                       "message_id": 3]),
         ])]
         let w = try show()
         XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "kept.pdf") }, "\(texts(w))")
         XCTAssertFalse(has(w, "gone.pdf"), "a file the host no longer has is hidden by default")
-        suite.defaults.set(true, forKey: MacArtifactsList.showMissingKey)
+        suite.defaults.set(true, forKey: ArtifactsClient.showMissingKey)
         XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "gone.pdf") }, "\(texts(w))")
         XCTAssertTrue(has(w, "No longer on the host"))
+        XCTAssertEqual(host.paths.count, 2, "the toggle reads the list again: \(host.paths)")
+        XCTAssertFalse(host.paths[1].contains("missing="), "and asks for everything: \(host.paths[1])")
     }
 
     func testAnEmptyListWithHiddenFilesOffersShowMissingFiles() throws {
-        host.pages = [page([ArtifactsTestSupport.row(["kind": "document", "name": "gone.pdf", "path": "/root/gone.pdf",
-                                                      "exists": false])])]
+        host.pages = [ArtifactsTestSupport.response([
+            ArtifactsTestSupport.row(["kind": "document", "name": "gone.pdf", "path": "/root/gone.pdf", "exists": false])])]
         let w = try show()
         XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "No Artifacts Yet") }, "\(texts(w))")
         XCTAssertTrue(has(w, "Files no longer on your Hermes host are hidden."))
         XCTAssertTrue(AccessibilityProbe.labels(in: w).contains("Show Missing Files"))
+        XCTAssertTrue(AccessibilityProbe.press("Show Missing Files", in: w))
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "gone.pdf") }, "\(texts(w))")
+        XCTAssertTrue(suite.defaults.bool(forKey: ArtifactsClient.showMissingKey))
     }
 
     func testAFailedLoadShowsTryAgain() throws {
@@ -363,13 +433,13 @@ final class MacArtifactsListHostedTests: XCTestCase {
         XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "Artifacts couldn't load") }, "\(texts(w))")
         XCTAssertTrue(AccessibilityProbe.labels(in: w).contains("Try Again"))
         host.failure = nil
-        host.pages = [page([ArtifactsTestSupport.row(["kind": "document", "name": "back.pdf", "path": "/root/back.pdf"])])]
+        host.pages = [ArtifactsTestSupport.response([document("back.pdf")])]
         XCTAssertTrue(AccessibilityProbe.press("Try Again", in: w))
         XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "back.pdf") }, "\(texts(w))")
     }
 
     func testTheSearchTextAndAChipReachTheHost() throws {
-        host.pages = [page([ArtifactsTestSupport.row(["kind": "document", "name": "a.pdf", "path": "/root/a.pdf"])])]
+        host.pages = [ArtifactsTestSupport.response([document("a.pdf")])]
         let w = try show(query: " road trip ")
         XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "a.pdf") }, "\(texts(w))")
         XCTAssertTrue(host.paths[0].contains("q=road%20trip"), host.paths[0])
@@ -379,12 +449,26 @@ final class MacArtifactsListHostedTests: XCTestCase {
         XCTAssertTrue(host.paths[1].contains("q=road%20trip"), "the chip keeps the search: \(host.paths[1])")
     }
 
+    func testAnUnsupportedHostLoadsNothingUntilItReports() throws {
+        host.pages = [ArtifactsTestSupport.response([document("late.pdf")])]
+        let w = try show(supported: false)
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "Update the Conduit plugin") }, "\(texts(w))")
+        HostedTestSupport.settle(0.3)
+        XCTAssertTrue(host.paths.isEmpty, "no request while the plugin cannot list: \(host.paths)")
+        XCTAssertTrue(AccessibilityProbe.nodes(in: w).filter { $0.role == "AXMenuButton" }.isEmpty, "no More menu without artifacts")
+        // The plugin's report lands after the pane opened (upstream's list would stay here).
+        env.supported = true
+        render()
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "late.pdf") }, "\(texts(w))")
+        XCTAssertEqual(host.paths.count, 1)
+    }
+
+    // MARK: paging
+
     func testReachingTheEndReadsTheNextPage() throws {
         host.pages = [
-            page([ArtifactsTestSupport.row(["kind": "document", "name": "first.pdf", "path": "/root/first.pdf",
-                                            "message_id": 9])], next: 9),
-            page([ArtifactsTestSupport.row(["kind": "document", "name": "second.pdf", "path": "/root/second.pdf",
-                                            "message_id": 4])]),
+            ArtifactsTestSupport.response([document("first.pdf", message: 9)], next: 9),
+            ArtifactsTestSupport.response([document("second.pdf", message: 4)]),
         ]
         let w = try show()
         XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "second.pdf") }, "\(texts(w)) \(host.paths)")
@@ -393,11 +477,162 @@ final class MacArtifactsListHostedTests: XCTestCase {
         XCTAssertTrue(host.paths[1].contains("before=9"), host.paths[1])
     }
 
-    func testAnUnsupportedHostLoadsNothing() throws {
-        let w = try show(supported: false)
-        XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "Update the Conduit plugin") }, "\(texts(w))")
+    func testAHostThatRepeatsTheCursorEndsTheListWithoutALoop() throws {
+        host.pages = [ArtifactsTestSupport.response([document("only.pdf", message: 9)], next: 9)]
+        let w = try show()
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.host.paths.count == 2 }, "\(host.paths)")
+        HostedTestSupport.settle(0.5)
+        XCTAssertEqual(host.paths.count, 2, "no third request: \(host.paths)")
+        let isSpinner: (String) -> Bool = { $0.contains("Progress") || $0.contains("Busy") }
+        XCTAssertFalse(AccessibilityProbe.nodes(in: w).map(\.role).contains(where: isSpinner), "the pager is gone")
+        XCTAssertTrue(has(w, "only.pdf"))
+    }
+
+    func testThePagerRestartsWhenAReloadReturnsTheSameCursor() throws {
+        // The pager's read (before=9) is still out when the chip starts a reload whose first page
+        // has the same cursor: the old read is stale, and the list must still read on.
+        host.holds = { $0.contains("before=9") && !$0.contains("kind=images") }
+        host.pages = [ArtifactsTestSupport.response([document("first.pdf", message: 9)], next: 9)]
+        let w = try show()
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.host.paths.count == 2 }, "\(host.paths)")
+        XCTAssertTrue(host.paths[1].contains("before=9"))
+        XCTAssertTrue(AccessibilityProbe.press("Images", in: w))
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.host.paths.contains { $0.contains("kind=images") && !$0.contains("before=") } },
+                      "\(host.paths)")
+        host.release()
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.host.paths.contains { $0.contains("kind=images") && $0.contains("before=9") } },
+                      "the pager reads the images list on: \(host.paths)")
+    }
+
+    // MARK: dashboard
+
+    func testADashboardSwitchDropsTheOldServersRows() throws {
+        host.pages = [ArtifactsTestSupport.response([document("first-server.pdf")])]
+        let w = try show()
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "first-server.pdf") }, "\(texts(w))")
+        // The other server answers slowly: its list is empty, not the first server's.
+        host.holds = { _ in true }
+        host.pages = [ArtifactsTestSupport.response([document("second-server.pdf")])]
+        env.dashboard = UUID()
+        render()
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.host.paths.count == 2 }, "\(host.paths)")
         HostedTestSupport.settle(0.3)
-        XCTAssertTrue(host.paths.isEmpty, "no request while the plugin cannot list: \(host.paths)")
-        XCTAssertTrue(AccessibilityProbe.nodes(in: w).filter { $0.role == "AXMenuButton" }.isEmpty, "no More menu without artifacts")
+        XCTAssertFalse(has(w, "first-server.pdf"), "no row of the old server under the new one: \(texts(w))")
+        host.release()
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "second-server.pdf") }, "\(texts(w))")
+    }
+
+    func testADashboardSwitchCancelsAnOpenInFlight() throws {
+        host.pages = [ArtifactsTestSupport.response([document("notes.pdf")])]
+        let w = try show()
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "notes.pdf") }, "\(texts(w))")
+        env.holdFile = true
+        env.file = .downloaded(try download("notes.pdf"))
+        XCTAssertTrue(press(prefix: "notes.pdf", in: w))
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.env.heldFile != nil }, "the download started")
+        env.dashboard = UUID()
+        render()
+        HostedTestSupport.settle(0.2)
+        env.heldFile?.resume()
+        env.heldFile = nil
+        HostedTestSupport.settle(0.4)
+        XCTAssertTrue(env.presented.isEmpty, "a file read for the old server is not shown under the new one")
+        XCTAssertNil(window?.attachedSheet, "and the switch does not end in an alert about the old server's file")
+    }
+
+    // MARK: open
+
+    private func download(_ name: String) throws -> DashboardDownloadedFile {
+        let directory = scratch.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent(name)
+        try Data("x".utf8).write(to: file)
+        return DashboardDownloadedFile(directory: directory, file: file, mimeType: nil)
+    }
+
+    private func dataURL(_ text: String, mime: String = "text/html") -> String {
+        "data:\(mime);base64," + Data(text.utf8).base64EncodedString()
+    }
+
+    private func alertAppears(over w: NSWindow, saying text: String) -> Bool {
+        HostedTestSupport.waitUntil {
+            guard let sheet = w.attachedSheet else { return false }
+            return AccessibilityProbe.texts(in: sheet).contains { $0.contains(text) }
+        }
+    }
+
+    func testAPageOpensInTheSheet() throws {
+        host.pages = [ArtifactsTestSupport.response([
+            ArtifactsTestSupport.row(["kind": "page", "name": "chart.html", "path": "/root/chart.html"])])]
+        env.dataURLs["/root/chart.html"] = dataURL("<html><body>hello</body></html>")
+        let w = try show()
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "chart.html") }, "\(texts(w))")
+        XCTAssertTrue(press(prefix: "chart.html", in: w))
+        XCTAssertTrue(HostedTestSupport.waitUntil { w.attachedSheet != nil }, "the page opens in a sheet")
+        let sheet = try XCTUnwrap(w.attachedSheet)
+        func webView(in view: NSView?) -> WKWebView? {
+            guard let view else { return nil }
+            if let web = view as? WKWebView { return web }
+            return view.subviews.lazy.compactMap { webView(in: $0) }.first
+        }
+        XCTAssertTrue(HostedTestSupport.waitUntil { webView(in: sheet.contentView) != nil },
+                      "the sheet draws the page in a web view")
+        XCTAssertTrue(env.presented.isEmpty, "a page is drawn, not revealed")
+    }
+
+    func testAPageThatCannotBeDrawnOpensAsAFile() throws {
+        host.pages = [ArtifactsTestSupport.response([
+            ArtifactsTestSupport.row(["kind": "page", "name": "big.html", "path": "/root/big.html"])])]
+        // Not UTF-8: `HTMLPreviewPage.decodedDocument` refuses it.
+        env.dataURLs["/root/big.html"] = "data:text/html;base64," + Data([0xFF, 0xFE, 0xFA]).base64EncodedString()
+        let file = try download("big.html")
+        env.file = .downloaded(file)
+        let w = try show()
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "big.html") }, "\(texts(w))")
+        XCTAssertTrue(press(prefix: "big.html", in: w))
+        XCTAssertTrue(HostedTestSupport.waitUntil { !self.env.presented.isEmpty }, "it is revealed instead")
+        XCTAssertEqual(env.presented, [file.file])
+        XCTAssertNil(w.attachedSheet)
+    }
+
+    func testAFileGoesToThePresenterAndAFileOverTheLimitShowsTheAlert() throws {
+        host.pages = [ArtifactsTestSupport.response([document("notes.pdf")])]
+        let file = try download("notes.pdf")
+        env.file = .downloaded(file)
+        let w = try show()
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "notes.pdf") }, "\(texts(w))")
+        XCTAssertTrue(press(prefix: "notes.pdf", in: w))
+        XCTAssertTrue(HostedTestSupport.waitUntil { !self.env.presented.isEmpty })
+        XCTAssertEqual(env.presented, [file.file])
+        XCTAssertNil(w.attachedSheet, "no alert when the file shows")
+
+        env.file = .tooLarge
+        XCTAssertTrue(press(prefix: "notes.pdf", in: w))
+        XCTAssertTrue(alertAppears(over: w, saying: "Too large to open on this Mac"),
+                      "\(String(describing: w.attachedSheet.map { AccessibilityProbe.texts(in: $0) }))")
+    }
+
+    func testAFileThePresenterRefusesFallsBackToItsDataURL() throws {
+        host.pages = [ArtifactsTestSupport.response([document("notes.pdf")])]
+        env.file = .downloaded(try download("notes.pdf"))
+        env.presentResult = false
+        env.dataURLs["/root/notes.pdf"] = dataURL("pdf bytes", mime: "application/pdf")
+        let w = try show()
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "notes.pdf") }, "\(texts(w))")
+        XCTAssertTrue(press(prefix: "notes.pdf", in: w))
+        XCTAssertTrue(HostedTestSupport.waitUntil { !self.env.presentedDataURLs.isEmpty }, "the data URL is the fallback")
+        XCTAssertEqual(env.presentedDataURLs, [dataURL("pdf bytes", mime: "application/pdf")])
+        XCTAssertNil(w.attachedSheet)
+    }
+
+    func testAFileThatCannotBeReadAtAllSaysSo() throws {
+        host.pages = [ArtifactsTestSupport.response([document("notes.pdf")])]
+        env.file = .unavailable
+        let w = try show()
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "notes.pdf") }, "\(texts(w))")
+        XCTAssertTrue(press(prefix: "notes.pdf", in: w))
+        XCTAssertTrue(alertAppears(over: w, saying: "This file is no longer on your Hermes host."),
+                      "no silent end: \(String(describing: w.attachedSheet.map { AccessibilityProbe.texts(in: $0) }))")
+        XCTAssertTrue(env.presented.isEmpty)
     }
 }

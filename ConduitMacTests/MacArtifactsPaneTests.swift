@@ -32,16 +32,6 @@ final class MacArtifactsPaneTests: XCTestCase {
         try? FileManager.default.removeItem(at: scratch)
     }
 
-    private func artifactItem(_ fields: [String: Any] = [:]) throws -> ArtifactItem {
-        var row: [String: Any] = [
-            "kind": "image", "source": "delivered", "name": "map.png", "path": "/root/out/map.png",
-            "exists": true, "size": 2048, "session_id": "s1", "session_title": "Weekend trip",
-            "message_id": 12, "timestamp": 1_760_000_000.0,
-        ]
-        row.merge(fields) { _, new in new }
-        return try XCTUnwrap(ArtifactItem(row))
-    }
-
     // MARK: tab, route, shortcut, strip
 
     func testArtifactsTabRoutesToArtifactsPane() {
@@ -73,24 +63,31 @@ final class MacArtifactsPaneTests: XCTestCase {
 
     func testShowMissingDefaultsOffAndHidesMissing() throws {
         // The key is upstream's, so the Mac list and any upstream list share the setting.
-        XCTAssertEqual(MacArtifactsList.showMissingKey, "artifacts.showMissing")
-        XCTAssertFalse(MacArtifactsList.showMissingDefault)
-        let unset = suite.defaults.bool(forKey: MacArtifactsList.showMissingKey)
+        XCTAssertEqual(ArtifactsClient.showMissingKey, "artifacts.showMissing")
+        let unset = suite.defaults.bool(forKey: ArtifactsClient.showMissingKey)
         XCTAssertFalse(unset, "a defaults suite without the key reads as off")
 
-        var state = MacArtifactsListState()
-        let key = ArtifactsListKey(dashboard: nil, profile: "default", filter: .all, query: "")
-        let ticket = state.beginReload(key)
-        let rows = [
-            try artifactItem(),
-            try artifactItem(["exists": false, "path": "/root/gone.pdf", "kind": "document", "name": "gone.pdf"]),
-            try artifactItem(["kind": "link", "source": "link", "path": NSNull(), "url": "https://curate.example/r",
-                              "name": "Curate", "exists": false]),
+        // Off asks the host to leave missing files out (plugin 0.51.8+); on lists everything.
+        let hidden = ArtifactsClient.requestPath(profile: "default", sessionIDs: [], filter: .all, query: "",
+                                                 showMissing: unset, before: nil)
+        XCTAssertTrue(hidden.contains("missing=hide"), hidden)
+        let shown = ArtifactsClient.requestPath(profile: "default", sessionIDs: [], filter: .all, query: "",
+                                                showMissing: true, before: nil)
+        XCTAssertFalse(shown.contains("missing="), shown)
+
+        // An older plugin lists them whatever it was asked: the page drops them, a link stays.
+        let rows: [[String: Any]] = [
+            ArtifactsTestSupport.row(),
+            ArtifactsTestSupport.row(["exists": false, "path": "/root/gone.pdf", "kind": "document", "name": "gone.pdf"]),
+            ArtifactsTestSupport.row(["kind": "link", "source": "link", "path": NSNull(), "url": "https://curate.example/r",
+                                      "name": "Curate", "exists": false]),
         ]
-        state.finishReload(.page(ArtifactPage(items: rows, nextBefore: nil)), key: key, ticket: ticket)
-        XCTAssertEqual(state.visibleItems(showMissing: unset).map(\.name), ["map.png", "Curate"],
-                       "a file gone from the host is hidden; a link has no file to miss")
-        XCTAssertEqual(state.visibleItems(showMissing: true).map(\.name), ["map.png", "gone.pdf", "Curate"])
+        let response = ArtifactsTestSupport.response(rows, next: 5)
+        XCTAssertEqual(try ArtifactsClient.parse(response, showMissing: unset).items.map(\.name), ["map.png", "Curate"])
+        XCTAssertEqual(try ArtifactsClient.parse(response, showMissing: true).items.map(\.name), ["map.png", "gone.pdf", "Curate"])
+
+        // The list's own request (hosted, default setting) carries the flag:
+        // `MacArtifactsListHostedTests.testLoadedListShowsChipsTilesRowsAndLinks`.
     }
 
     // MARK: states
@@ -132,25 +129,30 @@ final class MacArtifactsPaneTests: XCTestCase {
 
         var state = MacArtifactsListState()
         let loaded = state.beginReload(onFirst)
-        state.finishReload(.page(ArtifactPage(items: [try artifactItem()], nextBefore: 9)), key: onFirst, ticket: loaded)
+        state.finishReload(.page(ArtifactPage(items: [try ArtifactsTestSupport.item()], nextBefore: 9)), key: onFirst, ticket: loaded)
         XCTAssertEqual(state.items.count, 1)
 
         // Another filter on the same server keeps the rows up (dimmed) while its own load.
         let images = ArtifactsListKey(dashboard: first, profile: "default", filter: .images, query: "")
+        XCTAssertEqual(state.rows(for: images).count, 1)
+        // The other server's key draws none of them from the first pass on, before the reload
+        // that clears them has run.
+        XCTAssertTrue(state.rows(for: onSecond).isEmpty)
+        XCTAssertEqual(state.items.count, 1, "still held until beginReload")
         _ = state.beginReload(images)
         XCTAssertEqual(state.items.count, 1)
         XCTAssertEqual(state.nextBefore, 9)
 
-        // The other server's list never shows this server's rows, not even for a moment.
+        // The other server's list never shows this server's rows, not even for a moment (the view
+        // side is `MacArtifactsListHostedTests.testADashboardSwitchDropsTheOldServersRows`).
         let switching = state.beginReload(onSecond)
         XCTAssertTrue(state.items.isEmpty)
         XCTAssertNil(state.nextBefore)
         XCTAssertNil(state.loadedKey)
         XCTAssertNil(state.failure)
-        XCTAssertTrue(state.visibleItems(showMissing: true).isEmpty)
 
         // A late answer for the first server is dropped under the second.
-        state.finishReload(.page(ArtifactPage(items: [try artifactItem()], nextBefore: nil)), key: images, ticket: loaded)
+        state.finishReload(.page(ArtifactPage(items: [try ArtifactsTestSupport.item()], nextBefore: nil)), key: images, ticket: loaded)
         XCTAssertTrue(state.items.isEmpty)
         state.finishReload(.page(ArtifactPage(items: [], nextBefore: nil)), key: onSecond, ticket: switching)
         XCTAssertEqual(state.loadedKey, onSecond)
@@ -176,7 +178,7 @@ final class MacArtifactsPaneTests: XCTestCase {
         ) { _ in posted.value += 1 }
         defer { NotificationCenter.default.removeObserver(observer) }
 
-        let item = try artifactItem(["session_id": "s1", "message_id": 77])
+        let item = try ArtifactsTestSupport.item(["session_id": "s1", "message_id": 77])
         MacArtifactsPane.showInChat(item, in: appState)
 
         let reveal = try XCTUnwrap(appState.pendingArtifactReveal)
