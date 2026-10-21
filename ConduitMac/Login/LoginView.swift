@@ -21,8 +21,13 @@ struct LoginView: View {
     @State private var serverUrl = ""
     @State private var username = ""
     @State private var password = ""
-    @State private var saveCredentials = false
+    @State private var saveCredentials = LoginSignInDefaults.saveCredentials
     @State private var useFaceID = false
+    /// The address the card filled in itself (from the last dashboard), so a dashboard switch under an open card
+    /// can replace it, and an address the user typed stays.
+    @State private var autoFilledURL = ""
+    /// How the active dashboard can sign in without typing (B5), read from the Keychain on appear, not in `body`.
+    @State private var savedSignIn: LoginSavedSignIn?
     /// Read on appear rather than per view init (each read is a
     /// LocalAuthentication round trip), and again on return to the
     /// foreground, where a fingerprint or face may just have been set up.
@@ -139,14 +144,24 @@ struct LoginView: View {
         }
         .onAppear {
             biometrics = BiometricAuth.status
-            biometricsLoaded = true
-            guard serverUrl.isEmpty else { return }
-            serverUrl = appState.lastDashboardURL
-            if let access = appState.dashboardScopedCloudflareAccess(for: serverUrl) {
-                cloudflareEnabled = true
-                cloudflareClientID = access.clientID
-                cloudflareClientSecret = access.clientSecret
+            if !biometricsLoaded {
+                useFaceID = LoginSignInDefaults.useBiometrics(
+                    biometricsAvailable: biometrics.isAvailable, saveCredentials: saveCredentials)
             }
+            biometricsLoaded = true
+            refreshSavedSignIn()
+            guard serverUrl.isEmpty else { return }
+            fillAddress(appState.lastDashboardURL)
+        }
+        .onChange(of: appState.activeDashboardID) { _, newID in
+            // The dashboard switcher also shows over this card: the address and the Cloudflare token it holds belong
+            // to the dashboard that was active when the card opened.
+            refreshSavedSignIn()
+            guard let newID, let dashboard = appState.savedDashboardRegistry.dashboard(with: newID),
+                  let address = LoginDashboardAddress.refreshed(
+                    current: serverUrl, autoFilled: autoFilledURL, dashboardURL: dashboard.normalizedURL)
+            else { return }
+            fillAddress(address)
         }
         .onReceive(appState.$pendingLoginFailure) { pending in
             // Typed handoff from AppState (rejected saved password,
@@ -158,6 +173,7 @@ struct LoginView: View {
             failure = pending
             savedRepairAvailable = appState.makeSavedConnectionRepairContext() != nil
             appState.pendingLoginFailure = nil
+            refreshSavedSignIn()
         }
         .sheet(item: $connectionSetupDestination) { destination in
             ConnectionSetupView(
@@ -244,7 +260,7 @@ struct LoginView: View {
                     appState.resolveDashboardID(forURL: url, registerIfMissing: true)
                 },
                 websiteDataStoreIdentifier: signInWebKitStoreID,
-            onTicket: { ticket, baseUrl in
+                onTicket: { ticket, baseUrl in
                     // The dashboard is solely an authentication bridge. Dismiss it
                     // before connection work begins so Conduit, not the dashboard,
                     // becomes the active surface as soon as we have a ticket.
@@ -269,9 +285,12 @@ struct LoginView: View {
                     Self.logger.error(
                         "Auth WebView sign-in error: \(String(describing: classifiedFailure), privacy: .public) detail: \(detail)"
                     )
+                    // Close the sheet first: a failure under an open sheet is hidden.
+                    showWebView = false
                     failure = .presenting(classifiedFailure)
                 }
             )
+            .asSignInSheet()
         }
     }
 
@@ -341,6 +360,18 @@ struct LoginView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("login.connection-setup")
+
+                if let savedSignIn {
+                    // B5: a cancelled or refused Face ID / Touch ID unlock leaves this card; this is the way to
+                    // ask for the saved sign-in again.
+                    LoginSavedSignInButton(
+                        offer: savedSignIn.offer,
+                        address: savedSignIn.address,
+                        isBusy: isConnecting || appState.isConnecting
+                    ) {
+                        Task { await appState.switchDashboard(to: savedSignIn.id) }
+                    }
+                }
 
                 TextField("https://hermes.example", text: $serverUrl)
                     .textContentType(.URL)
@@ -487,11 +518,12 @@ struct LoginView: View {
                         }
                         if failure.offersRecoveryActions {
                             AdaptiveStack(spacing: 16) {
-                                Button("Try Again") {
+                                // A dashboard whose sign-in ended is retried by signing in again (same action).
+                                Button(failure.asksToSignInAgain ? AppLocalization.string("Sign In Again") : AppLocalization.string("Try Again")) {
                                     Task { await connect() }
                                 }
                                 .disabled(isConnecting)
-                                .accessibilityIdentifier("login.error.try-again")
+                                .accessibilityIdentifier(failure.asksToSignInAgain ? "login.error.sign-in-again" : "login.error.try-again")
 
                                 if let destination = failure.helpDestination {
                                     Button("Troubleshoot Connection") {
@@ -619,21 +651,18 @@ struct LoginView: View {
             var requiresBrowserSignIn = false
             var shouldUseNativeOAuth = false
             var discoveredNativeProvider: String?
-            switch try await client.authProviderDiscovery() {
-            case .interactiveSignInRequired:
+            switch try await Self.signInRoute(
+                for: client.authProviderDiscovery(),
+                credentialsArePresent: credentialsArePresent,
+                supportsNativeOAuth: { try await client.supportsNativeOAuth() }
+            ) {
+            case .browser:
                 requiresBrowserSignIn = true
-            case .providers(let providers, _):
-                let supportsPassword = HermesProviderCheck.supportsPassword(providers)
-                let supportsOAuth = HermesProviderCheck.hasNativeOAuthProvider(providers)
-                if supportsOAuth && (!supportsPassword || !credentialsArePresent),
-                   try await client.supportsNativeOAuth() {
-                    shouldUseNativeOAuth = true
-                    discoveredNativeProvider = HermesProviderCheck.nativeOAuthProvider(providers)
-                } else {
-                    requiresBrowserSignIn = !supportsPassword
-                }
-            case .unrecognized:
-                requiresBrowserSignIn = true
+            case .nativeOAuth(let provider):
+                shouldUseNativeOAuth = true
+                discoveredNativeProvider = provider
+            case .password:
+                break
             }
             if shouldUseNativeOAuth {
                 guard let dashboardID = appState.resolveDashboardID(forURL: serverUrl, registerIfMissing: true) else {
@@ -692,6 +721,8 @@ struct LoginView: View {
                 } else {
                     KeychainHelper.clearCloudflareAccess(dashboardID: dashboardID)
                 }
+                // The next sign-in and the Saved Dashboards rows start with this username.
+                appState.rememberDashboardUsername(username, dashboardID: dashboardID)
             }
             if let dashboardID {
                 authenticatedConnection.commitCookies(dashboardID: dashboardID)
@@ -704,6 +735,38 @@ struct LoginView: View {
             Self.logger.error("Login connection failed: \(String(describing: ConnectionFailureClassifier.classify(error)), privacy: .public)")
             failure = .presenting(ConnectionFailureClassifier.classify(error))
         }
+    }
+
+    /// Puts a dashboard's address in the address field with the Cloudflare token saved for it, and clears a token
+    /// that belonged to the previous address.
+    private func fillAddress(_ address: String) {
+        serverUrl = address
+        autoFilledURL = address
+        if let access = appState.dashboardScopedCloudflareAccess(for: address) {
+            cloudflareEnabled = true
+            cloudflareClientID = access.clientID
+            cloudflareClientSecret = access.clientSecret
+        } else {
+            cloudflareEnabled = false
+            cloudflareClientID = ""
+            cloudflareClientSecret = ""
+        }
+    }
+
+    private func refreshSavedSignIn() {
+        guard let id = appState.activeDashboardID,
+              let dashboard = appState.savedDashboardRegistry.dashboard(with: id) else {
+            savedSignIn = nil
+            return
+        }
+        let status = BiometricAuth.status
+        guard let offer = LoginSavedSignInOffer.make(
+            kind: appState.savedSignIn(for: id), biometricKind: status.kind, biometricsAvailable: status.isAvailable
+        ) else {
+            savedSignIn = nil
+            return
+        }
+        savedSignIn = LoginSavedSignIn(id: id, offer: offer, address: dashboard.normalizedURL)
     }
 
     /// Valid extra headers saved for the address currently typed.
@@ -727,6 +790,143 @@ struct LoginView: View {
         case .system:
             return colorScheme == .dark ? AppIconChoice.dark.previewAssetName : AppIconChoice.light.previewAssetName
         }
+    }
+}
+
+// MARK: - Sign-in decision (R17)
+
+/// The next step for a dashboard's discovery answer, as a plain value so the mapping is unit-testable.
+enum LoginSignInRoute: Equatable {
+    case password
+    case browser
+    case nativeOAuth(provider: String?)
+}
+
+extension LoginView {
+    /// Decides the next sign-in step. An answer that names no sign-in (a page that is not Hermes, an empty or
+    /// unusable provider list) throws the shared `DashboardSignInError`, which classifies as "Unexpected response"
+    /// with Try Again and Troubleshoot Connection; it never opens a browser sheet that cannot sign in. A password
+    /// dashboard that also offers a browser sign-in (a provider listed without `supports_password`, or a native
+    /// provider whose capability check fails) opens that sign-in when no credentials are typed.
+    static func signInRoute(
+        for discovery: AuthProviderDiscoveryResult,
+        credentialsArePresent: Bool,
+        supportsNativeOAuth: () async throws -> Bool
+    ) async throws -> LoginSignInRoute {
+        switch discovery {
+        case .interactiveSignInRequired:
+            return .browser
+        case .unrecognized:
+            throw DashboardSignInError.unrecognizedServer
+        case .providers(let providers, let authFlows):
+            let supportsPassword = HermesProviderCheck.supportsPassword(providers)
+            let offer = DashboardSignInResolver.browserOffer(providers, advertisedFlows: authFlows)
+            if !supportsPassword && offer == nil { throw DashboardSignInError.noSignInMethod }
+            if HermesProviderCheck.hasNativeOAuthProvider(providers),
+               !supportsPassword || !credentialsArePresent,
+               try await supportsNativeOAuth() {
+                return .nativeOAuth(provider: HermesProviderCheck.nativeOAuthProvider(providers))
+            }
+            if !supportsPassword || (!credentialsArePresent && offer != nil) { return .browser }
+            return .password
+        }
+    }
+}
+
+/// M3: the address field after the active dashboard changed under an open login card.
+enum LoginDashboardAddress {
+    /// The dashboard's address when the field is empty or still holds what the card filled in itself; nil keeps what
+    /// the user typed (or when nothing changes).
+    static func refreshed(current: String, autoFilled: String, dashboardURL: String) -> String? {
+        let target = dashboardURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let now = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty, now != target else { return nil }
+        func bare(_ text: String) -> String {
+            var text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            while text.hasSuffix("/") { text.removeLast() }
+            return text
+        }
+        return now.isEmpty || bare(now) == bare(autoFilled) ? target : nil
+    }
+}
+
+/// K3: the sign-in options the card starts with (upstream: save the sign-in, with Face ID or Touch ID when the Mac
+/// has one).
+enum LoginSignInDefaults {
+    static let saveCredentials = true
+
+    static func useBiometrics(biometricsAvailable: Bool, saveCredentials: Bool) -> Bool {
+        biometricsAvailable && saveCredentials
+    }
+}
+
+// MARK: - Saved sign-in (B5)
+
+/// The card's own control for the active dashboard's saved sign-in, with the wording of upstream's Saved Dashboards
+/// row.
+struct LoginSavedSignInOffer: Equatable {
+    let title: String
+    let symbol: String
+
+    /// Nil when nothing is saved, or when the saved password needs a Face ID / Touch ID that is gone (that sign-in
+    /// then needs typing).
+    static func make(kind: SavedSignInKind, biometricKind: BiometricAuth.Kind?, biometricsAvailable: Bool) -> LoginSavedSignInOffer? {
+        switch kind {
+        case .biometric:
+            guard biometricsAvailable else { return nil }
+            return biometricKind == .touchID
+                ? LoginSavedSignInOffer(title: AppLocalization.string("Signs in with Touch ID"), symbol: "touchid")
+                : LoginSavedSignInOffer(title: AppLocalization.string("Signs in with Face ID"), symbol: "faceid")
+        case .password, .session:
+            return LoginSavedSignInOffer(title: AppLocalization.string("Saved sign-in"), symbol: "key")
+        case .signInNeeded:
+            return nil
+        }
+    }
+}
+
+struct LoginSavedSignIn: Equatable {
+    let id: UUID
+    let offer: LoginSavedSignInOffer
+    let address: String
+}
+
+struct LoginSavedSignInButton: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
+    let offer: LoginSavedSignInOffer
+    let address: String
+    let isBusy: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: offer.symbol)
+                    .font(.body)
+                    .foregroundStyle(.conduitAccent)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(offer.title)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(verbatim: address)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .conduitGlassSurface(cornerRadius: 14, tint: .conduitAura.opacity(0.06))
+            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(isBusy)
+        .accessibilityIdentifier("login.saved-sign-in")
     }
 }
 

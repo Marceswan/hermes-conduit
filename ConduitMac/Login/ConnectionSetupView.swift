@@ -116,7 +116,8 @@ struct ConnectionSetupView: View {
                             onComplete(result)
                             dismiss()
                         },
-                        repairReview: repairReview
+                        repairReview: repairReview,
+                        settingsReview: settingsReview
                     )
                 default:
                     ScrollView {
@@ -182,6 +183,22 @@ struct ConnectionSetupView: View {
         )
     }
 
+    /// The Settings entry's review model, nil elsewhere (ported from upstream). Sign In Again goes through the same
+    /// explicit sign-in and activation as Repair's Sign In to Reconnect, so it needs the activation handler too.
+    private var settingsReview: ConnectionSetupSettingsReview? {
+        guard flow.enteredFromCurrentConnection else { return nil }
+        return ConnectionSetupSettingsReview(
+            isSessionConnected: appState.isConnected,
+            offersSignInAgain: onRepair != nil && ConnectionSetupSettingsReview.offersSignInAgain(
+                for: flow,
+                activeDashboardURL: appState.connection?.baseUrl ?? appState.lastDashboardURL
+            ),
+            isSigningIn: isActivating,
+            signInFailure: activationFailure,
+            signInAgain: { beginRepairSignIn() }
+        )
+    }
+
     /// Interactive repair sign-in, pointed at the tested address with the
     /// wizard's same-origin Cloudflare state. Native-capable OAuth providers
     /// use the external-browser PKCE flow; other interactive deployments keep
@@ -242,6 +259,7 @@ struct ConnectionSetupView: View {
                     activationFailure = classifiedFailure
                 }
                 )
+                .asSignInSheet()
             }
         } else {
             // Unreachable: the sheet is only presented with a configuration.

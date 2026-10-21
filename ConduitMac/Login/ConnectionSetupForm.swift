@@ -11,6 +11,9 @@ struct ConnectionSetupForm: View {
     /// actions are Reconnect Now / Sign In to Reconnect instead of the
     /// login-form handoff or the Settings Done/apply paths.
     let repairReview: ConnectionSetupRepairReview?
+    /// Non-nil only for the Settings entry: offers Sign In Again when the dashboard Conduit is set up for signs in
+    /// through a browser.
+    var settingsReview: ConnectionSetupSettingsReview? = nil
     @FocusState private var focusedField: Field?
 
     private enum Field: Hashable { case host, port, url, username, password }
@@ -263,7 +266,14 @@ struct ConnectionSetupForm: View {
             // its per-stage outcomes.
             if flow.canUseSettings {
                 ConnectionSetupStageList(state: flow.testState)
-                if flow.testState.requiresInteractiveSignIn {
+                if let settingsReview, settingsReview.offersSignInAgain {
+                    // Settings, for the dashboard Conduit is set up for: the next step is signing in, here. Never
+                    // "return to the login screen" while the app shell is up.
+                    Text(ConnectionSetupSettingsReview.signInAgainMessage(connected: settingsReview.isSessionConnected))
+                        .font(.headline)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("setup.test.sign-in-again")
+                } else if flow.testState.requiresInteractiveSignIn {
                     // The user has NOT authenticated: say what happens next
                     // instead of claiming success. Never "Login successful".
                     Text(flow.isRepairingConnection
@@ -298,22 +308,60 @@ struct ConnectionSetupForm: View {
                 repairReviewFooter(repair)
             } else {
                 Text(flow.enteredFromCurrentConnection
-                     ? AppLocalization.string("Applying saves these settings for your next reconnect. Your current session stays connected.")
+                     ? ConnectionSetupSettingsReview.applyNote(connected: settingsReview?.isSessionConnected ?? true)
                      : AppLocalization.string("These settings will fill the login form. You’ll tap Connect there when you’re ready."))
                     .foregroundStyle(.secondary)
                 validationNotice
                 // From Settings with unchanged, successfully tested settings
                 // there is nothing to apply — Done simply closes the wizard.
-                Button(flow.testedSettingsUnchanged ? AppLocalization.string("Done") : AppLocalization.string("Use these settings")) {
-                    if let result = flow.complete() { onComplete(result) }
+                if let settingsReview, settingsReview.offersSignInAgain {
+                    // Sign In Again is the primary action.
+                    settingsSignInAgain(settingsReview)
+                    Button(flow.testedSettingsUnchanged ? AppLocalization.string("Done") : AppLocalization.string("Use these settings")) {
+                        if let result = flow.complete() { onComplete(result) }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!reviewIsValid || settingsReview.isSigningIn)
+                    .accessibilityIdentifier("setup.use-settings")
+                } else {
+                    Button(flow.testedSettingsUnchanged ? AppLocalization.string("Done") : AppLocalization.string("Use these settings")) {
+                        if let result = flow.complete() { onComplete(result) }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!reviewIsValid)
+                    .accessibilityIdentifier("setup.use-settings")
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(!reviewIsValid)
-                .accessibilityIdentifier("setup.use-settings")
                 if flow.canUseSettings, flow.testState.requiresSignInChoice {
                     signInChoiceEnterCredentialsButton // R17
                 }
             }
+        }
+    }
+
+    /// Settings' Sign In Again (ported from upstream): opens the sign-in the test decided for the active dashboard,
+    /// and reconnects when it finishes.
+    @ViewBuilder
+    private func settingsSignInAgain(_ review: ConnectionSetupSettingsReview) -> some View {
+        if review.isSigningIn {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Reconnecting…")
+                    .font(.headline)
+            }
+            .accessibilityIdentifier("setup.review.reconnecting")
+        } else {
+            if let failure = review.signInFailure {
+                Text(failure.userMessage)
+                    .font(.subheadline)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("setup.review.sign-in-again-failure")
+            }
+            Button("Sign In Again") { review.signInAgain() }
+                .buttonStyle(.borderedProminent)
+                .tint(.conduitAccent)
+                .accessibilityIdentifier("setup.review.sign-in-again")
         }
     }
 
