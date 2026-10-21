@@ -1,3 +1,4 @@
+import ObjectiveC
 import XCTest
 import WebKit
 @testable import ConduitMac
@@ -127,5 +128,68 @@ final class WebViewTwinTests: XCTestCase {
         XCTAssertFalse(fetchInPage?.contains("secret-value") == true)
         let fetchInConduit = try await webView.evaluateJavaScript("Function.prototype.toString.call(window.fetch)", contentWorld: DashboardScriptWorld.world) as? String
         XCTAssertTrue(fetchInConduit?.contains("[native code]") == false, "the header script is not installed in Conduit's world, so sign-in loses the proxy header")
+    }
+
+    // MARK: - AuthWebView signed-in detection
+
+    /// Copy of upstream `AuthWebViewNavigationPolicyTests`. An auth proxy's
+    /// own sign-in page is not the dashboard: minting a ticket from it
+    /// reports a session-ticket failure.
+    func testOnlyTheDashboardPastItsSignInPagesCountsAsSignedIn() {
+        let dashboard = URL(string: "https://hermes.example")!
+        for signedIn in ["https://hermes.example/", "https://hermes.example/chat", "https://hermes.example/docs/login-guide"] {
+            XCTAssertTrue(AuthWebViewNavigationPolicy.isSignedInDashboardPage(URL(string: signedIn), expectedDashboardURL: dashboard), signedIn)
+        }
+        for notYet in [
+            // Hermes' own sign-in, and an auth proxy's page on the same origin.
+            "https://hermes.example/login?next=%2F",
+            "https://hermes.example/oauth2/sign_in?rd=%2Flogin",
+            "https://hermes.example/oauth2/start?rd=%2F",
+            // The identity provider's page.
+            "https://sso.example/authorize",
+        ] {
+            XCTAssertFalse(AuthWebViewNavigationPolicy.isSignedInDashboardPage(URL(string: notYet), expectedDashboardURL: dashboard), notYet)
+        }
+        XCTAssertFalse(AuthWebViewNavigationPolicy.isSignedInDashboardPage(nil, expectedDashboardURL: dashboard))
+        XCTAssertFalse(AuthWebViewNavigationPolicy.isSignedInDashboardPage(URL(string: "https://hermes.example/chat"), expectedDashboardURL: nil))
+    }
+
+    // MARK: - Navigation policy selector (#832)
+
+    /// The selector WebKit asks a delegate about before a navigation.
+    private static let policySelector = NSSelectorFromString("webView:decidePolicyForNavigationAction:decisionHandler:")
+
+    /// Mac copy of upstream `WebKitNavigationPolicyConformanceTests`. A
+    /// policy method that only nearly matches `WKNavigationDelegate` (a
+    /// decision handler without `@MainActor @Sendable`, under strict
+    /// concurrency) is not exposed to Objective-C: WebKit never calls it, and
+    /// every navigation it would cancel is allowed. The default checking
+    /// still matches a plain closure, so this pins the selector and the list.
+    func testEveryMacNavigationDelegateAnswersThePolicySelector() {
+        let delegates: [(name: String, type: AnyClass)] = [
+            ("AuthWebView.Coordinator", AuthWebView.Coordinator.self),
+            ("DashboardTicketBridge", DashboardTicketBridge.self),
+        ]
+        for delegate in delegates {
+            XCTAssertTrue(class_conformsToProtocol(delegate.type, WKNavigationDelegate.self), "\(delegate.name) is no WKNavigationDelegate")
+            XCTAssertTrue(class_respondsToSelector(delegate.type, Self.policySelector), "WebKit would never ask \(delegate.name) before a navigation")
+        }
+    }
+
+    func testAuthWebViewCoordinatorAnswersWithItsNavigationPolicy() async {
+        let view = AuthWebView(
+            url: "https://hermes.example",
+            cloudflareAccess: nil,
+            onTicket: { _, _ in },
+            onError: { _, _ in }
+        )
+        let coordinator = AuthWebView.Coordinator(parent: view)
+        // Before the dashboard pins, a sign-in may cross to its identity provider.
+        let provider = await decidePolicy("https://sso.example/authorize", type: .other, delegate: coordinator)
+        XCTAssertEqual(provider, .allow)
+        let local = await decidePolicy("file:///etc/hosts", type: .other, delegate: coordinator)
+        XCTAssertEqual(local, .cancel)
+        let script = await decidePolicy("javascript:alert(1)", type: .other, delegate: coordinator)
+        XCTAssertEqual(script, .cancel)
     }
 }

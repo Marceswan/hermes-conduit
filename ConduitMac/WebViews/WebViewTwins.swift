@@ -376,8 +376,7 @@ struct AuthWebView: NSViewRepresentable {
             // flow, then a non-login route can use its HttpOnly session cookie
             // to mint a one-time WebSocket ticket.
             guard let expectedURL,
-                  ConnectionURLPolicy.originMatches(webView.url, expected: expectedURL),
-                  !(webView.url?.path.contains("/login") ?? true) else { return }
+                  AuthWebViewNavigationPolicy.isSignedInDashboardPage(webView.url, expectedDashboardURL: expectedURL) else { return }
             hasPinnedDashboardOrigin = true
             authenticatedWebView = webView
             let js = """
@@ -460,7 +459,7 @@ struct AuthWebView: NSViewRepresentable {
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
-            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+            decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
         ) {
             // A nil targetFrame is treated as main-frame, matching the
             // historical policy for the initial navigation.
@@ -477,6 +476,21 @@ struct AuthWebView: NSViewRepresentable {
                 decisionHandler(.cancel)
             }
         }
+    }
+}
+
+// Copied from upstream LoginView.swift AuthWebViewNavigationPolicy; keep in sync (PORTING_LEDGER).
+// The Mac enum is the frozen copy in ConduitMac/Login/LoginView.swift (decision 2B), which
+// has no `isSignedInDashboardPage`, so the member lives here.
+extension AuthWebViewNavigationPolicy {
+    /// Whether a finished page is the dashboard past its sign-in, where the
+    /// session cookie can mint a ticket: on the dashboard's origin and not a
+    /// sign-in page there (Hermes' /login, or an auth proxy's own page such
+    /// as oauth2-proxy's /oauth2/sign_in), which the user hasn't got past.
+    static func isSignedInDashboardPage(_ url: URL?, expectedDashboardURL: URL?) -> Bool {
+        guard let url, let expectedDashboardURL,
+              ConnectionURLPolicy.originMatches(url, expected: expectedDashboardURL) else { return false }
+        return !DashboardSignInRedirect.isSignInPath(url.path)
     }
 }
 
