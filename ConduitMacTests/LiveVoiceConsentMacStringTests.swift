@@ -54,12 +54,25 @@ final class LiveVoiceConsentMacStringTests: XCTestCase {
     func testTheViewUsesTheMacKeyOnlyUnderTheMacRegion() throws {
         let source = try String(
             contentsOf: repoRoot.appendingPathComponent("Conduit/Views/LiveVoiceConsentViews.swift"), encoding: .utf8)
-        let region = try XCTUnwrap(source.range(of: "#if os(macOS) // MAC:"), "the Mac region")
         let macKey = try XCTUnwrap(source.range(of: "\"\(key)\""), "the Mac key")
-        let upstreamText = try XCTUnwrap(source.range(of: "\"\(upstreamKey)\""), "upstream's text")
-        let otherwise = try XCTUnwrap(source.range(of: "#else // MAC:"))
-        let end = try XCTUnwrap(source.range(of: "#endif // MAC:"))
-        XCTAssertTrue(region.lowerBound < macKey.lowerBound && macKey.upperBound <= otherwise.lowerBound)
-        XCTAssertTrue(otherwise.upperBound <= upstreamText.lowerBound && upstreamText.upperBound <= end.lowerBound)
+        // The region around the key, wherever it sits in the file: the nearest `#if` above the key,
+        // the `#else` after it, and the `#endif` after upstream's text.
+        let region = try XCTUnwrap(
+            source.range(of: "#if os(macOS) // MAC:", options: .backwards, range: source.startIndex..<macKey.lowerBound),
+            "the Mac region above the Mac key")
+        let otherwise = try XCTUnwrap(
+            source.range(of: "#else // MAC:", range: macKey.upperBound..<source.endIndex), "the #else after the Mac key")
+        let upstreamText = try XCTUnwrap(
+            source.range(of: "\"\(upstreamKey)\"", range: otherwise.upperBound..<source.endIndex),
+            "upstream's text after the #else")
+        let end = try XCTUnwrap(
+            source.range(of: "#endif // MAC:", range: upstreamText.upperBound..<source.endIndex), "the #endif")
+        XCTAssertTrue(region.lowerBound < macKey.lowerBound)
+        XCTAssertTrue(macKey.upperBound <= otherwise.lowerBound)
+        XCTAssertTrue(otherwise.upperBound <= upstreamText.lowerBound)
+        XCTAssertTrue(upstreamText.upperBound <= end.lowerBound)
+        // No other `#if` sits between the region start and the end: one region, not several.
+        let inner = String(source[region.upperBound..<end.lowerBound])
+        XCTAssertFalse(inner.contains("#if "), "one region")
     }
 }
