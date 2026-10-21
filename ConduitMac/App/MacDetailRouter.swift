@@ -99,7 +99,7 @@ struct MacDetailRouter<Chat: View>: View {
                 MacPaneHeader(title: SidebarTab.bots.displayName)
                 BotRosterView()
             }
-        case .cron: CronList()
+        case .cron: MacCronPane()
         case .kanban: KanbanView()
         case .home: MacHomeView(appState: appState)
         }

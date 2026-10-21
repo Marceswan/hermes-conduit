@@ -2499,6 +2499,9 @@ struct CronJobDetailSheet: View {
         .sheet(isPresented: $editing) {
             CronJobEditorSheet(target: .edit(job))
                 .environmentObject(appState)
+            #if os(macOS) // MAC: the Form sheet has no ideal size on Mac; same frame as the create sheet
+                .macFormSheetSize()
+            #endif // MAC:
         }
         .alert("Delete scheduled job?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive) {

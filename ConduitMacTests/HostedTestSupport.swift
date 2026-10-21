@@ -65,6 +65,8 @@ enum AccessibilityProbe {
         /// Relative to the content view's top-left.
         var frame: CGRect
         var identifier: String?
+        /// `nil` when the element does not report it.
+        var isEnabled: Bool? = nil
     }
 
     /// Every accessibility element below the window's content view, depth-first.
@@ -81,7 +83,8 @@ enum AccessibilityProbe {
                                   value: AccessibilityProbe.stringValue(of: element),
                                   frame: CGRect(x: r.minX - content.minX, y: content.maxY - r.maxY,
                                                 width: r.width, height: r.height),
-                                  identifier: element.axValue("accessibilityIdentifier")))
+                                  identifier: element.axValue("accessibilityIdentifier"),
+                                  isEnabled: element.axValue("accessibilityEnabled")))
             }
             let kids: [Any]? = element.axValue("accessibilityChildren")
             if depth < 10 { for kid in kids ?? [] { if let o = kid as? NSObject { walk(o, depth: depth + 1) } } }
