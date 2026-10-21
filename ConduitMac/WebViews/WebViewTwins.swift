@@ -263,7 +263,7 @@ struct AuthWebView: NSViewRepresentable {
             return webView
         }
         if let request = try? Self.dashboardRequest(normalizedBaseURL: normalized, cloudflareAccess: cloudflareAccess) {
-            webView.load(request)
+            Self.load(request, into: webView, websiteDataStoreIdentifier: websiteDataStoreIdentifier)
         } else {
             Self.reportConstructionFailure(onError, detail: AppLocalization.string("dashboard sign-in request construction failed"))
         }
@@ -298,6 +298,22 @@ struct AuthWebView: NSViewRepresentable {
             )
         }
         return config
+    }
+
+    /// Loads `request` now, or once the clear of this sign-in's store has
+    /// finished. A Sign Out or disconnect clears its store over IPC, so the
+    /// clear can outlive the tap that started it; a session minted before it
+    /// lands would be deleted by it (#788). The wait is bounded (10 s).
+    @MainActor
+    static func load(_ request: URLRequest, into webView: WKWebView, websiteDataStoreIdentifier: UUID?) {
+        if DashboardCookiePersistence.hasPendingStoreClear(for: websiteDataStoreIdentifier) {
+            Task { @MainActor [weak webView] in
+                await DashboardCookiePersistence.awaitPendingStoreClear(for: websiteDataStoreIdentifier)
+                webView?.load(request)
+            }
+        } else {
+            webView.load(request)
+        }
     }
 
     /// Construction-time failures cannot synchronously mutate the owning
@@ -368,31 +384,40 @@ struct AuthWebView: NSViewRepresentable {
                   AuthWebViewNavigationPolicy.isSignedInDashboardPage(webView.url, expectedDashboardURL: expectedURL) else { return }
             hasPinnedDashboardOrigin = true
             authenticatedWebView = webView
-            let js = """
-            (async function() {
-                try {
-                    const response = await fetch('/api/auth/ws-ticket', {
-                        method: 'POST',
-                        credentials: 'include'
-                    });
-                    const body = await response.json().catch(() => ({}));
-                    window.webkit.messageHandlers.ticket.postMessage(JSON.stringify({
-                        type: 'hermes-ticket',
-                        status: response.status,
-                        ticket: body.ticket || null
-                    }));
-                } catch (error) {
-                    window.webkit.messageHandlers.ticket.postMessage(JSON.stringify({
-                        type: 'hermes-ticket',
-                        status: 0,
-                        error: String(error)
-                    }));
-                }
-            })();
-            true;
-            """
-            webView.evaluateJavaScript(js, in: nil, in: DashboardScriptWorld.world, completionHandler: nil)
+            Self.requestTicket(in: webView)
         }
+
+        /// The dashboard page mints a one-time WebSocket ticket with its session
+        /// cookie and posts it to the `ticket` handler. It runs in
+        /// `DashboardScriptWorld`, where the handler lives (#774): in the page
+        /// world there is no such handler and the sign-in would never finish.
+        static func requestTicket(in webView: WKWebView) {
+            webView.evaluateJavaScript(ticketScript, in: nil, in: DashboardScriptWorld.world, completionHandler: nil)
+        }
+
+        static let ticketScript = """
+        (async function() {
+            try {
+                const response = await fetch('/api/auth/ws-ticket', {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+                const body = await response.json().catch(() => ({}));
+                window.webkit.messageHandlers.ticket.postMessage(JSON.stringify({
+                    type: 'hermes-ticket',
+                    status: response.status,
+                    ticket: body.ticket || null
+                }));
+            } catch (error) {
+                window.webkit.messageHandlers.ticket.postMessage(JSON.stringify({
+                    type: 'hermes-ticket',
+                    status: 0,
+                    error: String(error)
+                }));
+            }
+        })();
+        true;
+        """
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             guard message.name == "ticket", let rawMessage = message.body as? String,

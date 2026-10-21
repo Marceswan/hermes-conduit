@@ -40,43 +40,66 @@ final class WebViewTwinTests: XCTestCase {
     /// Resolves when a page has loaded.
     private final class LoadWaiter: NSObject, WKNavigationDelegate {
         private var continuation: CheckedContinuation<Void, Error>?
+        private var outcome: Result<Void, Error>?
+
+        /// Asked when the page's load begins.
+        var onStart: (() -> Void)?
+
+        func attach(to webView: WKWebView) {
+            webView.navigationDelegate = self
+        }
 
         func load(_ html: String, in webView: WKWebView) async throws {
-            webView.navigationDelegate = self
-            try await withCheckedThrowingContinuation { continuation in
-                self.continuation = continuation
-                webView.loadHTMLString(html, baseURL: nil)
+            attach(to: webView)
+            webView.loadHTMLString(html, baseURL: nil)
+            try await finished()
+        }
+
+        /// Returns at the next finished load, or at once if it finished already.
+        func finished() async throws {
+            if let outcome { return try outcome.get() }
+            try await withCheckedThrowingContinuation { continuation = $0 }
+        }
+
+        private func complete(_ result: Result<Void, Error>) {
+            if let continuation {
+                continuation.resume(with: result)
+                self.continuation = nil
+            } else {
+                outcome = result
             }
         }
 
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            onStart?()
+        }
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            continuation?.resume()
-            continuation = nil
+            complete(.success(()))
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            continuation?.resume(throwing: error)
-            continuation = nil
+            complete(.failure(error))
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            continuation?.resume(throwing: error)
-            continuation = nil
+            complete(.failure(error))
         }
     }
 
     /// A sign-in page, loaded in the WebView the twin configures.
     private func signInPage(
         recorder: TicketRecorder,
-        cloudflareAccess: CloudflareAccessCredentials? = nil
+        cloudflareAccess: CloudflareAccessCredentials? = nil,
+        headerStore: CustomHeaderStore = CustomHeaderStore(load: { [:] }, persist: { _ in })
     ) async throws -> WKWebView {
         let configuration = AuthWebView.makeConfiguration(
             normalizedBaseURL: "https://dash.example.com",
             cloudflareAccess: cloudflareAccess,
             websiteDataStoreIdentifier: nil,
             ticketHandler: recorder,
-            // Not the shared store: it reads the Keychain on first use.
-            headerStore: CustomHeaderStore(load: { [:] }, persist: { _ in })
+            // Not the shared store: it caches what it reads for the whole process.
+            headerStore: headerStore
         )
         let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 200, height: 200), configuration: configuration)
         let waiter = LoadWaiter()
@@ -130,6 +153,110 @@ final class WebViewTwinTests: XCTestCase {
         XCTAssertFalse(fetchInPage?.contains("secret-value") == true)
         let fetchInConduit = try await webView.evaluateJavaScript("Function.prototype.toString.call(window.fetch)", contentWorld: DashboardScriptWorld.world) as? String
         XCTAssertTrue(fetchInConduit?.contains("[native code]") == false, "the header script is not installed in Conduit's world, so sign-in loses the proxy header")
+    }
+
+    /// A proxy header (not the Cloudflare token) is the same: only the isolated
+    /// world may hold a script that carries it.
+    func testCustomHeaderScriptIsNotInThePageWorld() async throws {
+        let store = CustomHeaderStore(load: { [:] }, persist: { _ in })
+        XCTAssertTrue(store.setHeaders([CustomHeader(name: "X-Proxy-Auth", value: "header-secret-value")], forServerURL: "https://dash.example.com"))
+        let webView = try await signInPage(recorder: TicketRecorder(), headerStore: store)
+
+        let fetchInPage = try await webView.evaluateJavaScript("Function.prototype.toString.call(window.fetch)", contentWorld: .page) as? String
+        XCTAssertTrue(fetchInPage?.contains("[native code]") == true, "the page world's fetch is wrapped: \(fetchInPage ?? "nil")")
+        let fetchInConduit = try await webView.evaluateJavaScript("Function.prototype.toString.call(window.fetch)", contentWorld: DashboardScriptWorld.world) as? String
+        XCTAssertTrue(fetchInConduit?.contains("[native code]") == false, "the header script is not installed in Conduit's world")
+    }
+
+    /// `didFinish` asks the dashboard page for a ticket. The script has to run
+    /// where the `ticket` handler is, or the message never arrives and the
+    /// sign-in never finishes. (A page with no origin cannot fetch, so the
+    /// script posts its failure message: that is enough to show the world.)
+    func testTicketRequestRunsInTheDashboardWorld() async throws {
+        let recorder = TicketRecorder()
+        let webView = try await signInPage(recorder: recorder)
+
+        let arrived = expectation(description: "the ticket script posted")
+        recorder.onMessage = { arrived.fulfill() }
+        AuthWebView.Coordinator.requestTicket(in: webView)
+        await fulfillment(of: [arrived], timeout: 10)
+        XCTAssertEqual(recorder.worldNames, [DashboardScriptWorld.world.name])
+        XCTAssertTrue(recorder.bodies.first?.contains("hermes-ticket") == true, "\(recorder.bodies)")
+    }
+
+    /// Dismantling removes the handler from the world it was added to; a
+    /// removal in the page world would leave it in place.
+    func testDismantleRemovesTheTicketHandlerFromTheDashboardWorld() async throws {
+        let recorder = TicketRecorder()
+        let webView = try await signInPage(recorder: recorder)
+        let before = try await webView.evaluateJavaScript(Self.ticketHandlerProbe, contentWorld: DashboardScriptWorld.world) as? String
+        XCTAssertEqual(before, "object")
+
+        let view = AuthWebView(url: "https://dash.example.com", cloudflareAccess: nil, onTicket: { _, _ in }, onError: { _, _ in })
+        AuthWebView.dismantleNSView(webView, coordinator: AuthWebView.Coordinator(parent: view))
+        try await LoadWaiter().load("<!doctype html><html><body>again</body></html>", in: webView)
+        let after = try await webView.evaluateJavaScript(Self.ticketHandlerProbe, contentWorld: DashboardScriptWorld.world) as? String
+        XCTAssertEqual(after, "undefined", "the ticket handler is still installed after the sign-in page went")
+    }
+
+    // MARK: - AuthWebView store clear (#788, #1058)
+
+    private func storeClearWebView(_ id: UUID?) -> WKWebView {
+        let configuration = AuthWebView.makeConfiguration(
+            normalizedBaseURL: "https://dash.example.com",
+            cloudflareAccess: nil,
+            websiteDataStoreIdentifier: id,
+            ticketHandler: TicketRecorder(),
+            headerStore: CustomHeaderStore(load: { [:] }, persist: { _ in })
+        )
+        return WKWebView(frame: NSRect(x: 0, y: 0, width: 200, height: 200), configuration: configuration)
+    }
+
+    /// Sign Out clears the dashboard's WebKit store over IPC, so the clear can
+    /// outlive the tap. A sign-in page that loads at once can have the session
+    /// it mints deleted by that late clear. The page waits for the clear.
+    func testSignInPageLoadWaitsForAPendingStoreClear() async throws {
+        let id = UUID()
+        let webView = storeClearWebView(id)
+        let waiter = LoadWaiter()
+        var clearPendingWhenLoadStarted: Bool?
+        waiter.onStart = { clearPendingWhenLoadStarted = DashboardCookiePersistence.hasPendingStoreClear(for: id) }
+
+        DashboardCookiePersistence.scheduleWebKitSessionClear(for: id)
+        XCTAssertTrue(DashboardCookiePersistence.hasPendingStoreClear(for: id))
+        waiter.attach(to: webView)
+        AuthWebView.load(URLRequest(url: URL(string: "about:blank")!), into: webView, websiteDataStoreIdentifier: id)
+        // The clear runs on this actor and has had no turn yet.
+        XCTAssertFalse(webView.isLoading, "the sign-in page started loading while its store was still clearing")
+
+        try await waiter.finished()
+        XCTAssertEqual(clearPendingWhenLoadStarted, false, "the load started after the clear was done")
+        XCTAssertFalse(DashboardCookiePersistence.hasPendingStoreClear(for: id))
+    }
+
+    func testSignInPageLoadsAtOnceWhenNothingIsClearing() async throws {
+        let id = UUID()
+        XCTAssertFalse(DashboardCookiePersistence.hasPendingStoreClear(for: id))
+        let webView = storeClearWebView(id)
+        let waiter = LoadWaiter()
+        waiter.attach(to: webView)
+        AuthWebView.load(URLRequest(url: URL(string: "about:blank")!), into: webView, websiteDataStoreIdentifier: id)
+        XCTAssertTrue(webView.isLoading, "no clear is running, so the load starts in this turn")
+        try await waiter.finished()
+    }
+
+    /// Another dashboard's clear is no reason to wait.
+    func testSignInPageDoesNotWaitForAnotherDashboardsClear() async throws {
+        let other = UUID()
+        DashboardCookiePersistence.scheduleWebKitSessionClear(for: other)
+        let id = UUID()
+        let webView = storeClearWebView(id)
+        let waiter = LoadWaiter()
+        waiter.attach(to: webView)
+        AuthWebView.load(URLRequest(url: URL(string: "about:blank")!), into: webView, websiteDataStoreIdentifier: id)
+        XCTAssertTrue(webView.isLoading, "the other dashboard's clear is no reason to wait")
+        try await waiter.finished()
+        await DashboardCookiePersistence.awaitPendingStoreClear(for: other)
     }
 
     // MARK: - AuthWebView signed-in detection
