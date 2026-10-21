@@ -1287,11 +1287,6 @@ private struct InlineMarkdown: View {
             selectionCoordinator: selectionCoordinator,
             selectionSegment: selectionSegment
         )
-#if os(macOS)
-            // MAC: an NSViewRepresentable has no baseline, so the list marker's
-            // firstTextBaseline HStack floated it a line above its text.
-            .firstBaselineAligned()
-#endif
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

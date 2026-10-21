@@ -233,26 +233,6 @@ extension SelectableTextView {
         return ceil(laidOut.layout.usedRect(for: laidOut.container).height)
     }
 
-    /// Distance from the top of the text to the first line's baseline at
-    /// `width`, as upstream's UITextView exposes through its first-baseline
-    /// alignment. An NSViewRepresentable has no baseline of its own, so a
-    /// `.firstTextBaseline` HStack (list bullets) fell back to the view's
-    /// bottom edge and the marker floated a line above its text.
-    func firstBaseline(width: CGFloat) -> CGFloat {
-        let styled = styledText()
-        guard styled.length > 0 else { return ceil(font.ascender) }
-        let laidOut = Self.laidOutText(styled, width: max(1, width))
-        let fragment = laidOut.layout.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil)
-        return fragment.minY + laidOut.layout.location(forGlyphAt: 0).y
-    }
-
-    /// Publishes `firstBaseline(width:)` as this view's `.firstTextBaseline`.
-    func firstBaselineAligned() -> some View {
-        alignmentGuide(.firstTextBaseline) { dimensions in
-            firstBaseline(width: dimensions.width)
-        }
-    }
-
     func styledText() -> NSAttributedString {
         let styled = NSMutableAttributedString(attributedString: attributedText)
         let fullRange = NSRange(location: 0, length: styled.length)
