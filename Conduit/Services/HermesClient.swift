@@ -2324,7 +2324,17 @@ final class HermesClient: ObservableObject {
     /// gateway from before that slot refuses the unknown key with `4000`
     /// before anything runs, so the turn is resent once without it and the
     /// key is dropped for this client from then on.
-    func sendPrompt(_ sessionId: String, text: String, surface: String? = nil, voiceTurn: Bool = false) async throws -> PromptSubmissionOutcome {
+    /// `queued` is Queue (#842): with a turn running, Hermes keeps the
+    /// message as the next turn, on its side, instead of steering or
+    /// interrupting with it. A gateway that refuses the key is never sent
+    /// the message without it, which would steer or interrupt instead.
+    func sendPrompt(
+        _ sessionId: String,
+        text: String,
+        surface: String? = nil,
+        voiceTurn: Bool = false,
+        queued: Bool = false
+    ) async throws -> PromptSubmissionOutcome {
         var params: [String: Any] = [
             "session_id": sessionId,
             "text": text
@@ -2332,6 +2342,10 @@ final class HermesClient: ObservableObject {
         if let surface { params["surface"] = surface }
         let marksVoiceTurn = voiceTurn && !gatewayRefusesVoiceTurn
         if marksVoiceTurn { params["voice_turn"] = true }
+        if queued {
+            guard !gatewayRefusesQueued else { throw QueueUnsupportedError() }
+            params["queued"] = true
+        }
         let result: AnyCodable
         do {
             result = try await rpc("prompt.submit", params: params, timeout: Self.promptSubmitTimeout)
@@ -2339,6 +2353,9 @@ final class HermesClient: ObservableObject {
             gatewayRefusesVoiceTurn = true
             params.removeValue(forKey: "voice_turn")
             result = try await rpc("prompt.submit", params: params, timeout: Self.promptSubmitTimeout)
+        } catch let error as RpcError where queued && error.refusesUnknownParam("queued") {
+            gatewayRefusesQueued = true
+            throw QueueUnsupportedError()
         }
         return PromptSubmissionOutcome(
             gatewayStatus: result.objectValue?["status"]?.stringValue
@@ -2348,6 +2365,16 @@ final class HermesClient: ObservableObject {
     /// Set once this gateway refused `prompt.submit`'s `voice_turn` key
     /// (a Hermes from before `auxiliary.voice_chat`).
     private var gatewayRefusesVoiceTurn = false
+
+    /// Set once this gateway refused `prompt.submit`'s `queued` key.
+    private var gatewayRefusesQueued = false
+
+    /// Queue on a Hermes without `prompt.submit`'s `queued` key.
+    struct QueueUnsupportedError: LocalizedError {
+        var errorDescription: String? {
+            AppLocalization.string("This Hermes can't queue messages. Update Hermes, or touch and hold send to steer or interrupt instead.")
+        }
+    }
 
     /// Read-only liveness probe against the gateway's in-memory runtime
     /// registry (`session.active_list`). Unlike `session.resume` this does not
@@ -4424,6 +4451,19 @@ enum MessageNormalizer {
     /// The caption the gateway writes when a picture arrives without one.
     private static let defaultImageCaption = "What do you see in this image?"
 
+    /// What Hermes saved in place of a picture before hermes-agent d0f5ef7041
+    /// (v0.21): the model-only description vision wrote for it, then where
+    /// the file is. tui_gateway (`_enrich_with_attached_images`) and the
+    /// chat platform gateway (`_enrich_message_with_vision`) word it
+    /// differently, and each has a wording for a failed analysis. Group 1 is
+    /// the description when there is one, the last group the path.
+    private static let visionEnrichmentPatterns: [NSRegularExpression] = [
+        #"\[The user attached an image:\r?\n(.*?)\]\r?\n\[You can examine it with vision_analyze using image_url: ([^\]\r\n]+)\]"#,
+        #"\[The user attached an image but analysis failed\.\]\r?\n\[You can examine it with vision_analyze using image_url: ([^\]\r\n]+)\]"#,
+        #"\[The user sent an image~ Here's what I can see:\r?\n(.*?)\]\r?\n\[If you need a closer look, use vision_analyze with image_url: (\S+) ~\]"#,
+        #"\[The user sent an image but [^\[\]]*? with vision_analyze using image_url: ([^\]\r\n]+)\]"#,
+    ].compactMap { try? NSRegularExpression(pattern: $0, options: [.dotMatchesLineSeparators]) }
+
     /// What Hermes puts in place of each picture it leaves out of a
     /// transcript read with `inline_images=false` (#652).
     static let inlineImageMarker = "[image]"
@@ -4518,8 +4558,21 @@ enum MessageNormalizer {
         let body = markers.text
         let fullRange = NSRange(body.startIndex..<body.endIndex, in: body)
 
-        var references: [(range: NSRange, path: String)] = []
+        var references: [(range: NSRange, path: String, description: String?)] = []
         var foundHint = false
+        for expression in visionEnrichmentPatterns {
+            for match in expression.matches(in: body, range: fullRange) {
+                guard let pathRange = Range(match.range(at: match.numberOfRanges - 1), in: body) else { continue }
+                let path = String(body[pathRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !path.isEmpty else { continue }
+                var description: String?
+                if match.numberOfRanges > 2, let range = Range(match.range(at: 1), in: body) {
+                    let text = String(body[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    description = text.isEmpty ? nil : text
+                }
+                references.append((match.range, path, description))
+            }
+        }
         for (expression, isHint) in [(imageReferencePattern, false), (imageHintPattern, true)] {
             guard let expression else { continue }
             for match in expression.matches(in: body, range: fullRange) {
@@ -4530,7 +4583,7 @@ enum MessageNormalizer {
                     let path = String(body[swiftRange])
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     if !path.isEmpty {
-                        references.append((match.range, path))
+                        references.append((match.range, path, nil))
                         foundHint = foundHint || isHint
                     }
                     break
@@ -4561,7 +4614,17 @@ enum MessageNormalizer {
             visibleContent = ""
         }
 
-        let paths = references.map(\.path)
+        // One picture named twice (its description and an `@image:` token)
+        // is one attachment, carrying the description.
+        var pictures: [(path: String, description: String?)] = []
+        for reference in references {
+            if let index = pictures.firstIndex(where: { $0.path == reference.path }) {
+                pictures[index].description = pictures[index].description ?? reference.description
+            } else {
+                pictures.append((reference.path, reference.description))
+            }
+        }
+        let paths = pictures.map(\.path)
         let attachments = (0..<max(paths.count, markers.count)).map { index -> Attachment in
             let path = index < paths.count ? paths[index] : nil
             let name = path.map { URL(fileURLWithPath: $0).lastPathComponent } ?? ""
@@ -4580,7 +4643,8 @@ enum MessageNormalizer {
                 uri: path ?? "",
                 mimeType: path.flatMap { imageMimeType(for: $0) },
                 kind: .image,
-                inlineImage: inlineImage
+                inlineImage: inlineImage,
+                imageDescription: index < pictures.count ? pictures[index].description : nil
             )
         }
         return (visibleContent, body, attachments)

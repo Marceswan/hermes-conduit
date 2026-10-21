@@ -89,6 +89,9 @@ struct ChatResumeLifecycleOperations {
     /// decision RPC.
     var respondToApproval: (@MainActor (HermesClient, String, String?, String, String?) async throws -> Bool)?
     var sendPrompt: (@MainActor (HermesClient, String, String) async throws -> PromptSubmissionOutcome)?
+    /// Test seam for a Queue send (`queued: true`, #842). Not an init
+    /// parameter: tests set it on the value.
+    var sendQueuedPrompt: (@MainActor (HermesClient, String, String) async throws -> PromptSubmissionOutcome)?
     /// Test seam for one attachment upload (session id, attachment) before
     /// the prompt; returns the `@file:` reference the prompt carries, nil
     /// for an image. Not an init parameter: tests set it on the value.
@@ -150,15 +153,11 @@ struct ChatResumeLifecycleOperations {
     var titleBotChat: (@MainActor (HermesClient, String, String, String) async throws -> Void)?
     /// Test seam: the WebSocket transport for clients built by makeClient; nil = URLSession.
     var makeTransport: (@MainActor () -> any HermesWebSocketTransport)?
-    #if os(macOS) // MAC: test seam for a successful `session.create` (ledger)
-    /// Replaces the `session.create` RPC of `createAndReconcileSession`. Not an
-    /// init parameter: tests set it on the value.
-    var createSession: (@MainActor (HermesClient, String?) async throws -> (
-        sessionId: String,
-        storedSessionId: String?,
-        profile: String?
-    ))? = nil
-    #endif // MAC:
+    /// Test seam for the `session.create` of the automatic resume's fresh
+    /// chat (`createAndReconcileSession` without a widget lease): client and
+    /// cwd in, the created ids out. Not an init parameter: tests set it on
+    /// the value.
+    var createSession: (@MainActor (HermesClient, String?) async throws -> BranchResult)?
 
     init(
         connectClient: (@MainActor (HermesClient) async throws -> Void)? = nil,
@@ -1934,6 +1933,9 @@ final class AppState: ObservableObject {
         }
         switch turnState {
         case .running:
+            if busyInputMode == .queue {
+                return AppLocalization.string("Queue a message for \(conversationAgentIdentity.name)…")
+            }
             return AppLocalization.string("\(busyInputMode.title) \(conversationAgentIdentity.name)…")
         case .synchronizing, .reconnecting:
             return AppLocalization.string("Checking agent activity…")
@@ -2354,6 +2356,13 @@ final class AppState: ObservableObject {
     private var geminiLiveMemoryContext: GeminiLiveMemoryContext?
     /// The transcript `submitVoiceTranscript` is submitting, while it is.
     private var spokenSubmissionText: String?
+    /// Where a caller of `submitComposer` says `text` came from (a Shortcut,
+    /// a live call's request), for the plugin's report (#888). Keyed by the
+    /// text like `spokenSubmissionText`, so a typed send interleaving on
+    /// another text never takes it.
+    var submissionTurnSurface: (text: String, surface: TurnSurface)?
+    /// Seam for tests: takes the plugin's turn-surface reports.
+    var turnSurfaceSender: (([String: Any]) async throws -> Void)?
 
     private func resolveGeminiLiveSearchSource() async -> GeminiLiveSearchSource {
         let mode = geminiLiveSearchMode
@@ -3442,6 +3451,7 @@ final class AppState: ObservableObject {
                 if foundBusy { throw VoiceThreadBusyError() }
                 throw VoiceAudioError.unavailable(AppLocalization.string("Hermes could not send this to the chat."))
             }
+            await self.reportTurnSurface(self.messageTurnSurface(spoken: true), runtimeSessionID: chat.runtimeID, text: text)?.value
             switch try await client.sendPrompt(chat.runtimeID, text: text, surface: AppState.spokenPromptSurface, voiceTurn: true) {
             case .accepted:
                 return .started(runtimeID: chat.runtimeID)
@@ -4163,17 +4173,18 @@ final class AppState: ObservableObject {
     /// that its requested session no longer exists. Callers use this to
     /// retire a saved automatic-return target instead of retrying it forever.
     private var reconciliationSessionWasNotFound = false
-    #if os(macOS) // MAC: upstream bug, candidate for upstream PR (ledger)
-    /// Catalog rows `session.resume` answered 4007 for, per dashboard and
-    /// profile, for this app run. Keeps a retry (after a failed fresh-chat
-    /// create) from probing the same dead rows again.
-    private var macDeadResumeRowIDs: [String: Set<String>] = [:]
-
-    private var macDeadResumeKey: String {
-        "\(activeDashboardID?.uuidString ?? "-")|\(activeProfile)"
-    }
-    #endif // MAC:
+    /// Catalog rows `session.resume` answered 4007 for during an automatic
+    /// resume, per dashboard and profile, for this app run. The catalog can
+    /// keep listing a conversation the gateway no longer resumes; without
+    /// this, the retry after a failed fresh-chat create would select and
+    /// probe the same dead rows again.
+    private var deadResumeRowIDs: [String: Set<String>] = [:]
     private var reconciliation: Reconciliation?
+    /// Side-agent answers that came in while a reconciliation was open.
+    /// Hermes keeps no copy of them, so unlike the buffered stream they
+    /// can't come back with a later transcript: they show once the boundary
+    /// closes, whether its reconcile committed or was dropped.
+    private var heldSideAgentCompletions: [StreamEvent] = []
     private var activeClientEpoch = UUID()
     private var activeAssistantMessageId: String?
     private var activeReasoningMessageId: String?
@@ -4350,6 +4361,13 @@ final class AppState: ObservableObject {
     /// Counts catalog reads as they start, so the slow read a chat sync left
     /// for later can tell that a newer read began while it was paging.
     private var catalogReadSequence: UInt64 = 0
+    /// Ticket for each read that replaces the published list wholesale
+    /// (`loadSessions` and a chat sync), taken when the read starts, and
+    /// the newest ticket whose answer is listed. Reads overlap (a reconnect,
+    /// a return to the list, a pull to refresh), and an older answer that
+    /// lands after a newer one would put back a list from before it (#786).
+    private var sessionListReadTicket: UInt64 = 0
+    private var sessionListListedTicket: UInt64 = 0
     /// The catalog read that returning to the list starts, and whether
     /// another return asked for one while it ran.
     private(set) var leaveCatalogRefreshTask: Task<Void, Never>?
@@ -5508,6 +5526,8 @@ final class AppState: ObservableObject {
             presentationCacheDebounceSuspension
             ?? { duration in try await Task.sleep(for: duration) }
         self.defaults = defaults
+        self.notifierPluginNoticeChannel = NotifierPluginNoticeChannel.load(from: defaults)
+        self.appInstallSource = AppInstallSource.lastKnown(in: defaults)
         // The registry (and its legacy migration) loads before any connection
         // hydration: scoped auth records are meaningless without it.
         let initialRegistry = preloadedRegistry
@@ -7450,6 +7470,8 @@ final class AppState: ObservableObject {
             // probe, is waited for: never steered or interrupted.
             var foundBusy = isBusy
             if !foundBusy {
+                submissionTurnSurface = (text, messageTurnSurface(spoken: true))
+                defer { submissionTurnSurface = nil }
                 let sent = await submitComposer(text: text, onBusy: { foundBusy = true })
                 // The id captured before the send: the user may have moved to
                 // another chat while it was in flight.
@@ -7459,6 +7481,8 @@ final class AppState: ObservableObject {
             throw VoiceAudioError.unavailable(AppLocalization.string("Hermes could not send this to the chat."))
         }
         let target = runtimeID.isEmpty ? thread.runtimeSessionID : runtimeID
+        // Alongside the read below, so it adds no wait between the read and the send.
+        let surfaceReport = reportTurnSurface(messageTurnSurface(spoken: true), runtimeSessionID: target, text: text)
         // Re-read right before the send: a turn running there (typed on
         // another device) is waited for. A failed read fails the send rather
         // than risk steering it.
@@ -7469,6 +7493,7 @@ final class AppState: ObservableObject {
         }) {
             throw VoiceThreadBusyError()
         }
+        await surfaceReport?.value
         switch try await client.sendPrompt(target, text: text) {
         case .accepted:
             return target
@@ -11707,13 +11732,10 @@ final class AppState: ObservableObject {
         }
         guard let baseURL else { return }
         DashboardCookiePersistence.clearNativeCookies(for: baseURL)
-        Task { @MainActor in
-            if let url = URL(string: baseURL) {
-                await DashboardCookiePersistence.clear(
-                    from: WKWebsiteDataStore.default().httpCookieStore,
-                    for: url
-                )
-            }
+        if let url = URL(string: baseURL) {
+            // Ordered: the next default-store sign-in waits for this clear
+            // (#788).
+            DashboardCookiePersistence.clearDefaultStore(for: url)
         }
     }
 
@@ -12842,11 +12864,13 @@ final class AppState: ObservableObject {
             // sequence: discover the live gateway's current sessions first,
             // then resume the newest chat. A persisted runtime id can belong
             // to a process that no longer exists after a relaunch.
+            let readTicket = takeSessionListReadTicket()
             let catalogLoad = try await profileCatalog(using: client, deferringOlderPages: true)
             // The rest of a due full read runs once this sync is over, so
             // the drawer still fills in without holding up the chat. Only a
-            // sync that published its list schedules it: an abandoned one
-            // leaves the read to the sync that replaced it.
+            // sync that reached its list schedules it (a newer list read may
+            // have listed in its place): an abandoned one leaves the read to
+            // the sync that replaced it.
             var publishedCatalog = false
             defer {
                 if catalogLoad.olderPagesDeferred, publishedCatalog {
@@ -12891,12 +12915,16 @@ final class AppState: ObservableObject {
                 )
                 return chatResumeSyncInterruptionOutcome(for: automaticWorkToken)
             }
-            sessions = allSessions.filter { $0.source != .cron }
-            cronSessions = allSessions.filter { $0.source == .cron }
-            savedChatListReplacedByLiveList(
-                newestPageOnly: catalogLoad.olderPagesDeferred,
-                dashboardID: dashboardID
-            )
+            // A list read that started after this sync's read already
+            // listed newer rows; the sync still resumes its chat.
+            if claimSessionListListing(readTicket) {
+                sessions = allSessions.filter { $0.source != .cron }
+                cronSessions = allSessions.filter { $0.source == .cron }
+                savedChatListReplacedByLiveList(
+                    newestPageOnly: catalogLoad.olderPagesDeferred,
+                    dashboardID: dashboardID
+                )
+            }
             sessionCatalogLoadState.markLoaded(SessionCatalogOwner(dashboardID: dashboardID, profile: profile))
             if let dashboardID {
                 widgetSettledCatalogOwner = WidgetWorkspaceID(dashboardID: dashboardID, profile: profile)
@@ -12997,23 +13025,16 @@ final class AppState: ObservableObject {
             // earlier snapshot did not know — healing and the candidate filter
             // must both see that answer, not the one that prompted the refresh.
             let ownership = botOwnership
-            #if os(macOS) // MAC: upstream bug, candidate for upstream PR (ledger)
-            // Rows already found dead this run are not offered again.
-            let deadRowIDs = macDeadResumeRowIDs[macDeadResumeKey] ?? []
+            // A row this run already found dead (`session.resume` 4007) is
+            // not offered again, however long the catalog keeps listing it.
+            let deadRowIDs = deadResumeRowIDs[
+                Self.deadResumeRowKey(dashboardID: dashboardID, profile: profile)
+            ] ?? []
             let resumeCandidates = BotChatHygiene.ordinaryResumeCandidates(
                 allSessions,
                 roster: botRoster,
                 botOwnedSessionIDs: ownership.botOwnedIDs
-            ).filter { row in
-                deadRowIDs.isDisjoint(with: Set([row.id] + row.alternateIds + [row.storedSessionId].compactMap { $0 }))
-            }
-            #else // MAC:
-            let resumeCandidates = BotChatHygiene.ordinaryResumeCandidates(
-                allSessions,
-                roster: botRoster,
-                botOwnedSessionIDs: ownership.botOwnedIDs
-            )
-            #endif // MAC:
+            ).filter { !Self.resumeRow($0, isAmong: deadRowIDs) }
             let storedReferenceAliases = Self.aliasesForStoredReference(
                 storedReference,
                 catalog: allSessions
@@ -13104,7 +13125,7 @@ final class AppState: ObservableObject {
                     runtimeSessionID: target.storedSessionId != nil ? target.id : nil,
                     acceptedSessionIDs: acceptedTargetIDs
                 )
-                let succeeded = await reconcile(
+                var succeeded = await reconcile(
                     sessionId: target.id,
                     using: client,
                     token: token,
@@ -13115,27 +13136,43 @@ final class AppState: ObservableObject {
                     requiredViewportTransitionGeneration: requiredViewportTransitionGeneration,
                     historySourceUnavailable: historySourceUnavailable
                 )
-                #if os(macOS) // MAC: upstream bug, candidate for upstream PR (ledger)
+                if !succeeded, purpose == .automaticReturn {
+                    succeeded = await resumeByStoredIDAfterNotFound(
+                        target,
+                        acceptedSessionIDs: acceptedTargetIDs,
+                        conversationIdentity: targetIdentity,
+                        using: client,
+                        profile: profile,
+                        token: token,
+                        automaticWorkToken: automaticWorkToken,
+                        automaticSyncOperationID: automaticOperationID,
+                        requiredViewportTransitionGeneration: requiredViewportTransitionGeneration,
+                        historySourceUnavailable: historySourceUnavailable
+                    )
+                }
                 if !succeeded,
                    purpose == .automaticReturn,
                    reconciliationSessionWasNotFound,
-                   automaticChatResumeWorkIsCurrent(
-                    automaticWorkToken,
-                    syncOperationID: automaticOperationID
-                   ),
-                   chatViewportTransitionIsCurrent(requiredViewportTransitionGeneration),
-                   token == reconciliationToken,
-                   profile == activeProfile,
-                   let activeClient = self.client,
-                   activeClient === client {
-                    // The catalog lists a row `session.resume` answers 4007
+                   resumeRecoveryOwnsViewport(
+                    token: token,
+                    profile: profile,
+                    client: client,
+                    automaticWorkToken: automaticWorkToken,
+                    automaticSyncOperationID: automaticOperationID,
+                    requiredViewportTransitionGeneration: requiredViewportTransitionGeneration
+                   ) {
+                    // The catalog LISTS a row `session.resume` answers 4007
                     // for: the same authoritative evidence the missing-saved-
-                    // session branch below recovers from.
+                    // session branch below recovers from, which only runs when
+                    // the row is absent from the catalog. Retrying it would
+                    // loop forever behind the read-only saved copy ("Failed
+                    // to restore this conversation"); retire it instead.
                     return await retireUnresumableResumeTargets(
                         targetIDs.union([target.storedSessionId].compactMap { $0 }),
                         candidates: resumeCandidates,
                         using: client,
                         profile: profile,
+                        dashboardID: dashboardID,
                         purpose: purpose,
                         token: token,
                         automaticWorkToken: automaticWorkToken,
@@ -13144,7 +13181,6 @@ final class AppState: ObservableObject {
                         historySourceUnavailable: historySourceUnavailable
                     )
                 }
-                #endif // MAC:
                 if !succeeded,
                    purpose == .automaticReturn,
                    !reconciliationWasIdentityRejected,
@@ -13222,7 +13258,7 @@ final class AppState: ObservableObject {
                             runtimeSessionID: fallback.storedSessionId != nil ? fallback.id : nil,
                             acceptedSessionIDs: fallbackIDs
                         )
-                        let fallbackSucceeded = await reconcile(
+                        var fallbackSucceeded = await reconcile(
                             sessionId: fallback.id,
                             using: client,
                             token: token,
@@ -13233,28 +13269,42 @@ final class AppState: ObservableObject {
                             requiredViewportTransitionGeneration: requiredViewportTransitionGeneration,
                             historySourceUnavailable: historySourceUnavailable
                         )
+                        if !fallbackSucceeded {
+                            fallbackSucceeded = await resumeByStoredIDAfterNotFound(
+                                fallback,
+                                acceptedSessionIDs: fallbackIDs,
+                                conversationIdentity: fallbackIdentity,
+                                using: client,
+                                profile: profile,
+                                token: token,
+                                automaticWorkToken: automaticWorkToken,
+                                automaticSyncOperationID: automaticOperationID,
+                                requiredViewportTransitionGeneration: requiredViewportTransitionGeneration,
+                                historySourceUnavailable: historySourceUnavailable
+                            )
+                        }
                         if fallbackSucceeded, errorMessage == handledMissingSessionError {
                             errorMessage = nil
                         }
-                        #if os(macOS) // MAC: upstream bug, candidate for upstream PR (ledger)
                         if !fallbackSucceeded,
                            reconciliationSessionWasNotFound,
-                           automaticChatResumeWorkIsCurrent(
-                            automaticWorkToken,
-                            syncOperationID: automaticOperationID
-                           ),
-                           chatViewportTransitionIsCurrent(requiredViewportTransitionGeneration),
-                           token == reconciliationToken,
-                           profile == activeProfile,
-                           let activeClient = self.client,
-                           activeClient === client {
+                           resumeRecoveryOwnsViewport(
+                            token: token,
+                            profile: profile,
+                            client: client,
+                            automaticWorkToken: automaticWorkToken,
+                            automaticSyncOperationID: automaticOperationID,
+                            requiredViewportTransitionGeneration: requiredViewportTransitionGeneration
+                           ) {
                             // The fallback is gone too: keep walking the
-                            // catalog instead of stopping on a dead row.
+                            // catalog instead of stopping on a dead row with
+                            // nothing scheduled.
                             return await retireUnresumableResumeTargets(
                                 fallbackIDs.union([fallback.storedSessionId].compactMap { $0 }),
                                 candidates: resumeCandidates,
                                 using: client,
                                 profile: profile,
+                                dashboardID: dashboardID,
                                 purpose: purpose,
                                 token: token,
                                 automaticWorkToken: automaticWorkToken,
@@ -13263,7 +13313,6 @@ final class AppState: ObservableObject {
                                 historySourceUnavailable: historySourceUnavailable
                             )
                         }
-                        #endif // MAC:
                         if !fallbackSucceeded,
                            !reconciliationWasIdentityRejected,
                            !reconciliationSessionWasNotFound,
@@ -13390,20 +13439,25 @@ final class AppState: ObservableObject {
         return .automaticIntentInvalidated
     }
 
-    #if os(macOS) // MAC: upstream bug, candidate for upstream PR (ledger)
-    /// Recovery for resume targets `session.resume` authoritatively reports
-    /// missing (code 4007) although the catalog lists them, so the
-    /// missing-saved-session branch (which needs the row ABSENT from the
-    /// catalog) never ran. Without it the cold launch stayed on the read-only
-    /// saved copy, retried the same dead row forever and left New Chat
-    /// disabled. Same recovery as that branch: forget the pointer if it names
-    /// a dead row, then open the next catalog row, and a fresh chat when none
-    /// resumes. A row that is itself missing is skipped, not retried.
+    /// Recovery for automatic-resume targets `session.resume` authoritatively
+    /// reports missing (code 4007) although the catalog lists them, so the
+    /// missing-saved-session branch of `performSyncSession` (which needs the
+    /// row ABSENT from the catalog) never ran. Without it a cold launch stayed
+    /// on the read-only saved copy and retried the same dead row forever.
+    /// Same recovery as that branch: forget the saved pointer if it names a
+    /// dead row, then open the next catalog row, and a fresh chat when none
+    /// resumes. A row that is itself missing is skipped, never retried; any
+    /// other failure is not evidence the row is dead, so it keeps the usual
+    /// retry instead of creating a chat.
+    ///
+    /// Ported from Marceswan/hermes-conduit, where it first shipped for
+    /// macOS only.
     private func retireUnresumableResumeTargets(
         _ deadIDs: Set<String>,
         candidates: [SessionSummary],
         using client: HermesClient,
         profile: String,
+        dashboardID: UUID?,
         purpose: ChatResumeSyncPurpose,
         token: UUID,
         automaticWorkToken: ChatResumeAutomaticWorkToken?,
@@ -13411,18 +13465,26 @@ final class AppState: ObservableObject {
         requiredViewportTransitionGeneration: UInt64?,
         historySourceUnavailable: Bool
     ) async -> ChatResumeSyncExecutionOutcome {
+        let deadRowKey = Self.deadResumeRowKey(dashboardID: dashboardID, profile: profile)
         var dead = deadIDs
+        deadResumeRowIDs[deadRowKey, default: []].formUnion(dead)
         let handledError = errorMessage
         if let saved = chatResumeCoordinator.lastSessionID(for: profile), dead.contains(saved) {
+            // Clears whatever kind the reference recorded: the
+            // conversation's authoritative absence is not evidence about
+            // which surface it belonged to.
             chatResumeCoordinator.rememberSession(nil, for: profile)
         }
-        // A catalog full of rows the gateway cannot resume (for example a
-        // profile mis-tag) must not cost one resume plus one history request
-        // per row: after `macDeadRowProbeLimit` more dead rows, create.
+        // Its agents go with it, whichever conversation (or new chat) is
+        // opened instead.
+        keepDelegateAgents(of: [])
+        // A catalog full of rows the gateway cannot resume (a profile
+        // mis-tag, a pruned state.db) must not cost one resume plus one
+        // history request per row: after `deadResumeRowProbeLimit` more dead
+        // rows, create a fresh chat.
         var probes = 0
-        macDeadResumeRowIDs[macDeadResumeKey, default: []].formUnion(dead)
-        while probes < Self.macDeadRowProbeLimit {
-            guard macResumeRecoveryOwnsViewport(
+        while probes < Self.deadResumeRowProbeLimit {
+            guard resumeRecoveryOwnsViewport(
                 token: token,
                 profile: profile,
                 client: client,
@@ -13432,9 +13494,7 @@ final class AppState: ObservableObject {
             ) else {
                 return chatResumeSyncInterruptionOutcome(for: automaticWorkToken)
             }
-            let remaining = candidates.filter { row in
-                dead.isDisjoint(with: Set([row.id] + row.alternateIds + [row.storedSessionId].compactMap { $0 }))
-            }
+            let remaining = candidates.filter { !Self.resumeRow($0, isAmong: dead) }
             guard let fallback = selectChatResumeTarget(
                 in: remaining,
                 profile: profile,
@@ -13445,22 +13505,37 @@ final class AppState: ObservableObject {
             ) else { break }
             probes += 1
             let fallbackIDs = Set([fallback.id] + fallback.alternateIds)
-            let fallbackSucceeded = await reconcile(
+            let fallbackIdentity = ConversationIdentity(
+                profile: profile,
+                durableSessionID: fallback.storedSessionId ?? fallback.id,
+                runtimeSessionID: fallback.storedSessionId != nil ? fallback.id : nil,
+                acceptedSessionIDs: fallbackIDs
+            )
+            var fallbackSucceeded = await reconcile(
                 sessionId: fallback.id,
                 using: client,
                 token: token,
                 acceptedSessionIDs: fallbackIDs,
-                conversationIdentity: ConversationIdentity(
-                    profile: profile,
-                    durableSessionID: fallback.storedSessionId ?? fallback.id,
-                    runtimeSessionID: fallback.storedSessionId != nil ? fallback.id : nil,
-                    acceptedSessionIDs: fallbackIDs
-                ),
+                conversationIdentity: fallbackIdentity,
                 automaticWorkToken: automaticWorkToken,
                 automaticSyncOperationID: automaticSyncOperationID,
                 requiredViewportTransitionGeneration: requiredViewportTransitionGeneration,
                 historySourceUnavailable: historySourceUnavailable
             )
+            if !fallbackSucceeded {
+                fallbackSucceeded = await resumeByStoredIDAfterNotFound(
+                    fallback,
+                    acceptedSessionIDs: fallbackIDs,
+                    conversationIdentity: fallbackIdentity,
+                    using: client,
+                    profile: profile,
+                    token: token,
+                    automaticWorkToken: automaticWorkToken,
+                    automaticSyncOperationID: automaticSyncOperationID,
+                    requiredViewportTransitionGeneration: requiredViewportTransitionGeneration,
+                    historySourceUnavailable: historySourceUnavailable
+                )
+            }
             if fallbackSucceeded {
                 if errorMessage == handledError { errorMessage = nil }
                 return .completed
@@ -13468,11 +13543,11 @@ final class AppState: ObservableObject {
             if reconciliationSessionWasNotFound {
                 dead.formUnion(fallbackIDs)
                 dead.formUnion([fallback.storedSessionId].compactMap { $0 })
-                macDeadResumeRowIDs[macDeadResumeKey, default: []].formUnion(dead)
+                deadResumeRowIDs[deadRowKey, default: []].formUnion(dead)
                 continue
             }
             if !reconciliationWasIdentityRejected,
-               macResumeRecoveryOwnsViewport(
+               resumeRecoveryOwnsViewport(
                 token: token,
                 profile: profile,
                 client: client,
@@ -13480,12 +13555,15 @@ final class AppState: ObservableObject {
                 automaticSyncOperationID: automaticSyncOperationID,
                 requiredViewportTransitionGeneration: requiredViewportTransitionGeneration
                ) {
+                // A dead row is not a visible preserve-current target for
+                // the retry: it returns to the saved conversation, or the
+                // newest live one when the pointer was retired above.
                 activeSessionId = nil
                 scheduleReconnectAfterFailedSync()
             }
             return chatResumeSyncInterruptionOutcome(for: automaticWorkToken)
         }
-        guard macResumeRecoveryOwnsViewport(
+        guard resumeRecoveryOwnsViewport(
             token: token,
             profile: profile,
             client: client,
@@ -13495,9 +13573,9 @@ final class AppState: ObservableObject {
         ) else {
             return chatResumeSyncInterruptionOutcome(for: automaticWorkToken)
         }
-        // The create is a reconciliation like `createNewSession`'s: mark it so
-        // the sidebar New Chat gate stays closed until it settles (a second
-        // click would otherwise start a second `session.create`).
+        // The create is a reconciliation like `createNewSession`'s: the
+        // failed resume above left `.reconnecting`, and a New Chat tapped now
+        // must wait for this `session.create` rather than start a second one.
         turnState = .synchronizing
         await createAndReconcileSession(
             using: client,
@@ -13514,9 +13592,79 @@ final class AppState: ObservableObject {
         ) ? .completed : chatResumeSyncInterruptionOutcome(for: automaticWorkToken)
     }
 
-    private static let macDeadRowProbeLimit = 3
+    /// `session.resume` just answered 4007 for `row.id`. When the row names a
+    /// different stored id, that 4007 can mean only that Hermes dropped the
+    /// RUNTIME (a gateway restart, idle reaping): it resumes by the stored
+    /// id, the durable identity (#446). Resumes once more by the stored id,
+    /// with the same accepted ids and identity, before anything treats the
+    /// row as dead. Returns whether that resume succeeded. Afterwards
+    /// `reconciliationSessionWasNotFound` describes the LAST resume, so a
+    /// caller retires the row only when its stored id is missing too. A row
+    /// without a distinct stored id, any other failure, or a sync that lost
+    /// ownership is left exactly as it was (false, nothing resumed).
+    private func resumeByStoredIDAfterNotFound(
+        _ row: SessionSummary,
+        acceptedSessionIDs: Set<String>,
+        conversationIdentity: ConversationIdentity,
+        using client: HermesClient,
+        profile: String,
+        token: UUID,
+        automaticWorkToken: ChatResumeAutomaticWorkToken?,
+        automaticSyncOperationID: UUID?,
+        requiredViewportTransitionGeneration: UInt64?,
+        historySourceUnavailable: Bool
+    ) async -> Bool {
+        guard reconciliationSessionWasNotFound,
+              let storedID = row.storedSessionId,
+              !storedID.isEmpty,
+              storedID != row.id,
+              resumeRecoveryOwnsViewport(
+                token: token,
+                profile: profile,
+                client: client,
+                automaticWorkToken: automaticWorkToken,
+                automaticSyncOperationID: automaticSyncOperationID,
+                requiredViewportTransitionGeneration: requiredViewportTransitionGeneration
+              ) else { return false }
+        let handledError = errorMessage
+        let succeeded = await reconcile(
+            sessionId: storedID,
+            using: client,
+            token: token,
+            acceptedSessionIDs: acceptedSessionIDs,
+            conversationIdentity: conversationIdentity,
+            automaticWorkToken: automaticWorkToken,
+            automaticSyncOperationID: automaticSyncOperationID,
+            requiredViewportTransitionGeneration: requiredViewportTransitionGeneration,
+            historySourceUnavailable: historySourceUnavailable
+        )
+        // The runtime id's "Failed to restore this conversation" was handled
+        // by this resume; the conversation is on screen.
+        if succeeded, errorMessage == handledError { errorMessage = nil }
+        return succeeded
+    }
 
-    private func macResumeRecoveryOwnsViewport(
+    /// Further dead catalog rows the recovery above probes before it gives up
+    /// on the catalog and creates a fresh chat.
+    private static let deadResumeRowProbeLimit = 3
+
+    private static func deadResumeRowKey(dashboardID: UUID?, profile: String) -> String {
+        "\(dashboardID?.uuidString ?? "-")|\(profile)"
+    }
+
+    /// Whether any identity of `row` (its id, aliases or stored id) is in `ids`.
+    private static func resumeRow(_ row: SessionSummary, isAmong ids: Set<String>) -> Bool {
+        guard !ids.isEmpty else { return false }
+        if ids.contains(row.id) { return true }
+        if row.alternateIds.contains(where: { ids.contains($0) }) { return true }
+        if let stored = row.storedSessionId, ids.contains(stored) { return true }
+        return false
+    }
+
+    /// The ownership fences every step of the dead-row recovery re-checks
+    /// after an await: the same automatic intent, viewport transition,
+    /// reconciliation, profile and client this sync started with.
+    private func resumeRecoveryOwnsViewport(
         token: UUID,
         profile: String,
         client: HermesClient,
@@ -13535,7 +13683,6 @@ final class AppState: ObservableObject {
               activeClient === client else { return false }
         return true
     }
-    #endif // MAC:
 
     func beginReconciliation() -> UUID {
         let token = UUID()
@@ -13564,12 +13711,38 @@ final class AppState: ObservableObject {
 
     private func invalidateReconciliation() {
         let wasReconciling = activeChatScrollSessionIdentity.isReconciling
+        let closed = reconciliation
         reconciliationToken = UUID()
         reconciliation = nil
         refreshActiveChatScrollSessionIdentity(
             isReconciling: false,
             advanceSettledRevision: wasReconciling
         )
+        releaseHeldSideAgentCompletions(closing: closed)
+    }
+
+    /// Shows the side-agent answers held while the reconciliation was open,
+    /// after any transcript it committed. An answer addressed to an id the
+    /// closed reconciliation accepted for the active conversation (a resume
+    /// that rotated the runtime id before the catalog learned it) is shown
+    /// there, as it would have been while the boundary was open; one from
+    /// another conversation still isn't.
+    private func releaseHeldSideAgentCompletions(closing closed: Reconciliation?) {
+        guard reconciliation == nil, !heldSideAgentCompletions.isEmpty else { return }
+        let held = heldSideAgentCompletions
+        heldSideAgentCompletions = []
+        let aliases = closed?.acceptedSessionIDs ?? []
+        for event in held {
+            guard case .sideAgentComplete(let sessionId, let kind, let taskId, let text, let question) = event,
+                  let activeSessionId, sessionId != activeSessionId,
+                  !eventBelongsToActiveSession(sessionId),
+                  aliases.contains(activeSessionId), aliases.contains(sessionId) else {
+                applyStreamEvent(event)
+                continue
+            }
+            applyStreamEvent(.sideAgentComplete(sessionId: activeSessionId, kind: kind, taskId: taskId,
+                                                text: text, question: question))
+        }
     }
 
     @discardableResult
@@ -13600,6 +13773,7 @@ final class AppState: ObservableObject {
             isReconciling: false,
             advanceSettledRevision: wasReconciling
         )
+        releaseHeldSideAgentCompletions(closing: activeReconciliation)
         return true
     }
 
@@ -14547,24 +14721,13 @@ final class AppState: ObservableObject {
             let created: (sessionId: String, storedSessionId: String?, profile: String?)
             if let widgetSessionCreatorOverride {
                 created = try await widgetSessionCreatorOverride(client, cwd)
+            } else if let createSession = chatResumeLifecycleOperations.createSession {
+                created = try await createSession(client, cwd)
             } else {
-                #if os(macOS) // MAC: test seam for a successful `session.create` (ledger)
-                if let createSession = chatResumeLifecycleOperations.createSession {
-                    created = try await createSession(client, cwd)
-                } else {
-                    created = try await client.createSession(
-                        model: runtime.model.isEmpty ? nil : runtime.model,
-                        provider: runtime.provider.isEmpty ? nil : runtime.provider,
-                        cwd: cwd
-                    )
-                }
-                #else // MAC:
-                created = try await client.createSession(
-                    model: runtime.model.isEmpty ? nil : runtime.model,
-                    provider: runtime.provider.isEmpty ? nil : runtime.provider,
-                    cwd: cwd
-                )
-                #endif // MAC:
+                // No model: a new chat runs on the profile's default model,
+                // not on whatever the chat open before it was switched to
+                // (#916). The model picker switches this chat afterwards.
+                created = try await client.createSession(cwd: cwd)
             }
             guard automaticChatResumeWorkIsCurrent(
                     automaticWorkToken,
@@ -14604,6 +14767,10 @@ final class AppState: ObservableObject {
             // layer and leaves the composer stuck synchronizing.
             markChatViewportReplacement()
             setActiveSessionState(id: runtimeSessionID, title: AppLocalization.string("New conversation"))
+            // The model shown is the previous chat's until Hermes reports
+            // this one's (session.info), and this chat may run on another.
+            runtime.model = ""
+            runtime.provider = ""
             keepDelegateAgents(of: [])
             newChatOpenedSessionID = runtimeSessionID
             newChatOpenedDurableSessionID = created.storedSessionId ?? runtimeSessionID
@@ -14815,7 +14982,7 @@ final class AppState: ObservableObject {
         // transcript holds none: the gateway's open requests are the whole
         // truth, and a prompt withdrawn while detached simply stays gone.
         for prompt in result.snapshot.pendingInputPrompts {
-            applyInputPromptActivity(prompt)
+            applyInputPromptActivity(prompt, authoritative: true)
         }
         let authoritativePendingApproval = result.snapshot.pendingApprovalPayload.flatMap {
             MessageNormalizer.approvalActivity(from: $0, sessionId: result.sessionId)
@@ -17820,6 +17987,7 @@ final class AppState: ObservableObject {
         let profile = activeProfile
         let dashboardID = activeDashboardID
         let retainedActiveTurn = activeTurnCatalogSession()
+        let readTicket = takeSessionListReadTicket()
         do {
             let loadedSessions: [SessionSummary]
             if let sessionCatalogLoaderOverride {
@@ -17838,6 +18006,10 @@ final class AppState: ObservableObject {
                 guard let activeClient, self.client === activeClient else { return false }
             }
             guard requiredViewportTransitionGeneration.map({ chatViewportTransitionIsCurrent(generation: $0) }) ?? true else { return false }
+            // A read that started later already listed what it saw: this
+            // older answer is no news, and the list it would put back is
+            // older than the one shown.
+            guard claimSessionListListing(readTicket) else { return true }
             let allSessions = uniqueSessions(
                 [retainedActiveTurn].compactMap { $0 } + loadedSessions
             )
@@ -17891,6 +18063,9 @@ final class AppState: ObservableObject {
             // A read cancelled under it (a pull to refresh the list left)
             // says nothing about the catalog: the next showing reads again.
             if error is CancellationError || (error as? URLError)?.code == .cancelled || Task.isCancelled { return false }
+            // A read that started later already listed: the list is current,
+            // and this older failure is no news.
+            guard readTicket > sessionListListedTicket else { return true }
             guard reportsFailure else { return false }
             errorMessage = AppLocalization.string("Failed to load sessions: \(UserFacingError.message(for: error))")
             sessionCatalogLoadState.markFailed(
@@ -17899,6 +18074,20 @@ final class AppState: ObservableObject {
             )
             return false
         }
+    }
+
+    private func takeSessionListReadTicket() -> UInt64 {
+        sessionListReadTicket &+= 1
+        return sessionListReadTicket
+    }
+
+    /// Whether the read holding `ticket` may replace the list: only if no
+    /// read that started after it has. A newer read that failed leaves the
+    /// list to this one.
+    private func claimSessionListListing(_ ticket: UInt64) -> Bool {
+        guard ticket > sessionListListedTicket else { return false }
+        sessionListListedTicket = ticket
+        return true
     }
 
     /// Hermes pushes no catalog changes, so returning to the list from a
@@ -21250,12 +21439,14 @@ final class AppState: ObservableObject {
     /// `onBusy`, when given, replaces the composer's Steer/Interrupt routing:
     /// a submission that finds a turn running (directly or after a stale-idle
     /// probe) calls it and sends nothing. A live call's turn uses it to wait
-    /// for typed work instead of steering it.
+    /// for typed work instead of steering it. `busyMode`, when given, is the
+    /// long-press choice for this message only, over the profile's mode.
     func submitComposer(
         text: String,
         attachments: [Attachment] = [],
         context: ComposerSubmissionContext? = nil,
-        onBusy: (() -> Void)? = nil
+        onBusy: (() -> Void)? = nil,
+        busyMode: BusyInputMode? = nil
     ) async -> Bool {
         var submissionContext = context ?? composerSubmissionContext()
         // The canvas a closed chat leaves (archive, delete) has no chat
@@ -21269,7 +21460,8 @@ final class AppState: ObservableObject {
             text: text,
             attachments: attachments,
             submissionContext: submissionContext,
-            onBusy: onBusy
+            onBusy: onBusy,
+            busyMode: busyMode ?? busyInputMode
         )
         // Only something Hermes took moves the registry's count; a refused
         // or busy-diverted submission leaves another device's turn due. A
@@ -21326,7 +21518,8 @@ final class AppState: ObservableObject {
         text: String,
         attachments: [Attachment],
         submissionContext: ComposerSubmissionContext,
-        onBusy: (() -> Void)?
+        onBusy: (() -> Void)?,
+        busyMode: BusyInputMode
     ) async -> Bool {
         guard isCurrentComposerSubmission(submissionContext) else { return false }
 
@@ -21357,12 +21550,7 @@ final class AppState: ObservableObject {
             }
 
             if let onBusy { onBusy(); return false }
-            switch busyInputMode {
-            case .steer:
-                return await steer(text, context: submissionContext)
-            case .interrupt:
-                return await redirectOrInterruptAndSend(text, context: submissionContext)
-            }
+            return await submitWhileBusy(text, mode: busyMode, context: submissionContext)
         }
 
         // A lifecycle/recovery boundary (scene dip, reconnect, ambiguous
@@ -21379,14 +21567,8 @@ final class AppState: ObservableObject {
                 return false
             }
             if let onBusy { onBusy(); return false }
-            switch busyInputMode {
-            case .steer:
-                lifecycleLog.notice("submitComposer: stale-idle corrected to running → busy steer")
-                return await steer(text, context: submissionContext)
-            case .interrupt:
-                lifecycleLog.notice("submitComposer: stale-idle corrected to running → busy redirect/interrupt")
-                return await redirectOrInterruptAndSend(text, context: submissionContext)
-            }
+            lifecycleLog.notice("submitComposer: stale-idle corrected to running → busy \(busyMode.rawValue, privacy: .public)")
+            return await submitWhileBusy(text, mode: busyMode, context: submissionContext)
         }
 
         // The stale-idle probe above can lose a race with a live busy edge:
@@ -21400,14 +21582,8 @@ final class AppState: ObservableObject {
                 return false
             }
             if let onBusy { onBusy(); return false }
-            switch busyInputMode {
-            case .steer:
-                lifecycleLog.notice("submitComposer: busy edge raced the stale-idle probe → busy steer")
-                return await steer(text, context: submissionContext)
-            case .interrupt:
-                lifecycleLog.notice("submitComposer: busy edge raced the stale-idle probe → busy redirect/interrupt")
-                return await redirectOrInterruptAndSend(text, context: submissionContext)
-            }
+            lifecycleLog.notice("submitComposer: busy edge raced the stale-idle probe → busy \(busyMode.rawValue, privacy: .public)")
+            return await submitWhileBusy(text, mode: busyMode, context: submissionContext)
         }
 
         // Transcript freshness is a separate concern from turn-state
@@ -21433,18 +21609,10 @@ final class AppState: ObservableObject {
                     return false
                 }
                 if let onBusy { onBusy(); return false }
-                switch busyInputMode {
-                case .steer:
-                    lifecycleLog.notice(
-                        "submitComposer: freshness recovery found live turn → busy steer"
-                    )
-                    return await steer(text, context: submissionContext)
-                case .interrupt:
-                    lifecycleLog.notice(
-                        "submitComposer: freshness recovery found live turn → busy redirect/interrupt"
-                    )
-                    return await redirectOrInterruptAndSend(text, context: submissionContext)
-                }
+                lifecycleLog.notice(
+                    "submitComposer: freshness recovery found live turn → busy \(busyMode.rawValue, privacy: .public)"
+                )
+                return await submitWhileBusy(text, mode: busyMode, context: submissionContext)
             case .blocked(let message):
                 errorMessage = message
                 return false
@@ -21464,6 +21632,24 @@ final class AppState: ObservableObject {
             restorePendingScreenshot(screenshot.attachment, forSession: screenshot.sessionID)
         }
         return sent
+    }
+
+    /// A typed message while a turn runs, by `mode`: into the turn, as a
+    /// new turn after stopping it, or kept by Hermes as the next turn
+    /// (#842), so it goes even if the app closes.
+    private func submitWhileBusy(
+        _ text: String,
+        mode: BusyInputMode,
+        context: ComposerSubmissionContext
+    ) async -> Bool {
+        switch mode {
+        case .steer:
+            return await steer(text, context: context)
+        case .interrupt:
+            return await redirectOrInterruptAndSend(text, context: context)
+        case .queue:
+            return await sendMessage(text, context: context, queued: true)
+        }
     }
 
     /// Read-only authoritative correction of a possibly stale local idle
@@ -21895,8 +22081,24 @@ final class AppState: ObservableObject {
     /// The plugin on its repository's main branch, once read. A reset for
     /// another host keeps it (`freshNotifierPluginStatus`).
     private var latestNotifierPluginVersion: String?
+    /// The stable plugin version, once read; kept like the latest.
+    private var stableNotifierPluginVersion: String?
+    /// Which plugin versions the update notice asks for (Settings >
+    /// Conduit plugin > Update notices).
+    @Published private(set) var notifierPluginNoticeChannel: NotifierPluginNoticeChannel
+    /// Where this copy of Conduit came from, read again each launch until
+    /// the App Store's signature verifies it.
+    @Published private(set) var appInstallSource: AppInstallSource
+    private var appInstallSourceRead = false
+    private var notifierPluginFollowsMain: Bool {
+        notifierPluginNoticeChannel.followsMain(installedFrom: appInstallSource)
+    }
     private var freshNotifierPluginStatus: NotifierPluginStatus {
-        NotifierPluginStatus(latestVersion: latestNotifierPluginVersion)
+        NotifierPluginStatus(
+            latestVersion: latestNotifierPluginVersion,
+            stableVersion: stableNotifierPluginVersion,
+            followsMain: notifierPluginFollowsMain
+        )
     }
     /// Apple Health sharing with one Hermes profile.
     /// Off until the user turns it on in Settings > Health.
@@ -21999,15 +22201,31 @@ final class AppState: ObservableObject {
         Task { await runPhoneSync(reason: .connected) }
     }
 
-    /// Reads the latest plugin version (saved, then from GitHub at most
-    /// hourly), so a plugin release is offered without a new Conduit build.
+    /// Reads the latest and stable plugin versions (saved, then from GitHub
+    /// at most hourly), so a plugin release is offered without a new
+    /// Conduit build, and where this copy of Conduit came from, which picks
+    /// between them.
     private func refreshLatestNotifierPluginVersion() async {
         guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
+        if !appInstallSourceRead {
+            if let verified = await AppInstallSource.detect(defaults: defaults) {
+                appInstallSourceRead = true
+                appInstallSource = verified
+            } else {
+                // Asked again on the next refresh.
+                appInstallSource = AppInstallSource.unverified()
+            }
+            applyNotifierPluginNoticeChannel()
+        }
         if latestNotifierPluginVersion == nil, let saved = NotifierPluginLatestVersion.cached(in: defaults) {
             applyLatestNotifierPluginVersion(saved)
         }
+        if stableNotifierPluginVersion == nil, let saved = NotifierPluginLatestVersion.cachedStable(in: defaults) {
+            applyStableNotifierPluginVersion(saved)
+        }
         guard let fetched = await NotifierPluginLatestVersion.refresh(defaults: defaults) else { return }
-        applyLatestNotifierPluginVersion(fetched)
+        if let latest = fetched.latest { applyLatestNotifierPluginVersion(latest) }
+        if let stable = fetched.stable { applyStableNotifierPluginVersion(stable) }
     }
 
     private func applyLatestNotifierPluginVersion(_ version: String) {
@@ -22015,6 +22233,25 @@ final class AppState: ObservableObject {
         guard notifierPlugin.latestVersion != version else { return }
         notifierPlugin.latestVersion = version
         clearSettledNotifierPluginUpdateOutcome()
+    }
+
+    private func applyStableNotifierPluginVersion(_ version: String) {
+        stableNotifierPluginVersion = version
+        guard notifierPlugin.stableVersion != version else { return }
+        notifierPlugin.stableVersion = version
+    }
+
+    /// Settings > Conduit plugin > Update notices.
+    func setNotifierPluginNoticeChannel(_ channel: NotifierPluginNoticeChannel) {
+        notifierPluginNoticeChannel = channel
+        defaults.set(channel.rawValue, forKey: NotifierPluginNoticeChannel.key)
+        applyNotifierPluginNoticeChannel()
+    }
+
+    private func applyNotifierPluginNoticeChannel() {
+        let followsMain = notifierPluginFollowsMain
+        guard notifierPlugin.followsMain != followsMain else { return }
+        notifierPlugin.followsMain = followsMain
     }
 
     /// Hands each of this dashboard's paired profiles an end-to-end
@@ -22250,16 +22487,20 @@ final class AppState: ObservableObject {
         error.code == 4016 || error.code == 4018
     }
 
+    /// `queued` is Queue (#842): Hermes keeps the message as the next turn
+    /// while one runs. That turn's reply goes on streaming meanwhile.
     func sendMessage(
         _ text: String,
         attachments: [Attachment] = [],
-        context: ComposerSubmissionContext? = nil
+        context: ComposerSubmissionContext? = nil,
+        queued: Bool = false
     ) async -> Bool {
         let submissionContext = context ?? composerSubmissionContext()
         guard isCurrentComposerSubmission(submissionContext) else { return false }
         guard let client, let sessionId = activeSessionId else { return false }
+        let joinsRunningTurn = queued && turnState.isRunning
         cancelChatResumeRestoration()
-        resetResponseHapticTurn()
+        if !joinsRunningTurn { resetResponseHapticTurn() }
         // Bot Mode composer middleware (upstream `mention-middleware`):
         // @mention identification. The canonical-forever-chat `/new` guard
         // runs in `executeSlashCommand`, which `submitComposer` reaches
@@ -22310,7 +22551,7 @@ final class AppState: ObservableObject {
         messages.append(userMessage)
         requestChatScrollToLatest()
         cacheMessagePresentation(for: [sessionId])
-        clearStreamingText()
+        if !joinsRunningTurn { clearStreamingText() }
         turnState = .running
 
         // Every file that isn't an image (PDFs included) is staged as a file,
@@ -22380,18 +22621,31 @@ final class AppState: ObservableObject {
         // The bubble keeps the typed text; Hermes gets the files' references
         // ahead of it.
         let promptText = Self.promptText(outboundText, fileReferences: fileReferences)
+        // Where in Conduit this was sent from, for its turn's line (#888).
+        let surfaceReport = reportTurnSurface(
+            submissionTurnSurface.flatMap { $0.text == text ? $0.surface : nil }
+                ?? messageTurnSurface(spoken: surface == Self.spokenPromptSurface),
+            runtimeSessionID: sessionId,
+            text: promptText
+        )
         await locationShare?.value
+        await surfaceReport?.value
         // Events that arrive while prompt.submit is in flight are held for
         // the turn's Live Activity (#605), which starts once it's accepted.
-        LiveTurnActivities.shared.turnSubmitting(sessionIDs: submissionSessionIDs)
+        if !joinsRunningTurn {
+            LiveTurnActivities.shared.turnSubmitting(sessionIDs: submissionSessionIDs)
+        }
         do {
             let outcome: PromptSubmissionOutcome
-            if let sendPrompt = chatResumeLifecycleOperations.sendPrompt {
+            if queued, let sendQueuedPrompt = chatResumeLifecycleOperations.sendQueuedPrompt {
+                outcome = try await sendQueuedPrompt(client, sessionId, promptText)
+            } else if let sendPrompt = chatResumeLifecycleOperations.sendPrompt {
                 outcome = try await sendPrompt(client, sessionId, promptText)
             } else {
                 outcome = try await client.sendPrompt(
                     sessionId, text: promptText, surface: surface,
-                    voiceTurn: surface == Self.spokenPromptSurface
+                    voiceTurn: surface == Self.spokenPromptSurface,
+                    queued: queued
                 )
             }
             // The gateway accepted the prompt. A session handoff may have
@@ -23700,7 +23954,8 @@ final class AppState: ObservableObject {
         // reasoning card's eventual commit.
         settleReasoningSegmentIntoTranscript()
         messages.append(ChatMessage(
-            id: "slash-\(Date().timeIntervalSince1970)",
+            // Unique: two notes can land in the same instant.
+            id: "slash-\(UUID().uuidString)",
             role: .system,
             content: text,
             rawContent: nil,
@@ -28218,6 +28473,10 @@ final class AppState: ObservableObject {
     private func bufferIfReconciling(_ event: StreamEvent) -> Bool {
         guard var reconciliation else { return false }
         guard reconciliation.accepts(sessionID(for: event)) else { return false }
+        if case .sideAgentComplete = event {
+            heldSideAgentCompletions.append(event)
+            return true
+        }
         reconciliation.bufferedEvents.append(event)
         self.reconciliation = reconciliation
         return true
@@ -28240,8 +28499,8 @@ final class AppState: ObservableObject {
                 .modelUpdate(let sessionId, _, _), .agentCount(let sessionId, _),
                 .delegateAgent(let sessionId, _), .statusUpdate(let sessionId, _, _),
                 .sideAgentComplete(let sessionId, _, _, _, _):
-            // Unreachable through bufferIfReconciling (status.update returns
-            // early); kept for switch completeness.
+            // `.sessionTitle` and `.statusUpdate` never reach
+            // bufferIfReconciling (handleStreamEvent returns early for them).
             return sessionId
         case .unparsed:
             return ""
@@ -28374,7 +28633,7 @@ final class AppState: ObservableObject {
             // Empty from current Hermes (open requests ride session.resume
             // only); applied for parity should a gateway include them.
             for prompt in snapshot.pendingInputPrompts {
-                applyInputPromptActivity(prompt)
+                applyInputPromptActivity(prompt, authoritative: true)
             }
             if let payload = snapshot.pendingApprovalPayload,
                let pendingApproval = MessageNormalizer.approvalActivity(
@@ -28588,7 +28847,7 @@ final class AppState: ObservableObject {
             setRunning(true)
 
         case .inputPrompt(_, let activity):
-            applyInputPromptActivity(activity, commitsStreamedText: true)
+            applyInputPromptActivity(activity, authoritative: false, commitsStreamedText: true)
             setRunning(true)
 
         case .inputPromptExpire(_, let requestId, let reason):
@@ -28698,6 +28957,11 @@ final class AppState: ObservableObject {
     /// was in flight, with the cancel reason. The gateway drops an answer for
     /// a closed request, so the send's completion must not claim "Sent".
     private var withdrawnInFlightInputPrompts = [String: String]()
+    /// Request ids of input prompts whose answer this device is sending right
+    /// now. Like `liveApprovalSubmissions`: a `.submitting` card without one
+    /// lost its send to an ownership fence, and only an authoritative replay
+    /// of the still-open request can make it answerable again.
+    private var liveInputPromptSubmissions = Set<String>()
 
     private func hasLiveApprovalSubmission(
         for activity: ApprovalActivity,
@@ -28998,25 +29262,42 @@ final class AppState: ObservableObject {
 
     /// Upserts one masked input card keyed by its server request id. A
     /// re-delivery (resume replay) never re-arms a card this device already
-    /// answered, skipped or has in flight.
+    /// answered, skipped or has in flight. The one exception mirrors
+    /// approvals: a `.submitting` card whose send was fenced off by a client
+    /// or profile replacement has no live submission left to settle it, so
+    /// the gateway's authoritative open-request list re-arms it. A one-shot
+    /// stream re-delivery is not authoritative and leaves it alone.
     private func applyInputPromptActivity(
         _ activity: InputPromptActivity,
+        authoritative: Bool,
         commitsStreamedText: Bool = false
     ) {
         if let index = messages.firstIndex(where: { $0.inputPrompt?.requestId == activity.requestId }) {
-            guard let existing = messages[index].inputPrompt, existing.isAnswerable else { return }
+            guard let existing = messages[index].inputPrompt else { return }
+            let orphanedSubmission = authoritative
+                && existing.status == .submitting
+                && !liveInputPromptSubmissions.contains(activity.requestId)
+            guard existing.isAnswerable || orphanedSubmission else { return }
             messages[index].content = activity.title
             messages[index].inputPrompt = activity
             return
         }
         settleReasoningSegmentIntoTranscript()
         if commitsStreamedText { flushStreamingPartial() }
+        // A resume rebuild drops input cards (they are live-only), so a
+        // request whose answer is still in flight comes back here: it stays
+        // `.submitting` for that send to settle, never answerable twice.
+        var appended = activity
+        if liveInputPromptSubmissions.contains(activity.requestId) {
+            appended.status = .submitting
+            appended.error = nil
+        }
         messages.append(ChatMessage(
             id: "input-prompt-\(activity.requestId)",
             role: .inputPrompt,
             content: activity.title,
             timestamp: Self.localTimestamp(),
-            inputPrompt: activity
+            inputPrompt: appended
         ))
     }
 
@@ -29069,6 +29350,8 @@ final class AppState: ObservableObject {
               let current = messages[index].inputPrompt,
               current.isAnswerable else { return }
         let skipped = value == nil
+        liveInputPromptSubmissions.insert(current.requestId)
+        defer { liveInputPromptSubmissions.remove(current.requestId) }
         messages[index].inputPrompt?.status = .submitting
         messages[index].inputPrompt?.error = nil
         // Same as approvals and clarifies: answering resumes the turn.

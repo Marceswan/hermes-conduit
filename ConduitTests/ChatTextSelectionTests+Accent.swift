@@ -132,6 +132,35 @@ extension ChatTextSelectionTests {
         )
     }
 
+    /// #920: a sheet (the full message editor) inherits its traits from the
+    /// window, not from the root's environment, so it has to find the pick
+    /// there or its accent colours fall back to amber.
+    @MainActor
+    func testAPickReachesAPresentedSheet() throws {
+        let model = AccentProbeModel()
+        let host = UIHostingController(rootView: WindowTintProbeView(model: model))
+        let window = Self.window(hosting: host)
+        defer { Self.close(window) }
+
+        model.choice = .blue
+        Self.settle(host)
+        let sheet = UIViewController()
+        host.present(sheet, animated: false)
+        Self.settle(host)
+        defer { sheet.dismiss(animated: false) }
+
+        XCTAssertEqual(window.traitCollection.conduitAccent, .blue)
+        XCTAssertEqual(sheet.traitCollection.conduitAccent, .blue, "the sheet sees the pick")
+        XCTAssertTrue(Self.isClose(
+            UIColor.conduitAccent.resolvedColor(with: sheet.traitCollection),
+            ConduitAccentChoice.blue.color(dark: true)
+        ), "and draws its accent in it")
+
+        model.choice = .green
+        Self.settle(host)
+        XCTAssertEqual(sheet.traitCollection.conduitAccent, .green, "a new pick reaches an open sheet")
+    }
+
     func testCopyingASentMessageLeavesOutTheQuotedReply() {
         let plain = ChatMessage(id: "u1", role: .user, content: "Just me", timestamp: "1")
         XCTAssertEqual(UserMessageCopyButton.copyText(for: plain), "Just me")
@@ -170,6 +199,9 @@ extension ChatTextSelectionTests {
     private static func settle(_ host: UIViewController) {
         let deadline = Date().addingTimeInterval(0.15)
         while Date() < deadline {
+            // As UIKit's own pass would: a window override reaches the
+            // window's traits before anything under it lays out.
+            host.view.window?.updateTraitsIfNeeded()
             host.view.setNeedsLayout()
             host.view.layoutIfNeeded()
             RunLoop.current.run(until: Date().addingTimeInterval(0.02))
