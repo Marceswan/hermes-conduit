@@ -38,9 +38,10 @@ This skill merges `kaishi00/hermes-conduit` (remote `upstream`) into the `macos`
 1. Run `git status --porcelain`. Pass = no output.
 2. Run `git branch --show-current`. Pass = it prints `macos`.
 3. Run `git fetch upstream --tags`. Pass = exit 0.
-4. Run `df -h .`. Read the free space in the `Avail` column. Stop if it is under 20 GB. Tell the user.
-5. Run `git merge-base macos upstream/main`. Pass = it prints one SHA. Keep the SHA.
-6. Run `mkdir -p build/scratch/upstream-sync`.
+4. Run `git rev-parse upstream/main`. Pass = it prints one SHA. Keep the SHA. It is the pinned head.
+5. Run `df -h .`. Read the free space in the `Avail` column. Stop if it is under 20 GB. Tell the user.
+6. Run `git merge-base macos upstream/main`. Pass = it prints one SHA. Keep the SHA.
+7. Run `mkdir -p build/scratch/upstream-sync`.
 
 ## Phase 1: Evaluate
 
@@ -52,7 +53,9 @@ This skill merges `kaishi00/hermes-conduit` (remote `upstream`) into the `macos`
    5. A test that passes on the rerun is a flake. Delete it from the baseline file. To do this, delete the test from `failed`. Delete its class from `failed_classes` when no failed test of that class remains.
 2. **Triage.** Run:
    `python3 scripts/upstream-sync/triage.py --repo . --mac-ref macos --head upstream/main --baseline build/scratch/upstream-sync/baseline.json --json build/scratch/upstream-sync/triage.json --report docs/macos/upstream-sync/<date>.md`
-   Pass = exit 0, and the report file exists.
+   1. Pass = exit 0, and the report file exists.
+   2. Read `steps` in `build/scratch/upstream-sync/triage.json`. Each step has `label`, `sha` and `count`. The `sha` is a full SHA. Pass = `steps[-1].sha` equals the pinned head. If it does not, stop and tell the user.
+   3. Pin the head in the report. In the "Merge steps" table, the last row can show `-` in the Commit column. Replace the `-` with the first 8 characters of the pinned head. Add the line `Pinned head: upstream/main = <full pinned head>` under the table.
 3. **Judge by reading.** Run `git show <sha>` for each commit in Gate off, Risk, and Needs a Mac entry point. Move a commit only with a written reason. Write the reason on the commit's line in the report.
    - For each Needs a Mac port commit, add the Mac file to its line. Take it from the "Mac side" column of the matching ledger row, or from the `keep in sync` marker's file.
    - For each new V2 route, menu item or sheet, look for a legacy entry point. Look in `SidebarView`, `ChatView`, `AuxiliaryViews` and the non-V2 path of `RootView`. With none, the commit goes under "Needs a Mac entry point" for the user.
@@ -72,9 +75,12 @@ Start only after the user approves the report. Run the commands in the main chec
 2. Create the worktree. Run `git worktree add .worktrees/sync-upstream-<date> -b sync/upstream-<date> macos`. The worktree is `.worktrees/sync-upstream-<date>`, on branch `sync/upstream-<date>`.
    1. Go into the worktree. Run all later commands there.
    2. Run `mkdir -p build/scratch/upstream-sync`.
-   3. Copy `baseline.json` from the main checkout's `build/scratch/upstream-sync/` to the same folder in the worktree.
+   3. Copy `baseline.json` and `triage.json` from the main checkout's `build/scratch/upstream-sync/` to the same folder in the worktree.
    4. Run `xcodegen generate`.
-3. Merge each step in the "Merge steps" table of the report. Go from the oldest step to the newest. For each merge step, do these items in order.
+3. Merge each step in `steps` of `build/scratch/upstream-sync/triage.json`. Go from the first step to the last step. For each merge step, do these items in order.
+   - Take the full SHA of each step from `steps[].sha`. Do not take it from the "Merge steps" table. The last row of that table can show `-`.
+   - The last step is the pinned head. Its `sha` is the pinned `upstream/main`. Merge that SHA. Never merge the name `upstream/main`.
+   - The number `<n>` of a merge step is its place in `steps`, counted from 1.
    1. Run `git merge --no-ff <step sha> -m "merge: upstream <label>"`. If it exits 0, go to item 6. If it reports conflicts, do items 2 to 5.
    2. Run `git diff --name-only --diff-filter=U`. The expected places for a conflict are only these:
       - lines tagged `// MAC:` in upstream files (under `Conduit/`, `Shared/` or `ConduitWidgets/`)
