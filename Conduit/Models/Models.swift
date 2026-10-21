@@ -418,11 +418,14 @@ struct ClarifyActivity: Codable, Equatable {
         // Migration: presentation caches written by older builds stored the
         // legacy single-question fields. Decode what is still usable instead
         // of failing the whole cache load; a degenerate empty-text record
-        // yields an empty question list rather than a phantom question.
+        // yields an empty question list rather than a phantom question, and
+        // is expired because a card with nothing to answer would otherwise
+        // derive pending and render an inert "needs your input" prompt.
         let question = (try? container.decode(String.self, forKey: .question)) ?? ""
         let choices = (try? container.decode([ClarifyChoice].self, forKey: .choices)) ?? []
         let status = (try? container.decode(ClarifyQuestion.Status.self, forKey: .status)) ?? .pending
         let answer = try? container.decode(String.self, forKey: .answer)
+        if question.isEmpty { isExpired = true }
         questions = question.isEmpty
             ? []
             : [
@@ -1354,6 +1357,14 @@ struct ProfileModelDefaults: Equatable {
         return (row?.name ?? savedProvider, savedModel)
     }
 
+    /// Whether the saved main model offers Ultrafast, which Hermes' config
+    /// schema leaves out of the Fast mode choices (Desktop adds it the same
+    /// way, from the catalog row's capabilities).
+    var mainModelOffersUltrafast: Bool {
+        let (rowName, model) = selection
+        return providers.first { $0.matches(rowName) }?.offersUltrafast(model) ?? false
+    }
+
     private func uniqueRow(listing model: String) -> ProviderInfo? {
         guard !model.isEmpty else { return nil }
         let rows = providers.filter { $0.models.contains(where: { $0.id == model }) }
@@ -1397,6 +1408,9 @@ struct RuntimeState: Equatable {
     var contextMax: Int = 0
     var cwd: String = ""
     var fast: Bool = false
+    /// The tier behind `fast`: "priority", "ultrafast", "auto", "cold", or
+    /// empty for normal. Empty on gateways that only report `fast`.
+    var serviceTier: String = ""
     var model: String = ""
     var provider: String = ""
     var reasoningEffort: String = ""

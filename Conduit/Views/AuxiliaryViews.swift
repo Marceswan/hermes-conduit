@@ -172,6 +172,8 @@ struct SettingsSnapshot: Identifiable {
     let isConnected: Bool
     let profile: String
     let defaultProfileName: String
+    /// The active profile as people see it: Hermes' display name when set.
+    let profileDisplayName: String
     let theme: ThemePreference
     let busyInputMode: BusyInputMode
     let chatResumeBehavior: ChatResumeBehavior
@@ -329,7 +331,7 @@ private struct LegacySettingsView: View {
 
     private var aboutSection: some View {
         ConduitSettingsSection(title: AppLocalization.string("About"), symbol: "info.circle", tint: .conduitAura) {
-            SettingsMetricRow(label: AppLocalization.string("Profile"), value: snapshot.profile.capitalized)
+            SettingsMetricRow(label: AppLocalization.string("Profile"), value: snapshot.profileDisplayName)
             SettingsMetricRow(label: AppLocalization.string("Version"), value: ConduitAppVersion.display)
         }
     }
@@ -585,6 +587,9 @@ struct SettingsView: View {
 
     @State private var path: [SettingsDestination] = []
     @State private var openedAtLink = false
+    /// Counts main-model saves, so Fast mode's model-dependent choices
+    /// reload for the new model.
+    @State private var mainModelSaves = 0
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -659,7 +664,7 @@ struct SettingsView: View {
         case .profile:
             ProfileSettingsDetail(
                 profile: snapshot.profile,
-                displayName: snapshot.profile == "default" ? snapshot.defaultProfileName : snapshot.profile.capitalized,
+                displayName: snapshot.profileDisplayName,
                 saveDefaultProfileName: saveDefaultProfileName
             )
         case .model:
@@ -670,13 +675,22 @@ struct SettingsView: View {
                 load: loadProfileSettings,
                 save: persistProfileSetting,
                 fieldsHeader: AppLocalization.string("Speed & limits"),
-                leadingSection: AnyView(ProfileModelSettingsDetail(load: loadProfileModelDefaults, save: persistProfileMainModel)),
+                leadingSection: AnyView(ProfileModelSettingsDetail(load: loadProfileModelDefaults, save: { provider, model, reasoning in
+                    let saved = await persistProfileMainModel(provider, model, reasoning)
+                    if saved { await MainActor.run { mainModelSaves += 1 } }
+                    return saved
+                })),
                 trailingSection: AnyView(FallbackModelsSettings(
                     loadModels: loadProfileModelDefaults,
                     load: { await appState.loadProfileFallbackModels() },
                     save: { await appState.setProfileFallbackModels($0) }
                 )),
-                loadSchema: { await appState.loadProfileConfigSchema() }
+                loadSchema: { await appState.loadProfileConfigSchema() },
+                loadExtraOptions: {
+                    await loadProfileModelDefaults()?.mainModelOffersUltrafast == true
+                        ? ["agent.service_tier": ["ultrafast"]] : [:]
+                },
+                extraOptionsRefresh: mainModelSaves
             )
         case .chat:
             ChatSettingsDetail(
@@ -1460,7 +1474,7 @@ private struct SettingsHome: View {
     }
 
     private var profileDisplayName: String {
-        snapshot.profile == "default" ? appState.defaultProfileName : snapshot.profile.capitalized
+        appState.profileDisplayName(snapshot.profile)
     }
 
     private func homeSection<Content: View>(_ title: String, symbol: String = "gearshape.2", tint: Color, @ViewBuilder content: () -> Content) -> some View {
@@ -1745,10 +1759,11 @@ private struct AttachmentLimitSettings: View {
 }
 
 /// Device-only: take a chat over from Hermes Desktop or a terminal as soon
-/// as a send is refused, instead of offering a button (#304).
+/// as a send is refused (#304), on until turned off (#1061). Off, the
+/// composer offers a button instead; calls take over either way.
 private struct ChatTakeoverSettings: View {
     @ObservedObject var appLanguage = AppLanguageStore.shared
-    @AppStorage(ChatTakeoverPreference.automaticKey) private var automatic = false
+    @AppStorage(ChatTakeoverPreference.automaticKey) private var automatic = ChatTakeoverPreference.automaticDefault
 
     var body: some View {
         ConduitSettingsSection(
@@ -1756,7 +1771,7 @@ private struct ChatTakeoverSettings: View {
             symbol: "desktopcomputer",
             tint: .conduitAura
         ) {
-            Text("Hermes lets one app use a chat at a time. When a chat is open in Hermes Desktop or a terminal, Conduit offers to take it over when you send.")
+            Text("Hermes lets one app use a chat at a time. When a chat is open in Hermes Desktop or a terminal, Conduit takes it over when you send. Calls always take it over; turn this off to be asked first when you type.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             Text("A reply running there always finishes first. If you go back to that app, reopen the chat there to see what you sent from Conduit.")
@@ -2522,7 +2537,7 @@ enum ProfileConfigValueDisplay {
         "approvals.mode": ["manual": "Manual", "smart": "Smart", "off": "YOLO mode"],
         "code_execution.mode": ["project": "Project", "strict": "Strict"],
         "agent.image_input_mode": ["auto": "Automatic", "native": "Native images", "text": "Text only"],
-        "agent.service_tier": ["normal": "Off", "fast": "Always", "auto": "Start of each turn", "cold": "First turn only"],
+        "agent.service_tier": ["normal": "Off", "fast": "Always", "auto": "Start of each turn", "cold": "First turn only", "ultrafast": "Ultrafast"],
         "updates.non_interactive_local_changes": ["stash": "Keep them", "discard": "Throw them away"],
         "display.personality": [
             "": "Default", "helpful": "Helpful", "concise": "Concise", "technical": "Technical",
@@ -2558,7 +2573,12 @@ struct ProfileConfigSettingsPage: View {
     /// The gateway's config schema, which hides settings this Hermes lacks
     /// and fills in runtime choices.
     var loadSchema: (() async -> ProfileConfigSchema)? = nil
+    /// Choices a field gains beyond its schema's, loaded with the page.
+    var loadExtraOptions: (() async -> [String: [String]])? = nil
+    /// Changing it reloads the extra choices.
+    var extraOptionsRefresh = 0
 
+    @State private var extraOptions: [String: [String]] = [:]
     @State private var values: [String: ProfileSettingValue] = [:]
     @State private var drafts: [String: String] = [:]
     @State private var schema = ProfileConfigSchema()
@@ -2591,6 +2611,13 @@ struct ProfileConfigSettingsPage: View {
         }
         .navigationTitle(showsNavigationTitle ? title : "")
         .task { await reload() }
+        // Also the first load. A newer refresh cancels an older one, so a
+        // slow read for the previous model can't land last.
+        .task(id: extraOptionsRefresh) {
+            let options = await loadExtras()
+            guard !Task.isCancelled else { return }
+            extraOptions = options
+        }
     }
 
     private struct FieldsCard: Identifiable {
@@ -2654,7 +2681,8 @@ struct ProfileConfigSettingsPage: View {
             case .options(let options, let defaultValue):
                 fieldLabel(field)
                 // A runtime list that came back empty falls back to the schema's.
-                let choices = optionOverrides[field.key].flatMap { $0.isEmpty ? nil : $0 } ?? options
+                let baseChoices = optionOverrides[field.key].flatMap { $0.isEmpty ? nil : $0 } ?? options
+                let choices = baseChoices + (extraOptions[field.key] ?? []).filter { !baseChoices.contains($0) }
                 let selectedValue = textValue(field.key, defaultValue: defaultValue)
                 let displayedValue = selectedValue
                 Menu {
@@ -2842,6 +2870,10 @@ struct ProfileConfigSettingsPage: View {
         values = await valuesRequest
         for field in fields { drafts[field.key] = values[field.key]?.textValue }
         loading = false
+    }
+
+    private func loadExtras() async -> [String: [String]] {
+        await loadExtraOptions?() ?? [:]
     }
 
     private func save(_ field: ProfileSettingField, value: ProfileSettingValue) {
@@ -3805,7 +3837,7 @@ private struct AboutSettingsDetail: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                SettingsMetricRow(label: AppLocalization.string("Active profile"), value: profile.capitalized)
+                SettingsMetricRow(label: AppLocalization.string("Active profile"), value: appState.profileDisplayName(profile))
                 SettingsMetricRow(label: AppLocalization.string("Version"), value: ConduitAppVersion.display)
             }
             ConduitSettingsSection(title: AppLocalization.string("Data handling"), symbol: "hand.raised", tint: .conduitAura) {

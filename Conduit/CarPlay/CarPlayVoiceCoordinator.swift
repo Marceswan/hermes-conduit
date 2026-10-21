@@ -155,6 +155,10 @@ final class CarPlayVoiceCoordinator {
     /// Test seam over the connection wait. nil (production) observes the
     /// bound AppState's `isConnected` for up to `connectionWaitTimeout`.
     var connectionWaiter: (@MainActor (AppState) async -> Bool)?
+    /// Test seam awaited just before a live call starts, once Hermes is
+    /// reached: it stands in for a start slow enough that the driver can
+    /// tap Listen and End before the call goes active. nil in production.
+    var liveCallStartGate: (@MainActor () async -> Void)?
     /// The in-flight connection wait, cancelled at every connect and
     /// disconnect so a wait for a surface that is gone resolves at once
     /// instead of holding its observation for the rest of the timeout.
@@ -229,6 +233,11 @@ final class CarPlayVoiceCoordinator {
     /// picked chat, a replayed job, a shortcut), however it ends: a resume after an interruption that
     /// sees it change leaves the conversation to the driver.
     private(set) var driverStartRequest: UInt64 = 0
+    /// `driverStartRequest` when End was last tapped: a driver start after
+    /// it owns the conversation (classic or live) an ended start would close.
+    private var driverStartRequestAtLastEnd: UInt64 = 0
+    /// The failure this coordinator last put on the phone (`showFailureOnPhone`).
+    private var shownPhoneFailure: String?
     /// A list is pushed over the voice screen. A conversation that starts
     /// meanwhile (from the phone, say) brings the voice screen back (#378).
     private(set) var isBrowsing = false
@@ -264,6 +273,7 @@ final class CarPlayVoiceCoordinator {
         observeAudioInterruptions()
         connectionGeneration &+= 1
         let generation = connectionGeneration
+        shownPhoneFailure = nil
         connectionWaitTask?.cancel()
         connectionWaitTask = nil
         // Defensive: never two live sinks, even for an unpaired re-connect.
@@ -338,6 +348,9 @@ final class CarPlayVoiceCoordinator {
     /// the runtime exactly like the PR #161 background boundary.
     func handleDisconnect() {
         connectionGeneration &+= 1
+        // What the phone shows stays for the driver; the next drive may
+        // post the same failure again.
+        shownPhoneFailure = nil
         connectionWaitTask?.cancel()
         connectionWaitTask = nil
         interfacing = nil
@@ -685,7 +698,9 @@ final class CarPlayVoiceCoordinator {
         stateObservation?.cancel()
         stateObservation = controller.$phase
             .sink { [weak self] phase in
-                self?.forward(CarPlayVoiceState.map(geminiLive: phase))
+                var failure: String?
+                if case .failed(let message) = phase { failure = message }
+                self?.forward(CarPlayVoiceState.map(geminiLive: phase), failure: failure)
             }
     }
 
@@ -694,17 +709,29 @@ final class CarPlayVoiceCoordinator {
         stateObservation?.cancel()
         stateObservation = controller.$phase
             .sink { [weak self] phase in
-                self?.forward(CarPlayVoiceState.map(gptLive: phase))
+                var failure: String?
+                if case .failed(let message) = phase { failure = message }
+                self?.forward(CarPlayVoiceState.map(gptLive: phase), failure: failure)
             }
     }
 
     /// The single forwarding path from controller state to CarPlay. Internal
     /// so the duplicate-suppression policy is deterministically testable.
     func handleControllerState(_ state: VoiceConversationState) {
-        forward(CarPlayVoiceState.map(state))
+        var failure: String?
+        // An interrupted conversation resumes on its own (a Siri prompt, a
+        // phone call): nothing for the phone to say.
+        if case .failed(let message) = state,
+           !(lastBoundAppState ?? appStateProvider()).voiceConversationController.failedForAudioInterruption {
+            failure = message
+        }
+        forward(CarPlayVoiceState.map(state), failure: failure)
     }
 
-    private func forward(_ target: CarPlayVoiceState, playsEarcon: Bool = true) {
+    /// `failure` is the controller's own message for an Error: when nothing
+    /// in the setup explains it, the car says "See your iPhone", so the
+    /// phone shows it.
+    private func forward(_ target: CarPlayVoiceState, playsEarcon: Bool = true, failure: String? = nil) {
         guard isConnected, template != nil else { return }
         var replacedFrom: CarPlayVoiceState?
         if target == .error {
@@ -714,7 +741,16 @@ final class CarPlayVoiceCoordinator {
             let shownBefore = shownState
             let wasPresented = isTemplatePresented
             noteErrorIssue()
+            // A named fix, or a failure with nothing to say, replaces an
+            // earlier unnamed failure on the phone.
+            if controls.errorIssue == nil, let failure = usableFailure(failure) {
+                showFailureOnPhone(failure)
+            } else {
+                clearFailureOnPhone()
+            }
             if wasPresented, !isTemplatePresented { replacedFrom = shownBefore }
+        } else {
+            clearFailureOnPhone()
         }
         guard let template else { return }
         updateBrowseButtons(for: target)
@@ -750,6 +786,28 @@ final class CarPlayVoiceCoordinator {
         if activated == .listening || activated == .responding, isBrowsing {
             returnToVoiceScreen()
         }
+    }
+
+    /// A failure the car can only call "Something went wrong. See your
+    /// iPhone." A call started in the car has no call screen on the phone,
+    /// so without this the phone showed nothing.
+    private func showFailureOnPhone(_ message: String) {
+        guard message != shownPhoneFailure else { return }
+        (lastBoundAppState ?? appStateProvider()).showCarPlayFailure(message, phoneOnScreen: phoneScreenProvider())
+        shownPhoneFailure = message
+    }
+
+    private func usableFailure(_ message: String?) -> String? {
+        guard let message = message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty else { return nil }
+        return message
+    }
+
+    /// The car moved on from the failure (a new call, Ready again): the
+    /// phone stops showing it, unless something else replaced it meanwhile.
+    private func clearFailureOnPhone() {
+        guard let shown = shownPhoneFailure else { return }
+        shownPhoneFailure = nil
+        (lastBoundAppState ?? appStateProvider()).clearCarPlayFailure(shown)
     }
 
     /// Records what the Error state should name as the thing to fix.
@@ -1607,6 +1665,7 @@ final class CarPlayVoiceCoordinator {
     func endTapped() {
         guard isConnected else { return }
         voiceStartRequest &+= 1
+        driverStartRequestAtLastEnd = driverStartRequest
         connectionWaitTask?.cancel()
         connectionWaitTask = nil
         endConversation()
@@ -1619,9 +1678,13 @@ final class CarPlayVoiceCoordinator {
     }
 
     /// A classic start whose prepare finished after End was tapped: a
-    /// conversation it opened is closed again rather than left open.
+    /// conversation it opened is closed again rather than left open, unless
+    /// a driver start (Listen, a picked chat, New Chat) came after the
+    /// latest End: there is one classic conversation, and it is that
+    /// start's now. A driver start that a later End ended protects nothing.
     private func closeStartEndedMeanwhile(_ outcome: AppState.VoiceConversationPrepareOutcome) {
-        guard isConnected, outcome == .handled else { return }
+        guard isConnected, outcome == .handled,
+              driverStartRequest == driverStartRequestAtLastEnd else { return }
         let appState = lastBoundAppState ?? appStateProvider()
         guard CarPlayVoiceMode.current(in: appState) == .classic else { return }
         appState.closeVoiceConversation()
@@ -1726,7 +1789,6 @@ final class CarPlayVoiceCoordinator {
         attachingTo thread: VoiceThreadTarget? = nil
     ) async {
         let startRequest = voiceStartRequest
-        let driverRequest = driverStartRequest
         guard await waitForHermes(appState: appState, generation: generation) else { return }
         // The setting may have changed while Hermes was being reached; the
         // controls start whichever mode is current on the next tap. End
@@ -1734,6 +1796,7 @@ final class CarPlayVoiceCoordinator {
         guard isCurrent(generation), isConnected, voiceStartRequest == startRequest,
               CarPlayVoiceMode.current(in: appState) == mode.voiceMode else { return }
         appState.keepVoiceFromHermesCallCleanup()
+        if let liveCallStartGate { await liveCallStartGate() }
         switch mode {
         case .geminiLive:
             await appState.startGeminiLiveForCarPlay(attachingTo: thread)
@@ -1753,10 +1816,12 @@ final class CarPlayVoiceCoordinator {
             }
         }
         // End tapped while the call was starting: the call it closed may
-        // not have been running yet, so close whatever started after it.
-        // A newer driver start now owns the call and must not be closed.
+        // not have been running yet, so close whatever started after it,
+        // unless a driver start (Listen, a picked chat) came after the
+        // latest End: that start owns the call now. A driver start that a
+        // later End ended protects nothing, as with classic Voice.
         if isCurrent(generation), isConnected, voiceStartRequest != startRequest,
-           driverStartRequest == driverRequest {
+           driverStartRequest == driverStartRequestAtLastEnd {
             endConversation()
             forward(.ready)
         }
