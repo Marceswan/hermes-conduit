@@ -1,4 +1,4 @@
-// Mac twin of HTMLPreviewBlock.swift HTMLPreviewWebView; minimal (R3). Keep in sync (PORTING_LEDGER).
+// Mac twin of HTMLPreviewBlock.swift HTMLPreviewWebView; minimal (R3). keep in sync (PORTING_LEDGER).
 import SwiftUI
 import WebKit
 

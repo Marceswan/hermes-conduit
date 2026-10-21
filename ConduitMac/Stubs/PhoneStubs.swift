@@ -1,7 +1,8 @@
 import Contacts
 import Foundation
 
-// Mac twins of the iOS-only phone sources (R3). Calendar and phone sharing is
+// Mac twins of the iOS-only phone sources (R3); keep in sync: Conduit/Phone/PhoneStatusSource.swift,
+// Conduit/Phone/PhonePeople.swift (PORTING_LEDGER). Calendar and phone sharing is
 // kept off on Mac (showsPhoneSettings is false), so nothing reaches these in
 // the app; they exist so the shared phone sync code compiles.
 

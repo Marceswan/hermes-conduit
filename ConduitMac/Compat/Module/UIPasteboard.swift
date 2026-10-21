@@ -65,7 +65,9 @@ public final class UIPasteboard {
         pending.observer = terminationCenter.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
         ) { [weak pending] _ in pending?.run(center: terminationCenter) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, expiry.timeIntervalSinceNow)) {
+        // Wall-clock time, so a sleep does not stretch the credential's lifetime: after a wake the
+        // clear runs at once when the date has passed.
+        DispatchQueue.main.asyncAfter(wallDeadline: .now() + max(0, expiry.timeIntervalSinceNow)) {
             pending.run(center: terminationCenter)
         }
     }

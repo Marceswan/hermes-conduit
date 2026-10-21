@@ -2379,10 +2379,6 @@ struct ThinkingCard: View {
 private enum MessageTimestampTone {
     case subtle
     case supporting
-#if os(macOS)
-    // MAC: tool-call card row only (the accent measured 2.8:1 in light mode)
-    case toolRow
-#endif
 }
 
 private struct MessageTimestampLabel: View {
@@ -2393,12 +2389,7 @@ private struct MessageTimestampLabel: View {
         if let label = MessageTimestampFormatter.displayString(for: timestamp) {
             Text(label)
                 .font(.caption2.weight(.medium))
-#if os(macOS)
-                // MAC: the tool-row time uses primary 85% to clear 4.5:1; other tones unchanged
-                .foregroundStyle(tone == .toolRow ? Color.primary.opacity(0.85) : tone == .supporting ? Color.conduitAccent.opacity(0.78) : Color.conduitAccent.opacity(0.70))
-#else
                 .foregroundStyle(tone == .supporting ? Color.conduitAccent.opacity(0.78) : Color.conduitAccent.opacity(0.70))
-#endif
                 .monospacedDigit()
                 .accessibilityLabel(AppLocalization.string("Sent \(label)"))
         }

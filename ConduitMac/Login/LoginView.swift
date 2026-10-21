@@ -110,10 +110,7 @@ struct LoginView: View {
                             .frame(minHeight: geometry.size.height)
                     }
                     .scrollDismissesKeyboard(.interactively)
-                    .onChange(of: focusedField) { _, field in
-                        // No soft keyboard on Mac; scrolling to focus clipped the header.
-                        guard field != nil else { return }
-                    }
+                    // No soft keyboard on Mac: no scroll-to-focus on focus changes (it clipped the header).
                     .onChange(of: revealCloudflareSection) { _, requested in
                         guard requested else { return }
                         revealCloudflareSection = false

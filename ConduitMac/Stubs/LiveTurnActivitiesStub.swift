@@ -1,6 +1,6 @@
 import Foundation
 
-// Mac twin of Conduit/Services/LiveTurnActivities.swift (R2). ActivityKit is
+// Mac twin of Conduit/Services/LiveTurnActivities.swift (R2); keep in sync (PORTING_LEDGER). ActivityKit is
 // unavailable on macOS, so there is no Lock Screen activity: every call is a
 // no-op. Members match the call sites in AppState.swift and AuxiliaryViews.swift.
 @MainActor
