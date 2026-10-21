@@ -199,11 +199,11 @@ def classify(commit: Commit, ctx: Context) -> Commit:
             risk.append("%s a file the Mac port depends on: %s" % (word, path))
         if matches(path, ctx.ledger_patterns):
             port.append("ledger file: %s" % path)
-        elif matches(path, ctx.mac_excludes):
+        if matches(path, ctx.mac_excludes):
             port.append("Mac-excluded file: %s" % path)
-        elif path in ctx.mac_marker_files:
+        if path in ctx.mac_marker_files:
             port.append("Mac-marked file: %s" % path)
-        elif path.rsplit("/", 1)[-1] in ctx.sync_basenames:
+        if path.rsplit("/", 1)[-1] in ctx.sync_basenames:
             port.append("keep-in-sync file: %s" % path)
         if path.startswith(V2_PREFIX) or matches(path, ctx.keep_off_patterns):
             gate.append("kept off on Mac: %s" % path)
@@ -214,16 +214,20 @@ def classify(commit: Commit, ctx: Context) -> Commit:
         if framework in RISK_FRAMEWORKS and _compiled_on_mac(path, ctx):
             risk.append("new import of %s in Mac-compiled file: %s" % (framework, path))
 
-    if risk:
-        group, reasons = "risk", risk
-    elif port:
-        group, reasons = "mac-port", port
-    elif gate:
-        group, reasons = "gate-off", gate
-    elif commit.files and all(_is_ios_only(p) for _, p in commit.files):
-        group, reasons = "ios-only", ["every file is iOS-only or has no Mac effect"]
-    else:
-        group, reasons = "comes-along", ["shared code; the Mac compiles it"]
+    ios_only: List[str] = []
+    if commit.files and all(_is_ios_only(p) for _, p in commit.files):
+        ios_only.append("every file is iOS-only or has no Mac effect")
+
+    ordered = [("risk", risk), ("mac-port", port), ("gate-off", gate), ("ios-only", ios_only)]
+    group = "comes-along"
+    reasons: List[str] = []
+    for name, found in ordered:
+        if found:
+            if not reasons:
+                group = name
+            reasons.extend(found)
+    if not reasons:
+        reasons = ["shared code; the Mac compiles it"]
 
     commit.group = group
     commit.reasons = reasons
@@ -231,11 +235,3 @@ def classify(commit: Commit, ctx: Context) -> Commit:
                    or bool(RICH_SUBJECT.search(commit.subject)))
     return commit
 
-
-def main(argv=None) -> int:
-    sys.stderr.write("triage.py is a library; use the collect script.\n")
-    return 2
-
-
-if __name__ == "__main__":
-    sys.exit(main())

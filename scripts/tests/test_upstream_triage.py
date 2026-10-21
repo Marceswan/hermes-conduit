@@ -110,6 +110,21 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(c.group, "comes-along")
         self.assertTrue(c.reasons)
 
+    def test_reasons_keep_every_matching_rule(self):
+        c = t.classify(commit([("M", "project.yml"), ("M", "Conduit/Views/RootView.swift")]), ctx())
+        self.assertEqual(c.group, "risk")
+        self.assertEqual(c.reasons[0], "project.yml changed")
+        self.assertIn("ledger file: Conduit/Views/RootView.swift", c.reasons)
+    def test_gate_off_reason_follows_port_reason(self):
+        c = t.classify(commit([("M", "Conduit/Views/V2/V2Shell.swift"), ("M", "Conduit/Views/RootView.swift")]), ctx())
+        self.assertEqual(c.group, "mac-port")
+        self.assertEqual(c.reasons, ["ledger file: Conduit/Views/RootView.swift",
+                                     "kept off on Mac: Conduit/Views/V2/V2Shell.swift"])
+    def test_one_path_records_ledger_and_sync_reasons(self):
+        c = t.classify(commit([("M", "Conduit/Views/RootView.swift")]), ctx(sync_basenames={"RootView.swift"}))
+        self.assertEqual(c.reasons, ["ledger file: Conduit/Views/RootView.swift",
+                                     "keep-in-sync file: Conduit/Views/RootView.swift"])
+
 
 if __name__ == "__main__":
     unittest.main()
