@@ -11,7 +11,7 @@ struct MacSessionWindowView: View {
     @Environment(\.dismissWindow) private var dismissWindow
     @State private var follow = MacTranscriptFollowPolicy()
 
-    private static let bottomAnchorID = "bottom-anchor"
+    static let bottomAnchorID = "bottom-anchor"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -33,19 +33,7 @@ struct MacSessionWindowView: View {
     private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(controller.transcript.messages) { message in
-                        MacSessionWindowRow(message: message, controller: controller).id(message.id)
-                    }
-                    if !controller.transcript.streamingText.isEmpty {
-                        StreamingBubble(text: controller.transcript.streamingText, active: true).id("streaming")
-                    }
-                    // The follow sentinel: in view means the reader is at the end.
-                    Color.clear.frame(height: 1)
-                        .id(Self.bottomAnchorID)
-                        .onAppear { follow.bottomVisibilityChanged(true) }
-                        .onDisappear { follow.bottomVisibilityChanged(false) }
-                }
+                MacSessionWindowTranscriptRows(controller: controller, follow: $follow)
                 .padding(16)
             }
             .onChange(of: controller.transcript.messages.count) { old, new in
@@ -84,20 +72,40 @@ struct MacSessionWindowView: View {
     }
 }
 
-/// One transcript row of a session window. The reused upstream rows (`MessageBubble`, the step
-/// and card rows) read their state and actions from the environment that `.chatRows()` sets, and
-/// stop with a precondition failure without it. A separate view so a test can lay out one row.
-struct MacSessionWindowRow: View {
-    let message: ChatMessage
+/// The rows of a session window's transcript. The reused upstream rows (`MessageBubble`, the step
+/// and card rows, `StreamingBubble`) read their state and actions from the environment that
+/// `.chatRows()` sets, and stop with a precondition failure without it. `.chatRows()` sits once on
+/// the stack, as in `ChatView`. A separate view so a test can lay out the rows.
+struct MacSessionWindowTranscriptRows: View {
     @ObservedObject var controller: MacSessionWindowController
-    @EnvironmentObject private var appState: AppState
+    @Binding var follow: MacTranscriptFollowPolicy
 
     var body: some View {
-        content.chatRows()
+        LazyVStack(alignment: .leading, spacing: 12) {
+            ForEach(controller.transcript.messages) { message in
+                MacSessionWindowRow(message: message, controller: controller).id(message.id)
+            }
+            if !controller.transcript.streamingText.isEmpty {
+                StreamingBubble(text: controller.transcript.streamingText, active: true).id("streaming")
+            }
+            // The follow sentinel: in view means the reader is at the end.
+            Color.clear.frame(height: 1)
+                .id(MacSessionWindowView.bottomAnchorID)
+                .onAppear { follow.bottomVisibilityChanged(true) }
+                .onDisappear { follow.bottomVisibilityChanged(false) }
+        }
+        .chatRows()
     }
+}
+
+/// One transcript row of a session window.
+struct MacSessionWindowRow: View {
+    let message: ChatMessage
+    let controller: MacSessionWindowController
+    @EnvironmentObject private var appState: AppState
 
     @ViewBuilder
-    private var content: some View {
+    var body: some View {
         switch message.role {
         case .approval:
             if let activity = message.approval {
