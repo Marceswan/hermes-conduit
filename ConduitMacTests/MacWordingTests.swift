@@ -320,6 +320,13 @@ final class MacWordingTests: XCTestCase {
                             upstream: "Listening stopped while your phone was locked. Tap Listen to continue.")
     }
 
+    func testGeminiAndGrokLiveTalkOverNotesNameTheMacSpeakers() throws {
+        try assertMacRegion("Conduit/Views/GeminiLiveViews.swift", mac: "\"Mac.GeminiLive.TalkOverNote\"",
+                            upstream: "Gemini talks on the phone's speaker or in the car, with iOS echo cancellation")
+        try assertMacRegion("Conduit/Views/GrokLiveViews.swift", mac: "\"Mac.GrokLive.TalkOverNote\"",
+                            upstream: "Grok talks on the phone's speaker or in the car, with iOS echo cancellation")
+    }
+
     func testConnectionFailureTextNamesTheMac() throws {
         let path = "Conduit/Services/ConnectionFailure.swift"
         try assertMacRegion(path, mac: "\"Mac.ConnectionFailure.Offline\"", upstream: "Reconnect to Wi-Fi or cellular and try again.")
@@ -390,6 +397,7 @@ final class MacWordingTests: XCTestCase {
         "Mac.VoiceSettings.MicrophoneAsksFirst", "Mac.VoiceSettings.SpeechRecognitionPermissionDenied",
         "Mac.VoiceSettings.KeepScreenAwakeToggle", "Mac.VoiceSettings.KeepListeningLockedNote", "Mac.VoiceSettings.TalkOverNote",
         "Mac.WakePhrase.OtherAudioNote", "Mac.ConnectionFailure.Offline", "Mac.ConnectionFailure.TLSUntrusted",
+        "Mac.GeminiLive.TalkOverNote", "Mac.GrokLive.TalkOverNote",
     ]
 
     /// New keys whose English text is the key (they carry a placeholder, so a symbolic name cannot hold it).
