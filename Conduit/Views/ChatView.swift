@@ -2442,8 +2442,8 @@ struct SettledThinkingCardContent: View, Equatable {
                     AdaptiveStack(spacing: 6) {
                         Text(AppLocalization.string("Thinking"))
                             .font(.body)
-                            #if os(macOS) // MAC: secondary renders as faded gold in a button label (3.05:1 light); primary 85% clears 4.5:1
-                            .foregroundStyle(Color.primary.opacity(0.85))
+                            #if os(macOS) // MAC: secondary renders as faded gold in a button label (3.05:1 light); MacStepRowInk.text clears 4.5:1
+                            .foregroundStyle(MacStepRowInk.text)
                             #else // MAC:
                             .foregroundStyle(.secondary)
                             #endif // MAC:
@@ -2452,8 +2452,8 @@ struct SettledThinkingCardContent: View, Equatable {
                     Spacer(minLength: 8)
                     Image(systemName: "chevron.down")
                         .font(.caption.weight(.semibold))
-                        #if os(macOS) // MAC: tertiary is 1.65:1 light, 2.48:1 dark; primary 60% clears 3:1
-                        .foregroundStyle(Color.primary.opacity(0.6))
+                        #if os(macOS) // MAC: tertiary is 1.65:1 light, 2.48:1 dark; MacStepRowInk.glyph clears 3:1
+                        .foregroundStyle(MacStepRowInk.glyph)
                         #else // MAC:
                         .foregroundStyle(.conduitTertiary)
                         #endif // MAC:
@@ -2538,19 +2538,19 @@ private struct ChatStepTimeLabel: View {
         if let text = ChatStepTiming.text(duration) {
             Text(text)
                 .font(.caption2.weight(.medium))
-                #if os(macOS) // MAC: secondary renders as faded gold in a button label (3.05:1 light); primary 85% clears 4.5:1
-                .foregroundStyle(Color.primary.opacity(0.85))
+                #if os(macOS) // MAC: secondary renders as faded gold in a button label (3.05:1 light); MacStepRowInk.text clears 4.5:1
+                .foregroundStyle(MacStepRowInk.text)
                 #else // MAC:
                 .foregroundStyle(.secondary)
                 #endif // MAC:
                 .monospacedDigit()
                 .accessibilityLabel(ChatStepTiming.spokenText(duration) ?? text)
         } else if !grouped {
-            #if os(macOS) // MAC: the accent clock time is 2.4:1 to 2.7:1 light; the same text with primary 85% (keep in sync with MessageTimestampLabel)
+            #if os(macOS) // MAC: the accent clock time is 2.4:1 to 2.7:1 light; the same text in MacStepRowInk.text (keep in sync with MessageTimestampLabel)
             if let label = MessageTimestampFormatter.displayString(for: timestamp) {
                 Text(label)
                     .font(.caption2.weight(.medium))
-                    .foregroundStyle(Color.primary.opacity(0.85))
+                    .foregroundStyle(MacStepRowInk.text)
                     .monospacedDigit()
                     .accessibilityLabel(AppLocalization.string("Sent \(label)"))
             }
@@ -2662,8 +2662,8 @@ private struct SettledToolCardContent: View, Equatable {
                             AdaptiveStack(spacing: 6) {
                                 Text(running ? style.runningTitle : style.doneTitle)
                                     .font(.body)
-                                    #if os(macOS) // MAC: the accent title is 4.01:1 on the light card; the spinner still shows the step runs
-                                    .foregroundStyle(Color.primary)
+                                    #if os(macOS) // MAC: the accent title is 4.01:1 on the light card; MacStepRowInk.accentTextColor keeps the cue and reaches 4.5:1
+                                    .foregroundStyle(running ? MacStepRowInk.accentTextColor : Color.primary)
                                     #else // MAC:
                                     .foregroundStyle(running ? Color.conduitAccent : Color.primary)
                                     #endif // MAC:
@@ -2679,8 +2679,8 @@ private struct SettledToolCardContent: View, Equatable {
                                 ?? ChatStepSubject.line(from: tool.output) {
                                 Text(subject)
                                     .font(.subheadline)
-                                    #if os(macOS) // MAC: secondary renders as faded gold in a button label (3.05:1 light); primary 85% clears 4.5:1
-                                    .foregroundStyle(Color.primary.opacity(0.85))
+                                    #if os(macOS) // MAC: secondary renders as faded gold in a button label (3.05:1 light); MacStepRowInk.text clears 4.5:1
+                                    .foregroundStyle(MacStepRowInk.text)
                                     #else // MAC:
                                     .foregroundStyle(.secondary)
                                     #endif // MAC:
@@ -2700,8 +2700,8 @@ private struct SettledToolCardContent: View, Equatable {
 
                         Image(systemName: "chevron.down")
                             .font(.caption.weight(.semibold))
-                            #if os(macOS) // MAC: tertiary is nearly invisible on the light card fill (1.65:1); primary 60% clears 3:1
-                            .foregroundStyle(Color.primary.opacity(0.6))
+                            #if os(macOS) // MAC: tertiary is nearly invisible on the light card fill (1.65:1); MacStepRowInk.glyph clears 3:1
+                            .foregroundStyle(MacStepRowInk.glyph)
                             #else // MAC:
                             .foregroundStyle(.conduitTertiary)
                             #endif // MAC:
@@ -2719,8 +2719,8 @@ private struct SettledToolCardContent: View, Equatable {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(tool.name)
                             .font(.system(.caption2, design: .monospaced).weight(.semibold))
-                            #if os(macOS) // MAC: tertiary is 1.65:1 light, 2.27:1 dark on the open box; primary 85% clears 4.5:1
-                            .foregroundStyle(Color.primary.opacity(0.85))
+                            #if os(macOS) // MAC: tertiary is 1.65:1 light, 2.27:1 dark on the open box; MacStepRowInk.text clears 4.5:1
+                            .foregroundStyle(MacStepRowInk.text)
                             #else // MAC:
                             .foregroundStyle(.conduitTertiary)
                             #endif // MAC:
@@ -2810,8 +2810,8 @@ private struct ToolRawTextSection: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(.caption2.bold())
-                #if os(macOS) // MAC: tertiary is 1.65:1 light, 2.27:1 dark on the open box; primary 85% clears 4.5:1
-                .foregroundStyle(Color.primary.opacity(0.85))
+                #if os(macOS) // MAC: tertiary is 1.65:1 light, 2.27:1 dark on the open box; MacStepRowInk.text clears 4.5:1
+                .foregroundStyle(MacStepRowInk.text)
                 #else // MAC:
                 .foregroundStyle(.conduitTertiary)
                 #endif // MAC:

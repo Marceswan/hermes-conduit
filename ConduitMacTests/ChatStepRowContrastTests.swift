@@ -4,9 +4,10 @@ import XCTest
 @testable import ConduitMac
 
 /// Light- and dark-mode contrast of the chat step rows upstream drew in 2.x
-/// (#645, #651, #1063, #1074): the tool row, the thinking row and the header of
-/// a run of steps. Each text element must reach 4.5:1 against its own surface
-/// and each chevron 3:1 (Ruling R20), measured from rendered pixels.
+/// (#645, #651, #1063, #1074): the tool row, the thinking row, the header of
+/// a run of steps, the readable result of an open tool row and the working line.
+/// Each text element must reach 4.5:1 against its own surface and each chevron
+/// 3:1 (Rulings R20, R43, R44), measured from rendered pixels.
 ///
 /// The method is the one of `ComposerToolCardContrastTests`: `ImageRenderer` at
 /// 4x with the app's root tint (`.conduitAccent`, which turns a hierarchical
@@ -14,10 +15,15 @@ import XCTest
 /// background. The best pixel of the ink rectangle is compared with the fill
 /// sample beside it; the fill must be one neutral colour, and the ink rectangle
 /// must hold enough differing pixels, so a layout shift cannot pass vacuously.
+/// The ink found around the rectangle (a margin of 2 pt outside it) must also
+/// lie inside the rectangle, 0.5 pt from each edge: a rectangle that drifted
+/// onto a neighbour's ink, or onto its own element's edge, fails.
 ///
-/// Not measured, because `ImageRenderer` does not paint an `NSViewRepresentable`:
-/// the raw input and output text, the open thinking text and diff text
-/// (`SelectableTextView`) and the running spinner (`ProgressView`).
+/// `ImageRenderer` does not paint an `NSViewRepresentable`: the raw input and
+/// output text, the open thinking text and the diff text (`SelectableTextView`)
+/// are checked by colour (resolved under each appearance, composited over the
+/// surface sampled from a render), and the running spinner (`ProgressView`) is
+/// not measured.
 ///
 /// Set `TEST_RUNNER_CONTRAST_SHOTS_DIR=<dir>` to also write the PNGs.
 @MainActor
@@ -50,7 +56,13 @@ final class ChatStepRowContrastTests: XCTestCase {
         var differingPixels: Int
         var fillIsUniform: Bool
         var fillIsNeutral: Bool
+        /// The bounds of the ink found within `guardOutset` of the rectangle, in points.
+        var inkBounds: CGRect?
     }
+
+    /// How far outside the rectangle the ink is looked for, and how far inside it must lie.
+    private static let guardOutset: CGFloat = 2
+    private static let guardMargin: CGFloat = 0.5
 
     private func measure(_ rep: NSBitmapImageRep, pointsWide: CGFloat, ink: CGRect, fill: CGPoint) -> Measurement {
         let scale = CGFloat(rep.pixelsWide) / pointsWide
@@ -83,16 +95,36 @@ final class ChatStepRowContrastTests: XCTestCase {
                 best = max(best, (max(l, bgLum) + 0.05) / (min(l, bgLum) + 0.05))
             }
         }
+
+        let scan = ink.insetBy(dx: -Self.guardOutset, dy: -Self.guardOutset)
+        var minX = Int.max, minY = Int.max, maxX = Int.min, maxY = Int.min
+        for x in max(0, Int(scan.minX * scale))..<min(rep.pixelsWide, Int(scan.maxX * scale)) {
+            for y in max(0, Int(scan.minY * scale))..<min(rep.pixelsHigh, Int(scan.maxY * scale)) {
+                guard let c = rgb(x, y), abs(luminance(c) - bgLum) > 0.05 else { continue }
+                minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+            }
+        }
+        let bounds = maxX >= minX
+            ? CGRect(x: CGFloat(minX) / scale, y: CGFloat(minY) / scale,
+                     width: CGFloat(maxX - minX + 1) / scale, height: CGFloat(maxY - minY + 1) / scale)
+            : nil
         return Measurement(ratio: best, differingPixels: differing,
-                           fillIsUniform: uniform, fillIsNeutral: neutral)
+                           fillIsUniform: uniform, fillIsNeutral: neutral, inkBounds: bounds)
     }
 
-    /// With `CONTRAST_SHOTS_DIR` set, appends each ratio to `ratios.txt` there.
+    private static var ratiosStarted = false
+
+    /// With `CONTRAST_SHOTS_DIR` set, writes each ratio to `ratios.txt` there. The first call of a run
+    /// empties the file, so a second run does not mix its lines with the first's.
     private func record(_ m: Measurement, _ name: String, target: Double) {
         guard let dir = ProcessInfo.processInfo.environment["CONTRAST_SHOTS_DIR"] else { return }
         let line = "\(name)\t\(String(format: "%.2f", m.ratio))\t\(target)\n"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let url = URL(fileURLWithPath: "\(dir)/ratios.txt")
+        if !Self.ratiosStarted {
+            Self.ratiosStarted = true
+            try? Data().write(to: url)
+        }
         if let handle = try? FileHandle(forWritingTo: url) {
             handle.seekToEndOfFile()
             handle.write(Data(line.utf8))
@@ -102,8 +134,13 @@ final class ChatStepRowContrastTests: XCTestCase {
         }
     }
 
-    private func check(_ m: Measurement, _ name: String, target: Double) {
+    private func check(_ m: Measurement, _ name: String, target: Double, rectangle: CGRect? = nil) {
         record(m, name, target: target)
+        if let rectangle, let bounds = m.inkBounds {
+            let inner = rectangle.insetBy(dx: Self.guardMargin, dy: Self.guardMargin)
+            XCTAssertTrue(inner.contains(bounds),
+                          "\(name): the ink spans x \(bounds.minX)...\(bounds.maxX), y \(bounds.minY)...\(bounds.maxY); it must lie inside x \(inner.minX)...\(inner.maxX), y \(inner.minY)...\(inner.maxY) (the rectangle less \(Self.guardMargin) pt)")
+        }
         XCTAssertTrue(m.fillIsUniform, "\(name): fill sample is not a uniform surface")
         XCTAssertTrue(m.fillIsNeutral, "\(name): fill sample is not a neutral surface")
         XCTAssertGreaterThanOrEqual(m.differingPixels, 10, "\(name): too few ink pixels differ from the fill")
@@ -173,7 +210,7 @@ final class ChatStepRowContrastTests: XCTestCase {
             }
             for element in elements {
                 check(measure(rep, pointsWide: Self.width, ink: element.ink, fill: element.fill),
-                      "\(id) \(element.name) \(suffix)", target: element.target)
+                      "\(id) \(element.name) \(suffix)", target: element.target, rectangle: element.ink)
             }
         }
     }
@@ -332,10 +369,10 @@ final class ChatStepRowContrastTests: XCTestCase {
         let message = result("step-result-web", name: "web_search", input: nil, output: output)
         try verify("result-web", height: 230, elements: [
             Element(name: "error", ink: CGRect(x: 82, y: 76, width: 94, height: 14), fill: CGPoint(x: 380, y: 83), target: Self.text),
-            Element(name: "notice", ink: CGRect(x: 82, y: 95, width: 117, height: 13), fill: CGPoint(x: 380, y: 102), target: Self.text),
+            Element(name: "notice", ink: CGRect(x: 81, y: 95, width: 119, height: 13), fill: CGPoint(x: 380, y: 102), target: Self.text),
             Element(name: "link title", ink: CGRect(x: 62, y: 115, width: 122, height: 12), fill: CGPoint(x: 380, y: 121), target: Self.text),
-            Element(name: "link host", ink: CGRect(x: 62, y: 130, width: 65, height: 12), fill: CGPoint(x: 380, y: 136), target: Self.text),
-            Element(name: "link snippet", ink: CGRect(x: 62, y: 144, width: 241, height: 12), fill: CGPoint(x: 380, y: 150), target: Self.text),
+            Element(name: "link host", ink: CGRect(x: 61, y: 130, width: 67, height: 12), fill: CGPoint(x: 380, y: 136), target: Self.text),
+            Element(name: "link snippet", ink: CGRect(x: 61, y: 144, width: 243, height: 12), fill: CGPoint(x: 380, y: 150), target: Self.text),
             Element(name: "link error", ink: CGRect(x: 62, y: 180, width: 119, height: 12), fill: CGPoint(x: 380, y: 185), target: Self.text),
         ]) {
             openRow(message)
@@ -362,18 +399,35 @@ final class ChatStepRowContrastTests: XCTestCase {
         }
     }
 
-    /// The link title takes the saved accent, which the user picks from six. Each choice, deepened or
-    /// lightened by `MacStepRowInk.linkTitleInk`, against the open box sampled from the render.
-    func testLinkTitleHasAtLeast4_5ToOneContrastForEveryAccentChoice() throws {
+    /// The accent as text (link title, running title, working line phrase) takes the saved accent,
+    /// which the user picks from six. Each pick goes through the provider that the views use
+    /// (`MacStepRowInk.accentText(choice:)`), under each appearance, over the open box sampled from the
+    /// render. A pick that already reads is kept as it is.
+    func testAccentTextHasAtLeast4_5ToOneContrastForEveryAccentChoice() throws {
         let message = result("step-result-accent", name: "web_search", input: nil,
                              output: #"{"data":{"web":[{"title":"Best dinners downtown","url":"https://example.com/dinner"}]}}"#)
         for dark in [false, true] {
             let rep = try bitmap(openRow(message), size: CGSize(width: Self.width, height: 160), dark: dark)
             let box = try fill(rep, at: CGPoint(x: 380, y: 60))
             for choice in ConduitAccentChoice.allCases {
-                let ink = MacStepRowInk.linkTitleInk(accent: choice.color(dark: dark), dark: dark)
-                assertInk(ink, over: box, dark: dark, name: "link title, \(choice.rawValue) accent")
+                assertInk(MacStepRowInk.accentText(choice: choice), over: box, dark: dark,
+                          name: "accent text, \(choice.rawValue) pick")
             }
+        }
+    }
+
+    // MARK: Working line
+
+    /// The line of the running turn: the agent's mark, the name, the phrase in the accent ("Searching
+    /// the web") and the timer on the right. It sits on the chat backdrop, with no card.
+    func testWorkingLinePhraseAndTimer() throws {
+        let line = ChatWorkingLine(currentToolName: "web_search", isThinking: false,
+                                   startedAt: Date().addingTimeInterval(-12))
+        try verify("working-line", height: 50, elements: [
+            Element(name: "phrase", ink: CGRect(x: 89, y: 8, width: 100, height: 16), fill: CGPoint(x: 300, y: 5), target: Self.text),
+            Element(name: "timer", ink: CGRect(x: 394, y: 8, width: 26, height: 16), fill: CGPoint(x: 300, y: 5), target: Self.text),
+        ]) {
+            host(line, disclosure: ChatRowDisclosure())
         }
     }
 
@@ -408,6 +462,36 @@ final class ChatStepRowContrastTests: XCTestCase {
         }
     }
 
+    /// The diff of a patch result is one `SelectableTextView`, coloured line by line by
+    /// `ToolResultBodyView.coloredDiff`. Each kind of line, as that function colours it, over the
+    /// open box sampled from the render.
+    func testDiffLinesHaveAtLeast4_5ToOneContrastOnTheOpenBox() throws {
+        let diff = ["--- a/notes.txt", "+++ b/notes.txt", "@@ -1,3 +1,3 @@", " a line that stays", "-a line that goes", "+a line that comes"]
+            .joined(separator: "\n")
+        let attributed = ToolResultBodyView.coloredDiff(diff, font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular))
+        let text = attributed.string as NSString
+        func ink(of line: String) throws -> NSColor {
+            let range = text.range(of: line)
+            XCTAssertNotEqual(range.location, NSNotFound, "\(line): not in the coloured diff")
+            return try XCTUnwrap(attributed.attribute(.foregroundColor, at: range.location, effectiveRange: nil) as? NSColor)
+        }
+        let kinds = [("file header (---)", "--- a/notes.txt"), ("file header (+++)", "+++ b/notes.txt"),
+                     ("hunk header", "@@ -1,3 +1,3 @@"), ("context line", " a line that stays"),
+                     ("removed line", "-a line that goes"), ("added line", "+a line that comes")]
+
+        let message = tool()
+        let disclosure = ChatRowDisclosure()
+        disclosure.willToggle(message.id, to: true)
+        for dark in [false, true] {
+            let rep = try bitmap(host(ToolCard(message: message), disclosure: disclosure),
+                                 size: CGSize(width: Self.width, height: 160), dark: dark)
+            let box = try fill(rep, at: CGPoint(x: 360, y: 60))
+            for (name, line) in kinds {
+                assertInk(try ink(of: line), over: box, dark: dark, name: "diff \(name)")
+            }
+        }
+    }
+
     /// The two rows take that colour from `MacStepRowInk`; a source pin, since the colour is not
     /// readable from the view.
     func testNativeTextRowsTakeTheirColourFromMacStepRowInk() throws {
@@ -426,7 +510,7 @@ final class ChatStepRowContrastTests: XCTestCase {
 
     private func assertInk(_ ink: NSColor, over fill: NSColor, dark: Bool, name: String) {
         let ratio = Self.contrast(ink, over: fill, dark: dark)
-        record(Measurement(ratio: ratio, differingPixels: 0, fillIsUniform: true, fillIsNeutral: true),
+        record(Measurement(ratio: ratio, differingPixels: 0, fillIsUniform: true, fillIsNeutral: true, inkBounds: nil),
                "\(name) \(dark ? "dark" : "light")", target: Self.text)
         XCTAssertGreaterThanOrEqual(ratio, Self.text,
                                     "\(name) \(dark ? "dark" : "light"): contrast \(String(format: "%.2f", ratio)):1, need \(Self.text):1")

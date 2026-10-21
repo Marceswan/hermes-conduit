@@ -36,8 +36,8 @@ struct ToolResultBodyView: View {
             if let notice = presentation.notice {
                 Label(notice, systemImage: "info.circle")
                     .font(.caption)
-                    #if os(macOS) // MAC: secondary is 3.1:1 light on the open box; primary 85% clears 4.5:1
-                    .foregroundStyle(Color.primary.opacity(0.85))
+                    #if os(macOS) // MAC: secondary is 3.1:1 light on the open box; MacStepRowInk.text clears 4.5:1
+                    .foregroundStyle(MacStepRowInk.text)
                     #else // MAC:
                     .foregroundStyle(.secondary)
                     #endif // MAC:
@@ -46,8 +46,8 @@ struct ToolResultBodyView: View {
             if let exitCode = presentation.exitCode {
                 Text(AppLocalization.string("Exit code \(String(exitCode))"))
                     .font(.caption2.monospaced())
-                    #if os(macOS) // MAC: secondary is 3.1:1 light on the open box; primary 85% clears 4.5:1
-                    .foregroundStyle(Color.primary.opacity(0.85))
+                    #if os(macOS) // MAC: secondary is 3.1:1 light on the open box; MacStepRowInk.text clears 4.5:1
+                    .foregroundStyle(MacStepRowInk.text)
                     #else // MAC:
                     .foregroundStyle(.secondary)
                     #endif // MAC:
@@ -70,8 +70,8 @@ struct ToolResultBodyView: View {
                             .accessibilityLabel(Self.statusLabel(for: item.status))
                         Text(item.content)
                             .strikethrough(item.status == .cancelled)
-                            #if os(macOS) // MAC: secondary is 3.1:1 light on the open box; a finished task in primary 85% clears 4.5:1
-                            .foregroundStyle(item.status == .completed || item.status == .cancelled ? Color.primary.opacity(0.85) : Color.primary)
+                            #if os(macOS) // MAC: secondary is 3.1:1 light on the open box; a finished task in MacStepRowInk.dimText clears 4.5:1
+                            .foregroundStyle(item.status == .completed || item.status == .cancelled ? MacStepRowInk.dimText : Color.primary)
                             #else // MAC:
                             .foregroundStyle(item.status == .completed || item.status == .cancelled ? .secondary : .primary)
                             #endif // MAC:
@@ -132,7 +132,7 @@ struct ToolResultBodyView: View {
                 Text(link.title)
                     .font(.subheadline)
                     #if os(macOS) // MAC: the accent is 3.7:1 light on the open box (amber); MacStepRowInk.linkTitle deepens it in light and lightens it in dark
-                    .foregroundStyle(link.opensPage ? MacStepRowInk.linkTitleColor : Color.primary)
+                    .foregroundStyle(link.opensPage ? MacStepRowInk.accentTextColor : Color.primary)
                     #else // MAC:
                     .foregroundStyle(link.opensPage ? Color.conduitAccent : Color.primary)
                     #endif // MAC:
@@ -141,8 +141,8 @@ struct ToolResultBodyView: View {
             if link.opensPage {
                 Text(URL(string: link.url)?.host ?? link.url)
                     .font(.caption2)
-                    #if os(macOS) // MAC: tertiary is 1.65:1 light and 2.27:1 dark on the open box; primary 85% clears 4.5:1
-                    .foregroundStyle(Color.primary.opacity(0.85))
+                    #if os(macOS) // MAC: tertiary is 1.65:1 light and 2.27:1 dark on the open box; MacStepRowInk.text clears 4.5:1
+                    .foregroundStyle(MacStepRowInk.text)
                     #else // MAC:
                     .foregroundStyle(.conduitTertiary)
                     #endif // MAC:
@@ -160,8 +160,8 @@ struct ToolResultBodyView: View {
             } else if let snippet = link.snippet {
                 Text(snippet)
                     .font(.caption)
-                    #if os(macOS) // MAC: secondary is 3.1:1 light on the open box; primary 85% clears 4.5:1
-                    .foregroundStyle(Color.primary.opacity(0.85))
+                    #if os(macOS) // MAC: secondary is 3.1:1 light on the open box; MacStepRowInk.text clears 4.5:1
+                    .foregroundStyle(MacStepRowInk.text)
                     #else // MAC:
                     .foregroundStyle(.secondary)
                     #endif // MAC:
@@ -198,13 +198,29 @@ struct ToolResultBodyView: View {
         for (index, line) in lines.enumerated() {
             let color: UIColor
             if line.hasPrefix("+++") || line.hasPrefix("---") || line.hasPrefix("@@") {
+                #if os(macOS) // MAC: tertiaryLabel is about 2:1 on the open box; MacStepRowInk.diffHeader clears 4.5:1
+                color = MacStepRowInk.diffHeader
+                #else // MAC:
                 color = .tertiaryLabel
+                #endif // MAC:
             } else if line.hasPrefix("+") {
+                #if os(macOS) // MAC: system green is about 3:1 on the light open box; MacStepRowInk.diffAdded clears 4.5:1
+                color = MacStepRowInk.diffAdded
+                #else // MAC:
                 color = .systemGreen
+                #endif // MAC:
             } else if line.hasPrefix("-") {
+                #if os(macOS) // MAC: system red is 2.7:1 light and 3.3:1 dark on the open box; MacStepRowInk.diffRemoved clears 4.5:1
+                color = MacStepRowInk.diffRemoved
+                #else // MAC:
                 color = .systemRed
+                #endif // MAC:
             } else {
+                #if os(macOS) // MAC: secondaryLabel is 3.8:1 light on the open box; MacStepRowInk.nativeText clears 4.5:1
+                color = MacStepRowInk.nativeText
+                #else // MAC:
                 color = .secondaryLabel
+                #endif // MAC:
             }
             let text = index < lines.count - 1 ? line + "\n" : line
             result.append(NSAttributedString(string: text, attributes: [.foregroundColor: color, .font: font]))

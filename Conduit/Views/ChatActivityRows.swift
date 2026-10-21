@@ -206,7 +206,11 @@ struct ChatWorkingLine: View {
         if let startedAt {
             Text(timerInterval: startedAt...Date.distantFuture, countsDown: false)
                 .font(.caption.weight(.medium))
+                #if os(macOS) // MAC: secondary is 3.1:1 on the light backdrop; MacStepRowInk.text clears 4.5:1
+                .foregroundStyle(MacStepRowInk.text)
+                #else // MAC:
                 .foregroundStyle(.secondary)
+                #endif // MAC:
                 .monospacedDigit()
         }
     }
@@ -233,7 +237,11 @@ struct ChatWorkingLine: View {
 
                 Text(phrase)
                     .font(.subheadline)
+                    #if os(macOS) // MAC: the accent is 4.3:1 on the light backdrop (amber); MacStepRowInk.accentTextColor reaches 4.5:1 and keeps the pick
+                    .foregroundStyle(MacStepRowInk.accentTextColor)
+                    #else // MAC:
                     .foregroundStyle(Color.conduitAccent)
+                    #endif // MAC:
                     .lineLimit(lineLimit)
                     .contentTransition(.opacity)
                     .animation(ConduitMotion.settle, value: phrase)
@@ -550,8 +558,8 @@ private struct ChatStepGroupHeader: View {
                 }
                 Text(title.shown)
                     .font(expanded ? .subheadline.weight(.semibold) : .subheadline)
-                    #if os(macOS) // MAC: secondary renders as faded gold in a button label (3.05:1 light); primary 85% clears 4.5:1
-                    .foregroundStyle(Color.primary.opacity(0.85))
+                    #if os(macOS) // MAC: secondary renders as faded gold in a button label (3.05:1 light); MacStepRowInk.text clears 4.5:1
+                    .foregroundStyle(MacStepRowInk.text)
                     #else // MAC:
                     .foregroundStyle(.secondary)
                     #endif // MAC:
@@ -560,8 +568,8 @@ private struct ChatStepGroupHeader: View {
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.down")
                     .font(.caption.weight(.semibold))
-                    #if os(macOS) // MAC: tertiary is 1.65:1 light, 2.48:1 dark; primary 60% clears 3:1
-                    .foregroundStyle(Color.primary.opacity(0.6))
+                    #if os(macOS) // MAC: tertiary is 1.65:1 light, 2.48:1 dark; MacStepRowInk.glyph clears 3:1
+                    .foregroundStyle(MacStepRowInk.glyph)
                     #else // MAC:
                     .foregroundStyle(.conduitTertiary)
                     #endif // MAC:

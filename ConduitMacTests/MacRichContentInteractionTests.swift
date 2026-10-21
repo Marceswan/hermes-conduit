@@ -67,8 +67,10 @@ final class MacRichContentInteractionTests: XCTestCase {
                        ["queue", "interrupt", "background", "btw"])
         XCTAssertEqual(ComposerSendChoice.choices(for: .send, hasAttachments: true, isSlashCommand: false), [],
                        "no menu for attachments, so no right-click menu either")
+        // The five titles the touch-and-hold menu shows, which the right-click menu shows too.
+        XCTAssertEqual(ComposerSendChoice.allCases.map(\.title),
+                       ["Steer", "Interrupt", "Queue", "Background", "Side question"])
         for choice in ComposerSendChoice.allCases {
-            XCTAssertFalse(choice.title.isEmpty, "\(choice): an item needs a title")
             XCTAssertFalse(choice.symbol.isEmpty, "\(choice): an item needs a symbol")
         }
     }
