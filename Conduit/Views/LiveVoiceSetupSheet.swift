@@ -57,7 +57,7 @@ struct LiveVoiceSetupSheet: View {
                 let checkHint = AppLocalization.string("Return to Voice settings, enable this mode if it is off, and tap \(mode.checkTitle) to check availability.")
                 #endif // MAC:
                 Label(
-                    checkHint,
+                    checkHint, // MAC: reads the Mac or iPhone text chosen above
                     systemImage: "arrow.uturn.backward"
                 )
                 .font(.footnote)

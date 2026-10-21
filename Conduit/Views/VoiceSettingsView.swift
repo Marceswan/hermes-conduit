@@ -429,7 +429,7 @@ struct VoiceSettingsView: View {
                  ? AppLocalization.string("Voice is on for \(profileDisplayName) on this iPhone. Each step below turns green when it's ready; an orange step has a fix.")
                  : AppLocalization.string("Turn this on to talk to \(profileDisplayName). Conduit asks for the microphone and Speech Recognition, and uses this iPhone to hear you and to speak the replies. Nothing to set up on Hermes.")
             #endif // MAC:
-            Text(voiceNote)
+            Text(voiceNote) // MAC: reads the Mac or iPhone text chosen above
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if isApplyingDefaults {
@@ -500,12 +500,16 @@ struct VoiceSettingsView: View {
             #endif // MAC:
             return setupStep(
                 AppLocalization.string("Microphone"),
-                detail: deniedDetail,
+                detail: deniedDetail, // MAC: reads the Mac or iPhone text chosen above
                 state: .attention,
                 fix: (label: AppLocalization.string("Open Settings"), action: openSystemSettings)
             )
         default:
+            #if os(macOS) // MAC: macOS asks, not iOS (Task 9b, fix round 1)
+            return setupStep(AppLocalization.string("Microphone"), detail: AppLocalization.string("Mac.VoiceSettings.MicrophoneAsksFirst"), state: .pending)
+            #else // MAC:
             return setupStep(AppLocalization.string("Microphone"), detail: AppLocalization.string("iOS asks the first time you talk."), state: .pending)
+            #endif // MAC:
         }
     }
 
@@ -527,7 +531,7 @@ struct VoiceSettingsView: View {
                 #endif // MAC:
                 return setupStep(
                     title,
-                    detail: notAllowedYet,
+                    detail: notAllowedYet, // MAC: reads the Mac or iPhone text chosen above
                     state: .pending,
                     fix: (label: AppLocalization.string("Allow"), action: { selectProvider(Self.appleProviderID, kind: .stt, force: true) })
                 )
@@ -539,7 +543,7 @@ struct VoiceSettingsView: View {
                 #endif // MAC:
                 return setupStep(
                     title,
-                    detail: speechDeniedDetail,
+                    detail: speechDeniedDetail, // MAC: reads the Mac or iPhone text chosen above
                     state: .attention,
                     fix: (label: AppLocalization.string("Open Settings"), action: openSystemSettings)
                 )
@@ -551,7 +555,7 @@ struct VoiceSettingsView: View {
                 #endif // MAC:
                 return setupStep(
                     title,
-                    detail: unsupportedDetail,
+                    detail: unsupportedDetail, // MAC: reads the Mac or iPhone text chosen above
                     state: .attention
                 )
             }
@@ -596,7 +600,7 @@ struct VoiceSettingsView: View {
             #endif // MAC:
             return setupStep(
                 title,
-                detail: notReadyDetail,
+                detail: notReadyDetail, // MAC: reads the Mac or iPhone text chosen above
                 state: .attention,
                 fix: useIPhone
             )
@@ -642,9 +646,9 @@ struct VoiceSettingsView: View {
         #endif // MAC:
         return setupStep(
             title,
-            detail: ttsNotReadyDetail,
+            detail: ttsNotReadyDetail, // MAC: reads the Mac or iPhone text chosen above
             state: .attention,
-            fix: (label: useThisDevice, action: { selectProvider(Self.iPhoneVoiceProviderID, kind: .tts) })
+            fix: (label: useThisDevice, action: { selectProvider(Self.iPhoneVoiceProviderID, kind: .tts) }) // MAC: reads the Mac or iPhone text chosen above
         )
     }
 
@@ -1240,11 +1244,21 @@ struct VoiceSettingsView: View {
                     }
                 ))
                 .onChange(of: lockedListening.enabled) { _, newValue in keepListeningWhenLocked = newValue }
+                #if os(macOS) // MAC: lock the Mac, not the phone; power, not battery (Task 9b, fix round 1)
+                Text("Mac.VoiceSettings.KeepListeningLockedNote")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                #else // MAC:
                 Text("A voice conversation that is already listening keeps going when you lock the phone or switch apps, so you can talk hands-free. While locked, Conduit always listens again after each response and keeps listening through silence. End it by saying a goodbye phrase or from the app. Uses more battery.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                #endif // MAC:
             }
+            #if os(macOS) // MAC: the label matches the Mac note below it (Task 9b, fix round 1)
+            Toggle("Mac.VoiceSettings.KeepScreenAwakeToggle", isOn: $keepScreenAwake)
+            #else // MAC:
             Toggle("Keep phone awake during voice conversations", isOn: $keepScreenAwake)
+            #endif // MAC:
             #if os(macOS) // MAC: the Mac sleeps its display; it has no phone lock (Task 9b)
             Text("Mac.VoiceSettings.KeepScreenAwakeNote")
                 .font(.caption)
@@ -1269,9 +1283,15 @@ struct VoiceSettingsView: View {
                     }
                 ))
                 .onChange(of: speakerTalkOver.enabled) { _, newValue in speakerTalkOverEnabled = newValue }
+                #if os(macOS) // MAC: the Mac's speakers; no car, no iOS (Task 9b, fix round 1)
+                Text("Mac.VoiceSettings.TalkOverNote")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                #else // MAC:
                 Text("Experimental. Keeps the microphone open while Hermes reads its reply on the phone's speaker or in the car, with iOS echo cancellation, so you can speak over it to start a new turn. Headphones and AirPods always allow this. Turn it off if Hermes keeps cutting itself off. Shared with Gemini Live and Grok Live. Applies to the next conversation.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                #endif // MAC:
             }
             Toggle("Animate the call orb", isOn: $animateCallOrb)
                 .accessibilityIdentifier("voice.animateCallOrb")
@@ -1439,9 +1459,15 @@ struct VoiceSettingsView: View {
                     .foregroundStyle(.secondary)
                 #endif // MAC:
             case .permissionDenied:
+                #if os(macOS) // MAC: the permission lives in System Settings > Privacy & Security > Speech Recognition (Task 9b, fix round 1)
+                Text("Mac.VoiceSettings.SpeechRecognitionPermissionDenied")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                #else // MAC:
                 Text("Speech Recognition permission was denied. Please enable it in Settings > Conduit > Speech Recognition.")
                     .font(.caption)
                     .foregroundStyle(.orange)
+                #endif // MAC:
             case .unsupported:
                 Text("On-device speech recognition is not available for your current language locale.")
                     .font(.caption)
@@ -1712,7 +1738,11 @@ struct VoiceSettingsView: View {
                 testStatus = AppLocalization.string("Enable Speech Recognition in Settings > Conduit > Speech Recognition, then retry selecting \"On this iPhone\".")
                 #endif // MAC:
             } else if case .permissionDenied = appleSpeechAvailability {
+                #if os(macOS) // MAC: the permission lives in System Settings > Privacy & Security > Speech Recognition (Task 9b, fix round 1)
+                testStatus = AppLocalization.string("Mac.VoiceSettings.SpeechRecognitionPermissionDenied")
+                #else // MAC:
                 testStatus = AppLocalization.string("Speech Recognition permission was denied. Please enable it in Settings > Conduit > Speech Recognition.")
+                #endif // MAC:
             } else if case .unsupported = appleSpeechAvailability {
                 testStatus = AppLocalization.string("On-device speech recognition is not available for your current language locale.")
             }
@@ -1933,11 +1963,22 @@ private struct WakePhraseSettingsSection: View {
                         model.setListensOverOtherAudio(value)
                     }
                 ))
+                #if os(macOS) // MAC: no iOS mixing clause on the Mac (Task 9b, fix round 1)
+                .accessibilityHint(Text("Mac.WakePhrase.OtherAudioNote"))
+                #else // MAC:
                 .accessibilityHint(Text("Off: wake pauses while another app plays music or a podcast, and listens again once it stops. On: wake keeps listening, but iOS may play that audio in mono or cut it out briefly."))
+                #endif // MAC:
+                #if os(macOS) // MAC: same note as the hint above (Task 9b, fix round 1)
+                Text("Mac.WakePhrase.OtherAudioNote")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                #else // MAC:
                 Text("Off: wake pauses while another app plays music or a podcast, and listens again once it stops. On: wake keeps listening, but iOS may play that audio in mono or cut it out briefly.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
+                #endif // MAC:
                 if model.isPausedForOtherAudio {
                     Label("Paused while another app plays audio. Wake listens again when it stops.", systemImage: "pause.circle")
                         .font(.caption)
@@ -2219,7 +2260,7 @@ struct VoiceCallSaveStatusSection: View {
                  ? AppLocalization.string("Your Hermes server can't save voice calls yet. Install or update the Hermes notifier plugin on your Hermes server, then tap Save Now.")
                  : AppLocalization.string("These calls are kept on this device and Conduit retries them automatically. It keeps up to 20 calls, and a call that still hasn't saved after 7 days is dropped.")
             #endif // MAC:
-            Text(savesNote)
+            Text(savesNote) // MAC: reads the Mac or iPhone text chosen above
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Button {

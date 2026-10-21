@@ -327641,6 +327641,710 @@
           }
         }
       }
+    },
+    "Mac.VoiceSettings.MicrophoneAsksFirst" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS fragt, wenn du zum ersten Mal sprichst."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS asks the first time you talk."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS te lo pedirá la primera vez que hables."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS vous le demande la première fois que vous parlez."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS akan bertanya saat pertama kali Anda berbicara."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS te lo chiede la prima volta che parli."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "初めて話すときにmacOSが確認します。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "처음 말할 때 macOS가 허용 여부를 물어봐요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS zapyta przy pierwszej rozmowie."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O macOS pergunta na primeira vez que você falar."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS спросит при первом разговоре."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS, ilk konuştuğunuzda sorar."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "首次说话时 macOS 会询问。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "第一次說話時，macOS 會詢問你。"
+          }
+        }
+      }
+    },
+    "Mac.VoiceSettings.SpeechRecognitionPermissionDenied" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Berechtigung für Spracherkennung wurde verweigert. Aktiviere sie unter „Systemeinstellungen“ > „Datenschutz & Sicherheit“ > „Spracherkennung“."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Speech Recognition permission was denied. Please enable it in System Settings > Privacy & Security > Speech Recognition."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Se denegó el permiso de Reconocimiento de voz. Actívalo en Ajustes del Sistema > Privacidad y seguridad > Reconocimiento de voz."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L'autorisation de reconnaissance vocale a été refusée. Activez-la dans Réglages Système > Confidentialité et sécurité > Reconnaissance vocale."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Izin Pengenalan Ucapan ditolak. Aktifkan di Pengaturan Sistem > Privasi & Keamanan > Pengenalan Ucapan."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L'autorizzazione Riconoscimento vocale è stata negata. Attivala in Impostazioni di Sistema > Privacy e sicurezza > Riconoscimento vocale."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音声認識の許可が拒否されました。「システム設定」>「プライバシーとセキュリティ」>「音声認識」で有効にしてください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "음성 인식 권한이 거부됐어요. ‘시스템 설정’ > ‘개인정보 보호 및 보안’ > ‘음성 인식’에서 켜세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odmówiono zgody na rozpoznawanie mowy. Włącz ją w Ustawieniach systemowych > Prywatność i ochrona > Rozpoznawanie mowy."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A permissão de Reconhecimento de Fala foi negada. Ative-a nos Ajustes do Sistema > Privacidade e Segurança > Reconhecimento de Fala."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Доступ к распознаванию речи запрещён. Включите его в «Системные настройки» > «Конфиденциальность и безопасность» > «Распознавание речи»."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Konuşma Tanıma izni reddedildi. Lütfen Sistem Ayarları > Gizlilik ve Güvenlik > Konuşma Tanıma bölümünden etkinleştirin."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音识别权限已被拒绝。请在「系统设置」>「隐私与安全」>「语音识别」中启用。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "語音辨識權限已遭拒。請在「系統設定」>「隱私權與安全性」>「語音辨識」中啟用。"
+          }
+        }
+      }
+    },
+    "Mac.VoiceSettings.KeepScreenAwakeToggle" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac bei Sprachunterhaltungen wach halten"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keep Mac awake during voice conversations"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mantener el Mac activo en conversaciones de voz"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Garder l'écran allumé pendant les conversations vocales"
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jaga Mac tetap menyala selama percakapan suara"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schermo sempre attivo nelle conversazioni vocali"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音声会話中は画面をオンのままにする"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "음성 대화 중 화면 켜 두기"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie usypiaj Maca podczas rozmów głosowych"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Manter o Mac ativo durante conversas por voz"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не блокировать экран при разговоре"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sesli konuşmalarda Mac’i uyanık tut"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音对话期间保持 Mac 唤醒"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "語音對話期間讓螢幕保持開啟"
+          }
+        }
+      }
+    },
+    "Mac.VoiceSettings.KeepListeningLockedNote" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eine Sprachunterhaltung, die bereits zuhört, läuft weiter, wenn du den Mac sperrst oder die App wechselst, sodass du freihändig sprechen kannst. Im gesperrten Zustand hört Conduit nach jeder Antwort immer wieder zu und auch bei Stille weiter. Beende sie mit einer Verabschiedung oder in der App. Verbraucht mehr Strom."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A voice conversation that is already listening keeps going when you lock your Mac or switch apps, so you can talk hands-free. While locked, Conduit always listens again after each response and keeps listening through silence. End it by saying a goodbye phrase or from the app. Uses more power."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Una conversación de voz que ya está escuchando continúa cuando bloqueas el Mac o cambias de app, para que puedas hablar sin usar las manos. Con el Mac bloqueado, Conduit siempre vuelve a escuchar tras cada respuesta y sigue escuchando durante los silencios. Termínala diciendo una frase de despedida o desde la app. Consume más energía."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Une conversation vocale déjà à l'écoute continue quand vous verrouillez le Mac ou changez d'app, pour parler sans les mains. Une fois verrouillé, Conduit se remet toujours à écouter après chaque réponse et continue d'écouter pendant les silences. Terminez-la en disant une phrase d'au revoir ou depuis l'app. Consomme plus d'énergie."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Percakapan suara yang sudah mendengarkan akan terus berjalan saat Anda mengunci Mac atau beralih app, sehingga Anda dapat berbicara tanpa menggunakan tangan. Saat terkunci, Conduit selalu mendengarkan lagi setelah setiap respons dan tetap mendengarkan meskipun hening. Akhiri dengan mengucapkan frasa perpisahan atau dari app. Menggunakan lebih banyak daya."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Una conversazione vocale che sta già ascoltando continua quando blocchi il Mac o cambi app, così puoi parlare a mani libere. Da bloccato, Conduit torna sempre ad ascoltare dopo ogni risposta e continua ad ascoltare anche nei silenzi. Terminala con una frase di congedo o dall'app. Consuma più energia."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "すでに聞き取り中の音声会話は、Macをロックしたりほかのアプリに切り替えたりしても続くため、ハンズフリーで話せます。ロック中は、Conduitは応答のたびに必ず聞き取りを再開し、無音の間も聞き取りを続けます。終了するには、終了のフレーズを話すか、アプリから操作します。消費電力が増えます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이미 듣고 있는 음성 대화는 Mac을 잠그거나 다른 앱으로 전환해도 계속되므로 손을 쓰지 않고 말할 수 있어요. 잠금 상태에서는 Conduit이 응답할 때마다 항상 다시 듣고, 조용할 때도 계속 들어요. 끝내려면 작별 인사를 하거나 앱에서 종료하세요. 전력을 더 많이 사용해요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozmowa głosowa, która już nasłuchuje, trwa dalej po zablokowaniu Maca lub przełączeniu aplikacji, dzięki czemu możesz rozmawiać bez użycia rąk. Po zablokowaniu Conduit zawsze ponownie słucha po każdej odpowiedzi i nie przestaje słuchać w ciszy. Zakończ rozmowę, mówiąc pożegnanie, lub w aplikacji. Zużywa więcej energii."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uma conversa por voz que já está ouvindo continua quando você bloqueia o Mac ou troca de app, para você falar sem usar as mãos. Enquanto o Mac está bloqueado, o Conduit sempre volta a ouvir após cada resposta e continua ouvindo durante o silêncio. Encerre dizendo uma frase de despedida ou pelo app. Usa mais energia."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Голосовой разговор, который уже слушает, продолжается, когда вы блокируете Mac или переключаетесь на другое приложение, — так можно говорить, не касаясь Mac. При блокировке Conduit всегда снова слушает после каждого ответа и не прекращает слушать в тишине. Завершите разговор прощальной фразой или в приложении. Расходует больше энергии."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zaten dinlemekte olan bir sesli konuşma, Mac’i kilitlediğinizde veya uygulama değiştirdiğinizde devam eder; böylece eller serbest konuşabilirsiniz. Kilitliyken Conduit her yanıttan sonra her zaman yeniden dinler ve sessizlik boyunca dinlemeyi sürdürür. Bir veda ifadesi söyleyerek veya uygulamadan sonlandırın. Daha fazla güç kullanır."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已在聆听的语音对话会在你锁屏或切换应用后继续进行，让你可以免手操作对话。锁屏期间，Conduit 会在每次回复后自动继续聆听，并在静默时保持聆听。说出结束语或在应用中即可结束对话。会消耗更多电力。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已在聆聽的語音對話會在你鎖定 Mac 或切換 App 時繼續進行，讓你免持說話。鎖定期間，Conduit 一律會在每次回應後再次聆聽，並在靜默時持續聆聽。說出道別語或從 App 中即可結束。會消耗較多電力。"
+          }
+        }
+      }
+    },
+    "Mac.VoiceSettings.TalkOverNote" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Experimentell. Hält das Mikrofon offen, während Hermes seine Antwort über die Lautsprecher des Mac vorliest, mit Echounterdrückung, damit du dazwischensprechen und einen neuen Durchgang beginnen kannst. Mit Kopfhörern und AirPods geht das immer. Schalte es aus, wenn Hermes sich ständig selbst unterbricht. Gilt gemeinsam mit Gemini Live und Grok Live. Gilt ab der nächsten Unterhaltung."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Experimental. Keeps the microphone open while Hermes reads its reply on the Mac's speakers, with echo cancellation, so you can speak over it to start a new turn. Headphones and AirPods always allow this. Turn it off if Hermes keeps cutting itself off. Shared with Gemini Live and Grok Live. Applies to the next conversation."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Experimental. Mantiene el micrófono abierto mientras Hermes lee su respuesta por los altavoces del Mac, con cancelación de eco, para que puedas hablar encima e iniciar un nuevo turno. Con auriculares y AirPods siempre es posible. Desactívalo si Hermes se corta solo una y otra vez. Compartido con Gemini Live y Grok Live. Se aplica a la próxima conversación."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Expérimental. Garde le micro ouvert pendant qu'Hermes lit sa réponse sur les haut-parleurs du Mac, avec l'annulation d'écho, pour que vous puissiez parler par-dessus et commencer un nouveau tour. C'est toujours possible avec des écouteurs et des AirPods. Désactivez cette option si Hermes n'arrête pas de se couper la parole. Partagé avec Gemini Live et Grok Live. S'applique à la prochaine conversation."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eksperimental. Mikrofon tetap terbuka saat Hermes membacakan balasannya melalui speaker Mac, dengan peredam gema, sehingga Anda dapat berbicara menyelanya untuk memulai giliran baru. Headphone dan AirPods selalu mengizinkan ini. Matikan jika Hermes terus memotong ucapannya sendiri. Digunakan bersama dengan Gemini Live dan Grok Live. Berlaku mulai percakapan berikutnya."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sperimentale. Tiene aperto il microfono mentre Hermes legge la risposta dagli altoparlanti del Mac, con la cancellazione dell'eco, così puoi parlarci sopra per iniziare un nuovo turno. Con cuffie e AirPods è sempre possibile. Disattiva l'opzione se Hermes continua a interrompersi da solo. Condiviso con Gemini Live e Grok Live. Vale dalla prossima conversazione."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "試験的な機能です。HermesがMacのスピーカーで返信を読み上げている間もマイクをオンのままにし、エコーキャンセルを使って、話しかけるだけで割り込んで新しいターンを始められるようにします。ヘッドフォンとAirPodsでは常に割り込めます。Hermesの読み上げが勝手に途切れる場合はオフにしてください。Gemini LiveおよびGrok Liveと共通の設定です。次の会話から適用されます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "실험적 기능이에요. Hermes가 Mac 스피커로 답장을 읽어 주는 동안에도 에코 제거를 사용해 마이크를 켜 두므로 말해서 새 턴을 시작할 수 있어요. 헤드폰과 AirPods에서는 항상 가능해요. Hermes가 계속 스스로 말을 끊는다면 끄세요. Gemini Live, Grok Live와 공통으로 적용돼요. 다음 대화부터 적용돼요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Funkcja eksperymentalna. Mikrofon pozostaje włączony, gdy Hermes czyta odpowiedź przez głośniki Maca (z redukcją echa), więc możesz mu przerwać i zacząć nową wypowiedź. Ze słuchawkami i AirPods jest to zawsze możliwe. Wyłącz, jeśli Hermes ciągle sam sobie przerywa. Wspólne z Gemini Live i Grok Live. Obowiązuje od następnej rozmowy."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Experimental. Mantém o microfone aberto enquanto o Hermes lê a resposta pelos alto-falantes do Mac, com cancelamento de eco, para você poder falar por cima e iniciar um novo turno. Fones de ouvido e AirPods sempre permitem isso. Desative se o Hermes ficar se interrompendo. Compartilhado com o Gemini Live e o Grok Live. Vale a partir da próxima conversa."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Экспериментальная функция. Микрофон остаётся включённым, пока Hermes читает ответ через динамики Mac, с подавлением эха — так можно заговорить поверх и начать новую реплику. В наушниках и AirPods это работает всегда. Выключите, если Hermes постоянно прерывает сам себя. Общая настройка с Gemini Live и Grok Live. Действует со следующего разговора."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Deneysel. Hermes yanıtını Mac’in hoparlörlerinden okurken yankı engellemesiyle mikrofonu açık tutar; böylece yeni bir tur başlatmak için araya girip konuşabilirsiniz. Kulaklıklarda ve AirPods'ta bu her zaman mümkündür. Hermes kendi sözünü kesip duruyorsa bunu kapatın. Gemini Live ve Grok Live ile ortaktır. Sonraki konuşmada geçerli olur."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实验功能。Hermes 通过 Mac 扬声器朗读回复时保持麦克风开启，并使用回声消除，让你可以直接开口打断并开始新一轮对话。耳机和 AirPods 始终支持此功能。如果 Hermes 不断打断自己，请关闭此选项。与 Gemini Live 和 Grok Live 共用此设置。从下一次对话开始生效。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "實驗性功能。Hermes 透過 Mac 揚聲器朗讀回覆時，麥克風會保持開啟並使用回音消除，讓你可以直接插話，開始新的回合。使用耳機和 AirPods 時一律可以這樣做。若 Hermes 一直打斷自己，請關閉此選項。與 Gemini Live 和 Grok Live 共用此設定。下次對話起生效。"
+          }
+        }
+      }
+    },
+    "Mac.WakePhrase.OtherAudioNote" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aus: Die Aktivierung pausiert, während eine andere App Musik oder einen Podcast abspielt, und hört danach wieder zu. Ein: Die Aktivierung hört weiter zu, aber das Audio wird dann eventuell in Mono abgespielt oder kurz unterbrochen."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Off: wake pauses while another app plays music or a podcast, and listens again once it stops. On: wake keeps listening, but that audio may play in mono or cut out briefly."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Desactivado: la escucha de activación se pausa mientras otra app reproduce música o un podcast, y se reanuda cuando termina. Activado: sigue escuchando, pero ese audio puede reproducirse en mono o cortarse brevemente."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Désactivé : l'activation vocale se met en pause quand une autre app lit de la musique ou un podcast, et reprend l'écoute dès que la lecture s'arrête. Activé : l'activation vocale continue d'écouter, mais cet audio peut être lu en mono ou coupé brièvement."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mati: pemicu suara dijeda saat app lain memutar musik atau podcast, lalu mendengarkan lagi setelah berhenti. Nyala: pemicu suara terus mendengarkan, tetapi audio tersebut mungkin diputar dalam mono atau terputus sebentar."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Disattivato: l'attivazione vocale si mette in pausa quando un'altra app riproduce musica o un podcast e riprende ad ascoltare quando si ferma. Attivato: l'attivazione vocale continua ad ascoltare, ma quell'audio potrebbe essere riprodotto in mono o interrotto brevemente."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "オフ：ほかのAppが音楽やPodcastを再生している間はウェイクフレーズの聞き取りを一時停止し、再生が止まると再開します。オン：ウェイクフレーズを聞き取り続けますが、そのオーディオがモノラルで再生されたり、一時的に途切れたりすることがあります。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "끔: 다른 앱이 음악이나 팟캐스트를 재생하는 동안 호출어 감지가 일시 정지되고, 재생이 멈추면 다시 들어요. 켬: 호출어 감지가 계속 듣지만 그 오디오가 모노로 재생되거나 잠깐 끊길 수 있어요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wyłączone: nasłuchiwanie wstrzymuje się, gdy inna aplikacja odtwarza muzykę lub podcast, i wznawia się po jej zatrzymaniu. Włączone: nasłuchiwanie trwa dalej, ale ten dźwięk może być odtwarzany w trybie mono lub na chwilę wyciszany."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Desativado: a ativação por voz pausa enquanto outro app toca música ou um podcast e volta a ouvir quando ele para. Ativado: a ativação por voz continua ouvindo, mas esse áudio pode tocar em mono ou ser cortado por um instante."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выкл.: ожидание фразы активации приостанавливается, пока другое приложение воспроизводит музыку или подкаст, и возобновляется, когда воспроизведение остановится. Вкл.: ожидание продолжается, но этот звук может воспроизводиться в моно или ненадолго прерываться."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kapalı: Başka bir uygulama müzik veya podcast çalarken uyandırma duraklar ve çalma durunca yeniden dinler. Açık: Uyandırma dinlemeye devam eder, ancak o ses mono çalabilir veya kısa süreliğine kesilebilir."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关闭：其他 App 播放音乐或播客时，唤醒词监听会暂停，播放停止后自动恢复。打开：唤醒词会持续监听，但该音频可能会以单声道播放，或短暂中断。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "關閉：其他 App 播放音樂或 Podcast 時，喚醒功能會暫停，停止播放後再繼續聆聽。開啟：喚醒功能會持續聆聽，但該音訊可能會以單聲道播放，或短暫中斷。"
+          }
+        }
+      }
+    },
+    "Mac.ConnectionFailure.Offline" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dieses Gerät scheint keine Netzwerkverbindung zu haben. Verbinde dich wieder mit WLAN oder Ethernet und versuche es erneut."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This device doesn’t appear to have a network connection. Reconnect to Wi-Fi or Ethernet and try again."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este dispositivo no parece tener conexión de red. Vuelve a conectarte a la red Wi-Fi o a Ethernet e inténtalo de nuevo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cet appareil ne semble pas avoir de connexion réseau. Reconnectez-vous au Wi-Fi ou à Ethernet et réessayez."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Perangkat ini tampaknya tidak memiliki koneksi jaringan. Hubungkan kembali ke Wi-Fi atau Ethernet, lalu coba lagi."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questo dispositivo non sembra avere una connessione di rete. Riconnettiti al Wi-Fi o a Ethernet e riprova."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このデバイスはネットワークに接続されていないようです。Wi-FiまたはEthernetに再接続して、もう一度お試しください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 기기가 네트워크에 연결되어 있지 않은 것 같아요. Wi-Fi 또는 이더넷에 다시 연결하고 다시 시도하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wygląda na to, że to urządzenie nie ma połączenia z siecią. Połącz się ponownie z Wi-Fi lub Ethernetem i spróbuj ponownie."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este aparelho parece estar sem conexão de rede. Reconecte-se ao Wi-Fi ou à rede Ethernet e tente novamente."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Похоже, у этого устройства нет подключения к сети. Подключитесь к Wi-Fi или Ethernet и повторите попытку."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bu cihazın ağ bağlantısı yok gibi görünüyor. Wi-Fi'ye veya Ethernet'e yeniden bağlanıp tekrar deneyin."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本设备似乎没有网络连接。请重新连接 Wi-Fi 或以太网后重试。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此裝置似乎沒有網路連線。請重新連接 Wi-Fi 或乙太網路，然後再試一次。"
+          }
+        }
+      }
+    },
+    "Mac.ConnectionFailure.TLSUntrusted" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit hat den Server erreicht, aber macOS vertraut seinem TLS-Zertifikat nicht. Wenn du eine eigene Zertifizierungsstelle nutzt, stelle sicher, dass ihr Root-Zertifikat auf diesem Gerät installiert ist und als vertrauenswürdig gilt."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit reached the server, but macOS does not trust its TLS certificate. If you use your own certificate authority, make sure its root certificate is installed and trusted on this device."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit llegó al servidor, pero macOS no confía en su certificado TLS. Si usas tu propia autoridad de certificación, asegúrate de que su certificado raíz esté instalado y sea de confianza en este dispositivo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit a joint le serveur, mais macOS ne fait pas confiance à son certificat TLS. Si vous utilisez votre propre autorité de certification, vérifiez que son certificat racine est installé et approuvé sur cet appareil."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit menjangkau server, tetapi macOS tidak memercayai sertifikat TLS-nya. Jika Anda menggunakan otoritas sertifikat sendiri, pastikan sertifikat root-nya terpasang dan dipercaya di perangkat ini."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit ha raggiunto il server, ma macOS non considera attendibile il suo certificato TLS. Se usi una tua autorità di certificazione, assicurati che il suo certificato radice sia installato e considerato attendibile su questo dispositivo."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduitはサーバに接続できましたが、macOSがそのTLS証明書を信頼していません。独自の認証局を使用している場合は、そのルート証明書がこのデバイスにインストールされ、信頼されていることを確認してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit이 서버에 연결했지만 macOS가 해당 TLS 인증서를 신뢰하지 않아요. 자체 인증 기관을 사용한다면 루트 인증서가 이 기기에 설치되어 있고 신뢰하도록 설정되어 있는지 확인하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit połączył się z serwerem, ale macOS nie ufa jego certyfikatowi TLS. Jeśli używasz własnego urzędu certyfikacji, upewnij się, że jego certyfikat główny jest zainstalowany i zaufany na tym urządzeniu."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O Conduit acessou o servidor, mas o macOS não confia no certificado TLS dele. Se você usa sua própria autoridade certificadora, verifique se o certificado raiz está instalado e marcado como confiável neste aparelho."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit связался с сервером, но macOS не доверяет его TLS-сертификату. Если вы используете собственный центр сертификации, убедитесь, что его корневой сертификат установлен на этом устройстве и ему назначено доверие."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit sunucuya ulaştı ancak macOS sunucunun TLS sertifikasına güvenmiyor. Kendi sertifika yetkilinizi kullanıyorsanız kök sertifikasının bu cihazda yüklü ve güvenilir olduğundan emin olun."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit 已连上服务器，但 macOS 不信任其 TLS 证书。如果你使用自己的证书颁发机构，请确保其根证书已安装并受此设备信任。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit 已連上伺服器，但 macOS 不信任其 TLS 憑證。如果你使用自己的憑證授權單位，請確認其根憑證已在此裝置上安裝並受信任。"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"
