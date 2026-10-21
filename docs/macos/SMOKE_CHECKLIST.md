@@ -252,6 +252,7 @@ Human pass at release time (agents never click or type into the running app, R18
 - [ ] More menu: Show Missing Files is off at first (missing files hidden); turn it on and missing files appear dimmed with a "Missing" badge on pictures; Refresh reads the list again.
 - [ ] A host whose plugin is older: the pane shows "Update the Conduit plugin" and no spinner; update the plugin, return to the pane, and the list loads.
 - [ ] Switch dashboard with the pane open: the old server's artifacts disappear at once. Light and dark, Reduce Transparency on, VoiceOver reads each tile as name, kind and chat.
+- [ ] Chat > Artifacts... (no key): disabled with no chat open and in a new empty chat; with a chat open it shows a sheet titled Artifacts with that chat's items, padded 20 pt each side, same filters and More menu as the pane. Show in Chat closes the sheet and scrolls to the message. Esc and the close button dismiss it. Light and dark.
 
 ## Session windows (D21)
 - [ ] Right-click a tab > Open in New Window: a window opens with that chat; the main window shows the neighbour tab.

@@ -112,6 +112,8 @@ struct ConduitMacApp: App {
             .macAccentEnvironment()
             // Cmd-Shift-D saved-dashboards sheet (D22): after the environment and tint it inherits.
             .macDashboardSwitcher(appState: appState)
+            // Chat > Artifacts... sheet (Task 13).
+            .macChatArtifactsSheet(appState: appState)
             // Links Conduit writes into chats (a voice call's job link)
             // open inside the app; every other link goes to the system.
             .macLinkPolicy(appState: appState)

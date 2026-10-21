@@ -491,6 +491,17 @@ final class MacKeyboardMenuTests: XCTestCase {
         return table
     }
 
+    /// Chat > Artifacts... (Task 13): in the Chat menu right after Ask About Window, with no key equivalent.
+    func testMenuTableHasChatArtifacts() throws {
+        let main = try XCTUnwrap(NSApp.mainMenu, "SwiftUI has not built the main menu")
+        let all = entries(main)
+        let paths = all.map(\.path)
+        let artifacts = try XCTUnwrap(all.first { $0.path == "/Chat/Artifacts\u{2026}" }, "\(paths)")
+        XCTAssertEqual(artifacts.item.keyEquivalent, "")
+        let ask = try XCTUnwrap(paths.firstIndex(of: "/Chat/Ask About Window\u{2026}"))
+        XCTAssertEqual(paths.firstIndex(of: "/Chat/Artifacts\u{2026}"), ask + 1)
+    }
+
     func testEveryShortcutIsInTheMenuAndWinsItsKey() throws {
         let main = try XCTUnwrap(NSApp.mainMenu, "SwiftUI has not built the main menu")
         let all = entries(main)

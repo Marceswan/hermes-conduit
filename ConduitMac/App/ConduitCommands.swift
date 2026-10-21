@@ -102,6 +102,10 @@ struct ConduitCommands: Commands {
                 Task { await MacAskAboutWindow.run(appState: appState, window: NSApp.keyWindow) }
             }
             .keyboardShortcut("w", modifiers: [.shift, .command])
+            // No key equivalent. Disabled without an open chat that has a row of its own; a
+            // disabled item with no key cannot swallow a key (see the note above).
+            Button("Artifacts\u{2026}") { MacAppActions.showChatArtifacts(window: NSApp.keyWindow, appState: appState) }
+                .disabled(!MacAppActions.canShowChatArtifacts(appState: appState))
             Divider()
             // No key equivalent (the global hotkey is the shortcut) and never
             // `.disabled`: this is the way in when the hotkey could not register.

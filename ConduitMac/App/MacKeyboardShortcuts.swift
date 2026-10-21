@@ -558,4 +558,28 @@ enum MacAppActions {
         (switcher ?? .shared).present()
         return true
     }
+
+    /// Whether Chat > Artifacts... has a chat to show: the open chat has a row of its own.
+    static func canShowChatArtifacts(appState: AppState) -> Bool {
+        !appState.activeChatArtifactSessionIDs.isEmpty
+    }
+
+    /// Chat > Artifacts...: the open chat's artifacts in a sheet. With no ids the list would read
+    /// every chat, so nothing is presented. `ids` is for tests; the menu reads the open chat.
+    @discardableResult
+    static func showChatArtifacts(
+        window: NSWindow?,
+        windows: [NSWindow]? = nil,
+        palette: MacPaletteStore? = nil,
+        appState: AppState,
+        store: MacChatArtifactsStore? = nil,
+        ids: [String]? = nil,
+        openMainWindow: (() -> Void)? = nil
+    ) -> Bool {
+        let sessionIDs = ids ?? appState.activeChatArtifactSessionIDs
+        guard !sessionIDs.isEmpty else { return false }
+        guard prepare(window: window, windows: windows, palette: palette, openMainWindow: openMainWindow) else { return false }
+        (store ?? .shared).present(sessionIDs: sessionIDs)
+        return true
+    }
 }
