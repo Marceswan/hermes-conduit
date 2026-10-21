@@ -201,11 +201,20 @@ final class WebViewTwinTests: XCTestCase {
 
     // MARK: - AuthWebView store clear (#788, #1058)
 
-    private func storeClearWebView(_ id: UUID?) -> WKWebView {
+    /// Clearing an identified store creates it on disk, in the real app's
+    /// WebKit folder. The two ids are fixed, so every run reuses the same two
+    /// directories instead of adding two more.
+    private static let clearingDashboard = UUID(uuidString: "7E570001-0000-4000-8000-000000000001")!
+    private static let otherClearingDashboard = UUID(uuidString: "7E570002-0000-4000-8000-000000000002")!
+    private static let idleDashboard = UUID(uuidString: "7E570003-0000-4000-8000-000000000003")!
+
+    /// A web view on the default store: the load decision depends on the
+    /// store id the sign-in is given, not on the store the view uses.
+    private func storeClearWebView() -> WKWebView {
         let configuration = AuthWebView.makeConfiguration(
             normalizedBaseURL: "https://dash.example.com",
             cloudflareAccess: nil,
-            websiteDataStoreIdentifier: id,
+            websiteDataStoreIdentifier: nil,
             ticketHandler: TicketRecorder(),
             headerStore: CustomHeaderStore(load: { [:] }, persist: { _ in })
         )
@@ -216,8 +225,9 @@ final class WebViewTwinTests: XCTestCase {
     /// outlive the tap. A sign-in page that loads at once can have the session
     /// it mints deleted by that late clear. The page waits for the clear.
     func testSignInPageLoadWaitsForAPendingStoreClear() async throws {
-        let id = UUID()
-        let webView = storeClearWebView(id)
+        let id = Self.clearingDashboard
+        await DashboardCookiePersistence.awaitPendingStoreClear(for: id)
+        let webView = storeClearWebView()
         let waiter = LoadWaiter()
         var clearPendingWhenLoadStarted: Bool?
         waiter.onStart = { clearPendingWhenLoadStarted = DashboardCookiePersistence.hasPendingStoreClear(for: id) }
@@ -235,9 +245,9 @@ final class WebViewTwinTests: XCTestCase {
     }
 
     func testSignInPageLoadsAtOnceWhenNothingIsClearing() async throws {
-        let id = UUID()
+        let id = Self.idleDashboard
         XCTAssertFalse(DashboardCookiePersistence.hasPendingStoreClear(for: id))
-        let webView = storeClearWebView(id)
+        let webView = storeClearWebView()
         let waiter = LoadWaiter()
         waiter.attach(to: webView)
         AuthWebView.load(URLRequest(url: URL(string: "about:blank")!), into: webView, websiteDataStoreIdentifier: id)
@@ -247,13 +257,13 @@ final class WebViewTwinTests: XCTestCase {
 
     /// Another dashboard's clear is no reason to wait.
     func testSignInPageDoesNotWaitForAnotherDashboardsClear() async throws {
-        let other = UUID()
+        let other = Self.otherClearingDashboard
+        await DashboardCookiePersistence.awaitPendingStoreClear(for: other)
         DashboardCookiePersistence.scheduleWebKitSessionClear(for: other)
-        let id = UUID()
-        let webView = storeClearWebView(id)
+        let webView = storeClearWebView()
         let waiter = LoadWaiter()
         waiter.attach(to: webView)
-        AuthWebView.load(URLRequest(url: URL(string: "about:blank")!), into: webView, websiteDataStoreIdentifier: id)
+        AuthWebView.load(URLRequest(url: URL(string: "about:blank")!), into: webView, websiteDataStoreIdentifier: Self.idleDashboard)
         XCTAssertTrue(webView.isLoading, "the other dashboard's clear is no reason to wait")
         try await waiter.finished()
         await DashboardCookiePersistence.awaitPendingStoreClear(for: other)
