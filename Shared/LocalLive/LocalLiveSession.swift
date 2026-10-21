@@ -1,6 +1,6 @@
 //
 //  LocalLiveSession.swift
-//  Conduit
+//  Conduit and the Conduit Watch app
 //
 //  One Local Live call through the Hermes host's relay to the user's speech
 //  server. The first frame is the session.update. Once the server confirms
@@ -15,13 +15,21 @@
 //
 //  It speaks the same seam as Gemini Live's session, so the shared
 //  conversation controller (phases, transcript, the speaker echo guard,
-//  hands-free end) drives Local Live unchanged.
+//  hands-free end) drives Local Live unchanged. The Watch runs it too,
+//  over the call grant's audio bridge (WatchGrokBridgeSocket).
 //
 
 import Foundation
 import OSLog
 
 private let localLiveLogger = Logger(subsystem: "com.milim.relay", category: "LocalLive")
+
+@MainActor
+protocol LocalLiveConnecting: AnyObject {
+    /// The upgrade request for one relay connection, with a fresh
+    /// single-use ticket: call once per WebSocket.
+    func socketRequest() async throws -> URLRequest
+}
 
 @MainActor
 final class LocalLiveSession: GeminiLiveSessionControlling {
@@ -50,6 +58,15 @@ final class LocalLiveSession: GeminiLiveSessionControlling {
     /// answer, so it doubles as the cue to start talking. Once per call.
     var greeting: (@MainActor () -> String?)?
     private var hasGreeted = false
+    /// Agent mode (Live > Local): the fast model's instructions and tools,
+    /// sent on each connection. Nil runs one Hermes turn per utterance.
+    var agentSetup: (@MainActor () -> LocalLiveProtocol.AgentSetup?)?
+    /// Whether the current connection runs in agent mode.
+    private var isAgent = false
+    /// Recent tool answers, by call id: one the plugin hands back as late
+    /// is said as an update.
+    private var toolAnswers: [String: (name: String, result: [String: String])] = [:]
+    private var toolAnswerOrder: [String] = []
     private(set) var connectionGeneration = 0
     var stateDescription: String { "\(state)" }
     /// The server transcribes the user's speech once an utterance is done.
@@ -65,6 +82,8 @@ final class LocalLiveSession: GeminiLiveSessionControlling {
     private var socket: GeminiLiveSocket?
     /// Identity of the current connection; frames from any other are ignored.
     private var connectionID = UUID()
+    /// The connection's capture, upsampled as one stream.
+    private var inputUpsampler = GrokInputUpsampler()
     private var receiveTask: Task<Void, Never>?
     private var connectTask: Task<Void, Never>?
     private var setupTimeoutTask: Task<Void, Never>?
@@ -132,6 +151,23 @@ final class LocalLiveSession: GeminiLiveSessionControlling {
 
     func send(_ message: LiveVoiceClientMessage, onSent: (@MainActor () -> Void)?, onFailure: (@MainActor () -> Void)?) {
         switch message {
+        case .toolResponse(let id, let name, let result, let scheduling) where isAgent:
+            // The fast model waits for it on the plugin; never the speech server's.
+            rememberToolAnswer(id: id, name: name, result: result)
+            let frame = LocalLiveProtocol.toolResult(callID: id, result: result, speak: scheduling != .silent)
+            guard state == .ready, let text = try? LocalLiveProtocol.encode(frame) else {
+                onFailure?()
+                return
+            }
+            enqueue([text], onSent: onSent, onFailure: onFailure)
+            return
+        case .contextNote(let note) where isAgent:
+            guard state == .ready, let text = try? LocalLiveProtocol.encode(LocalLiveProtocol.agentNote(note)) else {
+                onFailure?()
+                return
+            }
+            enqueue([text], onSent: onSent, onFailure: onFailure)
+            return
         case .contextNote, .toolResponse:
             // Hermes has the chat itself, and the call declares no tools:
             // the speech server's model is only a pipe to Hermes.
@@ -144,7 +180,7 @@ final class LocalLiveSession: GeminiLiveSessionControlling {
             onFailure?()
             return
         }
-        let (frames, wantsResponse) = GrokLiveProtocol.frames(for: message)
+        let (frames, wantsResponse) = GrokLiveProtocol.frames(for: message, upsampler: &inputUpsampler)
         var texts = frames.compactMap { try? LocalLiveProtocol.encode($0) }
         guard texts.count == frames.count else {
             onFailure?()
@@ -174,6 +210,28 @@ final class LocalLiveSession: GeminiLiveSessionControlling {
         guard openTurns.remove(turnID) != nil,
               let frame = try? LocalLiveProtocol.encode(LocalLiveProtocol.turnDone(turnID: turnID)) else { return }
         enqueue([frame], onSent: nil, onFailure: nil)
+    }
+
+    private func rememberToolAnswer(id: String, name: String, result: [String: String]) {
+        if toolAnswers[id] == nil { toolAnswerOrder.append(id) }
+        toolAnswers[id] = (name, result)
+        while toolAnswerOrder.count > 16 {
+            let dropped = toolAnswerOrder.removeFirst()
+            toolAnswers.removeValue(forKey: dropped)
+            localLiveLogger.notice("Dropped the kept answer for tool call \(dropped, privacy: .public)")
+        }
+    }
+
+    /// A tool answer the fast model stopped waiting for: said the way a
+    /// typed turn is, so the model reports it.
+    private func sayLateAnswer(_ callID: String) {
+        guard let answer = toolAnswers.removeValue(forKey: callID) else {
+            localLiveLogger.notice("No answer kept for late tool call \(callID, privacy: .public)")
+            return
+        }
+        toolAnswerOrder.removeAll { $0 == callID }
+        let text = LocalLiveProtocol.lateResultText(name: answer.name, result: answer.result)
+        send(.textTurn(text), onSent: nil, onFailure: nil)
     }
 
     private func enqueue(_ texts: [String], onSent: (@MainActor () -> Void)?, onFailure: (@MainActor () -> Void)?) {
@@ -226,6 +284,7 @@ final class LocalLiveSession: GeminiLiveSessionControlling {
         socket?.close()
         socket = nil
         connectionID = UUID()
+        inputUpsampler.reset()
         dropTurns()
     }
 
@@ -246,8 +305,12 @@ final class LocalLiveSession: GeminiLiveSessionControlling {
         }
         guard !Task.isCancelled, state != .stopped, !isFailed else { return }
         let socket = openSocket(request)
+        let agent = agentSetup?()
         do {
             try await socket.send(try LocalLiveProtocol.encode(LocalLiveProtocol.sessionUpdate))
+            // Before the readiness check, so the plugin answers every
+            // utterance after it with the fast model.
+            if let agent { try await socket.send(try LocalLiveProtocol.encode(LocalLiveProtocol.agentConfigure(agent))) }
         } catch {
             // A refused WebSocket upgrade surfaces here, on the first send.
             let close = await socket.serverClose(within: .milliseconds(400))
@@ -270,6 +333,7 @@ final class LocalLiveSession: GeminiLiveSessionControlling {
         self.socket?.close()
         self.socket = socket
         connectionID = id
+        isAgent = agent != nil
         awaitingSetup = (id, attempt)
         readinessCheck = nil
         readinessResponseOpen = false
@@ -313,11 +377,25 @@ final class LocalLiveSession: GeminiLiveSessionControlling {
                 return
             }
             guard id == connectionID else { return }
+            if let frame = LocalLiveProtocol.agentFrame(data) {
+                switch frame {
+                case .toolCall(let call):
+                    onEvent?(.toolCall([call]))
+                case .late(let callID):
+                    sayLateAnswer(callID)
+                }
+                continue
+            }
             if let turn = LocalLiveProtocol.turnFrame(data) {
                 handle(turn, connection: id)
                 continue
             }
             readinessResponseEnding = false
+            // Stopped first, so no audio already queued plays on; the
+            // check's own response is said by no one.
+            if !readinessResponseOpen, LocalLiveProtocol.stopsPlayback(data) {
+                onEvent?(.interrupted)
+            }
             for frame in GrokLiveProtocol.decode(data) {
                 // A frame can end this connection.
                 guard id == connectionID else { return }
@@ -487,6 +565,7 @@ final class LocalLiveSession: GeminiLiveSessionControlling {
         keepaliveTask?.cancel()
         keepaliveTask = nil
         connectionID = UUID()
+        inputUpsampler.reset()
         dropTurns()
         if let serverClose, GrokLiveSession.isRefusal(serverClose) {
             fail(Self.refusalMessage(serverClose))

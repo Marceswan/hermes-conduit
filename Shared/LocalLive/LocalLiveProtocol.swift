@@ -1,6 +1,6 @@
 //
 //  LocalLiveProtocol.swift
-//  Conduit
+//  Conduit and the Conduit Watch app
 //
 //  Wire format for Local Live: a live call through the user's own speech
 //  server (Hugging Face speech-to-speech), relayed by the notifier's
@@ -11,14 +11,16 @@
 //  adds on the same socket. When the server asks its model address for an
 //  answer, the plugin sends `conduit.turn`; Conduit runs it as a Hermes chat
 //  turn and streams the reply back as `conduit.turn.delta`, then
-//  `conduit.turn.done`.
+//  `conduit.turn.done`. A Watch call runs the same session through the
+//  host's audio bridge, where the host answers the turns itself.
 //
 
 import Foundation
 
 enum LocalLiveProtocol {
-    static let socketPath = SpeechServerSpeechStream.socketPath
-    static let statusPath = SpeechServerSpeechStream.statusPath
+    /// SpeechServerSpeechStream's too: one relay serves both.
+    static let socketPath = "/api/plugins/conduit_push/local-live/socket"
+    static let statusPath = "/api/plugins/conduit_push/local-live/status"
     /// The OpenAI Realtime PCM rate, both ways. The 16 kHz microphone
     /// stream is upsampled to it, as for Grok Live.
     static let sampleRate: Double = 24_000
@@ -97,6 +99,69 @@ enum LocalLiveProtocol {
         return ["type": "response.create", "response": response]
     }
 
+    // MARK: Agent mode
+
+    /// What a call in agent mode (Live > Local) gives the plugin's fast
+    /// model: the live-model instructions and the tools Grok Live gets.
+    /// The plugin runs the model; the tools run here, as they do on Grok.
+    struct AgentSetup {
+        let instructions: String
+        let functions: [GeminiLiveProtocol.FunctionDeclaration]
+    }
+
+    /// Added after the shared live instructions in agent mode: the fast
+    /// model can't reach the user's things, Hermes can, and start_job
+    /// answers as soon as the job runs (as on Grok Live). Written for the
+    /// model, so not localized.
+    static let agentInstructions = "\nYou are a fast front for the user's Hermes agent. You can't see the user's email, messages, calendar and schedule, to-dos, health, bank or other accounts, files or systems; Hermes can. Whenever the user asks you to check, read, find, send or do anything there (\"what's on my plate today?\" included), call start_job with their request instead of saying you can't, and never answer it from guesses." + GrokLiveProtocol.jobClaimInstructions
+
+    static func agentConfigure(_ setup: AgentSetup) -> [String: Any] {
+        ["type": "conduit.agent", "instructions": setup.instructions, "tools": setup.functions.map(GrokLiveProtocol.functionTool)]
+    }
+
+    /// A tool's answer. `speak` asks for it to be said even if the fast
+    /// model stopped waiting (the plugin then sends `conduit.tool.late`).
+    static func toolResult(callID: String, result: [String: String], speak: Bool) -> [String: Any] {
+        let output = (try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]))
+            .map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+        return ["type": "conduit.tool.result", "call_id": callID, "output": output, "speak": speak]
+    }
+
+    /// Context the fast model keeps without answering (a turn typed in the
+    /// attached chat).
+    static func agentNote(_ text: String) -> [String: Any] {
+        ["type": "conduit.agent.note", "text": text]
+    }
+
+    enum AgentFrame: Equatable {
+        /// The fast model called one of the call's tools.
+        case toolCall(GeminiLiveProtocol.FunctionCall)
+        /// A tool's answer came after the model stopped waiting for it.
+        case late(callID: String)
+    }
+
+    /// The plugin's agent-mode frame in `data`; nil for anything else.
+    static func agentFrame(_ data: Data) -> AgentFrame? {
+        guard data.range(of: Data("\"conduit.tool.".utf8)) != nil,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = object["type"] as? String else { return nil }
+        switch type {
+        case "conduit.tool.call":
+            return GrokLiveProtocol.functionCall(object).map(AgentFrame.toolCall)
+        case "conduit.tool.late":
+            guard let id = object["call_id"] as? String, !id.isEmpty else { return nil }
+            return .late(callID: id)
+        default:
+            return nil
+        }
+    }
+
+    /// What a late tool answer is said as: an update the fast model reports.
+    static func lateResultText(name: String, result: [String: String]) -> String {
+        let body = result.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value)" }.joined(separator: "\n")
+        return "Update from \(name), which answered late:\n\(body)\nTell the user what matters from it, briefly."
+    }
+
     static func turnDelta(turnID: String, text: String) -> [String: Any] {
         ["type": "conduit.turn.delta", "turn_id": turnID, "text": text]
     }
@@ -141,6 +206,26 @@ enum LocalLiveProtocol {
             return .cancel(id: id)
         default:
             return nil
+        }
+    }
+
+    /// Whether `data` tells the phone to stop the reply it is playing: the
+    /// server cleared its output audio, cancelled the response, or ended
+    /// it as cancelled. An engine that decides on its own that the caller
+    /// cut in (its own turn detection, a spoken "stop") sends one of these.
+    static func stopsPlayback(_ data: Data) -> Bool {
+        guard data.range(of: Data("output_audio_buffer".utf8)) != nil
+                || data.range(of: Data("response.cancel".utf8)) != nil
+                || data.range(of: Data("\"cancelled\"".utf8)) != nil,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = object["type"] as? String else { return false }
+        switch type {
+        case "output_audio_buffer.clear", "output_audio_buffer.cleared", "response.cancel", "response.cancelled":
+            return true
+        case "response.done":
+            return (object["response"] as? [String: Any])?["status"] as? String == "cancelled"
+        default:
+            return false
         }
     }
 

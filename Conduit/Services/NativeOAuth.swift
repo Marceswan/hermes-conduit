@@ -338,6 +338,9 @@ final class NativeOAuthSession {
     private var tokens: NativeOAuthTokenSet
     private var refreshTask: Task<NativeOAuthTokenSet, Error>?
     private var isInvalidated = false
+    /// The Keychain copy a refresh couldn't overwrite. The server has
+    /// rotated past it, so the live tokens stay the session's grant.
+    private var unsavedOver: NativeOAuthTokenSet?
 
     init?(baseURL: String, dashboardID: UUID, cloudflareAccess: CloudflareAccessCredentials?) {
         guard let tokens = KeychainHelper.loadNativeOAuthTokens(dashboardID: dashboardID) else { return nil }
@@ -353,8 +356,10 @@ final class NativeOAuthSession {
     }
 
     /// Compares the live grant without exposing it to callers or diagnostics.
+    /// A Keychain copy left behind by a refresh whose save failed still
+    /// matches: rebuilding from it would bring back a retired grant.
     func matchesStoredTokens(_ storedTokens: NativeOAuthTokenSet) -> Bool {
-        !isInvalidated && tokens == storedTokens
+        !isInvalidated && (tokens == storedTokens || unsavedOver == storedTokens)
     }
 
     func invalidate() {
@@ -441,6 +446,18 @@ final class NativeOAuthSession {
         return request
     }
 
+    /// The access token a dashboard WebSocket upgrade presents, refreshed
+    /// first once it has expired. Not earlier, unlike a REST request: the
+    /// upgrade's ticket was minted a moment ago (refreshing first if
+    /// needed) with the current token, and a server may bind the ticket to
+    /// it. The caller sends it only to this dashboard.
+    func upgradeBearer() async throws -> String {
+        guard !isInvalidated else { throw CancellationError() }
+        if tokens.needsRefresh(skewSeconds: 0) { try await refresh() }
+        guard !isInvalidated else { throw CancellationError() }
+        return tokens.accessToken
+    }
+
     /// Forgets a grant the server rejected again right after a refresh, as
     /// `requestJSON`'s replay does.
     func discardRejectedGrant() {
@@ -481,8 +498,16 @@ final class NativeOAuthSession {
             do {
                 let refreshed = try await self.client.refresh(current)
                 guard !self.isInvalidated else { throw CancellationError() }
+                // The server rotated the grant: the new tokens are the only
+                // live ones whether or not they reach the Keychain.
                 self.tokens = refreshed
-                KeychainHelper.saveNativeOAuthTokens(refreshed, dashboardID: self.dashboardID)
+                if KeychainHelper.saveNativeOAuthTokens(refreshed, dashboardID: self.dashboardID)
+                    || KeychainHelper.saveNativeOAuthTokens(refreshed, dashboardID: self.dashboardID) {
+                    self.unsavedOver = nil
+                } else {
+                    self.unsavedOver = self.unsavedOver ?? current
+                    nativeOAuthLogger.error("OAuth refresh: rotated tokens not saved; kept for this run")
+                }
                 return refreshed
             } catch NativeOAuthError.requestFailed(let status) where status == 400 || status == 401 {
                 guard !self.isInvalidated else { throw CancellationError() }

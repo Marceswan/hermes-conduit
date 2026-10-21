@@ -383,8 +383,7 @@ struct V2ScheduledList: View {
                 )
             }
             .tint(.conduitAccent)
-        }
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            // On the side away from Run now, so it isn't hit by accident.
             // Not a destructive role: that removes the row before the
             // confirmation is answered.
             Button {
@@ -395,6 +394,8 @@ struct V2ScheduledList: View {
             }
             .tint(.red)
             .disabled(appState.cronJobActionID != nil)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             if !job.isFinished {
                 Button {
                     Haptics.medium()

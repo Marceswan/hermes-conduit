@@ -318,10 +318,12 @@ struct ComposerBar: View, Equatable {
         action == .unavailable ? Color.primary.opacity(0.025) : actionTint
     }
 
+    /// Solid, so the chat scrolling under the composer never shows
+    /// through what is being typed.
     private var composerFoundation: Color {
         colorScheme == .dark
-            ? Color(red: 0.072, green: 0.080, blue: 0.106).opacity(0.96)
-            : Color.white.opacity(0.94)
+            ? Color(red: 0.072, green: 0.080, blue: 0.106)
+            : Color.white
     }
 
     private var composerStroke: Color {
@@ -362,6 +364,7 @@ struct ComposerBar: View, Equatable {
             selectionBehavior: .ordered,
             matching: .any(of: [.images, .videos])
         )
+        .conduitOutOfProcessAccentTint()
         .onChange(of: text) { _, newValue in
             let isProgrammaticDraftRestore = suppressNextTextChangeSuggestions
             suppressNextTextChangeSuggestions = false
@@ -553,6 +556,11 @@ struct ComposerBar: View, Equatable {
                         .transition(.opacity)
                 }
                 composerField
+                if rests && stopOnly {
+                    trailingSlot
+                        .padding(.trailing, 4)
+                        .transition(.opacity)
+                }
             }
             .padding(.horizontal, 6)
             .padding(.vertical, rests ? 6 : 0)
@@ -585,6 +593,10 @@ struct ComposerBar: View, Equatable {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 12)
+                    // Gone with the first keystroke. The send button's
+                    // spring would otherwise fade it out under the words
+                    // being typed.
+                    .transition(.identity)
             }
             ComposerPasteTextView(
                 text: $text,
@@ -695,19 +707,29 @@ struct ComposerBar: View, Equatable {
     }
 
     /// Anything that needs the full composer: focus, a draft, an
-    /// attachment, a reply, dictation, a running turn's Stop, a notice, or a
-    /// control's sheet.
+    /// attachment, a reply, dictation, steering a running turn, a notice, or
+    /// a control's sheet. A running turn's Stop alone fits the resting bar.
     private var composerInUse: Bool {
         let hasDraft = isFocused || hasText || !attachments.isEmpty || pendingScreenshot != nil
             || replyReference != nil || isShowingFullEditor
         let isDictating = dictation.isDictating || dictation.isStarting || dictation.isTranscribing
-        // Stop, steer and interrupt live in the controls row.
-        let turnControl = action == .stop || action == .steer || action == .interrupt
+        let turnControl = Self.turnControlExpandsComposer(action: action, restsWhenIdle: restsWhenIdle)
         let hasNotice = showsStateNotice || appState.composerNotice != nil || appState.isCompressingActiveSession
             || appState.activeChatTakeover != nil || composerErrorMessage != nil
         let pickerUp = showAttachmentMenu || showDocumentPicker || showCamera
         let sheetUp = appState.showModelPicker || appState.showContextSheet || appState.showAgentsSheet
         return hasDraft || isDictating || turnControl || hasNotice || pickerUp || sheetUp
+    }
+
+    /// Steer and interrupt live in the controls row. Stop does too in the
+    /// classic layout, but V2 keeps it in the resting bar, so the big voice
+    /// button beside it can start a call while Hermes replies (#762).
+    static func turnControlExpandsComposer(action: ComposerAction, restsWhenIdle: Bool) -> Bool {
+        switch action {
+        case .steer, .interrupt: return true
+        case .stop: return !restsWhenIdle
+        case .send, .unavailable: return false
+        }
     }
 
     /// The minimised call bar above a V2 composer hides only while someone
@@ -1420,8 +1442,9 @@ struct ComposerBar: View, Equatable {
     /// Why a waiting message came back, until the next edit or send.
     private func composerNoticeLine(_ notice: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "arrow.uturn.backward.circle")
+            Image(systemName: appState.composerNoticeSystemImage)
                 .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
             Text(notice)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -1468,7 +1491,7 @@ struct ComposerBar: View, Equatable {
             .contentShape(Self.controlHitShape)
         }
         .buttonStyle(.plain)
-        .disabled(appState.isPreparingVoiceResume || appState.isBusy)
+        .disabled(appState.isPreparingVoiceResume || appState.voiceWaitsForRunningTurn)
         .conduitGlassControl(cornerRadius: Self.controlSize / 2, tint: .conduitAura.opacity(0.14), interactive: true)
         .accessibilityLabel(AppLocalization.string("Resume call"))
         .accessibilityHint(AppLocalization.string("Starts a new live call that continues this one"))
@@ -1565,7 +1588,7 @@ struct ComposerBar: View, Equatable {
     }
 
     private var canOpenVoiceFromComposer: Bool {
-        appState.canStartPhoneVoiceConversation && !appState.isBusy && appState.composerIsEnabled
+        appState.canStartPhoneVoiceConversation && !appState.voiceWaitsForRunningTurn && appState.composerIsEnabled
     }
 
     private var canDictateFromComposer: Bool {
@@ -1644,6 +1667,11 @@ struct ComposerBar: View, Equatable {
         replyReference submittedReply: ComposerReplyReference?,
         for key: ComposerDraftKey
     ) {
+        let failed = ComposerDraft(
+            text: submittedText,
+            attachments: submittedAttachments,
+            replyReference: submittedReply
+        )
         let restorationKey: ComposerDraftKey
         if Self.draftKeysAreEquivalent(
             key,
@@ -1656,22 +1684,16 @@ struct ComposerBar: View, Equatable {
         }
 
         guard loadedDraftKey == restorationKey else {
-            draftStore.saveIfMissing(
-                ComposerDraft(
-                    text: submittedText,
-                    attachments: submittedAttachments,
-                    replyReference: submittedReply
-                ),
-                for: restorationKey
-            )
+            draftStore.restoreFailedSubmission(failed, for: restorationKey)
             return
         }
-        // Do not overwrite a new draft if the user already returned to the
-        // composer while the failed request was in flight.
-        guard text.isEmpty, attachments.isEmpty else { return }
-        replaceComposerText(submittedText)
-        attachments = submittedAttachments
-        if replyReference == nil { replyReference = submittedReply }
+        // Words typed while the failed request was in flight stay, below
+        // the message that didn't go.
+        let restored = ComposerDraft(text: text, attachments: attachments, replyReference: replyReference)
+            .restoring(failed)
+        replaceComposerText(restored.text, cursorAtEnd: true)
+        attachments = restored.attachments
+        replyReference = restored.replyReference
     }
 
     /// A screenshot chat opened with the keyboard: the field takes focus.

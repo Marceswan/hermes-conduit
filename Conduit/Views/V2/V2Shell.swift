@@ -99,6 +99,11 @@ struct V2ShellContext: Equatable {
         /// True while a screen is pushed over this tab's root (a chat, a
         /// project page), so the root's backdrop can hold still under it.
         var isRootCovered = false
+        /// True on a wide iPad window, where Chats and Bots show their list
+        /// beside the open chat (`V2SplitLayout`).
+        var isSplit = false
+        /// Split, with a chat open beside this tab's list.
+        var hasChatBeside = false
     }
 
     var pickProfile: (String) -> Void = { _ in }
@@ -126,6 +131,16 @@ struct V2ShellContext: Equatable {
         set { values.isRootCovered = newValue }
     }
 
+    var isSplit: Bool {
+        get { values.isSplit }
+        set { values.isSplit = newValue }
+    }
+
+    var hasChatBeside: Bool {
+        get { values.hasChatBeside }
+        set { values.hasChatBeside = newValue }
+    }
+
     static func == (lhs: V2ShellContext, rhs: V2ShellContext) -> Bool {
         lhs.values == rhs.values
     }
@@ -147,7 +162,9 @@ extension EnvironmentValues {
 /// walks the whole catalog to draw (the default profile holds nearly every
 /// cron run), so a list kept under a pushed chat cost the chat frames on
 /// every update. Hidden, the list waits; shown again, it draws once with
-/// everything it missed.
+/// everything it missed. Beside a chat (a wide iPad), the list shows but
+/// draws at most a few times a second, so a streaming reply's publishes
+/// don't each redraw it.
 @MainActor
 final class V2ShownUpdates: ObservableObject {
     let objectWillChange = ObservableObjectPublisher()
@@ -155,20 +172,76 @@ final class V2ShownUpdates: ObservableObject {
     var isShown = true {
         didSet { if isShown, !oldValue, missedUpdate { missedUpdate = false; objectWillChange.send() } }
     }
+    /// Set by the list: a chat is open beside it.
+    var coalesces = false
+    /// How long the list beside a chat waits to draw the publishes since.
+    var coalescingDelay: TimeInterval = 0.5
     private var missedUpdate = false
+    private var drawScheduled = false
     private var subscription: AnyCancellable?
+    private var defaultsSubscription: AnyCancellable?
+    /// The list's saved settings, read through here rather than
+    /// `@AppStorage`: SwiftUI redraws every `@AppStorage` view on any write
+    /// to the defaults, whatever its key, and a chat saves its scroll
+    /// position there.
+    let defaults: UserDefaults
+    private let defaultsKeys: [String]
+    private var defaultsValues: [NSObject?]
 
     /// Read through here by the list's rows, which follow these updates.
     /// Held strongly: AppState never holds the gate, and the sink below
     /// holds the gate weakly.
     let appState: AppState
 
-    init(_ appState: AppState) {
+    init(_ appState: AppState, defaults: UserDefaults = .standard, defaultsKeys: [String] = []) {
         self.appState = appState
+        self.defaults = defaults
+        self.defaultsKeys = defaultsKeys
+        defaultsValues = Self.values(of: defaultsKeys, in: defaults)
         subscription = appState.objectWillChange.sink { [weak self] _ in
-            guard let self else { return }
-            if self.isShown { self.objectWillChange.send() } else { self.missedUpdate = true }
+            self?.passOn()
         }
+        guard !defaultsKeys.isEmpty else { return }
+        defaultsSubscription = NotificationCenter.default
+            .publisher(for: UserDefaults.didChangeNotification)
+            .sink { [weak self] _ in
+                // A write from elsewhere; the list's own go through `set`.
+                Task { @MainActor [weak self] in self?.defaultsChanged() }
+            }
+    }
+
+    /// Saves one of the list's settings and redraws it at once.
+    func set(_ value: Any?, forKey key: String) {
+        defaults.set(value, forKey: key)
+        defaultsChanged(atOnce: true)
+    }
+
+    private func passOn() {
+        guard isShown else { missedUpdate = true; return }
+        guard coalesces else { objectWillChange.send(); return }
+        guard !drawScheduled else { return }
+        drawScheduled = true
+        let delay = coalescingDelay
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self else { return }
+            drawScheduled = false
+            // Covered meanwhile, it waits for the list to show again.
+            if isShown { objectWillChange.send() } else { missedUpdate = true }
+        }
+    }
+
+    /// At once for the list's own write: a tap beside a chat doesn't wait.
+    private func defaultsChanged(atOnce: Bool = false) {
+        let values = Self.values(of: defaultsKeys, in: defaults)
+        guard values != defaultsValues else { return }
+        defaultsValues = values
+        if atOnce, isShown { objectWillChange.send() } else { passOn() }
+    }
+
+    /// Property-list values, compared by `isEqual:`.
+    private static func values(of keys: [String], in defaults: UserDefaults) -> [NSObject?] {
+        keys.map { defaults.object(forKey: $0) as? NSObject }
     }
 }
 
@@ -185,15 +258,6 @@ struct V2Shell: View {
     /// The custom bar keeps a tab alive once it has been opened, so its
     /// scroll position and pushed screens survive switching away.
     @State private var visitedTabs: Set<V2Tab> = [.chats]
-    /// The last tab a switch left. Set in the same update as the
-    /// selection, so the opened tab knows which side to come from.
-    @State private var leavingTab: V2Tab?
-    /// Tabs slid off screen by recent switches, kept shown and animating
-    /// until the last slide settles, so quick switches don't snap.
-    @State private var settlingTabs: Set<V2Tab> = []
-    @State private var tabSwitchToken = 0
-    /// The tabs' width as last laid out: how far a switch slides.
-    @State private var tabsWidth: CGFloat = 0
     @State private var contentFaded = false
     @State private var contentShift: CGFloat = 0
     @State private var profileSwitchToken = 0
@@ -205,11 +269,6 @@ struct V2Shell: View {
     /// voice button, with their bottom padding).
     @State private var tabBarHeight: CGFloat = 62
     @AppStorage(V2MainButtonPreference.key) private var mainButtonNewChat = V2MainButtonPreference.defaultValue
-    /// The Chats filter (V2ChatsView), set from Tasks to list cron runs.
-    @AppStorage("conduit.v2.sessionFilter") private var chatsFilterRaw = "all"
-    /// Chats' Sessions/Projects switch (V2ChatsView): Projects would hide
-    /// the runs.
-    @AppStorage("conduit.sessionPresentation") private var chatsPresentationRaw = "sessions"
 
     /// Whether the visible tab shows the conversation.
     private var conversationVisible: Bool {
@@ -225,27 +284,48 @@ struct V2Shell: View {
         chatsPath.contains(.conversation) || botsPath.contains(.conversation)
     }
 
-    /// Whether a screen is pushed over the tab's root.
-    private func isRootCovered(_ tab: V2Tab) -> Bool {
+    /// Whether a screen is pushed over the tab's root. Split, the chat
+    /// sits beside the list rather than over it.
+    private func isRootCovered(_ tab: V2Tab, split: Bool) -> Bool {
+        let path = path(of: tab)
+        return split ? path.contains { $0 != .conversation } : !path.isEmpty
+    }
+
+    private func path(of tab: V2Tab) -> [V2Route] {
         switch tab {
-        case .chats: return !chatsPath.isEmpty
-        case .bots: return !botsPath.isEmpty
-        case .tasks, .settings: return false
+        case .chats: chatsPath
+        case .bots: botsPath
+        case .tasks, .settings: []
         }
     }
 
     /// What the voice button starts: on a project's page, a chat in its
-    /// folder; anywhere else in the tabs, a new call.
+    /// folder; anywhere else in the tabs, a new call. The list's own top
+    /// screen decides, so a chat open beside a project's page keeps it.
     private var voiceContext: V2VoiceContext {
-        if selectedTab == .chats, case .project(let project)? = chatsPath.last {
+        if selectedTab == .chats, case .project(let project)? = V2SplitLayout.listRoutes(chatsPath).last {
             return .project(project)
         }
         return .home
     }
 
+    /// The tabs, one column or split by the window's width, which the
+    /// reader already has at the first layout: a wide iPad opens split
+    /// rather than laying the tabs out once as a phone's. The width stays
+    /// live, so a window resized across the threshold (Stage Manager, Split
+    /// View) switches layout and rebuilds the tab's stacks: the paths, and
+    /// so the open chat, carry over; the tab's own state (the list's scroll
+    /// position, its search) doesn't.
+    private var sizedTabs: some View {
+        GeometryReader { proxy in
+            let split = V2SplitLayout.isSplit(width: proxy.size.width)
+            tabs(split: split)
+                .environment(\.v2Shell, V2ShellContext(pickProfile: pickProfile, showScheduledRuns: showScheduledRuns, values: .init(contentFaded: contentFaded, contentShift: contentShift, isSplit: split)))
+        }
+    }
+
     var body: some View {
-        tabs
-            .environment(\.v2Shell, V2ShellContext(pickProfile: pickProfile, showScheduledRuns: showScheduledRuns, values: .init(contentFaded: contentFaded, contentShift: contentShift)))
+        sizedTabs
             .onChange(of: conversationVisible, initial: true) { _, visible in
                 // Covered means streaming rows needn't redraw and the chat
                 // doesn't count as seen (AppState.showSidebar).
@@ -324,7 +404,6 @@ struct V2Shell: View {
             .onDisappear {
                 // Sign-in replaces the shell; nothing covers the chat there.
                 appState.showSidebar = false
-                settlingTabs = []
             }
     }
 
@@ -339,74 +418,39 @@ struct V2Shell: View {
         }
     }
 
-    /// Where `tab` sits while `shown` is on screen: a full width toward its
-    /// side of the bar (right of `shown` waits right), so a switch moves
-    /// both screens like a pager. Zero for the shown tab and under Reduce
-    /// Motion, which only fades.
-    private func tabOffset(_ tab: V2Tab, from shown: V2Tab) -> CGFloat {
-        guard !reduceMotion, tabsWidth > 0,
-              let index = V2Tab.destinations.firstIndex(of: tab),
-              let shownIndex = V2Tab.destinations.firstIndex(of: shown),
-              index != shownIndex else { return 0 }
-        // The bar mirrors right to left; the offset doesn't.
-        let later: CGFloat = layoutDirection == .rightToLeft ? -1 : 1
-        return (index > shownIndex ? later : -later) * tabsWidth
-    }
-
     /// The four tabs over a custom glass capsule, the gold voice button
     /// beside it, on every iOS version. iOS 26's own tab bar has no place
     /// for a separate circle: a search-role tab sat inside the bar as a
     /// second Voice item under the button.
-    private var tabs: some View {
+    /// Split (a wide iPad window), the bar stays up under the list column,
+    /// beside the open chat, on every tab.
+    private func tabs(split: Bool) -> some View {
         ZStack {
             ForEach(V2Tab.destinations) { tab in
                 // The selected tab shows from the tap's own frame; it joins
                 // the visited ones right after.
                 if visitedTabs.contains(tab) || selectedTab == tab {
                     let isSelected = selectedTab == tab
-                    let isLeaving = settlingTabs.contains(tab) && !isSelected && !reduceMotion
-                    let moves = isSelected || isLeaving
-                    let rootCovered = isRootCovered(tab)
-                    tabRoot(tab)
+                    let rootCovered = isRootCovered(tab, split: split)
+                    let chatBeside = split && path(of: tab).contains(.conversation)
+                    tabRoot(tab, split: split)
                         .transformEnvironment(\.v2Shell) {
                             $0.isTabActive = isSelected
                             $0.isRootCovered = rootCovered
+                            $0.hasChatBeside = chatBeside
                         }
-                        // Nothing inside a tab animates with the switch.
+                        // The opened tab shows at once and the one left
+                        // hides at once. A fade read as slow, and a slide
+                        // only ever ran on the first switch after launch.
+                        .opacity(isSelected ? 1 : 0)
+                        // Nothing in or on a tab animates with the switch,
+                        // whatever transaction the bar's tap carries.
                         .animation(nil, value: selectedTab)
-                        // The opened tab pushes the one left off its side of
-                        // the bar, like a pager. Only offsets move: fading
-                        // two full screens of glass and backdrop into each
-                        // other dropped frames, and a 28 pt nudge under a
-                        // fade still read as a fade. A hidden tab waits a
-                        // width away on its own side, so the slide needs no
-                        // start state; the others jump while hidden.
-                        .animation(moves ? ConduitMotion.tabSlide : nil) {
-                            $0.offset(x: tabOffset(tab, from: selectedTab))
-                        }
-                        // Reduce Motion: the opened tab fades in instead.
-                        .animation(isSelected && reduceMotion ? ConduitMotion.tabFadeIn : nil) {
-                            $0.opacity(moves ? 1 : 0)
-                        }
                         .allowsHitTesting(isSelected)
                         .accessibilityHidden(!isSelected)
-                        // A tab's first visit inserts it already selected:
-                        // the same slide in from the side of the tab it left.
-                        .transition(firstVisitTransition(tab))
+                        .transition(.identity)
                 }
             }
-        }
-        .onGeometryChange(for: CGFloat.self) { proxy in
-            proxy.size.width
-        } action: { width in
-            if abs(width - tabsWidth) > 0.5 { tabsWidth = width }
-        }
-        // Each switch restarts the wait; it ends with the view.
-        .task(id: tabSwitchToken) {
-            guard !settlingTabs.isEmpty else { return }
-            // A little past the spring's duration, so it has settled off screen.
-            guard (try? await Task.sleep(for: .seconds(ConduitMotion.tabSlideDuration + 0.15))) != nil else { return }
-            settlingTabs = []
         }
         // The bar floats over the screens instead of insetting them: hiding
         // it for a pushed chat then moves only the bar, not the layout of the
@@ -414,16 +458,15 @@ struct V2Shell: View {
         // (`tabBarClearance`).
         .overlay(alignment: .bottom) {
             ZStack(alignment: .bottom) {
-                if !conversationVisible {
+                if split || !conversationVisible {
                     HStack(spacing: 10) {
-                        V2CapsuleTabBar(selection: Binding(
-                            get: { selectedTab },
-                            set: { switchTab(to: $0) }
-                        ))
+                        V2CapsuleTabBar(selection: $selectedTab)
                         voiceButton
                     }
                     .padding(.horizontal, 16)
                     .padding(.bottom, 6)
+                    .frame(width: split ? V2SplitLayout.listWidth : nil)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .onGeometryChange(for: CGFloat.self) { proxy in
                         proxy.size.height
                     } action: { height in
@@ -469,8 +512,16 @@ struct V2Shell: View {
     }
 
     @ViewBuilder
-    private func tabRoot(_ tab: V2Tab) -> some View {
+    private func tabRoot(_ tab: V2Tab, split: Bool) -> some View {
         switch tab {
+        case .chats where split:
+            splitColumns(path: $chatsPath, offersNewChat: true) {
+                tabBarClearance(V2ChatsView(appState: appState).equatable())
+            }
+        case .bots where split:
+            splitColumns(path: $botsPath, offersNewChat: false) {
+                tabBarClearance(V2BotsView())
+            }
         case .chats:
             NavigationStack(path: $chatsPath) {
                 // Only the list's own changes redraw it, not the shell's
@@ -494,6 +545,50 @@ struct V2Shell: View {
             // and on every page it pushes (`v2TabBarClearance()`).
             V2SettingsTab(link: $settingsLink)
                 .environment(\.v2TabBarClearance, tabBarHeight)
+        }
+    }
+
+    /// A wide window's Chats or Bots: the list column, with the pages it
+    /// pushes (a project, Artifacts), and the open chat beside it. The tab's
+    /// path stays the one a phone's stack follows, the conversation last
+    /// in it, so every route in and out of a chat works the same; only the
+    /// list's own stack leaves the conversation out.
+    private func splitColumns<Root: View>(
+        path: Binding<[V2Route]>,
+        offersNewChat: Bool,
+        @ViewBuilder root: () -> Root
+    ) -> some View {
+        let list = root()
+        return HStack(spacing: 0) {
+            NavigationStack(path: V2SplitLayout.listPath(path)) {
+                list
+                    .navigationDestination(for: V2Route.self, destination: destination)
+            }
+            .frame(width: V2SplitLayout.listWidth)
+            // Each column's backdrop stays in its own column.
+            .clipped()
+            Rectangle()
+                .fill(Color.primary.opacity(0.08))
+                .frame(width: 1)
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+            if path.wrappedValue.contains(.conversation) {
+                NavigationStack {
+                    V2ConversationScreen()
+                }
+                // Pushed or popped on a phone, VoiceOver follows; beside
+                // the list the column says so itself, opening or closing.
+                .onAppear {
+                    UIAccessibility.post(notification: .screenChanged, argument: nil)
+                }
+                .onDisappear {
+                    UIAccessibility.post(notification: .screenChanged, argument: nil)
+                }
+                .clipped()
+            } else {
+                V2SplitPlaceholder(offersNewChat: offersNewChat)
+                    .clipped()
+            }
         }
     }
 
@@ -531,8 +626,10 @@ struct V2Shell: View {
     /// Cron runs stay out of the All list (SidebarSourceRows): Scheduled
     /// lists them, at the top of Chats rather than behind an open chat.
     private func showScheduledRuns() {
-        chatsFilterRaw = V2SessionFilter.scheduled.rawValue
-        chatsPresentationRaw = "sessions"
+        // The Chats filter and its Sessions/Projects switch (V2ChatsView):
+        // Projects would hide the runs.
+        UserDefaults.standard.set(V2SessionFilter.scheduled.rawValue, forKey: V2ChatsView.filterKey)
+        UserDefaults.standard.set("sessions", forKey: V2ChatsView.presentationKey)
         // The list itself: not a chat, a project or Artifacts over it.
         chatsPath.removeAll()
         visitedTabs.insert(.chats)
@@ -542,30 +639,7 @@ struct V2Shell: View {
     private func selectTab(_ tab: V2Tab) {
         guard selectedTab != tab else { return }
         programmaticTab = tab
-        switchTab(to: tab)
-    }
-
-    /// Every tab change goes through here: the tab left stays on screen,
-    /// sliding off, until the slide settles. Under Reduce Motion it hides
-    /// at once.
-    private func switchTab(to tab: V2Tab) {
-        guard selectedTab != tab else { return }
-        if !reduceMotion {
-            leavingTab = selectedTab
-            settlingTabs.insert(selectedTab)
-            tabSwitchToken &+= 1
-        }
         selectedTab = tab
-    }
-
-    /// A first visit slides in from the side of the tab it left (a width
-    /// away, as `tabOffset` places it); under Reduce Motion it fades in.
-    private func firstVisitTransition(_ tab: V2Tab) -> AnyTransition {
-        guard let leavingTab, !reduceMotion else {
-            return AnyTransition.opacity.animation(ConduitMotion.tabFadeIn)
-        }
-        return AnyTransition.offset(x: tabOffset(tab, from: leavingTab))
-            .animation(ConduitMotion.tabSlide)
     }
 
     private func closeConversation() {
@@ -646,6 +720,84 @@ struct V2ProfileSwitchContent: ViewModifier {
 extension View {
     func v2ProfileSwitchContent() -> some View {
         modifier(V2ProfileSwitchContent())
+    }
+}
+
+// MARK: - Split
+
+/// A wide window (an iPad, or a wide iPad window in Split View or Stage
+/// Manager) shows Chats and Bots as two columns: the list, and the open
+/// chat beside it. It follows the window's width rather than the device,
+/// so a narrow iPad window, or an unfolded iPhone Duo, keeps the phone's
+/// one column.
+enum V2SplitLayout {
+    /// The list column: the narrowest iPhone's width, which every V2 list
+    /// screen already fits.
+    static let listWidth: CGFloat = 375
+    /// The least room the chat keeps beside the list.
+    static let minimumChatWidth: CGFloat = 430
+
+    static func isSplit(width: CGFloat) -> Bool {
+        width >= listWidth + 1 + minimumChatWidth
+    }
+
+    /// The list column's stack: the tab's path without the conversation,
+    /// which shows beside it. A page pushed or popped in the column keeps
+    /// the conversation at the end of the tab's path.
+    static func listPath(_ path: Binding<[V2Route]>) -> Binding<[V2Route]> {
+        Binding {
+            listRoutes(path.wrappedValue)
+        } set: { routes, transaction in
+            withTransaction(transaction) {
+                path.wrappedValue = tabRoutes(listing: routes, keepsConversation: path.wrappedValue.contains(.conversation))
+            }
+        }
+    }
+
+    static func listRoutes(_ path: [V2Route]) -> [V2Route] {
+        path.filter { $0 != .conversation }
+    }
+
+    static func tabRoutes(listing routes: [V2Route], keepsConversation: Bool) -> [V2Route] {
+        let list = listRoutes(routes)
+        return keepsConversation ? list + [.conversation] : list
+    }
+}
+
+/// The chat column with no chat open.
+private struct V2SplitPlaceholder: View {
+    @EnvironmentObject private var appState: AppState
+    /// Chats offers a new chat here; Bots opens a bot's from its list.
+    let offersNewChat: Bool
+
+    var body: some View {
+        ZStack {
+            V2Backdrop(drifts: false)
+            VStack(spacing: 18) {
+                Image(systemName: offersNewChat ? V2Tab.chats.symbol : V2Tab.bots.symbol)
+                    .font(.system(size: 44, weight: .regular))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+                if offersNewChat {
+                    Button {
+                        Haptics.medium()
+                        appState.startNewChat()
+                    } label: {
+                        Label(AppLocalization.string("Start a new conversation"), systemImage: "square.and.pencil")
+                            .font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 12)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.conduitAccent)
+                    .conduitGlassControl(cornerRadius: 22, tint: .conduitAccent.opacity(0.12))
+                    .disabled(!appState.canTapNewChat)
+                }
+            }
+            .padding(24)
+        }
+        // Bots' has nothing to act on.
+        .accessibilityHidden(!offersNewChat)
     }
 }
 

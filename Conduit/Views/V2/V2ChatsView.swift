@@ -253,6 +253,7 @@ struct V2ChatsView: View, Equatable {
     @StateObject private var updates: V2ShownUpdates
     @Environment(\.v2Shell) private var shell
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
     @State private var searchText = ""
     @FocusState private var searchFocused: Bool
     /// Hermes' full-text search behind the field, for chats whose messages
@@ -268,11 +269,35 @@ struct V2ChatsView: View, Equatable {
     @State private var repairContext: ConnectionRepairContext?
     /// The last activation the reveal served (NestRevealLatch).
     @State private var revealLatch = NestRevealLatch()
-    @AppStorage("conduit.sessionPresentation") private var sessionPresentationRaw = "sessions"
-    @AppStorage("conduit.v2.sessionFilter") private var filterRaw = "all"
+    // Saved settings, read and written through `updates` so the list
+    // under a chat stays still when anything else writes to the defaults.
+    static let presentationKey = "conduit.sessionPresentation"
+    static let filterKey = "conduit.v2.sessionFilter"
     /// Expanded parents, remembered per parent across launches.
-    @AppStorage("conduit.v2.expandedNests") private var expandedNestsRaw = ""
-    @AppStorage(V2MainButtonPreference.key) private var mainButtonNewChat = V2MainButtonPreference.defaultValue
+    static let expandedNestsKey = "conduit.v2.expandedNests"
+
+    private var sessionPresentationRaw: String {
+        get { updates.defaults.string(forKey: Self.presentationKey) ?? "sessions" }
+        nonmutating set { updates.set(newValue, forKey: Self.presentationKey) }
+    }
+
+    private var filterRaw: String {
+        get { updates.defaults.string(forKey: Self.filterKey) ?? "all" }
+        nonmutating set { updates.set(newValue, forKey: Self.filterKey) }
+    }
+
+    private var expandedNestsRaw: String {
+        get { updates.defaults.string(forKey: Self.expandedNestsKey) ?? "" }
+        nonmutating set { updates.set(newValue, forKey: Self.expandedNestsKey) }
+    }
+
+    private var projectChats: ProjectChatsInChats {
+        ProjectChatsInChats.stored(updates.defaults.string(forKey: ProjectChatsInChats.key))
+    }
+
+    private var mainButtonNewChat: Bool {
+        updates.defaults.object(forKey: V2MainButtonPreference.key) as? Bool ?? V2MainButtonPreference.defaultValue
+    }
     /// Parsed once per change of the store, not once per parent row.
     @State private var expansionCache = V2NestExpansionCache()
     /// A conversation opened from elsewhere whose closed section still has
@@ -287,7 +312,10 @@ struct V2ChatsView: View, Equatable {
 
     init(appState: AppState) {
         self.appState = appState
-        _updates = StateObject(wrappedValue: V2ShownUpdates(appState))
+        _updates = StateObject(wrappedValue: V2ShownUpdates(appState, defaultsKeys: [
+            Self.presentationKey, Self.filterKey, Self.expandedNestsKey, V2MainButtonPreference.key,
+            ProjectChatsInChats.key,
+        ]))
     }
 
     /// Redrawn by its own changes only; the shell redraws on every publish.
@@ -297,6 +325,10 @@ struct V2ChatsView: View, Equatable {
 
     /// Nothing pushed over the list, on the selected tab.
     private var isShown: Bool { shell.isTabActive && !shell.isRootCovered }
+
+    /// No chat covers the list: none is open, or a wide window shows the
+    /// list beside it.
+    private var listInView: Bool { appState.showSidebar || shell.isSplit }
 
     private var showingProjects: Bool { sessionPresentationRaw == "projects" }
 
@@ -352,7 +384,16 @@ struct V2ChatsView: View, Equatable {
         .environmentObject(updates)
         .toolbar(.hidden, for: .navigationBar)
         .navigationTitle(V2Tab.chats.title)
-        .onChange(of: isShown, initial: true) { _, shown in updates.isShown = shown }
+        .onChange(of: shell.hasChatBeside, initial: true) { _, beside in
+            updates.coalesces = beside
+        }
+        .onChange(of: isShown, initial: true) { _, shown in
+            updates.isShown = shown
+            // Anything over the list (a chat, a page, another tab) puts the
+            // keyboard away and keeps the search: SwiftUI otherwise hands
+            // focus back to the field on the way back, over the results.
+            if !shown { searchFocused = false }
+        }
         // Here rather than on the chats list, so an activation that arrives
         // while Projects is shown still opens its section on the way back.
         .onChange(of: appState.activeSessionId) { _, active in
@@ -391,13 +432,21 @@ struct V2ChatsView: View, Equatable {
         }
         // Running and Needs approval follow the gateway's live registry
         // while the list is on screen; a hidden tab or a conversation
-        // pushed over the list stops polling.
-        .task(id: "\(appState.activeProfile)|\(isShown)|\(appState.showSidebar)") {
-            guard isShown, appState.showSidebar else { return }
-            while !Task.isCancelled {
-                await appState.refreshLiveSessionStatuses()
-                try? await Task.sleep(for: .seconds(4))
-            }
+        // pushed over the list stops polling. The poll slows down while
+        // nothing on the list changes (PollCadence). Split, the list stays
+        // on screen beside the open chat.
+        .task(id: "\(appState.activeProfile)|\(isShown)|\(listInView)") {
+            guard isShown, listInView else { return }
+            await appState.runChatListPolling()
+        }
+        // Searching is looking at the list: it catches up at once.
+        .onChange(of: searchText) { _, _ in
+            if isShown { appState.noteChatListInteraction() }
+        }
+        // Back in the app over the list: it reads the catalog again if its
+        // last read is old (a chat started elsewhere meanwhile).
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, isShown, listInView { appState.chatListBecameActive() }
         }
         .sheet(item: $projectPendingRename) { project in
             RenameSheet(
@@ -613,10 +662,12 @@ struct V2ChatsView: View, Equatable {
 
     private func filterRows(_ selection: V2FilterSelection, searching: Bool) -> [SessionSummary] {
         guard !selection.isEmpty else {
+            // Read once, not once per row.
+            let projectChats = self.projectChats
             return V2ChatsView.allRows(
                 sourceRows(nil),
                 searching: searching,
-                inMainList: mainListShows
+                inMainList: { mainListShows($0, projectChats: projectChats) }
             )
         }
         return selection.rows(
@@ -638,12 +689,15 @@ struct V2ChatsView: View, Equatable {
     }
 
     /// A project's conversations live on its page, not in the main list;
-    /// a pinned one stays, since pinning asks for it here. The catalog
-    /// carries no folder, so this hides the conversations the project tree
-    /// is known to hold.
-    private func mainListShows(_ session: SessionSummary) -> Bool {
+    /// a pinned one stays, since pinning asks for it here, and Settings can
+    /// list the recent ones or all of them too, by the row's own activity
+    /// (a nest's newer call doesn't count). The catalog carries no folder,
+    /// so this hides the conversations the project tree is known to hold.
+    private func mainListShows(_ session: SessionSummary, projectChats: ProjectChatsInChats) -> Bool {
         guard appState.supportsProjects else { return true }
-        return appState.isSessionPinned(session) || appState.knownProjectID(for: session) == nil
+        return appState.isSessionPinned(session)
+            || appState.knownProjectID(for: session) == nil
+            || projectChats.shows(lastActivity: session.lastActivityAt)
     }
 
     /// What All lists. A search looks through every chat, a project's
@@ -669,10 +723,11 @@ struct V2ChatsView: View, Equatable {
         return rows.filter { sessionMatches($0, query: query) }
     }
 
-    /// While searching, a project's chat names its project, since the main
-    /// list doesn't otherwise say where it lives.
-    private func searchProjectTitle(_ item: V2ChatsListItem) -> String? {
-        guard isSearching, case .session(let node) = item.kind else { return nil }
+    /// A project's chat names its project while searching or filtering,
+    /// or when Settings lists project chats here, since the main list
+    /// doesn't otherwise say where it lives.
+    private func rowProjectTitle(_ item: V2ChatsListItem, namesProjects: Bool) -> String? {
+        guard namesProjects, case .session(let node) = item.kind else { return nil }
         return projectTitle(for: node.session)
     }
 
@@ -1151,10 +1206,13 @@ struct V2ChatsView: View, Equatable {
 
     /// One List row per item, so the List builds only the rows on screen.
     private func listRows(_ items: [V2ChatsListItem]) -> some View {
-        ForEach(items) { item in
+        // Read once, not once per row. A search or a filter looks through
+        // project chats whatever the setting, so it names them too.
+        let namesProjects = isSearching || !selection.isEmpty || projectChats != .hidden
+        return ForEach(items) { item in
             V2ChatsRow(
                 item: item,
-                projectTitle: searchProjectTitle(item),
+                projectTitle: rowProjectTitle(item, namesProjects: namesProjects),
                 onRename: { sessionPendingRename = $0 },
                 onDelete: { sessionPendingDeletion = $0 },
                 setExpanded: setExpanded
@@ -1416,7 +1474,7 @@ private struct V2ChatsRow: View {
     private var appState: AppState { updates.appState }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let item: V2ChatsListItem
-    /// The project a search result sits in, named before its preview.
+    /// The project a listed project chat sits in, named before its preview.
     let projectTitle: String?
     let onRename: (SessionSummary) -> Void
     let onDelete: (SessionSummary) -> Void

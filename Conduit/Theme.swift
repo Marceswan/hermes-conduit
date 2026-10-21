@@ -68,6 +68,10 @@ extension Color {
     static let conduitAdaptiveAccentSoft = Color(uiColor: UIColor { traits in
         traits.conduitAccent.softColor(dark: traits.userInterfaceStyle == .dark)
     })
+
+    /// A sent bubble's gradient stops, in the picked accent.
+    static let conduitUserBubble = Color(uiColor: .conduitUserBubble)
+    static let conduitUserBubbleShade = Color(uiColor: .conduitUserBubbleShade)
 }
 
 // MARK: - Accent choice
@@ -120,11 +124,27 @@ enum ConduitAccentChoice: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// The fill of the user's own message bubbles, which carry white text:
+    /// the light-mode accent, in dark mode too. The dark-mode accent is light
+    /// enough to read on the dark backdrop, and so too light under white
+    /// text. AccentContrastTests holds both to WCAG AA.
+    var bubbleColor: UIColor { color(dark: false) }
+
+    /// The bubble's lower-trailing gradient stop: the same shade, darker and
+    /// opaque, so white text keeps its contrast whatever lies behind.
+    var bubbleShadeColor: UIColor {
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        bubbleColor.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        return UIColor(red: red * 0.8, green: green * 0.8, blue: blue * 0.8, alpha: 1)
+    }
+
     /// The tint a text selection takes on a sent bubble: the system draws
-    /// selections in the accent, which disappears on an accent bubble. Dark
-    /// on a light bubble, white on a dark one.
-    func selectionColorOnBubble(dark: Bool) -> UIColor {
-        color(dark: dark).conduitRelativeLuminance > 0.3 ? .black : .white
+    /// selections in the accent, which disappears on an accent bubble.
+    var selectionColorOnBubble: UIColor { Self.markColor(on: bubbleColor) }
+
+    /// Black or white, whichever stands out on `fill`.
+    static func markColor(on fill: UIColor) -> UIColor {
+        fill.conduitRelativeLuminance > 0.3 ? .black : .white
     }
 }
 
@@ -188,7 +208,16 @@ extension UIColor {
 
     /// See ConduitAccentChoice.selectionColorOnBubble.
     static let conduitSelectionOnAccent = UIColor { traits in
-        traits.conduitAccent.selectionColorOnBubble(dark: traits.userInterfaceStyle == .dark)
+        traits.conduitAccent.selectionColorOnBubble
+    }
+
+    /// A sent bubble's fill, top-leading and bottom-trailing stops. See
+    /// ConduitAccentChoice.bubbleColor.
+    static let conduitUserBubble = UIColor { traits in
+        traits.conduitAccent.bubbleColor
+    }
+    static let conduitUserBubbleShade = UIColor { traits in
+        traits.conduitAccent.bubbleShadeColor
     }
 
     /// WCAG relative luminance of an sRGB colour.
@@ -250,15 +279,6 @@ enum ConduitMotion {
     /// The quick fade-out before a profile switch.
     static let fadeOut = Animation.easeOut(duration: fadeOutDuration)
 
-    /// Under Reduce Motion, a tab's screen fading in as it opens (the one
-    /// left hides at once).
-    static let tabFadeIn = Animation.easeOut(duration: 0.18)
-    /// Switching tabs: the opened screen pushes the one left off its side,
-    /// a full screen width, like a pager. Callers don't slide under Reduce
-    /// Motion (`V2Shell.tabOffset`).
-    static let tabSlideDuration: TimeInterval = 0.45
-    static let tabSlide = Animation.spring(duration: tabSlideDuration, bounce: 0)
-
     /// Under Reduce Motion every spring becomes the plain settle fade.
     static func ease(reduceMotion: Bool) -> Animation {
         reduceMotion ? settle : easeSpring
@@ -305,15 +325,20 @@ enum ConduitBackdropMotionPolicy {
     /// detail screens: they hold the static composition so only the main chat,
     /// the persistent sidebar column and sign-in run a timeline, rather than
     /// one per stacked layer while a sheet is open.
+    ///
+    /// `idle` is `InteractionIdleState.isIdle`: nothing touched, typed or
+    /// running for a couple of minutes. An iPad that never auto-locks would
+    /// otherwise draw the drift all night with nobody watching.
     static func shouldAnimate(
         drifts: Bool,
         sceneIsActive: Bool,
         reduceMotion: Bool,
         lowPowerMode: Bool,
+        idle: Bool,
         thermalState: ProcessInfo.ThermalState
     ) -> Bool {
         let thermalStateAllowsMotion = thermalState == .nominal || thermalState == .fair
-        return drifts && sceneIsActive && !reduceMotion && !lowPowerMode && thermalStateAllowsMotion
+        return drifts && sceneIsActive && !reduceMotion && !lowPowerMode && !idle && thermalStateAllowsMotion
     }
 
     /// One smooth out-and-back drift over 26 seconds, matching the previous
@@ -373,6 +398,8 @@ struct ConduitBackdrop: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var devicePower = DevicePowerState.shared
+    /// Publishes only when Conduit goes idle or wakes, never per touch.
+    @ObservedObject private var interactionIdle = InteractionIdleState.shared
     @State private var motionClock = ConduitBackdropMotionClock()
     private let drifts: Bool
     /// The warm glow's color. V2 tints it with the active profile's color;
@@ -393,6 +420,7 @@ struct ConduitBackdrop: View {
             sceneIsActive: scenePhase == .active,
             reduceMotion: reduceMotion,
             lowPowerMode: devicePower.isLowPowerModeEnabled,
+            idle: interactionIdle.isIdle,
             thermalState: devicePower.thermalState
         )
     }
@@ -459,6 +487,11 @@ struct ConduitBackdrop: View {
             motionClock.setAnimating(isAnimating, at: ProcessInfo.processInfo.systemUptime)
         }
         .ignoresSafeArea()
+        // The glows reach well past the backdrop's frame, and clipping only
+        // hides them: still hit-testable, the chat column's took touches
+        // (and accessibility's hit tests) meant for the list beside it on an
+        // iPad. Nothing on a backdrop takes a tap.
+        .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
 
@@ -658,6 +691,69 @@ extension View {
             }
         } else {
             self.buttonStyle(.plain)
+        }
+    }
+}
+
+extension View {
+    /// For the photo picker, which runs in another process and is handed the
+    /// tint of the view presenting it. The app-wide `.conduitAccent` resolves the choice from a
+    /// trait that process never sees, so it falls back to amber there (#748):
+    /// hand it the plain colour of the current pick instead.
+    func conduitOutOfProcessAccentTint() -> some View {
+        modifier(OutOfProcessAccentTint())
+    }
+}
+
+private struct OutOfProcessAccentTint: ViewModifier {
+    @Environment(\.conduitAccent) private var accent
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content.tint(Color(uiColor: accent.color(dark: colorScheme == .dark)))
+    }
+}
+
+/// Gives the window the chosen accent as its tint, for system screens Conduit
+/// presents but doesn't draw. The colour is resolved, not dynamic: a dynamic
+/// one sent to another process loses the pick (#748). It is set again when
+/// the window turns light or dark.
+struct WindowAccentTint: UIViewRepresentable {
+    let choice: ConduitAccentChoice
+
+    func makeUIView(context: Context) -> TintingView {
+        let view = TintingView()
+        view.isUserInteractionEnabled = false
+        view.choice = choice
+        return view
+    }
+
+    func updateUIView(_ view: TintingView, context: Context) {
+        view.choice = choice
+    }
+
+    final class TintingView: UIView {
+        var choice = ConduitAccentChoice.defaultChoice {
+            didSet { if choice != oldValue { applyTint() } }
+        }
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: TintingView, _) in
+                view.applyTint()
+            }
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            applyTint()
+        }
+
+        private func applyTint() {
+            guard let window else { return }
+            window.tintColor = choice.color(dark: window.traitCollection.userInterfaceStyle == .dark)
         }
     }
 }

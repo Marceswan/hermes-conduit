@@ -271,6 +271,7 @@ struct ConnectionSetupView: View {
                         activationFailure = classifiedFailure
                     }
                 )
+                .asSignInSheet()
             }
         } else {
             // Unreachable: the sheet is only presented with a configuration

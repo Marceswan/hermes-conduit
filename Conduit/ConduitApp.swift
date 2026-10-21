@@ -21,10 +21,14 @@ final class ConduitAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
         // Set up before launch returns: a call the Apple Watch starts can
         // launch Conduit in the background, and its message waits on this.
         MainActor.assumeIsolated {
+            // Low Power Mode and Low Data Mode stretch every poll.
+            DeviceConditionsMonitor.shared.start()
             WatchVoiceLink.shared.activate()
             // Calls from Hermes ring through PushKit (#449): a call that
             // launched Conduit is delivered once the registry is up.
             HermesNativeCalls.shared.activate()
+            // The relay needs this launch's push token if it changed.
+            PushNotificationService.shared.refreshDeviceTokenAtLaunch()
             // Apple Health wakes Conduit when shared data changes, and a
             // background refresh catches up.
             AppState.registerHealthSyncTask()
@@ -51,6 +55,9 @@ final class ConduitAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
         Task.detached(priority: .background) {
             AttachmentStaging.sweepStaleFiles()
         }
+        // iOS's daily usage and hang reports, kept on this device for
+        // Diagnostics & logs. Subscribes on its own background queue.
+        MetricKitReports.shared.start()
         if let payload = launchOptions?[.remoteNotification] as? [AnyHashable: Any] {
             Task { @MainActor in
                 PushNotificationService.shared.receiveNotificationPayload(payload)
@@ -69,15 +76,23 @@ final class ConduitAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
     /// that applies without asking. Conduit fetches it from the host and
     /// applies it in the time iOS gives.
     ///
-    /// This is the only silent push the relay sends. Visible pushes are
-    /// handled by the notification center delegate (willPresent / didReceive),
-    /// so anything else here has nothing to do; it's logged so an unexpected
-    /// one shows up.
+    /// The relay's only other silent push is its registration challenge: a
+    /// nonce Conduit sends back to prove it holds this device token. Visible
+    /// pushes are handled by the notification center delegate (willPresent /
+    /// didReceive), so anything else here has nothing to do; it's logged so
+    /// an unexpected one shows up.
     func application(
         _ application: UIApplication,
         didReceiveRemoteNotification userInfo: [AnyHashable: Any],
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
+        if let nonce = PushNotificationService.tokenChallenge(in: userInfo) {
+            Task { @MainActor in
+                PushNotificationService.shared.receiveTokenChallenge(nonce)
+                completionHandler(.noData)
+            }
+            return
+        }
         guard AppState.isPhoneChangesPush(userInfo) else {
             backgroundPushLogger.info("Background push that isn't a phone.changes push: nothing to do")
             completionHandler(.noData)
@@ -105,6 +120,15 @@ final class ConduitAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let request = response.notification.request
+        // "Draft ready in Conduit" from the share sheet (#812): coming to the
+        // front picks the draft up; one already on screen takes it now.
+        if request.identifier.hasPrefix(ShareDraftInbox.notificationIdentifierPrefix), !(request.trigger is UNPushNotificationTrigger) {
+            Task { @MainActor in
+                AppStateRuntimeRegistry.shared.appState.sharedDraftWasStaged()
+                completionHandler()
+            }
+            return
+        }
         // Only the notification Conduit posted itself, never a push carrying the key.
         if request.identifier == MapsNavigator.notificationIdentifier, !(request.trigger is UNPushNotificationTrigger),
            let maps = MapsNavigator.url(fromNotification: request.content.userInfo) {
@@ -148,6 +172,15 @@ final class ConduitAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
             completionHandler([])
             return
         }
+        // A draft shared while Conduit is on screen opens in it: no banner.
+        if notification.request.identifier.hasPrefix(ShareDraftInbox.notificationIdentifierPrefix),
+           !(notification.request.trigger is UNPushNotificationTrigger) {
+            Task { @MainActor in
+                AppStateRuntimeRegistry.shared.appState.sharedDraftWasStaged()
+            }
+            completionHandler([])
+            return
+        }
         // Directions to tap: posted from the background, kept if Conduit
         // came to the front before it showed.
         if notification.request.identifier == MapsNavigator.notificationIdentifier {
@@ -155,6 +188,11 @@ final class ConduitAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
             return
         }
         if notification.request.content.categoryIdentifier == HermesCallNotifications.categoryIdentifier {
+            completionHandler([.banner, .list, .sound])
+            return
+        }
+        // A step's timer from a rich card rings wherever the user is.
+        if notification.request.identifier.hasPrefix(RichStepsMemory.notificationPrefix) {
             completionHandler([.banner, .list, .sound])
             return
         }
@@ -228,8 +266,14 @@ struct ConduitApp: App {
             // The accent colours resolve the choice from this trait, so a
             // new pick redraws in place: no view is rebuilt.
             .environment(\.conduitAccent, accentChoice)
+            .background(WindowAccentTint(choice: accentChoice))
+            // Notes touches app-wide so the backdrop can rest when idle.
+            .background(InteractionIdleTouchProbe())
+            // The Watch app draws in the same accent.
+            .onChange(of: accentChoice) { _, _ in appState.shareWatchCallVoices() }
 #if DEBUG
             .modifier(WidgetLaunchUITestFixture.modifier(appState: appState))
+            .modifier(ScreenshotCallFixtureModifier(appState: appState))
 #endif
             // Links Conduit writes into chats (a voice call's job link)
             // open inside the app; every other link goes to the system.
@@ -266,6 +310,8 @@ struct ConduitApp: App {
                 pendingExternalLink = nil
                 appState.openAppLink(link)
             }
+            // A draft shared from another app while Conduit is on screen.
+            .task { SharedDraftStagedObserver.start() }
             .task { await PushNotificationService.shared.refresh() }
             // Siri learns the cached profile names for its profile phrases.
             .task { SiriProfileShortcuts.refresh() }

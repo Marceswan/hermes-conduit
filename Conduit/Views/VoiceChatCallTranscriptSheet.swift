@@ -13,18 +13,37 @@ struct VoiceChatCallTranscriptSheet: View {
     let call: VoiceChatCall
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         NavigationStack {
             ScrollView {
+                let latestLiveTurns = call.latestLiveTurns
                 LazyVStack(spacing: 10) {
                     ForEach(call.turns) { entry in
-                        LiveVoiceTranscriptBubble(
-                            entry: entry,
-                            label: label(for: entry)
-                        )
+                        if entry.speaker == .assistant, let note = VoiceJobLinkNote(text: entry.text) {
+                            VoiceJobLinkCard(note: note) {
+                                // The chat opens under the sheet: close it first.
+                                dismiss()
+                                openURL(note.link.url)
+                            }
+                            .frame(maxWidth: 360, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            LiveVoiceTranscriptBubble(
+                                entry: entry,
+                                label: label(for: entry)
+                            )
+                        }
                         if !entry.cards.isEmpty {
-                            RichCardsView(cards: entry.cards)
+                            // A live card shows only where it was last brought up to date.
+                            let cards = call.currentCards(for: entry, latestLiveTurns: latestLiveTurns)
+                            if cards.isEmpty {
+                                RichLiveUpdatedLine(title: entry.cards.first?.title)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            } else {
+                                RichCardsView(cards: cards)
+                            }
                         }
                     }
                 }

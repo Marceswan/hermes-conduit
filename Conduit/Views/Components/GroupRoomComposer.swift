@@ -79,10 +79,12 @@ struct GroupRoomComposer: View {
         return MentionAutocomplete.filter(MentionAutocomplete.roomCandidates(members), query: query)
     }
 
+    /// Solid, so the chat scrolling under the composer never shows
+    /// through what is being typed.
     private var foundation: Color {
         colorScheme == .dark
-            ? Color(red: 0.072, green: 0.080, blue: 0.106).opacity(0.96)
-            : Color.white.opacity(0.94)
+            ? Color(red: 0.072, green: 0.080, blue: 0.106)
+            : Color.white
     }
 
     private var stroke: Color {
@@ -157,6 +159,7 @@ struct GroupRoomComposer: View {
             selectionBehavior: .ordered,
             matching: .any(of: [.images, .videos])
         )
+        .conduitOutOfProcessAccentTint()
         .onChange(of: photoItems) { _, items in
             guard !items.isEmpty else { return }
             photoItems = []
@@ -543,7 +546,7 @@ struct GroupRoomComposer: View {
     }
 
     private func importPhotos(_ items: [PhotosPickerItem]) {
-        let limit = attachmentLimitMegabytes
+        let limit = GroupRoomFilesClient.stagingLimit(preference: attachmentLimitMegabytes)
         let roomID = surface?.room.roomID
         Task {
             var outcomes: [AttachmentStaging.StagedImport] = []
@@ -566,7 +569,7 @@ struct GroupRoomComposer: View {
             Haptics.error()
             return
         }
-        let limit = attachmentLimitMegabytes
+        let limit = GroupRoomFilesClient.stagingLimit(preference: attachmentLimitMegabytes)
         let roomID = surface?.room.roomID
         Task {
             var outcomes: [AttachmentStaging.StagedImport] = []
@@ -580,7 +583,7 @@ struct GroupRoomComposer: View {
     }
 
     private func importCapturedPhoto(_ image: UIImage) {
-        let limit = attachmentLimitMegabytes
+        let limit = GroupRoomFilesClient.stagingLimit(preference: attachmentLimitMegabytes)
         let roomID = surface?.room.roomID
         Task {
             let outcome = await Task.detached(priority: .userInitiated) {

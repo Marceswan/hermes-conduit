@@ -170,6 +170,11 @@ struct VoiceProfilePreferences: Codable, Equatable {
     /// speech server, with Hermes answering each turn in the call's chat
     /// (off by default; older blobs decode off). Never on with another live mode.
     var localLiveEnabled: Bool = false
+    /// Local Live in agent mode (Voice mode Live > Local): the host's fast
+    /// model answers and hands the work to Hermes as jobs. Off is Classic's
+    /// hands-free option on the speech server: one Hermes turn per
+    /// utterance (older blobs decode off, so a call works as it did).
+    var localLiveAgent: Bool = false
     /// Model for the Hermes sessions voice background jobs create. Nil keeps
     /// the profile's current model (the pre-existing behavior).
     var voiceJobModel: String? = nil
@@ -266,6 +271,7 @@ struct VoiceProfilePreferences: Codable, Equatable {
         grokLiveMemory = (try? container.decodeIfPresent(Bool.self, forKey: .grokLiveMemory)) ?? nil
         grokLivePersonality = (try? container.decodeIfPresent(Bool.self, forKey: .grokLivePersonality)) ?? nil
         localLiveEnabled = (try? container.decodeIfPresent(Bool.self, forKey: .localLiveEnabled)) ?? false
+        localLiveAgent = (try? container.decodeIfPresent(Bool.self, forKey: .localLiveAgent)) ?? false
         voiceJobModel = try container.decodeIfPresent(String.self, forKey: .voiceJobModel)
         voiceJobProvider = try container.decodeIfPresent(String.self, forKey: .voiceJobProvider)
         voiceJobReasoningEffort = try container.decodeIfPresent(String.self, forKey: .voiceJobReasoningEffort)
@@ -377,6 +383,12 @@ enum ReadAloudSpeed: Double, CaseIterable, Identifiable {
     /// system media players.
     var label: String {
         String(format: "%gx", locale: Locale(identifier: "en_US_POSIX"), rawValue)
+    }
+
+    /// The choice nearest a rate, for showing a rate that came from
+    /// elsewhere.
+    static func closest(to rate: Float) -> ReadAloudSpeed {
+        allCases.min { abs($0.rate - rate) < abs($1.rate - rate) } ?? .normal
     }
 
     /// The stored choice; anything missing or unrecognised reads as 1x.
@@ -758,6 +770,12 @@ protocol SpeechPlaybackService: AnyObject {
     /// Whether audio is currently held by `pause()`. A stream restart (route
     /// change) clears it even though nobody resumed.
     var isPaused: Bool { get }
+    /// Builds every stream so `changeRate` can retime it while it plays
+    /// (Read Aloud's player, #759). Off for conversations, which keep the
+    /// plain graph.
+    var keepsRateAdjustable: Bool { get set }
+    /// Retimes the audio already playing as well as the next stream.
+    func changeRate(_ rate: Float)
 }
 
 extension SpeechPlaybackService {
@@ -771,6 +789,14 @@ extension SpeechPlaybackService {
     func pause() -> Bool { false }
     func resume() {}
     var isPaused: Bool { false }
+
+    /// Services that cannot retime live apply the rate from the next stream.
+    var keepsRateAdjustable: Bool {
+        get { false }
+        set {}
+    }
+
+    func changeRate(_ rate: Float) { playbackRate = rate }
 }
 
 @MainActor

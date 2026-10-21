@@ -338,6 +338,10 @@ enum DashboardTicketBridgeError: LocalizedError {
             return AppLocalization.string("Hermes says this chat belongs to another profile. Switch to that profile, then try again.")
         case 403 where SessionMutationIdentity.isRefusalDetail(trimmed):
             return AppLocalization.string("Hermes only lets the computer it runs on change this older chat. Change it there instead.")
+        case 403 where isMeaningful:
+            // Hermes' own refusal to someone signed in (a sensitive path, a
+            // file it can't write): its reason says what to do.
+            return trimmed
         case 401, 403:
             if trimmed == signInRefreshedDetail { return trimmed }
             return AppLocalization.string("Hermes turned this down because the dashboard sign-in expired or doesn't allow it. Sign in again, then try once more.")
@@ -365,6 +369,16 @@ enum DashboardTicketBridgeError: LocalizedError {
         }
     }
 
+    /// Whether a dashboard request's failure means its sign-in is gone.
+    /// Hermes turns a signed-out request away with 401. Its 403 refuses
+    /// someone signed in (a sensitive path, a file it can't write, a chat
+    /// this sign-in may not change) and gives the reason as a JSON `detail`:
+    /// signing in again can't change that. An auth proxy in front of Hermes
+    /// answers 403 with its own page and no such reason, which still does.
+    static func meansSignIn(status: Int, hermesDetail: String?) -> Bool {
+        status == 401 || (status == 403 && hermesDetail == nil)
+    }
+
     /// Default HTTP reason phrases and browser fetch errors, which say
     /// nothing a person can act on.
     private static let genericDetails: Set<String> = [
@@ -374,6 +388,39 @@ enum DashboardTicketBridgeError: LocalizedError {
         "failed to fetch", "load failed", "typeerror: load failed",
         "typeerror: failed to fetch", "networkerror when attempting to fetch resource.",
     ]
+}
+
+/// The isolated JavaScript world that holds the dashboard's proxy headers
+/// (the Cloudflare Access service token and any custom headers) and every
+/// script Conduit itself runs in a dashboard WebView. The dashboard page's
+/// own scripts run in the page world, which shares the DOM but not
+/// JavaScript globals with this one: they can't read the header values,
+/// re-wrap the `fetch` that attaches them, or post to Conduit's message
+/// handlers. The page's own requests carry the session cookies the first
+/// native, header-bearing navigation earned, as its scripts and styles
+/// always did.
+@MainActor
+enum DashboardScriptWorld {
+    static let world = WKContentWorld.world(name: "ConduitDashboard")
+
+    /// Adds the header-attaching document-start scripts for this dashboard
+    /// to the isolated world. Cleartext dashboards get none.
+    static func installProxyHeaderScripts(
+        into controller: WKUserContentController,
+        cloudflareAccess: CloudflareAccessCredentials?,
+        normalizedBaseURL: String,
+        headerStore: CustomHeaderStore = .shared
+    ) {
+        let scripts = [
+            cloudflareAccess?.fetchInjectionUserScript(expectedBaseURL: normalizedBaseURL) ?? "",
+            headerStore.fetchInjectionUserScript(expectedBaseURL: normalizedBaseURL),
+        ]
+        for script in scripts where !script.isEmpty {
+            controller.addUserScript(
+                WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: world)
+            )
+        }
+    }
 }
 
 /// WKUserContentController retains its script message handlers strongly, so
@@ -548,6 +595,8 @@ final class DashboardTicketBridge: NSObject {
     /// Cookies the dashboard set on requests sent without the page, newest
     /// last, so a rotated session cookie is the one sent next.
     var backgroundIssuedCookies: [HTTPCookie] = []
+    /// Sends a request without the page in place of URLSession. Test seam.
+    var loadWithoutPageForTesting: (@MainActor (URLRequest) async throws -> (Data, URLResponse))?
     /// Observes the hidden page's load lifecycle for AppState's connection
     /// timeline (#417). Every request waits on this page, so when it becomes
     /// ready is the first thing a slow launch needs to show.
@@ -597,20 +646,18 @@ final class DashboardTicketBridge: NSObject {
         // in. Nil dashboards (legacy/test construction) keep the default
         // store.
         configuration.websiteDataStore = DashboardCookiePersistence.webKitStore(for: self.dashboardID)
-        if let script = cloudflareAccess?.fetchInjectionUserScript(expectedBaseURL: normalizedBaseURL), !script.isEmpty {
-            configuration.userContentController.addUserScript(
-                WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true)
-            )
-        }
-        let extraHeaderScript = CustomHeaderStore.shared.fetchInjectionUserScript(expectedBaseURL: normalizedBaseURL)
-        if !extraHeaderScript.isEmpty {
-            configuration.userContentController.addUserScript(
-                WKUserScript(source: extraHeaderScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
-            )
-        }
+        DashboardScriptWorld.installProxyHeaderScripts(
+            into: configuration.userContentController,
+            cloudflareAccess: cloudflareAccess,
+            normalizedBaseURL: normalizedBaseURL
+        )
         self.webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
-        configuration.userContentController.add(WeakScriptMessageHandler(self), name: "dashboard-response")
+        configuration.userContentController.add(
+            WeakScriptMessageHandler(self),
+            contentWorld: DashboardScriptWorld.world,
+            name: "dashboard-response"
+        )
         webView.navigationDelegate = self
         self.requestAuthorizer.cookieTicketMinter = { [weak self] in
             guard let self else { throw DashboardTicketBridgeError.notReady }
@@ -651,7 +698,9 @@ final class DashboardTicketBridge: NSObject {
         for deadline in requestDeadlines.values { deadline.cancel() }
         requestDeadlines.removeAll()
         pendingRequests.rejectAll(with: DashboardTicketBridgeError.notReady)
-        webView.configuration.userContentController.removeScriptMessageHandler(forName: "dashboard-response")
+        // The bridge registers exactly one handler; removing them all keeps
+        // this nonisolated deinit off the main-actor `DashboardScriptWorld`.
+        webView.configuration.userContentController.removeAllScriptMessageHandlers()
     }
 
     /// Saves the dashboard's current WebKit cookies as its Keychain mirror.
@@ -832,9 +881,9 @@ final class DashboardTicketBridge: NSObject {
     /// Error contract: unusable page states (a failed or URL-less landing,
     /// a stalled engine) surface as `.notReady` so callers flow into the
     /// reload recovery; a sign-in landing or redirect (Hermes' /login, an
-    /// auth proxy's sign-in page, any other origin) surfaces as
-    /// `.signInRequired`. Direct callers should not expect `.requestFailed`
-    /// for these states.
+    /// auth proxy's sign-in page, any other origin), of the page or of the
+    /// request itself, surfaces as `.signInRequired`. Direct callers should
+    /// not expect `.requestFailed` for these states.
     func requestJSON(
         path: String,
         method: String = "GET",
@@ -881,7 +930,7 @@ final class DashboardTicketBridge: NSObject {
         let timeout = max(1_000, timeoutMilliseconds)
         let responseLimit = max(1_024, maxResponseBytes)
 
-        return try await withTaskCancellationHandler(operation: {
+        let response: [String: Any] = try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
                 guard !Task.isCancelled else {
                     continuation.resume(throwing: CancellationError())
@@ -915,11 +964,12 @@ final class DashboardTicketBridge: NSObject {
                 }
                 let script = """
                 (async function() {
+                    let redirectedTo = null;
                     try {
                         const requestBody = \(bodyLiteral);
                         const controller = new AbortController();
                         const timeout = setTimeout(() => controller.abort(), \(timeout));
-                        const response = await fetch(\(pathLiteral), {
+                        const send = (options) => fetch(\(pathLiteral), Object.assign({
                             method: \(methodLiteral),
                             credentials: 'include',
                             headers: requestBody === null
@@ -927,7 +977,37 @@ final class DashboardTicketBridge: NSObject {
                                 : { Accept: 'application/json', 'Content-Type': 'application/json' },
                             body: requestBody === null ? undefined : JSON.stringify(requestBody),
                             signal: controller.signal
-                        });
+                        }, options));
+                        // Redirects are followed only within the dashboard's
+                        // origin: the browser refuses a hop to another origin
+                        // (an auth proxy's sign-in host) before sending
+                        // anything there, and fails it like a network error.
+                        // So a failure is probed once, side-effect free (GET,
+                        // no body, redirect not followed): an opaque redirect
+                        // means the request was sent off the dashboard, which
+                        // is sign-in. Anything else keeps the first error.
+                        let response;
+                        try {
+                            response = await send({ redirect: 'follow', mode: 'same-origin' });
+                        } catch (error) {
+                            if (controller.signal.aborted) throw error;
+                            let probe = null;
+                            try {
+                                probe = await send({
+                                    method: 'GET', body: undefined,
+                                    headers: { Accept: 'application/json' },
+                                    redirect: 'manual', cache: 'no-store'
+                                });
+                            } catch (_) {}
+                            if (!probe || probe.type !== 'opaqueredirect') throw error;
+                            clearTimeout(timeout);
+                            window.webkit.messageHandlers['dashboard-response'].postMessage(JSON.stringify({
+                                type: 'dashboard-response', id: \(id), ok: false, status: 0,
+                                signInRedirect: true, error: String(error)
+                            }));
+                            return;
+                        }
+                        if (response.redirected) redirectedTo = response.url;
                         const declaredLength = Number(response.headers.get('content-length') || 0);
                         if (declaredLength > \(responseLimit)) throw new Error('response_too_large');
                         const text = await (async function() {
@@ -959,21 +1039,24 @@ final class DashboardTicketBridge: NSObject {
                         const normalizedBody = Array.isArray(body) ? { _array: body } : (body && typeof body === 'object' ? body : { value: body });
                         window.webkit.messageHandlers['dashboard-response'].postMessage(JSON.stringify({
                             type: 'dashboard-response', id: \(id), ok: response.ok,
-                            status: response.status, body: normalizedBody,
+                            status: response.status, body: normalizedBody, redirectedTo: redirectedTo,
                             error: !response.ok && body && typeof body === 'object'
                                 ? (body.error || body.message || body.detail) : null
                         }));
                     } catch (error) {
                         window.webkit.messageHandlers['dashboard-response'].postMessage(JSON.stringify({
-                            type: 'dashboard-response', id: \(id), ok: false, status: 0, error: String(error)
+                            type: 'dashboard-response', id: \(id), ok: false, status: 0,
+                            redirectedTo: redirectedTo, error: String(error)
                         }));
                     }
                 })();
                 true;
                 """
-                webView.evaluateJavaScript(script) { [weak self] _, error in
+                // Runs in the isolated world, where the header scripts
+                // attach the proxy headers to this fetch.
+                webView.evaluateJavaScript(script, in: nil, in: DashboardScriptWorld.world) { [weak self] result in
                     guard let self else { return }
-                    guard let error else { return }
+                    guard case .failure = result else { return }
                     // The injected IIFE funnels every JS-level failure into
                     // the message channel, so a completion error means the
                     // engine never ran the script — a dead or stalled view.
@@ -994,6 +1077,11 @@ final class DashboardTicketBridge: NSObject {
                 self?.cancelPendingRequest(id: id)
             }
         })
+        // An answer already on its way when the bridge was invalidated (a
+        // dashboard switch) is the old dashboard's: its caller would apply
+        // it to the dashboard now showing.
+        guard !isInvalidated else { throw DashboardTicketBridgeError.notReady }
+        return response
     }
 
     /// Cancels the Swift-side deadline and resumes the pending request, if
@@ -1101,7 +1189,7 @@ extension DashboardTicketBridge: WKNavigationDelegate {
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction,
-        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
     ) {
         // Subframe check must come BEFORE the main-frame transport guard:
         // Turnstile's WebView requirements call for about:blank and
@@ -1298,6 +1386,20 @@ extension DashboardTicketBridge: WKScriptMessageHandler {
               let continuation = pendingRequests.removeValue(for: id) else { return }
         requestDeadlines.removeValue(forKey: id)?.cancel()
 
+        // The request was redirected to sign-in: off the dashboard's origin
+        // (the page refused to follow it and its probe saw the redirect), or
+        // to a sign-in page on it, whatever that page answered. Sign-in is
+        // required, as for requests sent without the page, never a network
+        // failure the reconnect loop retries forever.
+        if payload["signInRedirect"] as? Bool == true
+            || DashboardSignInRedirect.isSignIn(
+                (payload["redirectedTo"] as? String).flatMap(URL.init(string:)),
+                forDashboard: expectedURL
+            ) {
+            continuation.resume(throwing: DashboardTicketBridgeError.signInRequired)
+            return
+        }
+
         if payload["ok"] as? Bool == true {
             continuation.resume(returning: payload["body"] as? [String: Any] ?? [:])
             return
@@ -1305,11 +1407,13 @@ extension DashboardTicketBridge: WKScriptMessageHandler {
 
         let status = payload["status"] as? Int ?? 0
         let detail = payload["error"] as? String ?? AppLocalization.string("Dashboard request failed (\(String(status))).")
-        // Hermes' session writes answer 403 for a chat this sign-in may not
-        // change (old local history only its own computer may claim). That
-        // is a verdict on the chat, not an expired sign-in: signing in again
-        // can't change it.
-        if status == 401 || (status == 403 && !SessionMutationIdentity.isRefusalDetail(detail)) {
+        // Hermes' own 403 (its `detail` says why, such as a chat this
+        // sign-in may not change or a file it won't serve) is a verdict on
+        // the request, not an expired sign-in: signing in again can't change
+        // it.
+        let hermesDetail = (payload["body"] as? [String: Any])?["detail"] as? String
+        if DashboardTicketBridgeError.meansSignIn(status: status, hermesDetail: hermesDetail),
+           !SessionMutationIdentity.isRefusalDetail(detail) {
             continuation.resume(throwing: DashboardTicketBridgeError.signInRequired)
             return
         }

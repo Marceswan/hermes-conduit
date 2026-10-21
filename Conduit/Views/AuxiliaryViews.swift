@@ -76,14 +76,10 @@ struct ContextSheet: View {
     }
 
     private func loadBreakdown() async {
-        guard let client = appState.client, let sid = appState.activeSessionId else { return }
-        do {
-            let loaded = try await client.contextBreakdown(sid)
-            breakdown = loaded
-            appState.applyContextBreakdown(loaded)
-        } catch {
-            // Context detail is supplementary to the live ring in the composer.
-        }
+        // Only the open chat's breakdown, and only while it's still open.
+        // Context detail is supplementary to the live ring in the composer.
+        guard let loaded = await appState.refreshContextUsage() else { return }
+        breakdown = loaded
     }
 
     private func colorFor(_ name: String) -> Color {
@@ -531,11 +527,16 @@ struct SettingsView: View {
                         ConduitSheetHeader(title: AppLocalization.string("Settings"), close: { dismiss() })
                     }
                 }
+                // On a wide window every page keeps to a readable column.
+                // Inside the stack: a margin outside it doesn't reach the
+                // pages it hosts.
+                .readableContentWidth(ReadableWidth.settings)
                 // V2's Settings tab: each screen stops above the floating
                 // tab bar and fades under it. Nothing in the sheet.
                 .v2TabBarClearance()
                 .navigationDestination(for: SettingsDestination.self) { destination in
                     destinationView(destination)
+                        .readableContentWidth(ReadableWidth.settings)
                         .v2TabBarClearance()
                 }
         }
@@ -743,7 +744,9 @@ struct SettingsView: View {
                     ),
                     localLive: LocalLiveSettingsModel(
                         enabled: appState.isLocalLiveEnabled,
-                        setEnabled: { appState.setLocalLiveEnabled($0) }
+                        setEnabled: { appState.setLocalLiveEnabled($0) },
+                        agent: appState.isLocalLiveAgent,
+                        setAgent: { appState.setLocalLiveAgent($0) }
                     ),
                     liveStyle: appState.isGeminiLiveEnabled || appState.isGPTLiveEnabled || appState.isGrokLiveEnabled
                         ? LiveVoiceStyleSettingsModel(
@@ -993,6 +996,10 @@ private struct SettingsHome: View {
     /// has dismissed (one presentation context at a time).
     @State private var pendingAppliedNotice = false
     @State private var appliedConnectionNotice = false
+    /// The saved dashboard an edited address already belongs to: the apply
+    /// was refused, and says so the same way once the wizard has gone.
+    @State private var pendingAddressOwner: String?
+    @State private var addressOwner: String?
 
     /// Per-presentation seed for the wizard, built once when the row is
     /// tapped so the Keychain reads stay off the render path.
@@ -1015,7 +1022,7 @@ private struct SettingsHome: View {
             }
             ScrollView {
                 VStack(spacing: v2Layout ? 24 : 14) {
-                    if appState.notifierPlugin.updateAvailable || appState.notifierPlugin.restartPending {
+                    if appState.notifierPlugin.needsAttention {
                         NotifierPluginUpdateNotice(status: appState.notifierPlugin, dashboardLabel: notifierDashboardLabel) {
                             Haptics.selection()
                             path.append(.conduitPlugin)
@@ -1098,6 +1105,11 @@ private struct SettingsHome: View {
                 .environmentObject(appState)
         }
         .sheet(item: $connectionSetupSeed, onDismiss: {
+            if let owner = pendingAddressOwner {
+                pendingAddressOwner = nil
+                addressOwner = owner
+                return
+            }
             guard pendingAppliedNotice else { return }
             pendingAppliedNotice = false
             appliedConnectionNotice = true
@@ -1124,8 +1136,12 @@ private struct SettingsHome: View {
                         savedCredentials: appState.savedCredentialsForDashboard(at: seed.url),
                         savedCloudflareAccess: appState.dashboardScopedCloudflareAccess(for: seed.url)
                     )
-                    plan.perform(appState: appState)
-                    pendingAppliedNotice = !plan.isEmpty
+                    switch plan.perform(appState: appState) {
+                    case .applied:
+                        pendingAppliedNotice = !plan.isEmpty
+                    case .addressBelongsToDashboard(let label):
+                        pendingAddressOwner = label
+                    }
                 },
                 // Sign In Again (a test that found browser sign-in for this
                 // dashboard) signs in and reconnects through the same
@@ -1141,6 +1157,14 @@ private struct SettingsHome: View {
             Text(appState.isConnected
                  ? AppLocalization.string("Saved for your next reconnect. Your current session stays connected.")
                  : AppLocalization.string("Saved for your next reconnect."))
+        }
+        .alert("Settings not applied", isPresented: Binding(
+            get: { addressOwner != nil },
+            set: { if !$0 { addressOwner = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(AppLocalization.string("This address is your saved dashboard “\(addressOwner ?? "")”. Switch to it from your dashboards instead."))
         }
         // Asked again on every visit and dashboard switch: the connect-time
         // check can miss (the dashboard was still loading), and the plugin
@@ -1682,7 +1706,10 @@ private struct NotifierPluginUpdateNotice: View {
 
     var body: some View {
         ConduitSettingsSection(
-            title: AppLocalization.string("Update the Conduit plugin"),
+            // Missing, or on the host but not running: there's nothing to update.
+            title: status.offersInstall || status.isNotServed
+                ? AppLocalization.string("Conduit plugin")
+                : AppLocalization.string("Update the Conduit plugin"),
             symbol: "arrow.down.circle",
             tint: .orange
         ) {
@@ -1701,6 +1728,12 @@ private struct NotifierPluginUpdateNotice: View {
     }
 
     private var detail: String {
+        if status.isNotServed {
+            return AppLocalization.string("Installed on this dashboard's host, but the dashboard doesn't run it. Turn it on in Hermes, then restart the gateway and the dashboard.")
+        }
+        if status.offersInstall {
+            return AppLocalization.string("Missing or out of date on this dashboard's host, so features like taking chats over from Hermes Desktop won't work.")
+        }
         switch (dashboardLabel, status.restartPending && !status.updateAvailable) {
         case (let label?, true):
             return AppLocalization.string("The Conduit plugin on \(label) was updated, and Hermes needs a restart to use it.")
@@ -2616,7 +2649,7 @@ struct ProfileConfigSettingsPage: View {
         let raw = drafts[field.key] ?? textValue(field.key, defaultValue: defaultValue)
         switch field.control {
         case .number:
-            guard let number = Double(raw) else {
+            guard let number = ProfileSettingValue.parseNumber(raw) else {
                 fieldErrors[field.key] = AppLocalization.string("Enter a valid number for \(field.label).")
                 return
             }
@@ -2781,6 +2814,7 @@ private struct AppearanceSettingsDetail: View {
     @AppStorage("conduit.ipadPersistentSidebar") private var iPadPersistentSidebar = false
     @AppStorage(V2ShellPreference.key) private var usesV2 = V2ShellPreference.defaultValue
     @AppStorage(V2MainButtonPreference.key) private var mainButtonNewChat = V2MainButtonPreference.defaultValue
+    @AppStorage(ProjectChatsInChats.key) private var projectChats = ProjectChatsInChats.defaultValue
     @AppStorage(ConduitAccentChoice.storageKey) private var accentChoice = ConduitAccentChoice.defaultChoice
     @State private var selected: ThemePreference
     @State private var isChangingIcon = false
@@ -2896,6 +2930,22 @@ private struct AppearanceSettingsDetail: View {
                     }
                     .pickerStyle(.segmented)
                 }
+
+                // A project's chats otherwise show only on its page.
+                ConduitSettingsSection(title: AppLocalization.string("Project chats"), symbol: "folder", tint: .conduitAccent) {
+                    Text("Choose whether chats inside a project also appear in Chats, with the project’s name under the title. Recent shows the ones active today or yesterday.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Picker("Project chats", selection: Binding(get: { projectChats }, set: {
+                        Haptics.selection()
+                        projectChats = $0
+                    })) {
+                        Text("Off").tag(ProjectChatsInChats.hidden)
+                        Text("Recent").tag(ProjectChatsInChats.recent)
+                        Text("All").tag(ProjectChatsInChats.all)
+                    }
+                    .pickerStyle(.segmented)
+                }
             }
 
             if isPad {
@@ -2932,7 +2982,7 @@ private struct AccentColorPicker: View {
                             if isSelected {
                                 Image(systemName: "checkmark")
                                     .font(.footnote.weight(.bold))
-                                    .foregroundStyle(Color(uiColor: choice.selectionColorOnBubble(dark: colorScheme == .dark)))
+                                    .foregroundStyle(Color(uiColor: ConduitAccentChoice.markColor(on: choice.color(dark: colorScheme == .dark))))
                             }
                         }
                         .padding(4)
@@ -3106,8 +3156,11 @@ private struct NotificationsSettingsDetail: View {
                     }
                     // The plugin itself has its own page; here only a way there
                     // when it needs attention.
-                    if appState.notifierPlugin.updateAvailable || appState.notifierPlugin.restartPending {
-                        pluginPageLink(AppLocalization.string("Update the Conduit plugin"))
+                    if appState.notifierPlugin.needsAttention {
+                        // Missing, or on the host but not running: nothing to update.
+                        pluginPageLink(appState.notifierPlugin.offersInstall || appState.notifierPlugin.isNotServed
+                            ? AppLocalization.string("Open Conduit plugin")
+                            : AppLocalization.string("Update the Conduit plugin"))
                     }
                     if notifications.isFetchingMeta {
                         Text("Checking compatibility…")
@@ -3147,7 +3200,7 @@ private struct NotificationsSettingsDetail: View {
                         // pairings are behind. The host row above already
                         // offers them when the plugin itself reports it is
                         // behind.
-                        if !(appState.notifierPlugin.updateAvailable || appState.notifierPlugin.restartPending),
+                        if !appState.notifierPlugin.needsAttention,
                            pairings.thisDashboard.contains(where: Self.isOutdated) {
                             pluginPageLink(AppLocalization.string("Update the Conduit plugin"))
                         }
@@ -3169,6 +3222,10 @@ private struct NotificationsSettingsDetail: View {
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
+                    } else if notifications.relayMetaFetchFailed {
+                        Text("Couldn't reach the push relay to check compatibility.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     } else {
                         Text("Compatibility unknown. Your relay predates version reporting; decision cards may not be available until it updates.")
                             .font(.footnote)
@@ -3191,10 +3248,18 @@ private struct NotificationsSettingsDetail: View {
                     if appState.notifierPlugin.reports("pairing") {
                         oneTapPairing
                     } else {
-                        Text("Install the Conduit plugin on each dashboard's host, then create a short-lived pairing code here for each Hermes dashboard you want to reach.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        pluginPageLink(AppLocalization.string("Install or update the Conduit plugin"))
+                        // Installed but not running: installing again can't help.
+                        if appState.notifierPlugin.isNotServed {
+                            Text("Installed on this dashboard's host, but the dashboard doesn't run it. Turn it on in Hermes, then restart the gateway and the dashboard.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                            pluginPageLink(AppLocalization.string("Open Conduit plugin"))
+                        } else {
+                            Text("Install the Conduit plugin on each dashboard's host, then create a short-lived pairing code here for each Hermes dashboard you want to reach.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                            pluginPageLink(AppLocalization.string("Install or update the Conduit plugin"))
+                        }
                         Button {
                             Task {
                                 // Pairings are bound to the active dashboard
@@ -3250,7 +3315,7 @@ private struct NotificationsSettingsDetail: View {
             ConduitSettingsSection(title: AppLocalization.string("Push relay"), symbol: "server.rack", tint: .conduitAura) {
                 // Edits stay a draft until saved, so a half-typed URL never
                 // becomes the relay; saving moves an active registration.
-                TextField("https://push.milim.dev", text: $relayDraft)
+                TextField(PushNotificationService.defaultRelayURL.absoluteString, text: $relayDraft)
                     .textFieldStyle(.plain)
                     .font(.body.monospaced())
                     .padding(.vertical, 4)

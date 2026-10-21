@@ -248,26 +248,31 @@ struct AuthWebView: UIViewRepresentable {
     /// detail text (e.g. `payload["error"]`), so it is never rendered — the
     /// login card shows only the fixed copy for the classification.
     let onError: (ConnectionFailure, String) -> Void
+    /// The page asked for a passkey, which iOS refuses in this WebView
+    /// (AuthWebPasskeyDetector). Nil installs no detector.
+    var passkeyRequested: (() -> Void)? = nil
+
+    /// Runs `action` each time the page asks for a passkey.
+    func onPasskeyRequest(_ action: @escaping () -> Void) -> AuthWebView {
+        var copy = self
+        copy.passkeyRequested = action
+        return copy
+    }
 
     func makeUIView(context: Context) -> WKWebView {
         let normalized = try? ConnectionURLPolicy.normalizedBaseURL(url)
         let config = WKWebViewConfiguration()
         config.websiteDataStore = DashboardCookiePersistence.webKitStore(for: websiteDataStoreIdentifier)
-        config.userContentController.add(context.coordinator, name: "ticket")
-        if let normalized,
-           let script = cloudflareAccess?.fetchInjectionUserScript(expectedBaseURL: normalized),
-           !script.isEmpty {
-            config.userContentController.addUserScript(
-                WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true)
-            )
+        config.userContentController.add(context.coordinator, contentWorld: DashboardScriptWorld.world, name: "ticket")
+        if passkeyRequested != nil {
+            AuthWebPasskeyDetector.install(into: config.userContentController, handler: context.coordinator)
         }
         if let normalized {
-            let script = CustomHeaderStore.shared.fetchInjectionUserScript(expectedBaseURL: normalized)
-            if !script.isEmpty {
-                config.userContentController.addUserScript(
-                    WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true)
-                )
-            }
+            DashboardScriptWorld.installProxyHeaderScripts(
+                into: config.userContentController,
+                cloudflareAccess: cloudflareAccess,
+                normalizedBaseURL: normalized
+            )
         }
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
@@ -317,13 +322,20 @@ struct AuthWebView: UIViewRepresentable {
     func updateUIView(_ uiView: WKWebView, context: Context) {}
 
     static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
-        uiView.configuration.userContentController.removeScriptMessageHandler(forName: "ticket")
+        uiView.configuration.userContentController.removeScriptMessageHandler(
+            forName: "ticket",
+            contentWorld: DashboardScriptWorld.world
+        )
+        // Unconditional on purpose: removing a handler that was never added
+        // is a no-op, so this doesn't have to repeat makeUIView's condition.
+        AuthWebPasskeyDetector.uninstall(from: uiView.configuration.userContentController)
     }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
     }
 
+    @MainActor
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         let parent: AuthWebView
         private var hasDeliveredTicket = false
@@ -370,10 +382,14 @@ struct AuthWebView: UIViewRepresentable {
             })();
             true;
             """
-            webView.evaluateJavaScript(js)
+            webView.evaluateJavaScript(js, in: nil, in: DashboardScriptWorld.world, completionHandler: nil)
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            if AuthWebPasskeyDetector.isPasskeyRequest(name: message.name, worldName: message.world.name, body: message.body) {
+                parent.passkeyRequested?()
+                return
+            }
             guard message.name == "ticket", let rawMessage = message.body as? String,
                   message.frameInfo.isMainFrame,
                   let expectedURL,
@@ -427,7 +443,7 @@ struct AuthWebView: UIViewRepresentable {
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
-            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+            decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
         ) {
             // A nil targetFrame is treated as main-frame, matching the
             // historical policy for the initial navigation.
@@ -444,5 +460,41 @@ struct AuthWebView: UIViewRepresentable {
                 decisionHandler(.cancel)
             }
         }
+    }
+}
+
+// MARK: - Browser sign-in sheet
+
+/// The browser sign-in as a sheet: the dashboard's page under a bar with
+/// Cancel, so closing it doesn't depend on the swipe down (hard to find,
+/// and harder with VoiceOver or Switch Control). Cancel does what the swipe
+/// does: the sheet's presentation state clears and the screen underneath
+/// stays as it was.
+struct AuthWebSignInSheet: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
+    let webView: AuthWebView
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            webView
+                .explainingPasskeys()
+                .navigationTitle(Text("Sign in"))
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button(AppLocalization.string("Cancel")) { dismiss() }
+                            .accessibilityIdentifier("login.browser-sign-in.cancel")
+                    }
+                }
+        }
+    }
+}
+
+extension AuthWebView {
+    /// The sign-in page as its sheet's content, with the passkey notice and
+    /// a Cancel button.
+    func asSignInSheet() -> AuthWebSignInSheet {
+        AuthWebSignInSheet(webView: self)
     }
 }

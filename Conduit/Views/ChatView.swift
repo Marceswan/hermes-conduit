@@ -42,6 +42,8 @@ struct ChatView: View {
     /// Not observable on purpose: one stable instance rows read when built
     /// and write when tapped (see ChatRowDisclosure).
     @State private var rowDisclosure = ChatRowDisclosure()
+    /// A run of steps opened or closed: its rows join or leave the stack.
+    @State private var stepToggleRevision: UInt64 = 0
     /// Carries the engine's requests to AppState and ScrollViewProxy. Holds
     /// both weakly, so the engine never retains this view.
     @State private var scrollEventRouter = ChatScrollEventRouter()
@@ -113,6 +115,27 @@ struct ChatView: View {
     private var chatMessageScrollTargets: [ChatMessageScrollTarget] {
         _ = viewportInputs.targetsRevision
         return scrollEngine.targets
+    }
+
+    /// The rows the transcript lays out: a step that draws nothing (hidden,
+    /// or inside a collapsed run) is left out, or the stack would space it
+    /// like any row (ChatStepPlacement.drawsRow). Its scroll target stays.
+    /// Without such a step, the targets themselves, uncopied.
+    private var drawnMessageScrollTargets: [ChatMessageScrollTarget] {
+        let targets = chatMessageScrollTargets
+        _ = stepToggleRevision
+        let preferences = appState.displayPreferences
+        let isBusy = appState.isBusy
+        let draws: (ChatMessageScrollTarget) -> Bool = { target in
+            target.step?.drawsRow(
+                messageID: target.id,
+                preferences: preferences,
+                isBusy: isBusy,
+                disclosure: rowDisclosure
+            ) ?? true
+        }
+        guard targets.contains(where: { !draws($0) }) else { return targets }
+        return targets.filter(draws)
     }
 
     private var bottomAnchor: String {
@@ -385,7 +408,7 @@ struct ChatView: View {
                 // deep sessions. Row identity (target.id) and the transcript
                 // order needed by row geometry (target.order, maintained by
                 // the scroll-target cache) are unchanged.
-                ForEach(chatMessageScrollTargets) { target in
+                ForEach(drawnMessageScrollTargets) { target in
                     MessageBubble(
                         message: target.message,
                         gatewayResolver: appState.gatewayMediaResolver,
@@ -426,7 +449,8 @@ struct ChatView: View {
                     isBusy: appState.isBusy,
                     author: appState.activeProfile,
                     currentToolName: runningToolName,
-                    turnStartedAt: turnStartedAt
+                    turnStartedAt: turnStartedAt,
+                    repliesElsewhere: appState.activeChatRepliesElsewhere
                 )
 
                 if let pending = livePendingComposerSend {
@@ -442,6 +466,7 @@ struct ChatView: View {
             }
             .coordinateSpace(.named(ChatScrollEngine.coordinateSpaceName))
             .environment(\.chatRowDisclosure, rowDisclosure)
+            .onReceive(rowDisclosure.groupToggles.$revision) { stepToggleRevision = $0 }
             .background {
                 ChatScrollSurfaceLocator(engine: scrollEngine)
             }
@@ -516,6 +541,18 @@ struct ChatView: View {
             .task(id: appState.chatResumeRestorationRequest?.generation) {
                 guard let request = appState.chatResumeRestorationRequest else { return }
                 await runViewportRestoration(request)
+            }
+            // The same chat open on another device: a turn that went quiet
+            // here, or one the other device ran, is checked against the
+            // live registry while this chat shows. Each turn edge checks at
+            // once.
+            .task(id: "\(appState.activeSessionId ?? "")|\(appState.isBusy)|\(scenePhase == .active)|\(appState.showSidebar)") {
+                guard scenePhase == .active, !appState.showSidebar else { return }
+                appState.openChatSyncBecameVisible()
+                while !Task.isCancelled {
+                    await appState.openChatSyncTick()
+                    try? await Task.sleep(for: .seconds(5))
+                }
             }
             .onPreferenceChange(ChatRenderedScrollContentPreferenceKey.self) { value in
                 guard let value else { return }
@@ -734,7 +771,10 @@ private final class ChatScrollEventRouter {
             identity: appState.activeChatScrollSessionIdentity
         ) else { return }
         guard let snapshot = engine.renderedViewportSnapshot()?.snapshot else { return }
-        appState.recordChatViewport(snapshot, for: sessionKey)
+        // Saved once the reader stops scrolling (recordViewport).
+        appState.recordChatViewport(snapshot, for: sessionKey) { [weak engine] in
+            engine?.isUserScrolling ?? false
+        }
     }
 
     private func scrollWithoutAnimation(_ body: (ScrollViewProxy) -> Void) {
@@ -910,6 +950,7 @@ struct MessageBubble: View, Equatable {
     @Environment(\.chatRowActions) private var rowActions
     /// Acted on, not observed: what a row shows comes from `rowState`.
     private var appState: AppState { rowActions.required }
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         let _ = TranscriptPerf.note(.settledBubbleBody)
@@ -925,11 +966,21 @@ struct MessageBubble: View, Equatable {
                 )
             }
         case .assistant:
-            AssistantBubble(
-                message: message,
-                readAloudController: appState.messageReadAloudController,
-                gatewayResolver: gatewayResolver
-            )
+            if let note = VoiceJobLinkNote(text: message.content) {
+                // A saved call's job or chat line: a card that opens it. Not a
+                // reply, so it has no read-aloud or reaction controls.
+                VoiceJobLinkCard(note: note, timestamp: message.timestamp) {
+                    openURL(note.link.url)
+                }
+                .frame(maxWidth: 560, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                AssistantBubble(
+                    message: message,
+                    readAloudController: appState.messageReadAloudController,
+                    gatewayResolver: gatewayResolver
+                )
+            }
         case .reasoning:
             if let step {
                 ChatStepRow(message: message, placement: step)
@@ -947,10 +998,18 @@ struct MessageBubble: View, Equatable {
             } else if let tool = message.tool, case let cards = RichCard.cards(for: tool), !cards.isEmpty {
                 // Maps and places Hermes showed (conduit_show): drawn from
                 // the call's saved answer, so they come back with the chat,
-                // whatever the tool-progress setting.
-                RichCardsView(cards: cards)
-                    .frame(maxWidth: 560, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                // whatever the tool-progress setting. A live card shows
+                // only where it was last brought up to date.
+                let current = RichCard.current(cards, row: message.id, latestLiveRows: rowState.latestLiveRows)
+                Group {
+                    if current.isEmpty {
+                        RichLiveUpdatedLine(title: cards.first?.title)
+                    } else {
+                        RichCardsView(cards: current)
+                    }
+                }
+                .frame(maxWidth: 560, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
             } else if let step {
                 ChatStepRow(message: message, placement: step)
             } else {
@@ -1211,7 +1270,7 @@ struct UserMessageContent: View, Equatable {
             RoundedRectangle(cornerRadius: 21, style: .continuous)
                 .fill(
                     LinearGradient(
-                        colors: [.conduitAccent, .conduitAccent.opacity(0.76)],
+                        colors: [.conduitUserBubble, .conduitUserBubbleShade],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
@@ -1406,6 +1465,8 @@ private struct UserImageAttachmentPreview: View {
                 // The server file, else the copy Hermes stored inside the
                 // message: Hermes clears the files that came in through chat
                 // platforms after a day.
+                // Read first: a sign-out during the fetch keeps it off the phone.
+                let generation = TranscriptImageCache.generation
                 var dataURL: String?
                 if isGatewayImage {
                     dataURL = await gatewayResolver.dataURL(for: attachment.uri)
@@ -1414,7 +1475,7 @@ private struct UserImageAttachmentPreview: View {
                     dataURL = await gatewayResolver.inlineImageDataURL(ref)
                 }
                 guard !Task.isCancelled else { return }
-                guard let dataURL, let image = await Self.keep(dataURL, as: cacheKey) else {
+                guard let dataURL, let image = await Self.keep(dataURL, as: cacheKey, generation: generation) else {
                     gatewayLoadFailed = true
                     return
                 }
@@ -1451,9 +1512,9 @@ private struct UserImageAttachmentPreview: View {
 
     /// Keeps the picture in `dataURL` on the phone and decodes it at
     /// preview size, both off the MainActor. A failed write still shows it.
-    private static func keep(_ dataURL: String, as key: String) async -> UIImage? {
+    private static func keep(_ dataURL: String, as key: String, generation: Int) async -> UIImage? {
         await Task.detached(priority: .userInitiated) { () -> UIImage? in
-            if let file = TranscriptImageCache.store(dataURL: dataURL, for: key) {
+            if let file = TranscriptImageCache.store(dataURL: dataURL, for: key, generation: generation) {
                 return Self.downsampledPreview(url: file)
             }
             return DataURLLimits.decodeBase64DataURL(dataURL, prefix: "data:image/").flatMap { UIImage(data: $0) }
@@ -2949,7 +3010,7 @@ struct ClarifyQuestionRow: View {
                     .frame(width: 36, height: 36)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Send answer") // MAC: a11y
+            .accessibilityLabel(AppLocalization.string("Send answer"))
             .foregroundStyle(.white)
             .background(Color.orange, in: Circle())
             .disabled(!canSubmitCustomAnswer)
@@ -3027,7 +3088,7 @@ struct ClarifyQuestionRow: View {
                         .frame(width: 36, height: 36)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Send answer") // MAC: a11y
+                .accessibilityLabel(AppLocalization.string("Send answer"))
                 .foregroundStyle(.white)
                 .background(Color.orange, in: Circle())
                 .disabled(!canSubmitCustomAnswer)
@@ -3070,6 +3131,53 @@ struct ClarifyQuestionRow: View {
 
 // MARK: - Approval Card
 
+/// An approval's command with every line reachable before Run: drawn in
+/// full while it fits `maxHeight`, scrolled inside that height past it, so
+/// one long heredoc can't make its chat row thousands of points tall. The
+/// height is settled in the first layout pass, from a hidden copy of the
+/// content measured at the offered width: no measure-then-shrink, so the
+/// chat list never sees the row at full length.
+struct ApprovalCommandBox<Content: View>: View {
+    /// About this many lines show before the command scrolls.
+    static var maxLines: CGFloat { 12 }
+
+    let maxHeight: CGFloat
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        ApprovalCommandHeightLayout(maxHeight: maxHeight) {
+            content()
+                .hidden()
+                .accessibilityHidden(true)
+            ScrollView(.vertical) {
+                content()
+            }
+            .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+            .scrollIndicators(.visible)
+            .scrollIndicatorsFlash(onAppear: true)
+        }
+    }
+}
+
+/// Two subviews: the first is measured at the offered width with no height
+/// limit, and the box takes that height up to `maxHeight`; the second (the
+/// scroll view) is laid out in exactly that box.
+private struct ApprovalCommandHeightLayout: Layout {
+    let maxHeight: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard subviews.count == 2 else { return .zero }
+        let natural = subviews[0].sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        return CGSize(width: proposal.width ?? natural.width, height: min(natural.height, maxHeight))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard subviews.count == 2 else { return }
+        subviews[0].place(at: bounds.origin, proposal: ProposedViewSize(width: bounds.width, height: nil))
+        subviews[1].place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
+    }
+}
+
 struct ApprovalCard: View {
     @ObservedObject var appLanguage = AppLanguageStore.shared
     let message: ChatMessage
@@ -3077,6 +3185,9 @@ struct ApprovalCard: View {
     /// Acted on, not observed (`ChatRowState`).
     private var appState: AppState { rowActions.required }
     @State private var confirmAlways = false
+    /// The approval as drawn when Always allow was tapped: the confirmation
+    /// answers that one, even if the card changes while it is up.
+    @State private var alwaysShown: ApprovalActivity?
 
     var body: some View {
         if let approval = message.approval {
@@ -3090,7 +3201,7 @@ struct ApprovalCard: View {
                             .tracking(0.5)
                             .foregroundStyle(statusColor(for: approval.status))
                         SelectableTextView(
-                            text: approval.description,
+                            text: ApprovalDisplayText.revealingHidden(approval.description),
                             font: .preferredFont(forTextStyle: .subheadline).withTraits(.traitBold),
                             textColor: .label
                         )
@@ -3111,13 +3222,15 @@ struct ApprovalCard: View {
                 }
 
                 if !approval.command.isEmpty {
-                    SelectableTextView(
-                        text: approval.command,
-                        font: .monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .regular),
-                        textColor: .label,
-                        maximumNumberOfLines: 5
-                    )
+                    let commandFont = UIFont.monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .regular)
+                    ApprovalCommandBox(maxHeight: ApprovalCommandBox<EmptyView>.maxLines * commandFont.lineHeight) {
+                        SelectableTextView(
+                            text: ApprovalDisplayText.revealingHidden(approval.command),
+                            font: commandFont,
+                            textColor: .label
+                        )
                         .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                         .padding(12)
                         .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
@@ -3179,12 +3292,13 @@ struct ApprovalCard: View {
             .confirmationDialog(
                 "Always allow this command?",
                 isPresented: $confirmAlways,
-                titleVisibility: .visible
-            ) {
+                titleVisibility: .visible,
+                presenting: alwaysShown
+            ) { shown in
                 Button("Always allow", role: .destructive) {
-                    send("always", for: approval)
+                    send("always", for: shown)
                 }
-            } message: {
+            } message: { _ in
                 Text("Hermes will save this approval pattern for future commands.")
             }
         }
@@ -3212,6 +3326,7 @@ struct ApprovalCard: View {
 
         if allows("always", for: approval) {
             Button("Always allow") {
+                alwaysShown = approval
                 confirmAlways = true
             }
             .buttonStyle(.bordered)
@@ -3239,7 +3354,7 @@ struct ApprovalCard: View {
 
     private func send(_ choice: String, for approval: ApprovalActivity) {
         guard allows(choice, for: approval), canRespond(approval.status) else { return }
-        Task { await appState.respondToApproval(messageId: message.id, choice: choice) }
+        Task { await appState.respondToApproval(messageId: message.id, choice: choice, shown: approval) }
     }
 
     private func decisionTitle(_ choice: String) -> String {
@@ -3476,6 +3591,8 @@ struct ChatLiveTurnRows: View {
     var currentToolName: String?
     /// When the turn began, for the working line's timer.
     var turnStartedAt: Date?
+    /// Another device is getting this chat's reply.
+    var repliesElsewhere = false
 
     var body: some View {
         // Live reasoning renders from the projection, not the settled
@@ -3504,11 +3621,12 @@ struct ChatLiveTurnRows: View {
             .id("streaming")
         }
 
-        if isBusy && projection.streamingText.isEmpty {
+        if (isBusy && projection.streamingText.isEmpty) || repliesElsewhere {
             ChatWorkingLine(
                 currentToolName: currentToolName,
                 isThinking: projection.reasoningSegment != nil,
-                startedAt: turnStartedAt
+                startedAt: turnStartedAt,
+                repliesElsewhere: repliesElsewhere
             )
             .id("typing")
         }
@@ -3697,6 +3815,10 @@ private struct ConduitBreathing<Content: View>: View {
             sceneIsActive: scenePhase == .active,
             reduceMotion: reduceMotion,
             lowPowerMode: devicePower.isLowPowerModeEnabled,
+            // It breathes only while the chat shows work in progress (a
+            // turn, or compacting), never on an idle screen left alone, so
+            // the backdrop's idle pause doesn't apply.
+            idle: false,
             thermalState: devicePower.thermalState
         ) {
             ConduitBreathingTimeline(content: content)
