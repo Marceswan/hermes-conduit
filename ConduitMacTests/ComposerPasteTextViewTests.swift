@@ -214,6 +214,89 @@ final class ComposerPasteTextViewTests: XCTestCase {
         XCTAssertEqual(messages.count, 1)
     }
 
+    // MARK: A file over the limit next to an accepted one (re-review Minor 2)
+
+    /// Sets the attachment limit for the test (the paste path reads it from the defaults) and restores it.
+    private func withLimit(megabytes: Int, _ body: () throws -> Void) rethrows {
+        let key = AttachmentSizeLimit.preferenceKey
+        let saved = UserDefaults.standard.object(forKey: key)
+        UserDefaults.standard.set(megabytes, forKey: key)
+        defer {
+            if let saved { UserDefaults.standard.set(saved, forKey: key) } else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        try body()
+    }
+
+    private func boardWith(_ urls: [URL]) -> NSPasteboard {
+        let pb = board()
+        pb.clearContents()
+        pb.writeObjects(urls.map { $0 as NSURL })
+        return pb
+    }
+
+    func testMixedPasteAttachesTheSmallFileAndReportsTheLargeOne() throws {
+        let small = try imageFile(bytes: 0)
+        let large = try imageFile(bytes: 3 * 1024 * 1024)
+        defer { [small, large].forEach { try? FileManager.default.removeItem(at: $0) } }
+        let view = ComposerTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
+        var attached: [PastedImage] = []
+        var messages: [String] = []
+        view.onPastedImages = { attached += $0 }
+        view.onPastedImageError = { messages.append($0) }
+        withLimit(megabytes: 1) {
+            view.performPaste(from: boardWith([small, large]), sender: nil)
+        }
+        XCTAssertEqual(attached.count, 1, "the small file is attached")
+        XCTAssertEqual(messages.count, 1, "the large file is reported: \(messages)")
+        XCTAssertTrue(messages.first?.contains(large.lastPathComponent) == true, "\(messages)")
+        XCTAssertFalse(messages.first?.contains(small.lastPathComponent) == true, "the accepted file is not named")
+    }
+
+    func testPasteWithOnlySmallFilesReportsNothing() throws {
+        let small = try imageFile(bytes: 0)
+        defer { try? FileManager.default.removeItem(at: small) }
+        let view = ComposerTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
+        var attached = 0
+        var messages: [String] = []
+        view.onPastedImages = { attached += $0.count }
+        view.onPastedImageError = { messages.append($0) }
+        withLimit(megabytes: 1) { view.performPaste(from: boardWith([small]), sender: nil) }
+        XCTAssertEqual(attached, 1)
+        XCTAssertTrue(messages.isEmpty)
+    }
+
+    func testMixedDropAttachesTheSmallFileAndReportsTheLargeOne() throws {
+        let small = try imageFile(bytes: 0)
+        let large = try imageFile(bytes: 3 * 1024 * 1024)
+        defer { [small, large].forEach { try? FileManager.default.removeItem(at: $0) } }
+        let view = ComposerTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
+        var attached = 0
+        var messages: [String] = []
+        view.onPastedImages = { attached += $0.count }
+        view.onPastedImageError = { messages.append($0) }
+        var handled = false
+        withLimit(megabytes: 1) { handled = view.performImageDrop(from: boardWith([small, large])) }
+        XCTAssertTrue(handled)
+        XCTAssertEqual(attached, 1)
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertTrue(messages.first?.contains(large.lastPathComponent) == true, "\(messages)")
+    }
+
+    func testDropOfOnlyALargeFileIsOursAndReported() throws {
+        let large = try imageFile(bytes: 3 * 1024 * 1024)
+        defer { try? FileManager.default.removeItem(at: large) }
+        let view = ComposerTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
+        var attached = 0
+        var messages: [String] = []
+        view.onPastedImages = { attached += $0.count }
+        view.onPastedImageError = { messages.append($0) }
+        var handled = false
+        withLimit(megabytes: 1) { handled = view.performImageDrop(from: boardWith([large])) }
+        XCTAssertTrue(handled)
+        XCTAssertEqual(attached, 0)
+        XCTAssertEqual(messages.count, 1)
+    }
+
     func testReturnDuringMarkedTextDoesNotSubmit() {
         // Hosted in a window so the input context exists and marked text sticks.
         let view = ComposerTextView()

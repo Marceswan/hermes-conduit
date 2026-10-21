@@ -442,26 +442,40 @@ final class ComposerTextView: NSTextView {
     }
 
     override func paste(_ sender: Any?) {
-        switch Self.pasteDecision(for: .general) {
+        performPaste(from: .general, sender: sender)
+    }
+
+    /// `paste` for a given pasteboard (tests use a private one).
+    func performPaste(from pasteboard: NSPasteboard, sender: Any?) {
+        switch Self.pasteDecision(for: pasteboard) {
         case .images(let images):
             onPastedImages?(images)
+            // A file over the limit in the same paste is dropped: it says so too.
+            _ = reportOversizeImageFiles(on: pasteboard)
         case .text:
             // A file over the limit says so instead of pasting its name.
-            if reportOversizeImageFiles(on: .general) { return }
+            if reportOversizeImageFiles(on: pasteboard) { return }
             pasteAsPlainText(sender)
         }
+    }
+
+    /// Attaches the dropped images and tells the user about image files over the limit, in the same drop as well as
+    /// alone. True when the drop was ours.
+    func performImageDrop(from pasteboard: NSPasteboard) -> Bool {
+        let images = Self.pastedImages(from: pasteboard)
+        if !images.isEmpty {
+            onPastedImages?(images)
+            _ = reportOversizeImageFiles(on: pasteboard)
+            return true
+        }
+        return reportOversizeImageFiles(on: pasteboard)
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         if let dropSink, sinkOwnsDrag(sender.draggingPasteboard) {
             return dropSink.perform(sender.draggingPasteboard)
         }
-        let images = Self.pastedImages(from: sender.draggingPasteboard)
-        if !images.isEmpty {
-            onPastedImages?(images)
-            return true
-        }
-        if reportOversizeImageFiles(on: sender.draggingPasteboard) { return true }
+        if performImageDrop(from: sender.draggingPasteboard) { return true }
         return super.performDragOperation(sender)
     }
 }
