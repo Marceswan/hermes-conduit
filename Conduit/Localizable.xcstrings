@@ -324603,6 +324603,3478 @@
           }
         }
       }
+    },
+    "Mac.VoiceAudioError.MicrophoneDenied" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit benötigt das Mikrofon für den Sprachmodus. Erlaube den Zugriff unter „Systemeinstellungen“ > „Datenschutz & Sicherheit“ > „Mikrofon“."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit needs the microphone for voice. Allow it in System Settings > Privacy & Security > Microphone."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit necesita el micrófono para la voz. Permítelo en Ajustes del Sistema > Privacidad y seguridad > Micrófono."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit a besoin du micro pour la voix. Autorisez-le dans Réglages Système > Confidentialité et sécurité > Micro."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit memerlukan mikrofon untuk suara. Izinkan di Pengaturan Sistem > Privasi & Keamanan > Mikrofon."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit ha bisogno del microfono per la voce. Consentilo in Impostazioni di Sistema > Privacy e sicurezza > Microfono."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduitの音声機能にはマイクへのアクセスが必要です。「システム設定」>「プライバシーとセキュリティ」>「マイク」で許可してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit에서 음성을 사용하려면 마이크가 필요해요. ‘시스템 설정’ > ‘개인정보 보호 및 보안’ > ‘마이크’에서 허용하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit potrzebuje mikrofonu do obsługi głosu. Zezwól na to w Ustawieniach systemowych > Prywatność i ochrona > Mikrofon."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O Conduit precisa do microfone para a voz. Permita-o nos Ajustes do Sistema > Privacidade e Segurança > Microfone."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit нужен микрофон для голоса. Разрешите доступ в «Системные настройки» > «Конфиденциальность и безопасность» > «Микрофон»."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit'in ses için mikrofona ihtiyacı var. Sistem Ayarları > Gizlilik ve Güvenlik > Mikrofon bölümünden izin verin."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音需要麦克风权限。请在「系统设置」>「隐私与安全」>「麦克风」中允许。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit 需要使用麥克風才能使用語音功能。請在「系統設定」>「隱私權與安全性」>「麥克風」中允許。"
+          }
+        }
+      }
+    },
+    "Mac.VoiceSettings.MicrophoneDenied" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nicht erlaubt. Erlaube das Mikrofon für Conduit unter „Systemeinstellungen“ > „Datenschutz & Sicherheit“ > „Mikrofon“."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not allowed. Allow the microphone for Conduit in System Settings > Privacy & Security > Microphone."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No permitido. Permite el acceso al micrófono para Conduit en Ajustes del Sistema > Privacidad y seguridad > Micrófono."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non autorisé. Autorisez le micro pour Conduit dans Réglages Système > Confidentialité et sécurité > Micro."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tidak diizinkan. Izinkan mikrofon untuk Conduit di Pengaturan Sistem > Privasi & Keamanan > Mikrofon."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non consentito. Consenti l'accesso al microfono per Conduit in Impostazioni di Sistema > Privacy e sicurezza > Microfono."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "許可されていません。「システム設定」>「プライバシーとセキュリティ」>「マイク」でConduitにマイクへのアクセスを許可してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "허용되지 않았어요. ‘시스템 설정’ > ‘개인정보 보호 및 보안’ > ‘마이크’에서 Conduit의 마이크 접근을 허용하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak zgody. Zezwól aplikacji Conduit na dostęp do mikrofonu w Ustawieniach systemowych > Prywatność i ochrona > Mikrofon."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Não permitido. Permita o microfone para o Conduit nos Ajustes do Sistema > Privacidade e Segurança > Microfone."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не разрешено. Разрешите Conduit доступ к микрофону в «Системные настройки» > «Конфиденциальность и безопасность» > «Микрофон»."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "İzin verilmedi. Sistem Ayarları > Gizlilik ve Güvenlik > Mikrofon bölümünde Conduit için mikrofona izin verin."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未允许。请在「系统设置」>「隐私与安全」>「麦克风」中允许 Conduit 使用麦克风。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未允許。請在「系統設定」>「隱私權與安全性」>「麥克風」中允許 Conduit 使用麥克風。"
+          }
+        }
+      }
+    },
+    "Mac.VoiceSettings.SpeechRecognitionDenied" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spracherkennung ist nicht erlaubt. Erlaube sie für Conduit unter „Systemeinstellungen“ > „Datenschutz & Sicherheit“ > „Spracherkennung“ oder wähle unten unter „Sprache zu Text“ einen Hermes-Anbieter."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Speech Recognition isn't allowed. Allow it for Conduit in System Settings > Privacy & Security > Speech Recognition, or choose a Hermes provider under Speech to text below."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El reconocimiento de voz no está permitido. Permítelo para Conduit en Ajustes del Sistema > Privacidad y seguridad > Reconocimiento de voz o elige un proveedor de Hermes en Voz a texto, más abajo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La reconnaissance vocale n'est pas autorisée. Autorisez-la pour Conduit dans Réglages Système > Confidentialité et sécurité > Reconnaissance vocale, ou choisissez un fournisseur Hermes sous Transcription vocale ci-dessous."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pengenalan Ucapan tidak diizinkan. Izinkan untuk Conduit di Pengaturan Sistem > Privasi & Keamanan > Pengenalan Ucapan, atau pilih penyedia Hermes di Ucapan ke teks di bawah."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il riconoscimento vocale non è consentito. Consentilo per Conduit in Impostazioni di Sistema > Privacy e sicurezza > Riconoscimento vocale o scegli un provider Hermes in Trascrizione vocale qui sotto."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音声認識が許可されていません。「システム設定」>「プライバシーとセキュリティ」>「音声認識」でConduitに許可するか、下の「音声認識」でHermesのプロバイダを選択してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "음성 인식이 허용되지 않았어요. ‘시스템 설정’ > ‘개인정보 보호 및 보안’ > ‘음성 인식’에서 Conduit에 허용하거나, 아래 ‘음성 텍스트 변환’에서 Hermes 제공자를 선택하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozpoznawanie mowy nie jest dozwolone. Zezwól na nie aplikacji Conduit w Ustawieniach systemowych > Prywatność i ochrona > Rozpoznawanie mowy lub wybierz poniżej dostawcę Hermes w sekcji „Mowa na tekst”."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O Reconhecimento de Fala não está permitido. Permita-o para o Conduit nos Ajustes do Sistema > Privacidade e Segurança > Reconhecimento de Fala ou escolha um provedor do Hermes em Fala para texto abaixo."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Распознавание речи не разрешено. Разрешите его для Conduit в «Системные настройки» > «Конфиденциальность и безопасность» > «Распознавание речи» или выберите провайдера Hermes в разделе «Речь в текст» ниже."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Konuşma Tanıma'ya izin verilmedi. Sistem Ayarları > Gizlilik ve Güvenlik > Konuşma Tanıma bölümünde Conduit için izin verin veya aşağıdaki Konuşmadan metne bölümünden bir Hermes sağlayıcısı seçin."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未允许语音识别。请在「系统设置」>「隐私与安全」>「语音识别」中为 Conduit 允许语音识别，或在下方“语音转文字”中选择 Hermes 提供商。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未允許語音辨識。請在「系統設定」>「隱私權與安全性」>「語音辨識」中允許 Conduit 使用，或在下方的「語音轉文字」中選擇 Hermes 供應商。"
+          }
+        }
+      }
+    },
+    "Mac.VoiceSetupIssue.SpeechRecognitionDenied" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Erlaube die Spracherkennung für Conduit unter „Systemeinstellungen“ > „Datenschutz & Sicherheit“ > „Spracherkennung“ oder wähle unter „Einstellungen“ > „Sprachmodus“ eine andere Option für Sprache zu Text."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow Speech Recognition for Conduit in System Settings > Privacy & Security > Speech Recognition, or choose another speech-to-text option in Settings > Voice."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Permite el reconocimiento de voz para Conduit en Ajustes del Sistema > Privacidad y seguridad > Reconocimiento de voz, o elige otra opción de voz a texto en Ajustes > Voz."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Autorisez la reconnaissance vocale pour Conduit dans Réglages Système > Confidentialité et sécurité > Reconnaissance vocale, ou choisissez une autre option de transcription vocale dans Réglages > Voix."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Izinkan Pengenalan Ucapan untuk Conduit di Pengaturan Sistem > Privasi & Keamanan > Pengenalan Ucapan, atau pilih opsi ucapan ke teks lain di Pengaturan > Suara."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Consenti il riconoscimento vocale per Conduit in Impostazioni di Sistema > Privacy e sicurezza > Riconoscimento vocale, oppure scegli un'altra opzione di trascrizione vocale in Impostazioni > Voce."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "「システム設定」>「プライバシーとセキュリティ」>「音声認識」でConduitに音声認識を許可するか、「設定」>「音声」で別の音声入力方法を選択してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "‘시스템 설정’ > ‘개인정보 보호 및 보안’ > ‘음성 인식’에서 Conduit의 음성 인식을 허용하거나, ‘설정’ > ‘음성’에서 다른 음성 텍스트 변환 옵션을 선택하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zezwól Conduit na rozpoznawanie mowy w Ustawieniach systemowych > Prywatność i ochrona > Rozpoznawanie mowy lub wybierz inną opcję zamiany mowy na tekst w sekcji Ustawienia > Głos."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Permita o Reconhecimento de Fala para o Conduit nos Ajustes do Sistema > Privacidade e Segurança > Reconhecimento de Fala ou escolha outra opção de fala para texto em Ajustes > Voz."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Разрешите Conduit распознавание речи: «Системные настройки» > «Конфиденциальность и безопасность» > «Распознавание речи». Или выберите другой вариант распознавания речи в разделе «Настройки › Голос»."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sistem Ayarları > Gizlilik ve Güvenlik > Konuşma Tanıma bölümünde Conduit'e Konuşma Tanıma izni verin veya Ayarlar > Ses bölümünden başka bir konuşmadan metne seçeneği seçin."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请在「系统设置」>「隐私与安全」>「语音识别」中允许 Conduit 使用语音识别，或在「设置」>「语音」中选择其他语音转文字方式。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "請在「系統設定」>「隱私權與安全性」>「語音辨識」中允許 Conduit 使用語音辨識，或在「設定」>「語音」中選擇其他語音轉文字選項。"
+          }
+        }
+      }
+    },
+    "Mac.VoiceSettings.SpeechRecognitionRetry" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aktiviere die Spracherkennung unter „Systemeinstellungen“ > „Datenschutz & Sicherheit“ > „Spracherkennung“ und wähle dann erneut „Auf diesem Mac“."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enable Speech Recognition in System Settings > Privacy & Security > Speech Recognition, then retry selecting \"On this Mac\"."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Activa Reconocimiento de voz en Ajustes del Sistema > Privacidad y seguridad > Reconocimiento de voz y vuelve a seleccionar «En este Mac»."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Activez la reconnaissance vocale dans Réglages Système > Confidentialité et sécurité > Reconnaissance vocale, puis sélectionnez à nouveau « Sur ce Mac »."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nyalakan Pengenalan Ucapan di Pengaturan Sistem > Privasi & Keamanan > Pengenalan Ucapan, lalu coba pilih “Di Mac ini” lagi."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attiva Riconoscimento vocale in Impostazioni di Sistema > Privacy e sicurezza > Riconoscimento vocale, poi riprova a selezionare “Su questo Mac”."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "「システム設定」>「プライバシーとセキュリティ」>「音声認識」で音声認識を有効にしてから、もう一度「このMac」を選択してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "‘시스템 설정’ > ‘개인정보 보호 및 보안’ > ‘음성 인식’에서 음성 인식을 켠 다음 ‘이 Mac에서’를 다시 선택하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Włącz rozpoznawanie mowy w Ustawieniach systemowych > Prywatność i ochrona > Rozpoznawanie mowy, a następnie ponownie wybierz „Na tym Macu”."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ative o Reconhecimento de Fala em Ajustes do Sistema > Privacidade e Segurança > Reconhecimento de Fala e tente selecionar “Neste Mac” novamente."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Включите распознавание речи в «Системные настройки» > «Конфиденциальность и безопасность» > «Распознавание речи», затем снова выберите «На этом Mac»."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sistem Ayarları > Gizlilik ve Güvenlik > Konuşma Tanıma bölümünden Konuşma Tanıma'yı etkinleştirin, ardından “Bu Mac’te” seçeneğini yeniden seçmeyi deneyin."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在「系统设置」>「隐私与安全」>「语音识别」中启用语音识别，然后重新选择「在此 Mac 上」。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "請在「系統設定」>「隱私權與安全性」>「語音辨識」中啟用語音辨識，然後再試著選擇「在這部 Mac 上」。"
+          }
+        }
+      }
+    },
+    "Mac.RichInfoCard.NotificationsOff" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mitteilungen für Conduit sind in den Systemeinstellungen aus."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Notifications are off for Conduit in System Settings."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Las notificaciones de Conduit están desactivadas en los Ajustes del Sistema."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Les notifications de Conduit sont désactivées dans les Réglages Système."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pemberitahuan untuk Conduit nonaktif di Pengaturan Sistem."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le notifiche di Conduit sono disattivate nelle Impostazioni di Sistema."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "システム設定でConduitの通知がオフになっています。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "시스템 설정에서 Conduit 알림이 꺼져 있어요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Powiadomienia Conduit są wyłączone w Ustawieniach systemowych."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "As notificações do Conduit estão desativadas nos Ajustes do Sistema."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Уведомления Conduit выключены в Системных настройках."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit bildirimleri Sistem Ayarları'nda kapalı."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit 的通知已在系统设置中关闭。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit 的通知已在系統設定中關閉。"
+          }
+        }
+      }
+    },
+    "Mac.Notifications.ThisMac" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dieser Mac"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This Mac"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este Mac"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ce Mac"
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac Ini"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questo Mac"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このMac"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 Mac"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ten Mac"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este Mac"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Этот Mac"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bu Mac"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此 Mac"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "這部 Mac"
+          }
+        }
+      }
+    },
+    "Mac.VoiceSettings.UseThisMac" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diesen Mac verwenden"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use this Mac"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usar este Mac"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Utiliser ce Mac"
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gunakan Mac ini"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usa questo Mac"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このMacを使用"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 Mac 사용"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Użyj tego Maca"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usar este Mac"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Использовать этот Mac"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bu Mac’i kullan"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用这台 Mac"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用這部 Mac"
+          }
+        }
+      }
+    },
+    "Mac.VoiceSettings.SpeechNotAllowedYet" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Auf diesem Mac. Spracherkennung ist noch nicht erlaubt."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "On this Mac. Speech Recognition isn't allowed yet."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "En este Mac. El reconocimiento de voz aún no está permitido."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sur ce Mac. La reconnaissance vocale n'est pas encore autorisée."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Di Mac ini. Pengenalan Ucapan belum diizinkan."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Su questo Mac. Il riconoscimento vocale non è ancora consentito."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このMacで処理。音声認識がまだ許可されていません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 Mac에서 처리. 음성 인식이 아직 허용되지 않았어요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Na tym Macu. Rozpoznawanie mowy nie jest jeszcze dozwolone."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Neste Mac. O Reconhecimento de Fala ainda não foi permitido."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "На этом Mac. Распознавание речи пока не разрешено."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bu Mac’te. Konuşma Tanıma'ya henüz izin verilmedi."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在这台 Mac 上。尚未允许语音识别。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在這部 Mac 上。尚未允許語音辨識。"
+          }
+        }
+      }
+    },
+    "Mac.VoiceSettings.SpeechUnsupportedLanguage" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dieser Mac kann deine Sprache nicht auf dem Gerät transkribieren. Wähle unten unter „Sprache zu Text“ einen Hermes-Anbieter."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This Mac can't transcribe your language on the device. Choose a Hermes provider under Speech to text below."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este Mac no puede transcribir tu idioma en el dispositivo. Elige un proveedor de Hermes en Voz a texto, más abajo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ce Mac ne peut pas transcrire votre langue sur l'appareil. Choisissez un fournisseur Hermes sous Transcription vocale ci-dessous."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac ini tidak dapat mentranskripsikan bahasa Anda di perangkat. Pilih penyedia Hermes di Ucapan ke teks di bawah."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questo Mac non può trascrivere la tua lingua sul dispositivo. Scegli un provider Hermes in Trascrizione vocale qui sotto."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このMacでは、お使いの言語をデバイス上で文字起こしできません。下の「音声認識」でHermesのプロバイダを選択してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 Mac은 사용 중인 언어를 기기에서 받아쓸 수 없어요. 아래 ‘음성 텍스트 변환’에서 Hermes 제공자를 선택하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ten Mac nie może lokalnie transkrybować Twojego języka. Wybierz poniżej dostawcę Hermes w sekcji „Mowa na tekst”."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este Mac não consegue transcrever seu idioma no próprio aparelho. Escolha um provedor do Hermes em Fala para texto abaixo."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Этот Mac не может распознавать ваш язык на устройстве. Выберите провайдера Hermes в разделе «Речь в текст» ниже."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bu Mac, dilinizi cihaz üzerinde metne dönüştüremiyor. Aşağıdaki Konuşmadan metne bölümünden bir Hermes sağlayıcısı seçin."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 Mac 无法在设备上转写你的语言。请在下方“语音转文字”中选择 Hermes 提供商。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "這部 Mac 無法在裝置上轉寫你的語言。請在下方的「語音轉文字」中選擇 Hermes 供應商。"
+          }
+        }
+      }
+    },
+    "Mac.VoiceSettings.AppleSpeechPrivacy" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Verwendet das systemverwaltete Sprachmodell von Apple. Aufgenommenes Audio bleibt auf diesem Mac."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uses Apple's system-managed speech model. Captured audio stays on this Mac."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usa el modelo de voz gestionado por el sistema de Apple. El audio capturado se queda en este Mac."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Utilise le modèle vocal géré par le système d'Apple. L'audio capturé reste sur ce Mac."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Menggunakan model ucapan yang dikelola sistem Apple. Audio yang direkam tetap di Mac ini."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usa il modello vocale gestito dal sistema di Apple. L'audio acquisito resta su questo Mac."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Appleがシステムで管理する音声モデルを使用します。録音した音声はこのMac内に保持されます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple이 시스템에서 관리하는 음성 모델을 사용해요. 녹음된 오디오는 이 Mac에만 남아요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Używa zarządzanego przez system modelu mowy Apple. Nagrany dźwięk pozostaje na tym Macu."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usa o modelo de fala gerenciado pelo sistema da Apple. O áudio captado fica neste Mac."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Использует системную речевую модель Apple. Записанный звук остаётся на этом Mac."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple'ın sistem tarafından yönetilen konuşma modelini kullanır. Kaydedilen ses bu Mac’te kalır."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用 Apple 系统管理的语音模型。录制的音频保留在这台 Mac 上。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用 Apple 系統管理的語音模型。擷取的音訊會保留在這部 Mac 上。"
+          }
+        }
+      }
+    },
+    "Mac.VoiceSettings.LocalWhisperNote" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Läuft auf dem Hermes-Host mit dessen lokaler Whisper-Installation – nicht auf diesem Mac."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Runs on the Hermes host using its local Whisper installation—not on this Mac."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Se ejecuta en el host de Hermes con su instalación local de Whisper, no en este Mac."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "S'exécute sur l'hôte Hermes avec son installation locale de Whisper, et non sur ce Mac."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Berjalan di host Hermes menggunakan instalasi Whisper lokalnya—bukan di Mac ini."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Viene eseguito sull'host Hermes con la sua installazione locale di Whisper, non su questo Mac."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このMacではなく、HermesホストにインストールされたローカルのWhisperを使って実行されます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 Mac이 아닌 Hermes 호스트에서 로컬 Whisper 설치를 사용해 실행돼요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Działa na hoście Hermes przy użyciu jego lokalnej instalacji Whisper — nie na tym Macu."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Roda no host do Hermes usando a instalação local do Whisper — não neste Mac."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Работает на хосте Hermes с локальной установкой Whisper, а не на этом Mac."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bu Mac’te değil, Hermes ana makinesinde yerel Whisper kurulumuyla çalışır."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 Hermes 主机上以其本地 Whisper 安装运行，而非这台 Mac。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用 Hermes 主機本機安裝的 Whisper 在主機上執行，而不是在這部 Mac 上。"
+          }
+        }
+      }
+    },
+    "Mac.WakePhrase.ListensOnThisMac" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sag die Phrase, während Conduit geöffnet ist, um den Sprachmodus dieses Profils zu starten, egal welchen es verwendet. Das Zuhören läuft auf diesem Mac, pausiert bei Anrufen und im Hintergrund, und die Mikrofonanzeige bleibt an, solange zugehört wird."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Say the phrase while Conduit is open to start voice on this profile, in whichever voice mode it uses. Listening runs on this Mac, stops during calls and in the background, and the microphone indicator stays on while it listens."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Di la frase mientras Conduit está abierto para iniciar la voz en este perfil, con el modo de voz que use. La escucha funciona en este Mac, se detiene durante las llamadas y en segundo plano, y el indicador del micrófono permanece encendido mientras escucha."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dites la phrase pendant que Conduit est ouvert pour lancer la voix sur ce profil, dans le mode vocal qu'il utilise. L'écoute se fait sur ce Mac, s'arrête pendant les appels et en arrière-plan, et l'indicateur du micro reste allumé pendant l'écoute."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ucapkan frasa saat Conduit terbuka untuk memulai suara di profil ini, dalam mode suara yang digunakannya. Pendengaran berjalan di Mac ini, berhenti selama panggilan dan di latar belakang, dan indikator mikrofon tetap menyala selama mendengarkan."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pronuncia la frase mentre Conduit è aperto per avviare la voce su questo profilo, nella modalità vocale che usa. L'ascolto avviene su questo Mac, si interrompe durante le chiamate e in background, e l'indicatore del microfono resta acceso mentre ascolta."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduitを開いている間にフレーズを話すと、このプロファイルの音声モードで音声が開始されます。聞き取りはこのMac上で行われ、通話中やバックグラウンドでは停止します。聞き取り中はマイクのインジケータが点灯したままになります。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit이 열려 있는 동안 호출어를 말하면 이 프로필에서 사용하는 음성 모드로 음성이 시작돼요. 듣기는 이 Mac에서 실행되고 통화 중이거나 백그라운드에서는 멈추며, 듣는 동안에는 마이크 표시가 계속 켜져 있어요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wypowiedz frazę, gdy Conduit jest otwarty, aby uruchomić głos w tym profilu, w używanym przez niego trybie głosowym. Nasłuchiwanie działa na tym Macu, zatrzymuje się podczas połączeń i w tle, a wskaźnik mikrofonu świeci się, gdy trwa nasłuchiwanie."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diga a frase com o Conduit aberto para iniciar a voz neste perfil, no modo de voz que ele usar. A escuta acontece neste Mac, para durante chamadas e em segundo plano, e o indicador do microfone fica aceso enquanto ela ouve."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Произнесите фразу, пока Conduit открыт, чтобы запустить голос для этого профиля в том режиме, который он использует. Прослушивание выполняется на этом Mac, останавливается во время звонков и в фоне, а индикатор микрофона горит, пока идёт прослушивание."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bu profilde, kullandığı ses modunda sesi başlatmak için Conduit açıkken ifadeyi söyleyin. Dinleme bu Mac’te çalışır, aramalar sırasında ve arka planda durur; dinlerken mikrofon göstergesi açık kalır."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 Conduit 打开时说出唤醒词，即可按此配置文件当前使用的语音模式开始语音对话。监听在此 Mac 上进行，通话期间和后台时会停止，监听时麦克风指示灯会保持亮起。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 Conduit 打開時說出喚醒詞，即可在此設定檔上以其使用的語音模式開始語音。聆聽在這部 Mac 上進行，會在通話期間和背景中停止，聆聽時麥克風指示燈會保持亮起。"
+          }
+        }
+      }
+    },
+    "Mac.Dictation.AppleSummary" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apples Diktierfunktion, auf diesem Mac, wenn deine Sprache es zulässt. Die Wörter erscheinen, während du sprichst."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple's dictation, on this Mac when your language allows. Words appear as you speak."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El dictado de Apple, en este Mac cuando tu idioma lo permite. Las palabras aparecen mientras hablas."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La dictée d’Apple, sur ce Mac quand votre langue le permet. Les mots s’affichent pendant que vous parlez."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dikte Apple, di Mac ini jika bahasa Anda mendukung. Kata-kata muncul saat Anda berbicara."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La dettatura di Apple, su questo Mac quando la lingua lo consente. Le parole appaiono mentre parli."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple の音声入力です。言語が対応していればこの Mac 上で処理します。話すそばから文字が表示されます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple 받아쓰기로, 언어가 지원되면 이 Mac에서 처리합니다. 말하는 동안 글자가 나타납니다."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dyktowanie Apple, na tym Macu, jeśli pozwala na to język. Słowa pojawiają się w trakcie mówienia."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O ditado da Apple, neste Mac quando seu idioma permite. As palavras aparecem enquanto você fala."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Диктовка Apple, на этом Mac, если язык это позволяет. Слова появляются по мере речи."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple dikte özelliği; diliniz destekliyorsa bu Mac’te çalışır. Siz konuştukça sözcükler görünür."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple 的听写，语言支持时在这台 Mac 上处理。说话时文字会随即出现。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple 的聽寫，語言支援時在這部 Mac 上處理。說話時文字會隨即出現。"
+          }
+        }
+      }
+    },
+    "Mac.Dictation.SpeechAnalyzerSummary" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apples neueres Sprachmodell, auf diesem Mac. Besser bei langen Sätzen, nutzt deine eigenen Wörter aber eventuell nicht. Bei der ersten Nutzung wird es eventuell geladen."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple's newer speech model, on this Mac. Better with long sentences, though it may not use your custom words. The first use may download it."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El modelo de voz más reciente de Apple, en este Mac. Mejor con frases largas, aunque puede no usar tus palabras personalizadas. Puede descargarse la primera vez que lo uses."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le modèle vocal plus récent d’Apple, sur ce Mac. Meilleur avec les longues phrases, mais il peut ignorer vos mots personnalisés. Il peut être téléchargé à la première utilisation."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Model suara Apple yang lebih baru, di Mac ini. Lebih baik untuk kalimat panjang, tetapi mungkin tidak memakai kata khusus Anda. Mungkin diunduh saat pertama kali digunakan."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il modello vocale più recente di Apple, su questo Mac. Migliore con frasi lunghe, ma potrebbe non usare le tue parole personalizzate. Al primo utilizzo potrebbe essere scaricato."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple の新しい音声モデルで、この Mac 上で処理します。長い文に強い一方、カスタム単語は使われない場合があります。初回はモデルのダウンロードが必要な場合があります。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple의 최신 음성 모델로, 이 Mac에서 처리합니다. 긴 문장을 더 잘 인식하지만 사용자 단어는 사용하지 않을 수 있습니다. 처음 사용할 때 다운로드될 수 있습니다."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nowszy model mowy Apple, na tym Macu. Lepiej radzi sobie z długimi zdaniami, ale może nie używać Twoich własnych słów. Przy pierwszym użyciu może zostać pobrany."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O modelo de voz mais recente da Apple, neste Mac. Melhor com frases longas, mas pode não usar suas palavras personalizadas. Pode ser baixado no primeiro uso."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Более новая речевая модель Apple, на этом Mac. Лучше справляется с длинными фразами, но может не учитывать ваши слова. При первом использовании может загрузиться."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple’ın daha yeni konuşma modeli; bu Mac’te çalışır. Uzun cümlelerde daha iyidir ama özel kelimelerinizi kullanmayabilir. İlk kullanımda indirilebilir."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple 较新的语音模型，在这台 Mac 上处理。长句识别更好，但可能不会使用你的自定义词语。首次使用可能需要下载模型。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple 較新的語音模型，在這部 Mac 上處理。長句辨識更好，但可能不會使用你的自訂字詞。首次使用可能需要下載模型。"
+          }
+        }
+      }
+    },
+    "Mac.Dictation.SpeechAnalyzerUnavailable" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apples neues Sprachmodell ist auf diesem Mac nicht verfügbar."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple's new speech model isn't available on this Mac."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El nuevo modelo de voz de Apple no está disponible en este Mac."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le nouveau modèle vocal d’Apple n’est pas disponible sur ce Mac."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Model suara baru Apple tidak tersedia di Mac ini."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il nuovo modello vocale di Apple non è disponibile su questo Mac."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "この Mac では Apple の新しい音声モデルを利用できません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 Mac에서는 Apple의 새 음성 모델을 사용할 수 없습니다."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nowy model mowy Apple nie jest dostępny na tym Macu."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O novo modelo de voz da Apple não está disponível neste Mac."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Новая речевая модель Apple недоступна на этом Mac."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple’ın yeni konuşma modeli bu Mac’te kullanılamıyor."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 Mac 无法使用 Apple 的新语音模型。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "這部 Mac 無法使用 Apple 的新語音模型。"
+          }
+        }
+      }
+    },
+    "Voice is on for %@ on this Mac. Each step below turns green when it's ready; an orange step has a fix." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der Sprachmodus ist für %@ auf diesem Mac aktiv. Jeder Schritt unten wird grün, sobald er bereit ist; für einen orangen Schritt gibt es eine Lösung."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La voz está activada para %@ en este Mac. Cada paso de abajo se vuelve verde cuando está listo; un paso naranja tiene una solución."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La voix est activée pour %@ sur ce Mac. Chaque étape ci-dessous passe au vert quand elle est prête ; une étape orange propose une correction."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Suara aktif untuk %@ di Mac ini. Setiap langkah di bawah berubah hijau saat siap; langkah berwarna oranye memiliki perbaikan."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La voce è attiva per %@ su questo Mac. Ogni passaggio qui sotto diventa verde quando è pronto; un passaggio arancione ha una soluzione."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このMacで%@の音声がオンになっています。下の各手順は準備ができると緑色になります。オレンジ色の手順には解決方法があります。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 Mac에서 %@의 음성이 켜져 있어요. 아래 각 단계는 준비되면 초록색으로 바뀌며, 주황색 단계에는 해결 방법이 있어요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Głos jest włączony dla profilu %@ na tym Macu. Każdy krok poniżej zmieni kolor na zielony, gdy będzie gotowy; przy pomarańczowym kroku znajdziesz sposób naprawy."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A voz está ativada para %@ neste Mac. Cada etapa abaixo fica verde quando está pronta; uma etapa laranja tem uma correção."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Голос включён для профиля %@ на этом Mac. Каждый шаг ниже становится зелёным, когда готов; для оранжевого шага есть исправление."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bu Mac’te %@ için ses açık. Aşağıdaki her adım hazır olduğunda yeşile döner; turuncu bir adımın bir çözümü vardır."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 的语音已在这台 Mac 上开启。下方每一步就绪后会变为绿色；橙色步骤附有修复方法。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已在這部 Mac 上為 %@ 開啟語音。下方每個步驟就緒後會變成綠色；橘色步驟附有修正方法。"
+          }
+        }
+      }
+    },
+    "Turn this on to talk to %@. Conduit asks for the microphone and Speech Recognition, and uses this Mac to hear you and to speak the replies. Nothing to set up on Hermes." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schalte das ein, um mit %@ zu sprechen. Conduit fragt nach dem Mikrofon und der Spracherkennung und nutzt diesen Mac, um dich zu hören und die Antworten zu sprechen. Auf Hermes musst du nichts einrichten."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Actívalo para hablar con %@. Conduit pide acceso al micrófono y al Reconocimiento de voz, y usa este Mac para escucharte y para decir las respuestas. No hay nada que configurar en Hermes."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Active cette option pour parler à %@. Conduit demande l’accès au micro et à la Reconnaissance vocale, et utilise ce Mac pour t’écouter et lire les réponses à voix haute. Rien à configurer sur Hermes."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aktifkan ini untuk berbicara dengan %@. Conduit meminta akses mikrofon dan Pengenalan Ucapan, lalu memakai Mac ini untuk mendengarmu dan mengucapkan balasan. Tidak ada yang perlu diatur di Hermes."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attivalo per parlare con %@. Conduit chiede l’accesso al microfono e al Riconoscimento vocale, e usa questo Mac per ascoltarti e per leggere le risposte. Niente da configurare su Hermes."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "オンにすると%@と話せます。Conduitはマイクと音声認識へのアクセスを求め、このMacであなたの声を聞き取り、返答を読み上げます。Hermes側の設定は不要です。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@와(과) 대화하려면 켜세요. Conduit는 마이크와 음성 인식 권한을 요청하고, 이 Mac으로 사용자의 말을 듣고 답변을 읽어 줍니다. Hermes에서 설정할 것은 없습니다."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Włącz, aby rozmawiać z %@. Conduit poprosi o dostęp do mikrofonu i rozpoznawania mowy, a następnie użyje tego Maca, aby cię słuchać i czytać odpowiedzi. Na Hermesie nie trzeba nic konfigurować."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ative para conversar com %@. O Conduit pede acesso ao microfone e ao Reconhecimento de Fala, e usa este Mac para ouvir você e falar as respostas. Nada para configurar no Hermes."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Включите, чтобы говорить с %@. Conduit запросит доступ к микрофону и распознаванию речи и будет использовать этот Mac, чтобы слышать вас и озвучивать ответы. На Hermes ничего настраивать не нужно."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ ile konuşmak için bunu açın. Conduit mikrofon ve Konuşma Tanıma izni ister, sizi duymak ve yanıtları seslendirmek için bu Mac’i kullanır. Hermes'te ayarlanacak bir şey yok."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开后即可与 %@ 对话。Conduit 会请求麦克风和语音识别权限，并用这台 Mac 听你说话、朗读回复。Hermes 上无需任何设置。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "開啟後即可與 %@ 對話。Conduit 會要求麥克風和語音辨識權限，並用這部 Mac 聽你說話、朗讀回覆。Hermes 上無需任何設定。"
+          }
+        }
+      }
+    },
+    "Use this Mac's time zone (%@)" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zeitzone dieses Macs verwenden (%@)"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usar la zona horaria de este Mac (%@)"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Utiliser le fuseau horaire de ce Mac (%@)"
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gunakan zona waktu Mac ini (%@)"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usa il fuso orario di questo Mac (%@)"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このMacのタイムゾーンを使用（%@）"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 Mac의 시간대 사용(%@)"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Użyj strefy czasowej tego Maca (%@)"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usar o fuso horário deste Mac (%@)"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Использовать часовой пояс этого Mac (%@)"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bu Mac’in saat dilimini kullan (%@)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用这台 Mac 的时区（%@）"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用這部 Mac 的時區（%@）"
+          }
+        }
+      }
+    },
+    "%@ on Hermes isn't ready (%@). This Mac can do it instead, with nothing to install." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ auf Hermes ist nicht bereit (%@). Dieser Mac kann das stattdessen übernehmen, ganz ohne Installation."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ en Hermes no está listo (%@). Este Mac puede hacerlo en su lugar, sin instalar nada."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ sur Hermes n'est pas prêt (%@). Ce Mac peut s'en charger à la place, sans rien installer."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ di Hermes belum siap (%@). Mac ini dapat melakukannya sebagai gantinya, tanpa perlu memasang apa pun."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ su Hermes non è pronto (%@). Questo Mac può farlo al suo posto, senza installare nulla."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermesの%@は準備ができていません（%@）。代わりにこのMacで処理でき、インストールは不要です。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes의 %@ 사용 준비가 되지 않았어요(%@). 대신 이 Mac에서 처리할 수 있으며 따로 설치할 것은 없어요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dostawca %@ w Hermesie nie jest gotowy (%@). Zamiast niego może to robić ten Mac, bez instalowania czegokolwiek."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ no Hermes não está pronto (%@). Este Mac pode fazer isso no lugar dele, sem instalar nada."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ в Hermes не готов (%@). Вместо него можно использовать этот Mac — ничего устанавливать не нужно."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes'teki %@ hazır değil (%@). Bunun yerine bu Mac, hiçbir şey yüklemeden bu işi yapabilir."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes 上的 %@ 尚未就绪（%@）。可以改用这台 Mac，无需安装任何东西。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes 上的 %@ 尚未就緒（%@）。可以改由這部 Mac 處理，無需安裝任何項目。"
+          }
+        }
+      }
+    },
+    "%@ isn't ready on Hermes. This Mac can speak the replies instead, with nothing to set up." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ ist auf Hermes nicht bereit. Stattdessen kann dieser Mac die Antworten sprechen, ohne dass du etwas einrichten musst."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ no está listo en Hermes. Este Mac puede decir las respuestas en su lugar, sin configurar nada."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ n’est pas prêt sur Hermes. Ce Mac peut lire les réponses à la place, sans rien configurer."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ belum siap di Hermes. Mac ini bisa mengucapkan balasan sebagai gantinya, tanpa perlu mengatur apa pun."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ non è pronto su Hermes. Questo Mac può leggere le risposte al suo posto, senza configurare nulla."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@はHermesで準備ができていません。代わりにこのMacが返答を読み上げられます。設定は不要です。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@이(가) Hermes에서 준비되지 않았습니다. 대신 이 Mac이 설정 없이 답변을 읽어 줄 수 있습니다."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ nie jest gotowy na Hermesie. Ten Mac może zamiast tego czytać odpowiedzi, bez żadnej konfiguracji."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ não está pronto no Hermes. Este Mac pode falar as respostas no lugar, sem configurar nada."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ не готов на Hermes. Вместо него ответы может озвучивать этот Mac, без всякой настройки."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ Hermes'te hazır değil. Bunun yerine bu Mac yanıtları hiçbir ayar gerekmeden seslendirebilir."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 在 Hermes 上尚未就绪。可以改由这台 Mac 朗读回复，无需任何设置。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 在 Hermes 上尚未就緒。可以改由這部 Mac 朗讀回覆，無需任何設定。"
+          }
+        }
+      }
+    },
+    "%@ sends your voice to %@. Allow it in Conduit on your Mac to start the call." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ sendet deine Stimme an %2$@. Erlaube es in Conduit auf deinem Mac, um den Anruf zu starten."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ envía tu voz a %2$@. Permítelo en Conduit en tu Mac para iniciar la llamada."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ envoie votre voix à %2$@. Autorisez-le dans Conduit sur votre Mac pour lancer l’appel."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ mengirim suara Anda ke %2$@. Izinkan di Conduit pada Mac Anda untuk memulai panggilan."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ invia la tua voce a %2$@. Consentilo in Conduit sul tuo Mac per avviare la chiamata."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@は音声を%2$@に送信します。通話を始めるには、MacのConduitで許可してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@은(는) 음성을 %2$@에 보내요. 통화를 시작하려면 Mac의 Conduit에서 허용하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ wysyła Twój głos do %2$@. Zezwól na to w Conduit na Macu, aby rozpocząć rozmowę."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ envia sua voz para a %2$@. Permita no Conduit no seu Mac para iniciar a chamada."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ отправляет ваш голос в %2$@. Разрешите это в Conduit на Mac, чтобы начать звонок."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ sesinizi %2$@ şirketine gönderir. Aramayı başlatmak için Mac’inizdeki Conduit’te izin verin."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 会将你的语音发送给 %2$@。请在 Mac 上的 Conduit 中允许，才能开始通话。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 會將你的語音傳送給 %2$@。請在 Mac 上的 Conduit 中允許，才能開始通話。"
+          }
+        }
+      }
+    },
+    "Mac.VoiceSettings.SystemVoiceDetail" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Antworten werden mit den in macOS integrierten Stimmen auf diesem Mac gesprochen. Auf Hermes musst du nichts einrichten oder bezahlen."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Replies are spoken with the voices built into macOS, on this Mac. Nothing to set up or pay for on Hermes."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Las respuestas se dicen con las voces integradas en macOS, en este Mac. No hay nada que configurar ni pagar en Hermes."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Les réponses sont lues avec les voix intégrées à macOS, sur ce Mac. Rien à configurer ni à payer sur Hermes."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Balasan diucapkan dengan suara bawaan macOS, di Mac ini. Tidak ada yang perlu diatur atau dibayar di Hermes."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le risposte vengono lette con le voci integrate in macOS, su questo Mac. Niente da configurare o pagare su Hermes."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "返答はこのMac上で、macOSに内蔵された声で読み上げられます。Hermes側での設定や費用は不要です。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "답변은 이 Mac에서 macOS에 내장된 음성으로 읽어 줍니다. Hermes에서 설정하거나 비용을 낼 필요가 없습니다."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odpowiedzi są czytane głosami wbudowanymi w macOS, na tym Macu. Na Hermesie nie trzeba nic konfigurować ani płacić."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "As respostas são faladas com as vozes integradas ao macOS, neste Mac. Nada para configurar ou pagar no Hermes."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ответы озвучиваются встроенными голосами macOS на этом Mac. На Hermes ничего не нужно настраивать или оплачивать."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Yanıtlar bu Mac’te macOS’un yerleşik sesleriyle seslendirilir. Hermes'te ayarlanacak ya da ödenecek bir şey yok."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "回复会在这台 Mac 上用 macOS 内置的声音朗读。Hermes 上无需设置，也无需付费。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "回覆會在這部 Mac 上用 macOS 內建的聲音朗讀。Hermes 上無需設定，也無需付費。"
+          }
+        }
+      }
+    },
+    "Mac.VoiceSettings.EnhancedVoices" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Für eine natürlichere Stimme lade in den Systemeinstellungen unter „Bedienungshilfen“ > „Gesprochene Inhalte“ > „Systemstimme“ eine erweiterte oder Premium-Stimme. Conduit nutzt die beste installierte Stimme für die Sprache der Antwort."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "For a more natural voice, download an Enhanced or Premium voice in System Settings > Accessibility > Spoken Content > System voice. Conduit uses the best one installed for the reply's language."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Para una voz más natural, descarga una voz mejorada o premium en Ajustes del Sistema > Accesibilidad > Contenido leído > Voz del sistema. Conduit usa la mejor instalada para el idioma de la respuesta."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pour une voix plus naturelle, télécharge une voix améliorée ou premium dans Réglages Système > Accessibilité > Contenu énoncé > Voix système. Conduit utilise la meilleure voix installée pour la langue de la réponse."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Untuk suara yang lebih alami, unduh suara Ditingkatkan atau Premium di Pengaturan Sistem > Aksesibilitas > Konten Lisan > Suara sistem. Conduit memakai suara terbaik yang terpasang untuk bahasa balasan."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Per una voce più naturale, scarica una voce migliorata o premium in Impostazioni di Sistema > Accessibilità > Contenuto letto ad alta voce > Voce di sistema. Conduit usa la migliore installata per la lingua della risposta."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "より自然な声にするには、「システム設定」>「アクセシビリティ」>「読み上げコンテンツ」>「システムの声」で拡張またはプレミアムの声をダウンロードしてください。Conduitは返答の言語に合う、インストール済みの最も良い声を使います。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "더 자연스러운 음성을 원하면 시스템 설정 > 손쉬운 사용 > 콘텐츠 말하기 > 시스템 음성에서 향상된 음성 또는 프리미엄 음성을 다운로드하세요. Conduit는 답변 언어에 맞게 설치된 가장 좋은 음성을 사용합니다."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aby głos brzmiał naturalniej, pobierz głos rozszerzony lub premium w Ustawieniach systemowych > Dostępność > Zawartość mówiona > Głos systemowy. Conduit używa najlepszego zainstalowanego głosu dla języka odpowiedzi."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Para uma voz mais natural, baixe uma voz aprimorada ou premium em Ajustes do Sistema > Acessibilidade > Conteúdo Falado > Voz do sistema. O Conduit usa a melhor voz instalada para o idioma da resposta."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Для более естественного голоса скачайте улучшенный голос или голос премиум в «Системные настройки» > «Универсальный доступ» > «Устный контент» > «Голос системы». Conduit использует лучший установленный голос для языка ответа."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Daha doğal bir ses için Sistem Ayarları > Erişilebilirlik > Seslendirilen İçerik > Sistem sesi bölümünden Geliştirilmiş veya Premium bir ses indirin. Conduit, yanıtın dili için yüklü en iyi sesi kullanır."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "想要更自然的声音，请在“系统设置”>“无障碍”>“朗读内容”>“系统声音”中下载增强版或高级版声音。Conduit 会为回复的语言使用已安装的最佳声音。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "想要更自然的聲音，請在「系統設定」>「輔助使用」>「語音內容」>「系統聲音」中下載加強版或高級版聲音。Conduit 會為回覆的語言使用已安裝的最佳聲音。"
+          }
+        }
+      }
+    },
+    "Mac.VoiceSettings.KeepScreenAwakeNote" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der Bildschirm bleibt an, solange eine Sprachunterhaltung geöffnet ist, auch in den Live-Sprachmodi. Wenn aus, schaltet der Mac den Bildschirm nach der üblichen Zeit aus: Live-Anrufe laufen im Hintergrund weiter, eine klassische Sprachunterhaltung ebenfalls, wenn „Bei Sperre weiter zuhören“ aktiviert ist. Gilt für diesen Mac."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The screen stays on while a voice conversation is open, including the live voice modes. When off, the Mac sleeps its display on its usual timer: live voice calls keep going in the background, and a classic voice conversation does too with Keep Listening When Locked on. Applies to this Mac."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La pantalla permanece encendida mientras haya una conversación de voz abierta, incluidos los modos de voz en vivo. Si está desactivado, el Mac apaga la pantalla según su temporizador habitual: las llamadas de voz en vivo continúan en segundo plano, y una conversación de voz clásica también si Seguir escuchando al bloquear está activado. Se aplica a este Mac."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L'écran reste allumé tant qu'une conversation vocale est ouverte, y compris dans les modes vocaux en direct. Si l'option est désactivée, le Mac met l'écran en veille selon son délai habituel : les appels vocaux en direct continuent en arrière-plan, de même qu'une conversation vocale classique si Écouter même verrouillé est activé. S'applique à ce Mac."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Layar tetap menyala selama percakapan suara terbuka, termasuk mode Live Voice. Jika mati, Mac menidurkan layarnya sesuai pengatur waktu biasanya: panggilan Live Voice terus berjalan di latar belakang, begitu juga percakapan suara klasik jika “Tetap mendengarkan saat terkunci” dinyalakan. Berlaku untuk Mac ini."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lo schermo resta acceso mentre è aperta una conversazione vocale, comprese le modalità Voce live. Se disattivato, il Mac spegne lo schermo secondo il suo timer abituale: le chiamate live continuano in background, e così anche una conversazione vocale classica con Ascolta anche da bloccato attivo. Vale per questo Mac."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ライブ音声モードを含め、音声会話を開いている間は画面がオンのままになります。オフの場合、Macは通常のタイマーでディスプレイをスリープします。ライブ通話はバックグラウンドで続き、「ロック中も聞き取りを続ける」がオンならクラシック音声の会話も続きます。このMacに適用されます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "라이브 음성 모드를 포함해 음성 대화가 열려 있는 동안 화면이 켜진 상태로 유지돼요. 끄면 Mac이 평소 설정된 시간에 디스플레이를 잠자기 상태로 전환해요. 라이브 음성 통화는 백그라운드에서 계속되고, 클래식 음성 대화도 ‘잠금 상태에서도 계속 듣기’가 켜져 있으면 계속돼요. 이 Mac에 적용돼요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ekran pozostaje włączony, gdy rozmowa głosowa jest otwarta, także w trybach głosowych Live. Gdy ta opcja jest wyłączona, Mac usypia ekran po zwykłym czasie: połączenia Live trwają dalej w tle, a klasyczna rozmowa głosowa również, jeśli włączona jest opcja „Słuchaj po zablokowaniu”. Dotyczy tego Maca."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A tela fica ligada enquanto uma conversa por voz está aberta, inclusive nos modos de voz ao vivo. Quando desativado, o Mac desliga a tela no tempo habitual: chamadas de voz ao vivo continuam em segundo plano, e uma conversa no modo de voz clássico também, com Continuar ouvindo quando bloqueado ativado. Vale para este Mac."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Экран не гаснет, пока открыт голосовой разговор, в том числе в Live-режимах. Если выключено, Mac усыпляет дисплей по обычному таймеру: Live-звонки продолжаются в фоне, а классический голосовой разговор — тоже, если включено «Слушать при блокировке». Действует на этом Mac."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sesli bir konuşma açıkken (canlı ses modları dahil) ekran açık kalır. Kapalıyken Mac, ekranı her zamanki zamanlayıcısıyla uyku moduna alır: Canlı sesli aramalar arka planda devam eder; Kilitliyken dinlemeye devam et açıksa klasik sesli konuşma da devam eder. Bu Mac’te geçerlidir."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音对话（包括实时语音模式）打开时屏幕保持常亮。关闭后，Mac 会按平常的时间让显示器进入睡眠：实时语音通话会在后台继续，开启“锁屏时继续聆听”后，经典语音对话也会继续。仅适用于此 Mac。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "語音對話開啟期間（包括即時語音模式），螢幕會保持開啟。關閉時，Mac 會依平常的時間讓顯示器進入睡眠：即時語音通話會在背景繼續，而開啟「鎖定時繼續聆聽」時，經典語音對話也會繼續。套用於此 Mac。"
+          }
+        }
+      }
+    },
+    "Mac.VoiceSettings.OrbMotionNote" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Kugel auf dem Live-Anrufbildschirm bewegt sich mit dem Anruf. Schalte dies aus, um eine stillstehende Kugel zu sehen, die weniger Strom verbraucht. Sie bleibt auch still, solange „Bewegung reduzieren“ aktiviert ist. Gilt für diesen Mac."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The orb on the live call screen moves with the call. Turn this off for a still orb that uses less power. It also holds still while Reduce Motion is on. Applies to this Mac."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El orbe de la pantalla de llamada en vivo se mueve con la llamada. Desactívalo para tener un orbe fijo que gasta menos energía. También se queda quieto si Reducir movimiento está activado. Se aplica a este Mac."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L'orbe de l'écran d'appel en direct bouge au rythme de l'appel. Désactivez cette option pour un orbe fixe qui consomme moins d'énergie. Il reste aussi immobile quand Réduire les animations est activé. S'applique à ce Mac."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bola di layar panggilan langsung bergerak mengikuti panggilan. Matikan agar bola diam dan lebih hemat daya. Bola juga diam saat Kurangi Gerakan menyala. Berlaku untuk Mac ini."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La sfera nella schermata della chiamata live si muove con la chiamata. Disattiva questa opzione per una sfera ferma che consuma meno energia. Resta ferma anche quando Riduci movimento è attivo. Vale per questo Mac."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ライブ通話画面のオーブは通話に合わせて動きます。オフにすると、オーブが静止して消費電力が減ります。「視差効果を減らす」がオンのときも静止します。このMacに適用されます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "라이브 통화 화면의 오브가 통화에 맞춰 움직여요. 끄면 오브가 멈춰 있어 전력을 덜 사용해요. ‘동작 줄이기’가 켜져 있을 때도 멈춰 있어요. 이 Mac에 적용돼요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kula na ekranie połączenia Live porusza się w rytm rozmowy. Wyłącz tę opcję, aby kula była nieruchoma i zużywała mniej energii. Kula zatrzymuje się także, gdy włączona jest opcja Ogranicz ruch. Dotyczy tego Maca."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O orbe na tela da chamada ao vivo se move com a chamada. Desative para um orbe parado que usa menos energia. Ele também fica parado com Reduzir Movimento ativado. Vale para este Mac."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сфера на экране Live-звонка движется в такт звонку. Выключите, чтобы сфера была неподвижной и расходовала меньше энергии. Она также замирает, когда включено «Уменьшение движения». Действует на этом Mac."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Canlı arama ekranındaki küre aramayla birlikte hareket eder. Daha az enerji kullanan sabit bir küre için bunu kapatın. Hareketi Azalt açıkken de sabit kalır. Bu Mac’te geçerlidir."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实时通话界面上的光球会随通话而动。关闭后光球保持静止，更省电。开启“减弱动态效果”时，光球也会保持静止。仅适用于此 Mac。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "即時通話畫面上的光球會隨通話律動。關閉此選項可讓光球保持靜止，較省電。開啟「減少動態效果」時，光球也會保持靜止。僅套用於此 Mac。"
+          }
+        }
+      }
+    },
+    "Mac.Chat.SendButtonHint" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klicke mit der rechten Maustaste auf die Senden-Taste, um für eine Nachricht eine andere Art zu wählen."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Right-click the send button to choose another way for one message."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Haz clic con el botón derecho en el botón de enviar para elegir otra forma de enviar un mensaje."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Faites un clic droit sur le bouton d'envoi pour choisir une autre façon d'envoyer un message."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klik kanan tombol kirim untuk memilih cara lain mengirim satu pesan."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fai clic con il tasto destro sul pulsante di invio per scegliere un altro modo di inviare un messaggio."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "送信ボタンを右クリックすると、1件のメッセージだけ別の方法で送信できます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "보내기 버튼을 오른쪽 클릭하면 메시지 하나를 다른 방식으로 보낼 수 있어요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kliknij prawym przyciskiem myszy przycisk wysyłania, aby wysłać jedną wiadomość w inny sposób."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clique com o botão direito no botão de enviar para escolher outra forma de enviar uma mensagem."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нажмите правой кнопкой мыши на кнопку отправки, чтобы отправить одно сообщение по-другому."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bir mesajı başka bir şekilde göndermek için gönder düğmesine sağ tıklayın."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "右键点按发送按钮，可为单条消息选择其他发送方式。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在傳送按鈕上按一下滑鼠右鍵，可為單則訊息選擇其他傳送方式。"
+          }
+        }
+      }
+    },
+    "Mac.HermesClient.QueueUnsupported" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dieses Hermes kann keine Nachrichten einreihen. Aktualisiere Hermes oder klicke mit der rechten Maustaste auf die Senden-Taste, um stattdessen nachzusteuern oder zu unterbrechen."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This Hermes can't queue messages. Update Hermes, or right-click send to steer or interrupt instead."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este Hermes no puede poner mensajes en cola. Actualiza Hermes o haz clic con el botón derecho en enviar para guiar o interrumpir."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ce Hermes ne peut pas mettre de messages en file d'attente. Mettez Hermes à jour, ou faites un clic droit sur le bouton d'envoi pour réorienter ou interrompre."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes ini tidak bisa mengantrekan pesan. Perbarui Hermes, atau klik kanan tombol kirim untuk mengarahkan atau menginterupsi."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questo Hermes non può mettere in coda i messaggi. Aggiorna Hermes, oppure fai clic con il tasto destro su invio per reindirizzare o interrompere."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このHermesはメッセージをキューに追加できません。Hermesをアップデートするか、送信ボタンを右クリックして軌道修正または中断を選んでください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 Hermes는 메시지를 대기열에 넣을 수 없어요. Hermes를 업데이트하거나, 보내기 버튼을 오른쪽 클릭해 방향 조정 또는 중단을 선택하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ten Hermes nie umie kolejkować wiadomości. Zaktualizuj Hermesa albo kliknij prawym przyciskiem myszy przycisk wysyłania, aby zamiast tego pokierować lub przerwać."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este Hermes não consegue colocar mensagens na fila. Atualize o Hermes ou clique com o botão direito no botão de enviar para orientar ou interromper."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Этот Hermes не умеет ставить сообщения в очередь. Обновите Hermes или нажмите правой кнопкой мыши на кнопку отправки, чтобы скорректировать или прервать ответ."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bu Hermes mesajları sıraya alamıyor. Hermes'i güncelle ya da yönlendirmek veya yarıda kesmek için gönder düğmesine sağ tıkla."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此 Hermes 无法将消息排队。请更新 Hermes，或右键点按发送按钮改为引导或中断。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此 Hermes 無法將訊息排隊。請更新 Hermes，或在傳送按鈕上按一下滑鼠右鍵改為引導或中斷。"
+          }
+        }
+      }
+    },
+    "Mac.Sidebar.ProjectRowHint" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Öffnet die Unterhaltungen in diesem Projekt. Klicke mit der rechten Maustaste, um es umzubenennen oder zu löschen."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opens the conversations in this project. Right-click to rename or delete it."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abre las conversaciones de este proyecto. Haz clic con el botón derecho para cambiarle el nombre o eliminarlo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ouvre les conversations de ce projet. Faites un clic droit pour le renommer ou le supprimer."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Membuka percakapan di proyek ini. Klik kanan untuk mengganti nama atau menghapusnya."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apre le conversazioni di questo progetto. Fai clic con il tasto destro per rinominarlo o eliminarlo."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このプロジェクト内のチャットを開きます。右クリックで名前の変更や削除ができます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 프로젝트의 대화를 열어요. 이름을 변경하거나 삭제하려면 오른쪽 클릭하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwiera rozmowy w tym projekcie. Kliknij prawym przyciskiem myszy, aby zmienić jego nazwę lub go usunąć."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abre as conversas deste projeto. Clique com o botão direito para renomeá-lo ou apagá-lo."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открывает чаты этого проекта. Нажмите правой кнопкой мыши, чтобы переименовать или удалить его."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bu projedeki konuşmaları açar. Yeniden adlandırmak veya silmek için sağ tıklayın."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开此项目中的对话。右键点按可重命名或删除它。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打開此專案中的對話。按一下滑鼠右鍵即可重新命名或刪除。"
+          }
+        }
+      }
+    },
+    "Mac.Sidebar.SessionRowHint" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klicke mit der rechten Maustaste für Aktionen zur Unterhaltung."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Right-click for conversation actions."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Haz clic con el botón derecho para ver las acciones de la conversación."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Faites un clic droit pour afficher les actions de la conversation."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klik kanan untuk tindakan percakapan."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fai clic con il tasto destro per le azioni della conversazione."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "右クリックでチャットの操作を表示できます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "대화 동작을 보려면 오른쪽 클릭하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kliknij prawym przyciskiem myszy, aby wyświetlić czynności rozmowy."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clique com o botão direito para ver as ações da conversa."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нажмите правой кнопкой мыши, чтобы открыть действия с чатом."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Konuşma eylemleri için sağ tıklayın."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "右键点按可使用对话操作。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "按一下滑鼠右鍵即可使用對話動作。"
+          }
+        }
+      }
+    },
+    "Mac.LiveVoiceBar.CallStopped" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anruf beendet. Klicke, um den Grund zu sehen."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Call stopped. Click to see why."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Llamada detenida. Haz clic para ver por qué."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Appel arrêté. Cliquez pour savoir pourquoi."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Panggilan berhenti. Klik untuk melihat alasannya."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chiamata interrotta. Fai clic per vedere perché."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通話が停止しました。クリックすると理由が表示されます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "통화가 중지됐어요. 이유를 보려면 클릭하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Połączenie przerwane. Kliknij, aby zobaczyć dlaczego."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chamada interrompida. Clique para ver o motivo."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Звонок прерван. Нажмите, чтобы узнать причину."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arama durdu. Nedenini görmek için tıklayın."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通话已停止。点按查看原因。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通話已停止。按一下查看原因。"
+          }
+        }
+      }
+    },
+    "Mac.ModelPicker.AllHidden" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alle Anbieter sind ausgeblendet. Klicke auf „Bearbeiten“, um einen wiederherzustellen."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "All providers are hidden. Click Edit to restore one."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todos los proveedores están ocultos. Haz clic en Editar para restaurar uno."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tous les fournisseurs sont masqués. Cliquez sur Modifier pour en rétablir un."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Semua penyedia disembunyikan. Klik Edit untuk memulihkan salah satunya."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tutti i provider sono nascosti. Fai clic su Modifica per ripristinarne uno."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "すべてのプロバイダが非表示になっています。「編集」をクリックすると復元できます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "모든 제공자가 가려져 있어요. 다시 표시하려면 ‘편집’을 클릭하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wszyscy dostawcy są ukryci. Kliknij „Edycja”, aby przywrócić któregoś z nich."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todos os provedores estão ocultos. Clique em Editar para restaurar um."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Все провайдеры скрыты. Нажмите «Изменить», чтобы вернуть какой-либо из них."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tüm sağlayıcılar gizli. Birini geri getirmek için Düzenle'ye tıklayın."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所有提供方均已隐藏。点按“编辑”可恢复。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所有供應商皆已隱藏。按一下「編輯」即可回復。"
+          }
+        }
+      }
+    },
+    "Mac.GeminiLive.ResumptionLost" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemini Live hat dieses Gespräch auf seiner Seite verloren. Klicke auf „Erneut versuchen“, um ein neues zu beginnen."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemini Live lost this conversation on its side. Click Try again to start a new one."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemini Live perdió esta conversación por su parte. Haz clic en Reintentar para empezar una nueva."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemini Live a perdu cette conversation de son côté. Cliquez sur Réessayer pour en commencer une nouvelle."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemini Live kehilangan percakapan ini di sisinya. Klik Coba lagi untuk memulai yang baru."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemini Live ha perso questa conversazione dal suo lato. Fai clic su Riprova per iniziarne una nuova."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemini Live側でこの会話が失われました。「再試行」をクリックして新しい会話を始めてください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemini Live 쪽에서 이 대화가 사라졌어요. ‘다시 시도’를 클릭해 새 대화를 시작하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemini Live utracił tę rozmowę po swojej stronie. Kliknij Spróbuj ponownie, aby zacząć nową."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O Gemini Live perdeu esta conversa do lado dele. Clique em Tentar novamente para começar uma nova."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemini Live потерял этот разговор на своей стороне. Нажмите «Повторить», чтобы начать новый."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemini Live bu sohbeti kendi tarafında kaybetti. Yenisini başlatmak için Yeniden Dene'ye tıklayın."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemini Live 那边丢失了这段对话。点按“重试”开始新的对话。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemini Live 那端遺失了這段對話。按一下「再試一次」開始新的對話。"
+          }
+        }
+      }
+    },
+    "Return to Voice settings, enable this mode if it is off, and click %@ to check availability." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kehre zu den Spracheinstellungen zurück, aktiviere diesen Modus, falls er aus ist, und klicke auf „%@“, um die Verfügbarkeit zu prüfen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vuelve a los ajustes de Voz, activa este modo si está desactivado y haz clic en «%@» para comprobar la disponibilidad."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Revenez aux réglages Voix, activez ce mode s'il est désactivé, puis cliquez sur %@ pour vérifier la disponibilité."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kembali ke pengaturan Suara, aktifkan mode ini jika mati, lalu klik %@ untuk memeriksa ketersediaan."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Torna alle impostazioni Voce, attiva questa modalità se è disattivata e fai clic su %@ per verificare la disponibilità."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "「音声」設定に戻り、このモードがオフの場合はオンにしてから、%@をクリックして利用可能か確認してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "‘음성’ 설정으로 돌아가 이 모드가 꺼져 있으면 켠 다음, ‘%@’ 버튼을 클릭해 사용 가능한지 확인하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wróć do ustawień głosu, włącz ten tryb, jeśli jest wyłączony, i kliknij „%@”, aby sprawdzić dostępność."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Volte aos ajustes de Voz, ative este modo se estiver desativado e clique em %@ para verificar a disponibilidade."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вернитесь в настройки голоса, включите этот режим, если он выключен, и нажмите «%@», чтобы проверить доступность."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ses ayarlarına dönün, kapalıysa bu modu açın ve kullanılabilirliği denetlemek için “%@” düğmesine tıklayın."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "返回“语音”设置；如果此模式尚未启用，请先启用，然后点按 %@ 检查是否可用。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "返回「語音」設定，如果此模式已關閉請將其開啟，然後按一下「%@」檢查是否可用。"
+          }
+        }
+      }
+    },
+    "Mac.VoiceSettings.SaveNowBlocked" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dein Hermes-Server kann noch keine Sprachanrufe sichern. Installiere oder aktualisiere das Hermes-Notifier-Plug-in auf deinem Hermes-Server und klicke dann auf „Jetzt sichern“."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Your Hermes server can't save voice calls yet. Install or update the Hermes notifier plugin on your Hermes server, then click Save Now."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tu servidor Hermes aún no puede guardar llamadas de voz. Instala o actualiza el plugin de notificaciones de Hermes en tu servidor Hermes y luego haz clic en Guardar ahora."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Votre serveur Hermes ne peut pas encore enregistrer les appels vocaux. Installez ou mettez à jour le plugin de notification Hermes sur votre serveur Hermes, puis cliquez sur Enregistrer."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Server Hermes Anda belum dapat menyimpan panggilan suara. Instal atau perbarui plugin notifier Hermes di server Hermes Anda, lalu klik Simpan Sekarang."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il tuo server Hermes non può ancora salvare le chiamate vocali. Installa o aggiorna il plugin di notifica di Hermes sul tuo server Hermes, poi fai clic su Salva ora."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "お使いのHermesサーバはまだ音声通話を保存できません。HermesサーバにHermes通知プラグインをインストールまたはアップデートしてから、「今すぐ保存」をクリックしてください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes 서버가 아직 음성 통화를 저장할 수 없어요. Hermes 서버에 Hermes 알림 플러그인을 설치하거나 업데이트한 다음 ‘지금 저장’을 클릭하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Twój serwer Hermes nie może jeszcze zapisywać połączeń głosowych. Zainstaluj lub zaktualizuj wtyczkę powiadomień Hermes na swoim serwerze Hermes, a następnie kliknij „Zapisz teraz”."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Seu servidor Hermes ainda não pode salvar chamadas de voz. Instale ou atualize o plugin notificador do Hermes no seu servidor Hermes e clique em Salvar Agora."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ваш сервер Hermes пока не может сохранять голосовые звонки. Установите или обновите плагин уведомлений Hermes на сервере Hermes, затем нажмите «Сохранить сейчас»."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes sunucunuz henüz sesli aramaları kaydedemiyor. Hermes sunucunuza Hermes bildirim eklentisini yükleyin veya güncelleyin, ardından Şimdi Kaydet'e tıklayın."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的 Hermes 服务器暂时无法保存语音通话。请在 Hermes 服务器上安装或更新 Hermes notifier 插件，然后点按“立即保存”。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的 Hermes 伺服器目前無法儲存語音通話。請在 Hermes 伺服器上安裝或更新 Hermes 通知外掛程式，然後按一下「立即儲存」。"
+          }
+        }
+      }
+    },
+    "Mac.VoiceConversation.ListeningStoppedLocked" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das Zuhören wurde beendet, während dein Mac gesperrt war. Klicke auf „Zuhören“, um fortzufahren."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Listening stopped while your Mac was locked. Click Listen to continue."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La escucha se detuvo mientras el Mac estaba bloqueado. Haz clic en Escuchar para continuar."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L'écoute s'est arrêtée pendant que votre Mac était verrouillé. Cliquez sur Écouter pour continuer."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pendengaran berhenti saat Mac Anda terkunci. Klik Dengarkan untuk melanjutkan."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L'ascolto si è interrotto mentre il Mac era bloccato. Fai clic su Ascolta per continuare."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Macのロック中に聞き取りが停止しました。続けるには「聞き取り」をクリックしてください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac이 잠겨 있는 동안 듣기가 중지됐어요. 계속하려면 ‘듣기’를 클릭하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Słuchanie zostało zatrzymane, gdy Mac był zablokowany. Kliknij „Słuchaj”, aby kontynuować."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A escuta parou enquanto o Mac estava bloqueado. Clique em Ouvir para continuar."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Прослушивание остановилось, пока Mac был заблокирован. Нажмите «Слушать», чтобы продолжить."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac’iniz kilitliyken dinleme durdu. Devam etmek için Dinle'ye tıklayın."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac 锁定时聆听已停止。点按“聆听”继续。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac 鎖定時已停止聆聽。按一下「聆聽」以繼續。"
+          }
+        }
+      }
+    },
+    "Mac.HermesCalls.HowToAsk" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Frag in einem beliebigen Chat oder Sprachanruf: „Ruf mich an, wenn die Tests fertig sind.“ Hermes sagt dir per Mitteilung Bescheid, sobald der Job erledigt ist, und mit einem Klick darauf sprichst du in diesem Chat mit Hermes."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ask in any chat or voice call: “Call me when the tests finish.” Hermes tells you in a notification once the job is done, and clicking it opens voice in that chat."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pídelo en cualquier chat o llamada de voz: «Llámame cuando terminen las pruebas». Hermes te avisa con una notificación cuando el trabajo está listo y, al hacer clic en ella, hablas con Hermes en ese chat."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Demandez-le dans n'importe quelle discussion ou appel vocal : « Appelle-moi quand les tests sont finis. » Hermes vous prévient par une notification une fois le job terminé, et en cliquant dessus, vous parlez à Hermes dans cette discussion."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Minta di obrolan atau panggilan suara mana pun: “Telepon saya kalau tesnya sudah selesai.” Hermes memberi tahu Anda lewat pemberitahuan setelah pekerjaan selesai, dan saat pemberitahuan itu diklik, Anda berbicara dengan Hermes di obrolan itu."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chiedilo in qualsiasi chat o chiamata vocale: «Chiamami quando i test sono finiti». Hermes ti avvisa con una notifica appena il job è terminato e, facendo clic su di essa, parli con Hermes in quella chat."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "どのチャットや音声通話でも「テストが終わったら電話して」と頼んでください。ジョブが完了するとHermesが通知で知らせ、その通知をクリックするとそのチャットで音声会話が始まります。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "어느 채팅이나 음성 통화에서든 “테스트 끝나면 전화해 줘”라고 부탁하세요. 작업이 끝나면 Hermes가 알림으로 알려 주고, 알림을 클릭하면 그 채팅에서 음성 대화가 열려요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poproś na dowolnym czacie lub w połączeniu głosowym: „Zadzwoń, jak testy się skończą”. Hermes powiadomi Cię, gdy zlecenie będzie gotowe, a po kliknięciu powiadomienia rozmawiasz z Hermesem w tym czacie."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Peça em qualquer chat ou chamada de voz: “Me liga quando os testes terminarem.” O Hermes avisa por uma notificação quando o trabalho termina e, ao clicar nela, você conversa com o Hermes naquele chat."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Попросите в любом чате или голосовом звонке: «Позвони, когда тесты закончатся». Hermes сообщит об этом уведомлением, как только задание будет готово, а нажав на него, вы поговорите с Hermes в этом чате."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Herhangi bir sohbette ya da sesli aramada isteyin: “Testler bitince beni ara.” İş bittiğinde Hermes sizi bir bildirimle haberdar eder; bildirime tıkladığınızda o sohbette Hermes'le sesli konuşursunuz."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在任意聊天或语音通话中说：“测试跑完后给我打电话。”任务完成后 Hermes 会发通知告诉你，点按该通知即可在该聊天中语音对话。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在任何聊天或語音通話中說：「測試跑完後打電話給我。」工作完成後 Hermes 會以通知告知你，按一下該通知即可在該聊天中語音對話。"
+          }
+        }
+      }
+    },
+    "Mac.HermesCalls.Explainer" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wenn ein Job fertig ist, nach dem du gefragt hast, ruft Hermes dich an, damit ihr darüber sprechen könnt. Statt zu klingeln, kommt die Mitteilung „Hermes möchte sprechen“: Klicke auf „Sprechen“, um anzunehmen."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "When a job you asked about is done, Hermes calls you so you can talk it through. A “Hermes wants to talk” notification comes instead of a ring: click Talk to answer."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cuando termina un trabajo por el que preguntaste, Hermes te llama para que lo comenten. En lugar de sonar, llega una notificación «Hermes quiere hablar»: haz clic en Hablar para contestar."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quand un job dont vous avez demandé des nouvelles est terminé, Hermes vous appelle pour en parler. Au lieu d'une sonnerie, une notification « Hermes veut vous parler » arrive : cliquez sur Parler pour répondre."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saat pekerjaan yang Anda tanyakan selesai, Hermes menelepon Anda agar bisa membahasnya. Sebagai ganti dering, pemberitahuan “Hermes ingin bicara” muncul: klik Bicara untuk menjawab."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando un job di cui hai chiesto è terminato, Hermes ti chiama per parlarne. Al posto dello squillo arriva la notifica «Hermes vuole parlarti»: fai clic su Parla per rispondere."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "依頼したジョブが完了すると、Hermesが電話をかけてきて、結果について話せます。着信の代わりに「Hermesが話したがっています」という通知が届きます。「話す」をクリックして応答してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "물어본 작업이 끝나면 Hermes가 전화해서 결과를 함께 이야기할 수 있어요. 벨이 울리는 대신 “Hermes가 이야기하고 싶어 해요” 알림이 와요. 대화를 클릭해 받으세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gdy zlecenie, o które pytasz, zostanie zakończone, Hermes dzwoni, żebyście mogli o nim porozmawiać. Zamiast dzwonka przychodzi powiadomienie „Hermes chce porozmawiać”: kliknij Rozmawiaj, aby odebrać."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando um trabalho sobre o qual você perguntou termina, o Hermes liga para você para conversarem sobre ele. Em vez de tocar, chega uma notificação “O Hermes quer conversar”: clique em Conversar para atender."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Когда задание, о котором вы просили, будет готово, Hermes позвонит, чтобы вы могли его обсудить. Вместо звонка приходит уведомление «Hermes хочет поговорить»: нажмите «Говорить», чтобы ответить."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sorduğunuz bir iş bittiğinde, Hermes sonucu konuşabilmeniz için sizi arar. Çalmak yerine “Hermes konuşmak istiyor” bildirimi gelir: yanıtlamak için Konuş'a tıklayın."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你询问的任务完成后，Hermes 会给你打电话，方便你们聊聊结果。不会响铃，而是收到“Hermes 想和你通话”通知：点按“通话”即可接听。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你詢問的工作完成後，Hermes 會打電話給你，方便你們聊聊結果。不會響鈴，而是收到「Hermes 想跟你通話」通知：按一下「通話」即可接聽。"
+          }
+        }
+      }
+    },
+    "Opens a new chat with “%@” ready to send. Send it, and a notification arrives when Hermes replies." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Öffnet einen neuen Chat mit „%@“, bereit zum Senden. Sende es, und du bekommst eine Mitteilung, wenn Hermes antwortet."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abre un chat nuevo con «%@» listo para enviar. Envíalo y recibirás una notificación cuando Hermes responda."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ouvre une nouvelle discussion avec « %@ » prêt à envoyer. Envoyez-le, et une notification arrive quand Hermes répond."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Membuka obrolan baru dengan “%@” siap dikirim. Kirim, dan pemberitahuan masuk saat Hermes membalas."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apre una nuova chat con «%@» pronto da inviare. Invialo e riceverai una notifica quando Hermes risponde."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "「%@」を入力済みの新しいチャットを開きます。送信すると、Hermesが返信したときに通知が届きます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“%@” 문구가 입력된 새 채팅을 열어요. 보내면 Hermes가 답할 때 알림이 와요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwiera nowy czat z gotową do wysłania wiadomością „%@”. Wyślij ją, a gdy Hermes odpowie, przyjdzie powiadomienie."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abre um chat novo com “%@” pronto para enviar. Envie, e uma notificação chega quando o Hermes responder."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открывает новый чат с готовым к отправке сообщением «%@». Отправьте его, и когда Hermes ответит, придёт уведомление."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gönderilmeye hazır “%@” mesajıyla yeni bir sohbet açar. Gönderin; Hermes yanıt verdiğinde bir bildirim gelir."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开一个新聊天，已填好“%@”。发送后，Hermes 回复时你会收到通知。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "開啟一個新聊天，已填好「%@」。傳送後，Hermes 回覆時你會收到通知。"
+          }
+        }
+      }
+    },
+    "Mac.HermesCalls.WatchNote" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes prüft nicht von selbst, was deine Notiz beschreibt. Das öffnet einen neuen Chat, in dem du ihn bittest, geplante Prüfungen einzurichten, die dich anrufen, wenn es passiert. Wenn du die Notiz änderst, klicke erneut, um die Prüfungen anzupassen."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes doesn't check for what your note describes on its own. This opens a new chat asking it to set up scheduled checks that call you when it happens. After you change the note, click it again to bring the checks up to date."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes no comprueba por su cuenta lo que describe tu nota. Esto abre un chat nuevo en el que le pides que configure comprobaciones programadas que te llamen cuando ocurra. Si cambias la nota, vuelve a hacer clic para ponerlas al día."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes ne vérifie pas de lui-même ce que décrit votre note. Ceci ouvre une nouvelle discussion qui lui demande de mettre en place des vérifications planifiées qui vous appellent quand cela arrive. Après avoir modifié la note, cliquez à nouveau pour les mettre à jour."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes tidak memeriksa sendiri hal yang dijelaskan catatan Anda. Ini membuka obrolan baru yang meminta Hermes menyiapkan pemeriksaan terjadwal yang menelepon Anda saat hal itu terjadi. Setelah mengubah catatan, klik lagi untuk memperbarui pemeriksaannya."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes non controlla da solo ciò che descrive la tua nota. Questo apre una nuova chat in cui gli chiedi di impostare controlli pianificati che ti chiamino quando succede. Dopo aver modificato la nota, fai di nuovo clic per aggiornarli."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermesはメモに書かれたことを自分から確認しません。新しいチャットを開き、それが起きたら電話する定期チェックの設定をHermesに頼みます。メモを変えたら、もう一度クリックしてチェックを更新しましょう。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes는 메모에 적힌 일을 스스로 확인하지 않아요. 새 채팅을 열어, 그 일이 생기면 전화하는 정기 확인을 설정해 달라고 Hermes에게 요청해요. 메모를 바꾼 뒤 다시 클릭하면 확인이 최신 상태로 맞춰져요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes sam nie sprawdza tego, co opisuje Twoja notatka. To otwiera nowy czat z prośbą, by ustawił zaplanowane sprawdzania, które zadzwonią do Ciebie, gdy to się stanie. Po zmianie notatki kliknij ponownie, aby je zaktualizować."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O Hermes não verifica sozinho o que sua nota descreve. Isto abre um chat novo pedindo que ele configure verificações agendadas que liguem para você quando isso acontecer. Depois de mudar a nota, clique de novo para atualizá-las."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes сам не проверяет то, что описано в вашей заметке. Откроется новый чат с просьбой настроить проверки по расписанию, которые позвонят вам, когда это случится. Изменив заметку, нажмите снова, чтобы обновить проверки."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes, notunuzda anlatılanı kendiliğinden kontrol etmez. Bu, gerçekleştiğinde sizi arayan zamanlanmış kontroller kurmasını isteyen yeni bir sohbet açar. Notu değiştirdikten sonra kontrolleri güncellemek için tekrar tıklayın."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes 不会主动检查你的说明里写的事。这会打开一个新聊天，请它设置定时检查，在事情发生时给你打电话。修改说明后，再点一次即可更新这些检查。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes 不會主動檢查你的說明裡寫的事。這會開啟一個新聊天，請它設定定時檢查，在事情發生時打電話給你。修改說明後，再按一下即可更新這些檢查。"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

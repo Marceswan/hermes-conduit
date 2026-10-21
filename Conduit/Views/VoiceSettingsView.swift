@@ -332,8 +332,10 @@ struct VoiceSettingsView: View {
                             AgentSettingsModeSection(onChange: agentSettingsChanged)
                         }
                         wakeSection
+                        #if !os(macOS) // MAC: CarPlay and the Apple Watch are iPhone-only features (Task 9b, ledger: Kept off on Mac)
                         CarPlaySettingsSection()
                         WatchSettingsSection()
+                        #endif // MAC:
                         readAloudSection
                         DictationSettingsSection()
                         advancedSection
@@ -418,9 +420,16 @@ struct VoiceSettingsView: View {
             ))
             .disabled(isApplyingDefaults)
             .accessibilityIdentifier("voice.enableToggle")
-            Text(voiceEnabled
+            #if os(macOS) // MAC: the note names the Mac, not the iPhone (Task 9b)
+            let voiceNote = voiceEnabled
+                ? AppLocalization.string("Voice is on for \(profileDisplayName) on this Mac. Each step below turns green when it's ready; an orange step has a fix.")
+                : AppLocalization.string("Turn this on to talk to \(profileDisplayName). Conduit asks for the microphone and Speech Recognition, and uses this Mac to hear you and to speak the replies. Nothing to set up on Hermes.")
+            #else // MAC:
+            let voiceNote = voiceEnabled
                  ? AppLocalization.string("Voice is on for \(profileDisplayName) on this iPhone. Each step below turns green when it's ready; an orange step has a fix.")
-                 : AppLocalization.string("Turn this on to talk to \(profileDisplayName). Conduit asks for the microphone and Speech Recognition, and uses this iPhone to hear you and to speak the replies. Nothing to set up on Hermes."))
+                 : AppLocalization.string("Turn this on to talk to \(profileDisplayName). Conduit asks for the microphone and Speech Recognition, and uses this iPhone to hear you and to speak the replies. Nothing to set up on Hermes.")
+            #endif // MAC:
+            Text(voiceNote)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if isApplyingDefaults {
@@ -484,9 +493,14 @@ struct VoiceSettingsView: View {
         case .granted:
             return setupStep(AppLocalization.string("Microphone"), detail: AppLocalization.string("Allowed"), state: .done)
         case .denied:
+            #if os(macOS) // MAC: the permission lives in System Settings > Privacy & Security > Microphone (Task 9b)
+            let deniedDetail = AppLocalization.string("Mac.VoiceSettings.MicrophoneDenied")
+            #else // MAC:
+            let deniedDetail = AppLocalization.string("Not allowed. Allow the microphone for Conduit in iPhone Settings.")
+            #endif // MAC:
             return setupStep(
                 AppLocalization.string("Microphone"),
-                detail: AppLocalization.string("Not allowed. Allow the microphone for Conduit in iPhone Settings."),
+                detail: deniedDetail,
                 state: .attention,
                 fix: (label: AppLocalization.string("Open Settings"), action: openSystemSettings)
             )
@@ -500,25 +514,44 @@ struct VoiceSettingsView: View {
         if transcriptionMode == .appleOnDevice {
             switch appleSpeechAvailability {
             case .ready:
+                #if os(macOS) // MAC: "On this Mac" is an existing catalog key (Task 9b)
+                return setupStep(title, detail: AppLocalization.string("On this Mac"), state: .done)
+                #else // MAC:
                 return setupStep(title, detail: AppLocalization.string("On this iPhone"), state: .done)
+                #endif // MAC:
             case .permissionRequired:
+                #if os(macOS) // MAC: Task 9b
+                let notAllowedYet = AppLocalization.string("Mac.VoiceSettings.SpeechNotAllowedYet")
+                #else // MAC:
+                let notAllowedYet = AppLocalization.string("On this iPhone. Speech Recognition isn't allowed yet.")
+                #endif // MAC:
                 return setupStep(
                     title,
-                    detail: AppLocalization.string("On this iPhone. Speech Recognition isn't allowed yet."),
+                    detail: notAllowedYet,
                     state: .pending,
                     fix: (label: AppLocalization.string("Allow"), action: { selectProvider(Self.appleProviderID, kind: .stt, force: true) })
                 )
             case .permissionDenied:
+                #if os(macOS) // MAC: the permission lives in System Settings > Privacy & Security > Speech Recognition (Task 9b)
+                let speechDeniedDetail = AppLocalization.string("Mac.VoiceSettings.SpeechRecognitionDenied")
+                #else // MAC:
+                let speechDeniedDetail = AppLocalization.string("Speech Recognition isn't allowed. Allow it for Conduit in iPhone Settings, or choose a Hermes provider under Speech to text below.")
+                #endif // MAC:
                 return setupStep(
                     title,
-                    detail: AppLocalization.string("Speech Recognition isn't allowed. Allow it for Conduit in iPhone Settings, or choose a Hermes provider under Speech to text below."),
+                    detail: speechDeniedDetail,
                     state: .attention,
                     fix: (label: AppLocalization.string("Open Settings"), action: openSystemSettings)
                 )
             case .unsupported:
+                #if os(macOS) // MAC: Task 9b
+                let unsupportedDetail = AppLocalization.string("Mac.VoiceSettings.SpeechUnsupportedLanguage")
+                #else // MAC:
+                let unsupportedDetail = AppLocalization.string("This iPhone can't transcribe your language on the device. Choose a Hermes provider under Speech to text below.")
+                #endif // MAC:
                 return setupStep(
                     title,
-                    detail: AppLocalization.string("This iPhone can't transcribe your language on the device. Choose a Hermes provider under Speech to text below."),
+                    detail: unsupportedDetail,
                     state: .attention
                 )
             }
@@ -538,7 +571,11 @@ struct VoiceSettingsView: View {
         let name = providerName(service.snapshot.selectedSTTProvider, kind: .stt)
         var useIPhone: (label: String, action: () -> Void)?
         if appleSpeechAvailability.canAttemptRecognition {
+            #if os(macOS) // MAC: Task 9b
+            useIPhone = (label: AppLocalization.string("Mac.VoiceSettings.UseThisMac"), action: { selectProvider(Self.appleProviderID, kind: .stt) })
+            #else // MAC:
             useIPhone = (label: AppLocalization.string("Use this iPhone"), action: { selectProvider(Self.appleProviderID, kind: .stt) })
+            #endif // MAC:
         }
         if !service.snapshot.capability.supportsTranscription {
             return setupStep(
@@ -552,9 +589,14 @@ struct VoiceSettingsView: View {
         case .ready:
             return setupStep(title, detail: AppLocalization.string("\(name) on Hermes"), state: .done)
         case .notReady(let status):
+            #if os(macOS) // MAC: Task 9b
+            let notReadyDetail = AppLocalization.string("\(name) on Hermes isn't ready (\(VoiceProviderReadiness.label(forStatus: status))). This Mac can do it instead, with nothing to install.")
+            #else // MAC:
+            let notReadyDetail = AppLocalization.string("\(name) on Hermes isn't ready (\(VoiceProviderReadiness.label(forStatus: status))). This iPhone can do it instead, with nothing to install.")
+            #endif // MAC:
             return setupStep(
                 title,
-                detail: AppLocalization.string("\(name) on Hermes isn't ready (\(VoiceProviderReadiness.label(forStatus: status))). This iPhone can do it instead, with nothing to install."),
+                detail: notReadyDetail,
                 state: .attention,
                 fix: useIPhone
             )
@@ -566,7 +608,11 @@ struct VoiceSettingsView: View {
     private var assistantVoiceStep: some View {
         let title = AppLocalization.string("Assistant voice")
         if resolvedSpeechOutput == .onDevice {
+            #if os(macOS) // MAC: "On this Mac" is an existing catalog key (Task 9b)
+            return setupStep(title, detail: AppLocalization.string("On this Mac"), state: .done)
+            #else // MAC:
             return setupStep(title, detail: AppLocalization.string("On this iPhone"), state: .done)
+            #endif // MAC:
         }
         if resolvedSpeechOutput == .speechServer {
             let waiting = AppLocalization.string("Your speech server. Give it the model address and key shown under Assistant speech.")
@@ -587,11 +633,18 @@ struct VoiceSettingsView: View {
         if service.isLoading || !service.snapshot.capability.isGatewayConnected {
             return setupStep(title, detail: AppLocalization.string("Not checked yet"), state: .pending)
         }
+        #if os(macOS) // MAC: Task 9b
+        let ttsNotReadyDetail = AppLocalization.string("\(name) isn't ready on Hermes. This Mac can speak the replies instead, with nothing to set up.")
+        let useThisDevice = AppLocalization.string("Mac.VoiceSettings.UseThisMac")
+        #else // MAC:
+        let ttsNotReadyDetail = AppLocalization.string("\(name) isn't ready on Hermes. This iPhone can speak the replies instead, with nothing to set up.")
+        let useThisDevice = AppLocalization.string("Use this iPhone")
+        #endif // MAC:
         return setupStep(
             title,
-            detail: AppLocalization.string("\(name) isn't ready on Hermes. This iPhone can speak the replies instead, with nothing to set up."),
+            detail: ttsNotReadyDetail,
             state: .attention,
-            fix: (label: AppLocalization.string("Use this iPhone"), action: { selectProvider(Self.iPhoneVoiceProviderID, kind: .tts) })
+            fix: (label: useThisDevice, action: { selectProvider(Self.iPhoneVoiceProviderID, kind: .tts) })
         )
     }
 
@@ -1192,9 +1245,15 @@ struct VoiceSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Toggle("Keep phone awake during voice conversations", isOn: $keepScreenAwake)
+            #if os(macOS) // MAC: the Mac sleeps its display; it has no phone lock (Task 9b)
+            Text("Mac.VoiceSettings.KeepScreenAwakeNote")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            #else // MAC:
             Text("The screen stays on while a voice conversation is open, including the live voice modes. When off, the phone locks on its usual timer: live voice calls keep going in the background, and a classic voice conversation does too with Keep Listening When Locked on. Applies to this device.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            #endif // MAC:
         }
     }
 
@@ -1216,12 +1275,24 @@ struct VoiceSettingsView: View {
             }
             Toggle("Animate the call orb", isOn: $animateCallOrb)
                 .accessibilityIdentifier("voice.animateCallOrb")
+                #if os(macOS) // MAC: no battery or hot-phone clause on the Mac (Task 9b)
+                .accessibilityHint("Mac.VoiceSettings.OrbMotionNote")
+                #else // MAC:
                 .accessibilityHint("The orb on the live call screen moves with the call. Turn this off for a still orb that uses less battery. It also holds still while the phone is hot or Reduce Motion is on. Applies to this device.")
+                #endif // MAC:
+            #if os(macOS) // MAC: same note as the hint above (Task 9b)
+            Text("Mac.VoiceSettings.OrbMotionNote")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                // The switch's hint already reads this.
+                .accessibilityHidden(true)
+            #else // MAC:
             Text("The orb on the live call screen moves with the call. Turn this off for a still orb that uses less battery. It also holds still while the phone is hot or Reduce Motion is on. Applies to this device.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 // The switch's hint already reads this.
                 .accessibilityHidden(true)
+            #endif // MAC:
         }
     }
 
@@ -1313,12 +1384,21 @@ struct VoiceSettingsView: View {
 
     private var iPhoneVoiceDetail: some View {
         VStack(alignment: .leading, spacing: 8) {
+            #if os(macOS) // MAC: macOS voices on this Mac; the Mac glyph; the voices live in System Settings > Accessibility > Spoken Content (Task 9b)
+            Label(AppLocalization.string("Mac.VoiceSettings.SystemVoiceDetail"), systemImage: "desktopcomputer")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Text(AppLocalization.string("Mac.VoiceSettings.EnhancedVoices"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            #else // MAC:
             Label(AppLocalization.string("Replies are spoken with the voices built into iOS, on this iPhone. Nothing to set up or pay for on Hermes."), systemImage: "iphone")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             Text(AppLocalization.string("For a more natural voice, download an Enhanced or Premium voice in iPhone Settings > Accessibility: search Settings for “Voices” to find them. Conduit uses the best one installed for the reply's language."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            #endif // MAC:
         }
     }
 
@@ -1331,9 +1411,15 @@ struct VoiceSettingsView: View {
                 valueColor: isReady ? .green : (appleSpeechAvailability.canAttemptRecognition ? .orange : .secondary),
                 statusDot: isReady ? .green : nil
             )
+            #if os(macOS) // MAC: Task 9b
+            Label("Mac.VoiceSettings.AppleSpeechPrivacy", systemImage: "desktopcomputer")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            #else // MAC:
             Label("Uses Apple's system-managed speech model. Captured audio stays on this iPhone.", systemImage: "iphone")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+            #endif // MAC:
             if let localeIdentifier = appleSpeechAvailability.localeIdentifier {
                 Text("Language: \(Locale.current.localizedString(forIdentifier: localeIdentifier) ?? localeIdentifier)")
                     .font(.caption)
@@ -1343,9 +1429,15 @@ struct VoiceSettingsView: View {
             case .ready:
                 EmptyView()
             case .permissionRequired:
+                #if os(macOS) // MAC: the permission lives in System Settings > Privacy & Security > Speech Recognition (Task 9b)
+                Text("Mac.VoiceSettings.SpeechRecognitionRetry")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                #else // MAC:
                 Text("Enable Speech Recognition in Settings > Conduit > Speech Recognition, then retry selecting \"On this iPhone\".")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                #endif // MAC:
             case .permissionDenied:
                 Text("Speech Recognition permission was denied. Please enable it in Settings > Conduit > Speech Recognition.")
                     .font(.caption)
@@ -1379,9 +1471,15 @@ struct VoiceSettingsView: View {
                 .foregroundStyle(.secondary)
         }
         if descriptor.id == "local", descriptor.kind == .stt {
+            #if os(macOS) // MAC: Task 9b
+            Label("Mac.VoiceSettings.LocalWhisperNote", systemImage: "server.rack")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            #else // MAC:
             Label("Runs on the Hermes host using its local Whisper installation—not on this iPhone.", systemImage: "server.rack")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+            #endif // MAC:
         }
         if descriptor.supportsStreaming {
             Label("Streams speech as it is generated", systemImage: "waveform.path.ecg")
@@ -1565,11 +1663,21 @@ struct VoiceSettingsView: View {
     ) -> [(id: String, title: String)] {
         let hermes = providers.map { (id: $0.descriptor.id, title: $0.descriptor.displayName) }
         guard kind == .stt else {
+            #if os(macOS) // MAC: "On this Mac" is an existing catalog key (Task 9b)
+            return [(id: Self.iPhoneVoiceProviderID, title: AppLocalization.string("On this Mac"))] + hermes
+                + [(id: Self.speechServerVoiceProviderID, title: AppLocalization.string("Your speech server"))]
+            #else // MAC:
             return [(id: Self.iPhoneVoiceProviderID, title: AppLocalization.string("On this iPhone"))] + hermes
                 + [(id: Self.speechServerVoiceProviderID, title: AppLocalization.string("Your speech server"))]
+            #endif // MAC:
         }
+        #if os(macOS) // MAC: Task 9b
+        return [(id: Self.appleProviderID, title: AppLocalization.string("On this Mac"))] + hermes
+            + [(id: Self.speechServerProviderID, title: AppLocalization.string("Your speech server"))]
+        #else // MAC:
         return [(id: Self.appleProviderID, title: AppLocalization.string("On this iPhone"))] + hermes
             + [(id: Self.speechServerProviderID, title: AppLocalization.string("Your speech server"))]
+        #endif // MAC:
     }
 
     private var supportsSelectedTranscription: Bool {
@@ -1598,7 +1706,11 @@ struct VoiceSettingsView: View {
                 transcriptionModeChosen = true
                 testStatus = nil
             } else if case .permissionRequired = appleSpeechAvailability {
+                #if os(macOS) // MAC: the permission lives in System Settings > Privacy & Security > Speech Recognition (Task 9b)
+                testStatus = AppLocalization.string("Mac.VoiceSettings.SpeechRecognitionRetry")
+                #else // MAC:
                 testStatus = AppLocalization.string("Enable Speech Recognition in Settings > Conduit > Speech Recognition, then retry selecting \"On this iPhone\".")
+                #endif // MAC:
             } else if case .permissionDenied = appleSpeechAvailability {
                 testStatus = AppLocalization.string("Speech Recognition permission was denied. Please enable it in Settings > Conduit > Speech Recognition.")
             } else if case .unsupported = appleSpeechAvailability {
@@ -1766,9 +1878,15 @@ private struct WakePhraseSettingsSection: View {
                 }
             ))
             .disabled(isRequestingPermission)
+            #if os(macOS) // MAC: Task 9b
+            Text("Mac.WakePhrase.ListensOnThisMac")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            #else // MAC:
             Text("Say the phrase while Conduit is open to start voice on this profile, in whichever voice mode it uses. Listening runs on this iPhone, stops during calls and in the background, and the microphone indicator stays on while it listens.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            #endif // MAC:
             if permissionDenied {
                 Label("Allow Microphone and Speech Recognition for Conduit in Settings to use a wake phrase.", systemImage: "exclamationmark.triangle")
                     .font(.caption)
@@ -1794,6 +1912,7 @@ private struct WakePhraseSettingsSection: View {
                         model.save(phrases, value)
                     }
                 ))
+                #if !os(macOS) // MAC: CarPlay is an iPhone-only feature (Task 9b, ledger: Kept off on Mac)
                 Toggle("Listen on CarPlay", isOn: Binding(
                     get: { listensOnCarPlay },
                     set: { value in
@@ -1806,6 +1925,7 @@ private struct WakePhraseSettingsSection: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
+                #endif // MAC:
                 Toggle("Listen while other audio plays", isOn: Binding(
                     get: { listensOverOtherAudio },
                     set: { value in
@@ -1829,9 +1949,11 @@ private struct WakePhraseSettingsSection: View {
                         .foregroundStyle(.orange)
                 }
             }
+            #if !os(macOS) // MAC: the note names the iPhone Lock Screen; the Mac has no such entry (Task 9b, ledger: Kept off on Mac)
             Text("Siri remains the supported way to begin a voice conversation from the Lock Screen.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            #endif // MAC:
         }
         // Follow changes made elsewhere while this page stays open.
         .onChange(of: model.phrases) { _, newPhrases in
@@ -2088,9 +2210,16 @@ struct VoiceCallSaveStatusSection: View {
         ConduitSettingsSection(title: AppLocalization.string("Unsaved voice calls"), symbol: "exclamationmark.icloud", tint: .orange) {
             Text(AppLocalization.string("Voice calls waiting to save: \(model.pendingCount)"))
                 .font(.subheadline.weight(.semibold))
-            Text(model.blocked
+            #if os(macOS) // MAC: click, not tap (Task 9b)
+            let savesNote = model.blocked
+                ? AppLocalization.string("Mac.VoiceSettings.SaveNowBlocked")
+                : AppLocalization.string("These calls are kept on this device and Conduit retries them automatically. It keeps up to 20 calls, and a call that still hasn't saved after 7 days is dropped.")
+            #else // MAC:
+            let savesNote = model.blocked
                  ? AppLocalization.string("Your Hermes server can't save voice calls yet. Install or update the Hermes notifier plugin on your Hermes server, then tap Save Now.")
-                 : AppLocalization.string("These calls are kept on this device and Conduit retries them automatically. It keeps up to 20 calls, and a call that still hasn't saved after 7 days is dropped."))
+                 : AppLocalization.string("These calls are kept on this device and Conduit retries them automatically. It keeps up to 20 calls, and a call that still hasn't saved after 7 days is dropped.")
+            #endif // MAC:
+            Text(savesNote)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Button {

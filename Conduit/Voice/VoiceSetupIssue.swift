@@ -129,7 +129,11 @@ enum VoiceSetupIssue: Equatable {
         case .microphoneDenied:
             return VoiceAudioError.microphonePermissionDenied.localizedDescription
         case .speechRecognitionDenied:
+            #if os(macOS) // MAC: the permission lives in System Settings > Privacy & Security > Speech Recognition (Task 9b)
+            return AppLocalization.string("Mac.VoiceSetupIssue.SpeechRecognitionDenied")
+            #else // MAC:
             return AppLocalization.string("Allow Speech Recognition for Conduit in iPhone Settings > Conduit, or choose another speech-to-text option in Settings > Voice.")
+            #endif // MAC:
         case .speechRecognitionUnsupported(let locale):
             return AppLocalization.string("On-device Apple speech recognition doesn't support \(locale). Choose another speech-to-text option in Settings > Voice.")
         case .noSpeechToText(let detail):
@@ -142,7 +146,11 @@ enum VoiceSetupIssue: Equatable {
         case .notifierPluginMissing:
             return AppLocalization.string("Install or update the Hermes notifier plugin on your Hermes server.")
         case .providerConsentNeeded(let mode):
+            #if os(macOS) // MAC: Task 9b
+            return AppLocalization.string("\(mode.displayName) sends your voice to \(mode.company). Allow it in Conduit on your Mac to start the call.")
+            #else // MAC:
             return AppLocalization.string("\(mode.displayName) sends your voice to \(mode.company). Allow it in Conduit on your iPhone to start the call.")
+            #endif // MAC:
         }
     }
 

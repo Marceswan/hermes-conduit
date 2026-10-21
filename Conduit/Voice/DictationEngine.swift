@@ -34,9 +34,17 @@ enum DictationEngine: String, CaseIterable, Identifiable {
     var summary: String {
         switch self {
         case .apple:
+            #if os(macOS) // MAC: Task 9b
+            return AppLocalization.string("Mac.Dictation.AppleSummary")
+            #else // MAC:
             return AppLocalization.string("Apple's dictation, on this iPhone when your language allows. Words appear as you speak.")
+            #endif // MAC:
         case .appleSpeechAnalyzer:
+            #if os(macOS) // MAC: Task 9b
+            return AppLocalization.string("Mac.Dictation.SpeechAnalyzerSummary")
+            #else // MAC:
             return AppLocalization.string("Apple's newer speech model, on this iPhone. Better with long sentences, though it may not use your custom words. The first use may download it.")
+            #endif // MAC:
         case .hermes:
             return AppLocalization.string("The speech to text your Hermes uses, such as Whisper. Audio goes to your Hermes. Words appear as you speak when Hermes streams them, otherwise when you stop.")
         }

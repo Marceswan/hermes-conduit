@@ -2404,7 +2404,11 @@ final class HermesClient: ObservableObject {
     /// Queue on a Hermes without `prompt.submit`'s `queued` key.
     struct QueueUnsupportedError: LocalizedError {
         var errorDescription: String? {
+            #if os(macOS) // MAC: right-click, not touch and hold (Task 9b)
+            AppLocalization.string("Mac.HermesClient.QueueUnsupported")
+            #else // MAC:
             AppLocalization.string("This Hermes can't queue messages. Update Hermes, or touch and hold send to steer or interrupt instead.")
+            #endif // MAC:
         }
     }
 

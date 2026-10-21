@@ -673,7 +673,11 @@ final class GeminiLiveSession {
     /// Google's own reason for the rest.
     static func refusalMessage(_ close: GeminiLiveServerClose) -> String {
         if close.isResumptionLost {
+            #if os(macOS) // MAC: click, not tap; the key sits in a Mac-only file because the Watch catalog check reads this file (Task 9b)
+            return MacSharedWording.geminiLiveResumptionLost
+            #else // MAC:
             return AppLocalization.string("Gemini Live lost this conversation on its side. Tap Try again to start a new one.")
+            #endif // MAC:
         }
         return AppLocalization.string("Gemini Live refused the connection: \(close.summary)")
     }
