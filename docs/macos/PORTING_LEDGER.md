@@ -111,7 +111,14 @@ list after each `git merge upstream/main`.
 | ConduitWidgets/LauncherWidgets.swift | R4-widen | two `#available(iOS 18.0, *)` guarding `widgetAccentedRenderingMode` (macOS 15) need `macOS 15.0` named, else Mac 14 fails to compile (lines 76, 138) | `macOS 15.0` added to both availability lists (R8); the full-colour branch runs on Mac 14 |
 | ConduitWidgets/*, Shared/Widgets/*, ConduitWidgets/Resources/Assets.xcassets, Conduit/Localizable.xcstrings | shared source | the Mac widget extension compiles the iOS widget sources by path (D25); no copies | project.yml target `ConduitMacWidgets`; Mac-only plist and entitlements in ConduitMacWidgets/. Re-check after each upstream merge: new iOS-only API in ConduitWidgets/ or Shared/Widgets/ breaks the Mac extension build |
 
+## Kept off on Mac
+
+| Feature | Gate | Reason | Date |
+|---|---|---|---|
+
 ## Sync routine
+
+Run `/upstream-sync` (`.claude/skills/upstream-sync/SKILL.md`); the steps below are the reference it follows.
 
 1. **Fetch and preview.** Run `git fetch upstream`. Before merging:
    - Save `git diff --name-status HEAD...upstream/main` (three dots: upstream's changes since the merge-base).
@@ -127,7 +134,7 @@ list after each `git merge upstream/main`.
 4. **Merge.** Run `git merge upstream/main`. Conflicts should only be at `// MAC:` lines, in ledger files, or in `project.yml`. Commit the merge.
 5. **Build and test.**
    - Run `xcodegen generate`, then `xcodebuild test -scheme ConduitMac -destination 'platform=macOS'`. It must show `** TEST SUCCEEDED **`.
-   - Run `xcodebuild build -scheme Conduit -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO`. It must show `** BUILD SUCCEEDED **`.
+   - No iOS Simulator build: only the Mac app ships (2026-10-21).
    - On a new Mac compile error, apply the porting rules in order:
      - R1: add the missing member to a shim. Shims expose only members upstream uses.
      - R2: exclude the file and twin it under ConduitMac.
