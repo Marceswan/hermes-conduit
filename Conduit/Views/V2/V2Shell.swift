@@ -346,7 +346,7 @@ private struct V2ScrollHold: ViewModifier {
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
 
     func body(content: Content) -> some View {
-        if #available(iOS 18.0, *) {
+        if #available(iOS 18.0, macOS 15.0, *) { // MAC: name the macOS release (R4-widen)
             content
                 .onScrollPhaseChange { _, phase in
                     updates.setScrolling(phase != .idle && !voiceOver, by: id)

@@ -16,6 +16,7 @@ final class LiveTurnActivities {
     func turnStarted(
         sessionIDs: Set<String>,
         primaryID: String,
+        linkID: String? = nil,
         title: String,
         profile: String?,
         profileName: String? = nil,
@@ -36,4 +37,7 @@ final class LiveTurnActivities {
     func endTurns(ofDashboard dashboardID: String?, keepingThoseOnRelay: Bool = false) {}
 
     func adoptExisting() {}
+
+    /// No Live Activity card exists on Mac, so a link names no other chat id.
+    nonisolated static func sessionIDs(linkedTo id: String, profile: String, dashboardID: String?) -> [String] { [] }
 }

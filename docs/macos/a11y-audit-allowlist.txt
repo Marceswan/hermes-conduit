@@ -3,3 +3,5 @@
 Conduit/Views/ProfilePickerSheet.swift | Image(systemName: systemImage)  # reorderArrow helper; both call sites add "Move ... earlier/later" labels
 Conduit/Views/V2/V2BotsView.swift | Image(systemName: "plus")  # label is set on the Button ("New Bot"), 12 lines below the image; V2 file, not shown on Mac
 Conduit/Views/V2/V2VoiceButton.swift | Image(systemName: "square.and.pencil")  # label is set on the Button (`label`), below the image; V2 file, not shown on Mac
+Conduit/Views/Components/ComposerBar.swift | Image(systemName: isCapturing ? "mic.fill" : "mic")  # dictation button; label is set on the Button (`dictateTitle`), 26 lines below the image (upstream step 4, #986 put a large-content-viewer block between them)
+Conduit/Views/Components/GroupRoomComposer.swift | Image(systemName: isCapturing ? "mic.fill" : "mic")  # dictation button; label is set on the Button (`dictateTitle`), below the large-content-viewer block (upstream step 4, #986)
