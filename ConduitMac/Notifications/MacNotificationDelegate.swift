@@ -51,7 +51,19 @@ final class MacNotificationDelegate: NSObject, UNUserNotificationCenterDelegate,
         }
     }
 
+    /// Notifications Conduit posts for itself that show in front whatever the visibility rules say (Ruling R24).
+    /// Upstream's `ConduitAppDelegate.willPresent` does the same for a step timer from a rich card
+    /// (`RichStepsMemory.notificationPrefix`): it rings wherever the user is. Checked before the hand-over to a
+    /// displaced delegate, which would otherwise decide for it. Keep in sync (PORTING_LEDGER).
+    static func presentationOverride(forIdentifier identifier: String) -> UNNotificationPresentationOptions? {
+        identifier.hasPrefix(RichStepsMemory.notificationPrefix) ? [.banner, .list, .sound] : nil
+    }
+
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        if let options = Self.presentationOverride(forIdentifier: notification.request.identifier) {
+            completionHandler(options)
+            return
+        }
         let userInfo = notification.request.content.userInfo
         if MacNotificationPayload(userInfo: userInfo) == nil,
            let forward, forward.responds(to: #selector(UNUserNotificationCenterDelegate.userNotificationCenter(_:willPresent:withCompletionHandler:))) {

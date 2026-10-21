@@ -48,6 +48,15 @@ final class ConduitMacAppDelegate: NSObject, NSApplicationDelegate {
         Task.detached(priority: .background) {
             AttachmentStaging.sweepStaleFiles()
         }
+        // Ported from ConduitAppDelegate (upstream step 2); keep in sync (PORTING_LEDGER). Ruling R24.
+        if !MacDefaults.isRunningUnderXCTest {
+            // Low Power Mode and Low Data Mode stretch every poll (#845).
+            DeviceConditionsMonitor.shared.start()
+            // MetricKit's daily reports, kept for Diagnostics & logs (#843). MetricKit reaches the Mac from macOS 12.
+            MetricKitReports.shared.start()
+            // Mouse use keeps the drifting backdrop moving (the Mac twin of the iOS touch probe).
+            MacInteractionIdleMonitor.shared.start()
+        }
     }
 
     /// A failed hotkey registration is retried when the app comes forward (no retry loop).
@@ -56,6 +65,9 @@ final class ConduitMacAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        MacInteractionIdleMonitor.shared.stop()
+        // Contact cards written for "Add to Contacts" hold a phone number and an email address.
+        RichContactVCard.removeAllFiles()
         MacActivityBootstrap.stop()
         if !MacDefaults.isRunningUnderXCTest { MacQuickAskBootstrap.stop() }
     }
