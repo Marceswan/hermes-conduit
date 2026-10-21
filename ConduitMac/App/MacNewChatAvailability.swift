@@ -38,11 +38,18 @@ extension AppState {
             || (hasSavedCopy && !hasLiveGateway)
     }
 
+    /// A connected client that is not mid-connect: the rule `createNewSession` enforces, and the one
+    /// Home uses for its New Chat button (`MacHomeBinding`). The connected flag without a client is
+    /// not a live gateway.
+    var macHasLiveGateway: Bool {
+        isConnected && !isConnecting && client != nil
+    }
+
     var macNewChatDisabled: Bool {
         Self.macNewChatDisabled(
             turnState: turnState,
             hasSavedCopy: offlineChatPresentation != nil,
-            hasLiveGateway: isConnected && !isConnecting && client != nil,
+            hasLiveGateway: macHasLiveGateway,
             isProfileSwitching: isProfileSwitching,
             isStartingNewChat: isStartingNewChat
         )

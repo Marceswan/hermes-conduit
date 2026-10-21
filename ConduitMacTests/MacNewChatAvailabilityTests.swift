@@ -152,6 +152,20 @@ final class MacNewChatAvailabilityTests: XCTestCase {
         XCTAssertTrue(appState.macNewChatDisabled, "the connected flag without a client is not a live gateway")
     }
 
+    // MARK: - The live gateway (one rule for the strict gate and Home)
+
+    func testLiveGatewayNeedsAConnectedClientThatIsNotConnecting() throws {
+        let (appState, _) = try makeAppState()
+        XCTAssertFalse(appState.macHasLiveGateway, "nothing connected")
+        appState.isConnected = true
+        XCTAssertTrue(appState.macHasLiveGateway)
+        appState.isConnecting = true
+        XCTAssertFalse(appState.macHasLiveGateway, "mid-connect is not live (createNewSession refuses)")
+        appState.isConnecting = false
+        appState.client = nil
+        XCTAssertFalse(appState.macHasLiveGateway, "the connected flag without a client is not live")
+    }
+
     // MARK: - The strict gate of the creating callers
 
     func testStrictGatePureRule() {
