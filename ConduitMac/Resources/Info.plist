@@ -34,6 +34,7 @@
     <key>NSMicrophoneUsageDescription</key><string>Conduit uses the microphone for voice conversations with Hermes.</string>
     <key>NSSpeechRecognitionUsageDescription</key><string>Conduit transcribes your voice on this Mac before sending it to Hermes.</string>
     <key>NSCameraUsageDescription</key><string>Conduit can attach a photo from your camera to a chat.</string>
+    <key>NSLocalNetworkUsageDescription</key><string>Conduit connects to your own Hermes server when it is on your home or local network. Nothing goes to Conduit's developer.</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key><true/>
