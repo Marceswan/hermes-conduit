@@ -276,13 +276,15 @@ struct AuthWebView: NSViewRepresentable {
     /// The ticket handler and the proxy-header scripts live in
     /// `DashboardScriptWorld` (#774), not the page world: the dashboard page's
     /// own scripts can then neither read the Cloudflare Access token or the
-    /// custom headers, nor post a forged ticket.
+    /// custom headers, nor post a forged ticket. `headerStore` is a seam for
+    /// tests: the shared store reads the Keychain on first use.
     @MainActor
     static func makeConfiguration(
         normalizedBaseURL normalized: String?,
         cloudflareAccess: CloudflareAccessCredentials?,
         websiteDataStoreIdentifier: UUID?,
-        ticketHandler: WKScriptMessageHandler
+        ticketHandler: WKScriptMessageHandler,
+        headerStore: CustomHeaderStore = .shared
     ) -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = DashboardCookiePersistence.webKitStore(for: websiteDataStoreIdentifier)
@@ -291,7 +293,8 @@ struct AuthWebView: NSViewRepresentable {
             DashboardScriptWorld.installProxyHeaderScripts(
                 into: config.userContentController,
                 cloudflareAccess: cloudflareAccess,
-                normalizedBaseURL: normalized
+                normalizedBaseURL: normalized,
+                headerStore: headerStore
             )
         }
         return config

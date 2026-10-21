@@ -5,6 +5,17 @@ import WebKit
 
 @MainActor
 final class WebViewTwinTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        isolateKeychain()
+    }
+
+    /// The test host signs with the real app's Keychain service, so a test
+    /// must never run against the system backend.
+    func testTheKeychainIsInMemoryForTheseTests() {
+        XCTAssertTrue(KeychainHelper.backend is IsolatedKeychainBackend)
+    }
+
     func testMarkupWebViewIsTransparent() {
         let webView = MarkupWebView.makeConfiguredWebView()
         XCTAssertEqual(webView.value(forKey: "drawsBackground") as? Bool, false)
@@ -74,7 +85,9 @@ final class WebViewTwinTests: XCTestCase {
             normalizedBaseURL: "https://dash.example.com",
             cloudflareAccess: cloudflareAccess,
             websiteDataStoreIdentifier: nil,
-            ticketHandler: recorder
+            ticketHandler: recorder,
+            // Not the shared store: it reads the Keychain on first use.
+            headerStore: CustomHeaderStore(load: { [:] }, persist: { _ in })
         )
         let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 200, height: 200), configuration: configuration)
         let waiter = LoadWaiter()

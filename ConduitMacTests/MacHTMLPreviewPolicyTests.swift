@@ -8,6 +8,11 @@ import XCTest
 /// delegate that applies it.
 @MainActor
 final class MacHTMLPreviewPolicyTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        isolateKeychain()
+    }
+
     /// Stands in for the system opener, so a test never launches a browser.
     private final class OpenRecorder {
         private(set) var urls: [URL] = []

@@ -6,6 +6,11 @@ import SwiftUI
 
 @MainActor
 final class SelectableTextViewTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        isolateKeychain()
+    }
+
     func testMeasuredHeightGrowsWhenWidthShrinks() {
         let text = String(repeating: "word ", count: 80)
         let wide = SelectableTextView.measuredHeight(of: NSAttributedString(string: text), width: 600)
