@@ -89,10 +89,38 @@ final class MacTransportRecoveryTests: XCTestCase {
         XCTAssertTrue(recorder.delays.isEmpty, "a connect already in flight owns the flow")
     }
 
+    /// The re-arm goes through `scheduleReconnect`, so it takes upstream's backoff
+    /// (`PollCadence.reconnectDelay`, upstream 14370bc3: exponential from 1 s with jitter, full jitter
+    /// and a 60 s cap off screen, an upper-half jitter and an 8 s cap on screen). The scene is
+    /// inactive here, so the step is the off-screen one. The test reads the step from that API with
+    /// the two inputs pinned (the jitter, and a usable network path, which the real monitor decides
+    /// otherwise), instead of a literal that a change of the backoff breaks.
     func testRearmUsesTheBackoffNotAFixedRetry() {
+        fixture.appState.reconnectJitter = { 0.75 }
+        fixture.appState.deviceConditions = { DeviceConditions() }
         _ = fixture.appState.handleScenePhase(.active)
         _ = fixture.appState.handleScenePhase(.inactive)
-        XCTAssertEqual(recorder.delays, [1], "the first re-arm waits one backoff step, not 0.1 s")
+        let firstStep = PollCadence.reconnectDelay(attempt: 0, random: 0.75, onScreen: false)
+        XCTAssertEqual(recorder.delays, [firstStep], "the first re-arm waits one backoff step")
+        XCTAssertGreaterThan(firstStep, 0.1, "and that step is not the 0.1 s of an immediate retry")
+    }
+
+    func testTheNextRearmWaitsTheNextBackoffStep() async {
+        fixture.appState.reconnectJitter = { 0.75 }
+        fixture.appState.deviceConditions = { DeviceConditions() }
+        _ = fixture.appState.handleScenePhase(.active)
+        _ = fixture.appState.handleScenePhase(.inactive)
+        XCTAssertEqual(recorder.delays.count, 1)
+        // The cycle runs and does not connect: the backoff step is consumed.
+        await recorder.operations.first?()
+        XCTAssertEqual(recorder.purposes.count, 1)
+        _ = fixture.appState.handleScenePhase(.background)
+        XCTAssertEqual(
+            recorder.delays.last,
+            PollCadence.reconnectDelay(attempt: 1, random: 0.75, onScreen: false),
+            "the second wait is the second step of upstream's backoff"
+        )
+        XCTAssertGreaterThan(recorder.delays.last ?? 0, recorder.delays.first ?? 0)
     }
 
     func testRearmIsOffWhenThePolicyIsOff() {
