@@ -264,24 +264,12 @@ struct AuthWebView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WKWebView {
         let normalized = try? ConnectionURLPolicy.normalizedBaseURL(url)
-        let config = WKWebViewConfiguration()
-        config.websiteDataStore = DashboardCookiePersistence.webKitStore(for: websiteDataStoreIdentifier)
-        config.userContentController.add(context.coordinator, name: "ticket")
-        if let normalized,
-           let script = cloudflareAccess?.fetchInjectionUserScript(expectedBaseURL: normalized),
-           !script.isEmpty {
-            config.userContentController.addUserScript(
-                WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true)
-            )
-        }
-        if let normalized {
-            let script = CustomHeaderStore.shared.fetchInjectionUserScript(expectedBaseURL: normalized)
-            if !script.isEmpty {
-                config.userContentController.addUserScript(
-                    WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true)
-                )
-            }
-        }
+        let config = Self.makeConfiguration(
+            normalizedBaseURL: normalized,
+            cloudflareAccess: cloudflareAccess,
+            websiteDataStoreIdentifier: websiteDataStoreIdentifier,
+            ticketHandler: context.coordinator
+        )
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         guard let normalized else {
@@ -294,6 +282,33 @@ struct AuthWebView: NSViewRepresentable {
             Self.reportConstructionFailure(onError, detail: AppLocalization.string("dashboard sign-in request construction failed"))
         }
         return webView
+    }
+
+    /// The sign-in page's WebView configuration. Static, so the handler and
+    /// script placement stays unit-testable without a SwiftUI `Context`.
+    ///
+    /// The ticket handler and the proxy-header scripts live in
+    /// `DashboardScriptWorld` (#774), not the page world: the dashboard page's
+    /// own scripts can then neither read the Cloudflare Access token or the
+    /// custom headers, nor post a forged ticket.
+    @MainActor
+    static func makeConfiguration(
+        normalizedBaseURL normalized: String?,
+        cloudflareAccess: CloudflareAccessCredentials?,
+        websiteDataStoreIdentifier: UUID?,
+        ticketHandler: WKScriptMessageHandler
+    ) -> WKWebViewConfiguration {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = DashboardCookiePersistence.webKitStore(for: websiteDataStoreIdentifier)
+        config.userContentController.add(ticketHandler, contentWorld: DashboardScriptWorld.world, name: "ticket")
+        if let normalized {
+            DashboardScriptWorld.installProxyHeaderScripts(
+                into: config.userContentController,
+                cloudflareAccess: cloudflareAccess,
+                normalizedBaseURL: normalized
+            )
+        }
+        return config
     }
 
     /// Construction-time failures cannot synchronously mutate the owning
@@ -330,13 +345,17 @@ struct AuthWebView: NSViewRepresentable {
     func updateNSView(_ nsView: WKWebView, context: Context) {}
 
     static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
-        nsView.configuration.userContentController.removeScriptMessageHandler(forName: "ticket")
+        nsView.configuration.userContentController.removeScriptMessageHandler(
+            forName: "ticket",
+            contentWorld: DashboardScriptWorld.world
+        )
     }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
     }
 
+    @MainActor
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         let parent: AuthWebView
         private var hasDeliveredTicket = false
@@ -384,7 +403,7 @@ struct AuthWebView: NSViewRepresentable {
             })();
             true;
             """
-            webView.evaluateJavaScript(js)
+            webView.evaluateJavaScript(js, in: nil, in: DashboardScriptWorld.world, completionHandler: nil)
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
