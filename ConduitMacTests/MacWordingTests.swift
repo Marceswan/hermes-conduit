@@ -411,6 +411,19 @@ final class MacWordingTests: XCTestCase {
         "Return to Voice settings, enable this mode if it is off, and click %@ to check availability.",
     ]
 
+    /// On the Mac the toggle holds the display awake only (`UIApplication.isIdleTimerDisabled` takes an IOKit
+    /// display-sleep assertion while a voice conversation is on screen), so the label says the screen stays on.
+    func testKeepScreenAwakeLabelSaysScreenBecauseTheMacHoldsTheDisplayOnly() throws {
+        let shim = try lines("ConduitMac/Compat/Module/UIApplication.swift").joined(separator: "\n")
+        XCTAssertTrue(shim.contains("kIOPMAssertionTypePreventUserIdleDisplaySleep"), "the shim holds the display, not the system")
+        XCTAssertFalse(shim.contains("kIOPMAssertionTypePreventUserIdleSystemSleep"))
+        let v = try values(try strings()["Mac.VoiceSettings.KeepScreenAwakeToggle"])
+        XCTAssertEqual(v["en"]?.value, "Keep the screen on during voice conversations")
+        XCTAssertFalse(v.values.contains { ($0.value ?? "").contains("Mac") }, "no language says the Mac stays awake")
+        let note = try values(try strings()["Mac.VoiceSettings.KeepScreenAwakeNote"])
+        XCTAssertTrue(note["en"]?.value?.hasPrefix("The screen stays on while a voice conversation is open") == true)
+    }
+
     /// Whole English words that give an iPhone gesture or device away ("microphone" does not match).
     private static let iPhoneWord = try! NSRegularExpression(
         pattern: "\\b(tap|taps|tapping|touch|swipe|swipes|ios|phone|iphone|cellular)\\b", options: [.caseInsensitive])
@@ -464,7 +477,73 @@ final class MacWordingTests: XCTestCase {
         }
     }
 
-    /// Every Swift file the Mac app compiles from the repo (not the tests).
+    /// Swift source without its `//` and `/* */` comments (block comments nest, as in Swift). String literals stay whole,
+    /// also with an interpolation (`"a \(f("b")) c"`) and a multi-line string, so a `//` inside a literal (a URL) is kept.
+    static func strippingComments(from text: String) -> String {
+        enum Mode { case code(depth: Int), string(multiline: Bool) }
+        let chars = Array(text.unicodeScalars)
+        var out = String.UnicodeScalarView()
+        var modes: [Mode] = [.code(depth: 0)]
+        var block = 0
+        var i = 0
+        func at(_ k: Int) -> Unicode.Scalar? { k < chars.count ? chars[k] : nil }
+        while i < chars.count {
+            let c = chars[i]
+            if block > 0 {
+                if c == "/", at(i + 1) == "*" { block += 1; i += 2 } else if c == "*", at(i + 1) == "/" { block -= 1; i += 2 } else {
+                    if c == "\n" { out.append(c) }
+                    i += 1
+                }
+                continue
+            }
+            switch modes[modes.count - 1] {
+            case .code(let depth):
+                if c == "/", at(i + 1) == "/" {
+                    while i < chars.count, chars[i] != "\n" { i += 1 }
+                } else if c == "/", at(i + 1) == "*" {
+                    block = 1
+                    i += 2
+                } else if c == "\"" {
+                    let triple = at(i + 1) == "\"" && at(i + 2) == "\""
+                    modes.append(.string(multiline: triple))
+                    out.append(contentsOf: triple ? [c, c, c] : [c])
+                    i += triple ? 3 : 1
+                } else {
+                    if c == "(" { modes[modes.count - 1] = .code(depth: depth + 1) }
+                    if c == ")" {
+                        if depth == 0, modes.count > 1 { modes.removeLast() } else if depth > 0 { modes[modes.count - 1] = .code(depth: depth - 1) }
+                    }
+                    out.append(c)
+                    i += 1
+                }
+            case .string(let multiline):
+                if c == "\\", at(i + 1) == "(" {
+                    out.append(c)
+                    out.append("(")
+                    modes.append(.code(depth: 0))
+                    i += 2
+                } else if c == "\\", let next = at(i + 1) {
+                    out.append(c)
+                    out.append(next)
+                    i += 2
+                } else if c == "\"", !multiline || (at(i + 1) == "\"" && at(i + 2) == "\"") {
+                    modes.removeLast()
+                    out.append(contentsOf: multiline ? [c, c, c] : [c])
+                    i += multiline ? 3 : 1
+                } else if c == "\n", !multiline {
+                    modes.removeLast()
+                    out.append(c)
+                    i += 1
+                } else {
+                    out.append(c)
+                    i += 1
+                }
+            }
+        }
+        return String(out)
+    }
+
+    /// Every Swift file the Mac app compiles from the repo (not the tests), without comments.
     private func sourceText() throws -> String {
         var text = ""
         for folder in ["Conduit", "Shared", "ConduitMac"] {
@@ -472,10 +551,26 @@ final class MacWordingTests: XCTestCase {
             let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)
             while let item = files?.nextObject() as? URL {
                 guard item.pathExtension == "swift" else { continue }
-                text += try String(contentsOf: item, encoding: .utf8) + "\n"
+                text += Self.strippingComments(from: try String(contentsOf: item, encoding: .utf8)) + "\n"
             }
         }
         return text
+    }
+
+    func testStrippingCommentsDropsCommentsAndKeepsLiterals() {
+        let sample = """
+        let a = "Mac.A" // Mac.B
+        /// "Mac.C"
+        /* "Mac.D" */ let e = "https://example.test/Mac.E"
+        /* outer /* "Mac.F" */ still comment "Mac.G" */ let h = "Mac.H"
+        let i = "x \\(f("Mac.I")) y" // "Mac.J"
+        let k = \"\"\"
+        // Mac.K stays: it is inside a string
+        \"\"\"
+        """
+        let kept = Self.strippingComments(from: sample)
+        for key in ["Mac.A", "Mac.E", "Mac.H", "Mac.I", "Mac.K"] { XCTAssertTrue(kept.contains(key), "\(key) is code or a literal") }
+        for key in ["Mac.B", "Mac.C", "Mac.D", "Mac.F", "Mac.G", "Mac.J"] { XCTAssertFalse(kept.contains(key), "\(key) is in a comment") }
     }
 
     /// An English-text key must be the Swift literal itself (`%@` is an interpolation there). If an edit of the
@@ -491,7 +586,7 @@ final class MacWordingTests: XCTestCase {
         }
     }
 
-    /// A `Mac.` key nobody reads is dead weight in 13 languages.
+    /// A `Mac.` key nobody reads is dead weight in 13 languages. A key named only in a comment is not read.
     func testEveryMacKeyIsUsedInTheSources() throws {
         let source = try sourceText()
         for key in macKeys {
