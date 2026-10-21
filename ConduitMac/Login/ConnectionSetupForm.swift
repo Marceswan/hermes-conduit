@@ -182,6 +182,9 @@ struct ConnectionSetupForm: View {
                     .buttonStyle(.borderedProminent)
                     .tint(.conduitAccent)
                     .accessibilityIdentifier("setup.test.continue")
+                if flow.testState.requiresSignInChoice {
+                    signInChoiceEnterCredentialsButton // R17
+                }
             } else if !flow.testState.isRunning {
                 Button("Test Connection") { onStartTest() }
                     .buttonStyle(.borderedProminent)
@@ -213,6 +216,15 @@ struct ConnectionSetupForm: View {
             .tint(.conduitAccent)
             .accessibilityIdentifier("setup.test.enter-credentials")
         }
+    }
+
+    /// R17: the sign-in-choice outcome's password path (ported from upstream
+    /// ConnectionSetupForm): test a username and password now instead of
+    /// choosing on the login screen. The browser path is Continue.
+    private var signInChoiceEnterCredentialsButton: some View {
+        Button("Enter Credentials") { flow.enterCredentialsForSignInChoice() }
+            .buttonStyle(.bordered)
+            .accessibilityIdentifier("setup.test.choice-enter-credentials")
     }
 
     @ViewBuilder
@@ -260,6 +272,15 @@ struct ConnectionSetupForm: View {
                         .font(.headline)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("setup.test.interactive-ready")
+                } else if flow.testState.requiresSignInChoice {
+                    // R17: ported from upstream. The user has NOT authenticated
+                    // and may use either method.
+                    Text(flow.isRepairingConnection
+                         ? ConnectionSetupTestState.repairSignInChoiceMessage
+                         : ConnectionSetupTestState.signInChoiceMessage)
+                        .font(.headline)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("setup.test.sign-in-choice")
                 } else if repairReview?.activationFailure != nil {
                     // Repair: the explicit reconnect failed after a verified
                     // test. The failure text below carries the meaning — the
@@ -289,6 +310,9 @@ struct ConnectionSetupForm: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(!reviewIsValid)
                 .accessibilityIdentifier("setup.use-settings")
+                if flow.canUseSettings, flow.testState.requiresSignInChoice {
+                    signInChoiceEnterCredentialsButton // R17
+                }
             }
         }
     }
@@ -321,6 +345,11 @@ struct ConnectionSetupForm: View {
                     .buttonStyle(.borderedProminent)
                     .tint(.conduitAccent)
                     .accessibilityIdentifier("setup.review.sign-in-reconnect")
+                if repair.offersPasswordSignIn { // R17
+                    Button("Enter Credentials") { repair.enterCredentials() }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("setup.review.enter-credentials")
+                }
             } else if repair.isCandidateAvailable {
                 Button("Reconnect Now") { repair.reconnectNow() }
                     .buttonStyle(.borderedProminent)
@@ -347,7 +376,12 @@ struct ConnectionSetupForm: View {
                 // Only reachable through the interactive-auth acceptance:
                 // discovery proved this dashboard signs in via the browser,
                 // so the absent password is expected, not an omission.
-                reviewValue(AppLocalization.string("Password"), AppLocalization.string("None — browser sign-in"))
+                reviewValue(
+                    AppLocalization.string("Password"),
+                    flow.testState.requiresSignInChoice // R17
+                        ? AppLocalization.string("Not entered")
+                        : AppLocalization.string("None — browser sign-in")
+                )
             } else {
                 reviewValue(AppLocalization.string("Password"), AppLocalization.string("Entered"))
             }
