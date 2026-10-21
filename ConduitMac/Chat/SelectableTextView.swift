@@ -18,7 +18,8 @@ struct SelectableTextView: NSViewRepresentable {
     let selfSizingWidthRange: ClosedRange<CGFloat>?
     let selectionCoordinator: MarkdownSelectionCoordinator?
     let selectionSegment: MarkdownSelectionSegmentDescriptor?
-    /// Keeps the line spacing and alignment the text's own paragraph styles carry.
+    /// Keeps the paragraph styles the text carries exactly as they are (spacing, indents, tab
+    /// stops, alignment, line break mode); paragraphs with none get the view's values.
     let keepsParagraphStyles: Bool
 
     init(
