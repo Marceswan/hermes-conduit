@@ -5,11 +5,11 @@ import SwiftUI
 // here so the menu (ConduitCommands), the sidebar list modifier and the
 // composer twin share one definition and tests can reach it headlessly.
 
-/// Ctrl-Cmd-1 ... Ctrl-Cmd-5: one shortcut per sidebar tab, in `SidebarTab` order (Sessions to
-/// Kanban, then Home). The Mac strip shows Home first (`MacSidebarTabOrder`, D24); the numbers
-/// and the Go menu keep their order so muscle memory does not move.
+/// Ctrl-Cmd-1 ... Ctrl-Cmd-6: one shortcut per sidebar tab, in `SidebarTab` order (Sessions to
+/// Kanban, then Home, then Artifacts). The Mac strip shows Home first (`MacSidebarTabOrder`,
+/// D24); the numbers and the Go menu keep their order so muscle memory does not move.
 enum MacSidebarShortcut: CaseIterable, Identifiable {
-    case sessions, bots, cron, kanban, home
+    case sessions, bots, cron, kanban, home, artifacts
 
     var id: Self { self }
 
@@ -20,6 +20,7 @@ enum MacSidebarShortcut: CaseIterable, Identifiable {
         case .cron: return .cron
         case .kanban: return .kanban
         case .home: return .home
+        case .artifacts: return .artifacts
         }
     }
 
@@ -31,6 +32,7 @@ enum MacSidebarShortcut: CaseIterable, Identifiable {
         case .cron: return "3"
         case .kanban: return "4"
         case .home: return "5"
+        case .artifacts: return "6"
         }
     }
 

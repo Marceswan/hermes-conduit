@@ -9,6 +9,7 @@ final class MacDetailRouterTests: XCTestCase {
         XCTAssertEqual(MacDetailRouter<EmptyView>.destination(for: .cron), .cron)
         XCTAssertEqual(MacDetailRouter<EmptyView>.destination(for: .kanban), .kanban)
         XCTAssertEqual(MacDetailRouter<EmptyView>.destination(for: .home), .home)
+        XCTAssertEqual(MacDetailRouter<EmptyView>.destination(for: .artifacts), .artifacts)
     }
 
     func testOpeningSessionReturnsToSessions() {

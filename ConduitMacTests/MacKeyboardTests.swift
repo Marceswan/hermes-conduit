@@ -17,10 +17,11 @@ final class MacSidebarShortcutTests: XCTestCase {
         XCTAssertEqual(MacSidebarShortcut.tab(forKey: "3"), .cron)
         XCTAssertEqual(MacSidebarShortcut.tab(forKey: "4"), .kanban)
         XCTAssertEqual(MacSidebarShortcut.tab(forKey: "5"), .home)
+        XCTAssertEqual(MacSidebarShortcut.tab(forKey: "6"), .artifacts)
     }
 
     func testOtherKeysMapToNothing() {
-        for key in ["0", "6", "9", "a", "[", " "] as [Character] {
+        for key in ["0", "7", "9", "a", "[", " "] as [Character] {
             XCTAssertNil(MacSidebarShortcut.tab(forKey: key), "\(key)")
         }
     }
@@ -31,9 +32,10 @@ final class MacSidebarShortcutTests: XCTestCase {
         XCTAssertEqual(tabs.count, SidebarTab.allCases.count)
         let keys = MacSidebarShortcut.allCases.map(\.key.character)
         XCTAssertEqual(Set(keys).count, keys.count)
-        XCTAssertEqual(tabs, SidebarTab.allCases, "numbered in SidebarTab order: Home is Ctrl-Cmd-5 and last in Go, though the strip shows it first (D24)")
-        XCTAssertEqual(MacSidebarShortcut.allCases.map(\.key.character), ["1", "2", "3", "4", "5"])
+        XCTAssertEqual(tabs, SidebarTab.allCases, "numbered in SidebarTab order: Home is Ctrl-Cmd-5 and Artifacts Ctrl-Cmd-6, last in Go, though the strip shows Home first (D24, D26)")
+        XCTAssertEqual(MacSidebarShortcut.allCases.map(\.key.character), ["1", "2", "3", "4", "5", "6"])
         XCTAssertEqual(MacSidebarShortcut.tab(forKey: "5"), .home)
+        XCTAssertEqual(MacSidebarShortcut.tab(forKey: "6"), .artifacts)
         XCTAssertEqual(MacSidebarShortcut.tab(forKey: "1"), .sessions)
     }
 

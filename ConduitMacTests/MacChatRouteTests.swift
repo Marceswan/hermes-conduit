@@ -7,7 +7,7 @@ final class MacChatRouteTests: XCTestCase {
         XCTAssertTrue(MacChatRoute.isChatActive(tabRaw: SidebarTab.sessions.rawValue))
         XCTAssertTrue(MacChatRoute.isChatActive(tabRaw: nil))
         XCTAssertTrue(MacChatRoute.isChatActive(tabRaw: "Capabilities"), "removed raw values migrate to Sessions")
-        for tab in [SidebarTab.bots, .cron, .kanban] {
+        for tab in [SidebarTab.bots, .cron, .kanban, .home, .artifacts] {
             XCTAssertFalse(MacChatRoute.isChatActive(tabRaw: tab.rawValue))
         }
     }
@@ -23,9 +23,9 @@ final class MacChatRouteTests: XCTestCase {
         XCTAssertFalse(MacChatRoute.isChatActive(tabRaw: "Home"))
         XCTAssertEqual(MacChatRoute.navigationTitle(tabRaw: "Home"), SidebarTab.home.displayName)
         XCTAssertEqual(SidebarTab.home.rawValue, "Home")
-        XCTAssertEqual(SidebarTab.allCases.last, .home, "upstream's order (shortcuts, palette) keeps Home last; only the Mac strip puts it first")
+        XCTAssertEqual(SidebarTab.allCases.last, .artifacts, "upstream's order (shortcuts, palette) keeps the Mac tabs last, Home before Artifacts (D26); only the Mac strip puts Home first")
         XCTAssertEqual(MacSidebarTabOrder.strip.first, .home)
-        XCTAssertEqual(MacSidebarTabOrder.strip.last, .kanban)
+        XCTAssertEqual(MacSidebarTabOrder.strip.last, .artifacts)
         XCTAssertEqual(SidebarTab.migrated(rawValue: "Home"), .home)
     }
 

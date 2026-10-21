@@ -80,16 +80,16 @@ final class ButtonGeometryTests: XCTestCase {
                      size: NSSize(width: width, height: MacTabStripMetrics.containerHeight + 40))
     }
 
-    /// Strip order (`MacSidebarTabOrder.strip`): Home leftmost.
-    private let allNames = ["Home", "Sessions", "Bots", "Cron", "Kanban"]
+    /// Strip order (`MacSidebarTabOrder.strip`): Home leftmost, Artifacts rightmost (D26).
+    private let allNames = ["Home", "Sessions", "Bots", "Cron", "Kanban", "Artifacts"]
 
-    func testWideStripShowsFiveEqualSegmentsWithNames() throws {
+    func testWideStripShowsSixEqualSegmentsWithNames() throws {
         let width: CGFloat = 640
         let nodes = try strip(width: width)
         XCTAssertEqual(nodes.map(\.label), allNames)
         let containerWidth = width - 28
         for (index, node) in nodes.enumerated() {
-            let expected = MacTabStripMetrics.indicatorFrame(index: index, count: 5, containerWidth: containerWidth)
+            let expected = MacTabStripMetrics.indicatorFrame(index: index, count: 6, containerWidth: containerWidth)
                 .offsetBy(dx: 14, dy: 20)
             XCTAssertEqual(node.frame.minX, expected.minX, accuracy: 0.6, "x of \(node.label ?? "")")
             XCTAssertEqual(node.frame.minY, expected.minY, accuracy: 0.6, "y of \(node.label ?? "")")
@@ -105,27 +105,54 @@ final class ButtonGeometryTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(nodes.first).frame.minY - 20, MacTabStripMetrics.inset, accuracy: 0.6, "top inset")
     }
 
-    /// The widest the sidebar column can be dragged (390 pt) is the only column width where the
-    /// second step of the ladder shows: four equal name segments (the widest, Sessions, sets the
-    /// width) plus the 38 pt Home segment (leftmost) need 338 pt inside the padding.
-    func testWidestColumnKeepsTheFourExistingNamesAndCompactsHome() throws {
+    /// Width the second step of the ladder (every name but Home's, Home an icon) needs inside the
+    /// strip's 14 pt padding: the widest of the named tabs times their count, plus the 38 pt Home
+    /// segment. With six tabs it is more than the widest sidebar column gives (D26).
+    private var compactStepNeed: CGFloat {
+        let widths = MacSidebarTabStrip.nameSegmentWidths
+        let named = widths.filter { $0.key != .home }
+        return CGFloat(named.count) * (named.values.max() ?? 0) + MacTabStripMetrics.homeSegmentWidth
+    }
+
+    /// The widest the sidebar column can be dragged (390 pt) used to be the only column width where
+    /// the second step of the ladder showed (four equal name segments plus the 38 pt Home segment
+    /// needed 338 pt). Artifacts (D26) adds a fifth named tab, so that step needs more than the
+    /// 362 pt the widest column leaves, and the strip is icons at every width the sidebar can have.
+    func testWidestColumnFallsToIconsWithSixTabs() throws {
+        XCTAssertGreaterThan(compactStepNeed, MacSidebarState.sidebarMaxWidth - 28,
+                             "five names plus an icon-only Home no longer fit the widest column")
+        XCTAssertEqual(MacTabStripMetrics.ladder(availableWidth: MacSidebarState.sidebarMaxWidth - 28,
+                                                 nameSegmentWidths: MacSidebarTabStrip.nameSegmentWidths), .icons)
         let nodes = try strip(width: MacSidebarState.sidebarMaxWidth)
+        XCTAssertEqual(nodes.map(\.label), allNames)
+        XCTAssertTrue(nodes.allSatisfy { $0.identifier != HoverTooltipPolicy.visibleLabelIdentifier },
+                      "icon-only segments keep their tooltip: \(nodes.map { $0.identifier ?? "nil" })")
+    }
+
+    /// The second step is still laid out right at a width the sidebar never has (it is a pure
+    /// function of the strip's width, so it holds if the column limits ever grow): Home is an
+    /// icon-only segment on the left and the five other tabs keep icon and name in equal segments.
+    func testCompactStepKeepsFiveNamesAndShrinksHome() throws {
+        let width = compactStepNeed.rounded(.up) + 28 + 4
+        XCTAssertEqual(MacTabStripMetrics.ladder(availableWidth: width - 28,
+                                                 nameSegmentWidths: MacSidebarTabStrip.nameSegmentWidths), .homeCompact)
+        let nodes = try strip(width: width)
         XCTAssertEqual(nodes.map(\.label), allNames)
         let home = try XCTUnwrap(nodes.first)
         XCTAssertEqual(home.label, "Home", "Home is the leftmost segment")
         let names = nodes.dropFirst()
         XCTAssertTrue(names.allSatisfy { $0.identifier == HoverTooltipPolicy.visibleLabelIdentifier },
-                      "Sessions, Bots, Cron and Kanban keep their names at the widest column: \(nodes.map { $0.identifier ?? "nil" })")
+                      "Sessions, Bots, Cron, Kanban and Artifacts keep their names: \(nodes.map { $0.identifier ?? "nil" })")
         XCTAssertNotEqual(home.identifier, HoverTooltipPolicy.visibleLabelIdentifier, "Home is icon-only and keeps its tooltip")
         XCTAssertEqual(home.frame.width, MacTabStripMetrics.homeSegmentWidth - 2 * MacTabStripMetrics.inset, accuracy: 0.6)
         XCTAssertEqual(home.frame.minX - 14, MacTabStripMetrics.inset, accuracy: 0.6, "left inset")
         let widths = names.map(\.frame.width)
-        XCTAssertEqual(try XCTUnwrap(widths.max()) - (try XCTUnwrap(widths.min())), 0, accuracy: 0.6, "the four names stay equal")
-        XCTAssertEqual(MacSidebarState.sidebarMaxWidth - 14 - (try XCTUnwrap(nodes.last)).frame.maxX, MacTabStripMetrics.inset, accuracy: 0.6, "right inset")
+        XCTAssertEqual(try XCTUnwrap(widths.max()) - (try XCTUnwrap(widths.min())), 0, accuracy: 0.6, "the five names stay equal")
+        XCTAssertEqual(width - 14 - (try XCTUnwrap(nodes.last)).frame.maxX, MacTabStripMetrics.inset, accuracy: 0.6, "right inset")
     }
 
     /// Spec open question 2, measured: at the default 340 pt column (312 pt inside the padding)
-    /// the four names plus a compact Home need 338 pt, so the strip falls to icons. The column
+    /// the names plus a compact Home do not fit, so the strip falls to icons. The column
     /// metrics are pinned elsewhere (D6), so the ladder yields instead.
     func testDefaultColumnFallsBackToIconsAndKeepsEveryName() throws {
         let nodes = try strip(width: MacSidebarState.sidebarIdealWidth)
@@ -143,13 +170,14 @@ final class ButtonGeometryTests: XCTestCase {
         let step = { (column: CGFloat) in MacTabStripMetrics.ladder(availableWidth: column - 28, nameSegmentWidths: widths) }
         XCTAssertEqual(step(MacSidebarState.sidebarMinWidth), .icons)
         XCTAssertEqual(step(MacSidebarState.sidebarIdealWidth), .icons)
-        XCTAssertEqual(step(MacSidebarState.sidebarMaxWidth), .homeCompact)
+        XCTAssertEqual(step(MacSidebarState.sidebarMaxWidth), .icons, "six tabs: the compact step needs more than the widest column (D26)")
+        XCTAssertEqual(MacTabStripMetrics.ladder(availableWidth: compactStepNeed, nameSegmentWidths: widths), .homeCompact)
         XCTAssertEqual(MacTabStripMetrics.ladder(availableWidth: 640 - 28, nameSegmentWidths: widths), .names)
     }
 
     func testNarrowStripDropsEverythingToIcons() throws {
         let narrow = try strip(width: 232 + 28)
-        XCTAssertEqual(narrow.count, 5)
+        XCTAssertEqual(narrow.count, 6)
         XCTAssertEqual(narrow.map(\.label), allNames, "icon-only segments keep every name for VoiceOver")
         XCTAssertTrue(narrow.allSatisfy { $0.identifier != HoverTooltipPolicy.visibleLabelIdentifier },
                       "icon-only segments keep their tooltip")

@@ -7,8 +7,9 @@ enum SidebarTab: String, CaseIterable, Identifiable {
     case bots = "Bots"
     case cron = "Cron"
     case kanban = "Kanban"
-    #if os(macOS) // MAC: Home pane (D24); iOS keeps four tabs
+    #if os(macOS) // MAC: Home pane (D24) and Artifacts pane (D26); iOS keeps four tabs
     case home = "Home"
+    case artifacts = "Artifacts"
     #endif // MAC:
 
     var id: String { rawValue }
@@ -22,6 +23,7 @@ enum SidebarTab: String, CaseIterable, Identifiable {
         case .kanban: return AppLocalization.string("Kanban")
         #if os(macOS) // MAC: Home pane (D24); own key, because "Home" is upstream's saved-place word (R18)
         case .home: return AppLocalization.string("Mac.Pane.Home")
+        case .artifacts: return AppLocalization.string("Artifacts")
         #endif // MAC:
         }
     }
@@ -32,8 +34,9 @@ enum SidebarTab: String, CaseIterable, Identifiable {
         case .bots: return "person.2"
         case .cron: return "clock"
         case .kanban: return "rectangle.3.group"
-        #if os(macOS) // MAC: Home pane (D24)
+        #if os(macOS) // MAC: Home pane (D24) and Artifacts pane (D26)
         case .home: return "house"
+        case .artifacts: return "square.grid.2x2"
         #endif // MAC:
         }
     }

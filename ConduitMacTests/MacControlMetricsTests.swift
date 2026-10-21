@@ -60,12 +60,13 @@ final class MacControlMetricsTests: XCTestCase {
                        12 + MacTabStripMetrics.nameGap + 40 + 2 * MacTabStripMetrics.nameMargin + 2 * MacTabStripMetrics.inset)
     }
 
-    func testStripOrderPutsHomeFirstAndKeepsTheUpstreamOrderAfterIt() {
-        XCTAssertEqual(MacSidebarTabOrder.strip, [.home, .sessions, .bots, .cron, .kanban])
+    func testStripOrderPutsHomeFirstAndArtifactsLast() {
+        XCTAssertEqual(MacSidebarTabOrder.strip, [.home, .sessions, .bots, .cron, .kanban, .artifacts])
         XCTAssertEqual(MacSidebarTabOrder.strip.count, SidebarTab.allCases.count)
         XCTAssertEqual(Set(MacSidebarTabOrder.strip), Set(SidebarTab.allCases), "every tab is on the strip once")
-        XCTAssertEqual(Array(MacSidebarTabOrder.strip.dropFirst()), SidebarTab.allCases.filter { $0 != .home })
-        XCTAssertEqual(MacSidebarTabStrip.compactGroups, [[.home], [.sessions, .bots, .cron, .kanban]])
+        XCTAssertEqual(Array(MacSidebarTabOrder.strip.dropFirst()), SidebarTab.allCases.filter { $0 != .home },
+                       "after Home the strip follows SidebarTab order, which ends with Artifacts (D26)")
+        XCTAssertEqual(MacSidebarTabStrip.compactGroups, [[.home], [.sessions, .bots, .cron, .kanban, .artifacts]])
     }
 
     func testSegmentsAreEqualWidthAndTileTheContainer() {
