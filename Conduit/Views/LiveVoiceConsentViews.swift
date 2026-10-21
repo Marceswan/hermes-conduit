@@ -107,7 +107,11 @@ struct LiveVoiceConsentRow: View {
                     appState.setLiveVoiceConsent(false, for: mode)
                 }
                 .buttonStyle(.settings)
+                #if os(macOS) // MAC: the hint names the device; the Mac key is upstream's text with "Mac" for "iPhone" (R27 pattern, ledger)
+                .accessibilityHint(AppLocalization.string("Mac.LiveVoiceConsent.TakeBackHint"))
+                #else // MAC:
                 .accessibilityHint(AppLocalization.string("Ends a running call on this iPhone. The next call asks again."))
+                #endif // MAC:
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: LiveVoiceProviderConsent.didChange)) { _ in

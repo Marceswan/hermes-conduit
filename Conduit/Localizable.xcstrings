@@ -322630,6 +322630,94 @@
         }
       }
     },
+    "Mac.LiveVoiceConsent.TakeBackHint" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Beendet einen laufenden Anruf auf diesem Mac. Der nächste Anruf fragt erneut."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ends a running call on this Mac. The next call asks again."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Termina una llamada en curso en este Mac. La próxima llamada volverá a preguntar."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Met fin à un appel en cours sur ce Mac. Le prochain appel redemandera."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mengakhiri panggilan yang sedang berlangsung di Mac ini. Panggilan berikutnya akan bertanya lagi."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Termina una chiamata in corso su questo Mac. La prossima chiamata chiederà di nuovo."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このMacで進行中の通話を終了します。次回の通話で再度確認します。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 Mac에서 진행 중인 통화를 종료해요. 다음 통화에서 다시 물어봐요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kończy trwającą rozmowę na tym Macu. Następna rozmowa zapyta ponownie."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Encerra uma chamada em andamento neste Mac. A próxima chamada vai perguntar de novo."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Завершает текущий звонок на этом Mac. Следующий звонок спросит снова."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bu Mac’te devam eden aramayı sonlandırır. Sonraki arama yeniden sorar."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会结束此 Mac 上正在进行的通话。下次通话会再次询问。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "會結束此 Mac 上正在進行的通話。下次通話會再次詢問。"
+          }
+        }
+      }
+    },
     "Show Missing Files" : {
       "localizations" : {
         "de" : {
