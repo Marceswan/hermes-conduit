@@ -6,7 +6,8 @@
 //  session exchange, the WebRTC session over a fake peer, delegations as
 //  Hermes background jobs, and the controller's rules. Written as
 //  extensions of existing Voice suites, like the Gemini Live tests: the CI
-//  test planner is at capacity for new XCTestCase classes.
+//  test planner was at capacity for new XCTestCase classes when
+//  this file landed (its sharded plan carries new classes again).
 //
 
 import AVFAudio
@@ -138,6 +139,14 @@ final class FakeGPTLiveAudio: GPTLiveAudioSessionControlling {
 @MainActor
 private func settle(_ iterations: Int = 20) async {
     for _ in 0..<iterations { await Task.yield() }
+}
+
+/// Yields until `done` holds, capped at 10 s of wall clock: a fixed number
+/// of yields can run out on a busy hosted runner.
+@MainActor
+private func settle(until done: () -> Bool, limit: Duration = .seconds(10)) async {
+    let deadline = ContinuousClock.now.advanced(by: limit)
+    while !done(), ContinuousClock.now < deadline { await Task.yield() }
 }
 
 // MARK: - Wire format, host client, session
@@ -367,6 +376,11 @@ extension HermesVoiceGatewayTimeoutTests {
     func testGPTLiveBriefingBuildsTheRulesPersonaAndMemorySections() {
         let plain = GPTLiveConversationController.briefing()
         XCTAssertTrue(plain.contains("[Conduit voice app rules."))
+        // Simple talk stays on the call; only real work is delegated.
+        XCTAssertTrue(plain.contains("Answer yourself, without delegating"))
+        XCTAssertTrue(plain.contains("Never say something was done"))
+        XCTAssertFalse(plain.contains("Look up:"), "web lookups are added only when the host has a search backend")
+        XCTAssertTrue(GPTLiveConversationController.webLookUpRule.contains("delegate \"Look up:\""))
         XCTAssertFalse(plain.contains("<hermes_persona>"))
         XCTAssertFalse(plain.contains("<hermes_memory>"))
 
@@ -596,6 +610,37 @@ extension VoiceConversationControllerTests {
         XCTAssertEqual(settledChannel, .speakable)
         XCTAssertTrue(text.contains("All green."))
         XCTAssertNil(supervisor.takePendingNotice(), "The result is announced once, on the delegation")
+    }
+
+    func testGPTLiveLookUpSearchesTheWebOnTheDelegationWithoutAHermesJob() async {
+        let fake = FakeVoiceJobBackend()
+        let supervisor = VoiceBackgroundJobSupervisor(backend: fake.backend, pollInterval: .seconds(3_600))
+        let search = FakeGeminiLiveWebSearch()
+        search.results = [GeminiLiveWebResult(title: "Boston weather", url: "https://example.com", snippet: "Sunny, 18°C")]
+        let bridge = GPTLiveDelegationBridge(supervisor: supervisor, webSearch: search)
+
+        let reply = await bridge.handleDelegation(id: "del_1", request: "Look up: weather in Boston tomorrow")
+        XCTAssertEqual(search.queries, ["weather in Boston tomorrow"])
+        XCTAssertTrue(fake.submissions.isEmpty, "a lookup is never a Hermes job")
+        guard case .delegationReply("del_1", let text, .commentary)? = reply.first, reply.count == 1 else {
+            return XCTFail("Expected the results on the delegation, got \(reply)")
+        }
+        XCTAssertTrue(text.contains("Sunny, 18°C"))
+        XCTAssertTrue(text.contains(GeminiLiveToolBridge.lookupAnswerNote))
+
+        // The host's failure is told, not turned into a job.
+        search.error = URLError(.timedOut)
+        let failed = await bridge.handleDelegation(id: "del_2", request: "lookup: news today")
+        guard case .delegationReply("del_2", let failure, _)? = failed.first else { return XCTFail("\(failed)") }
+        XCTAssertTrue(failure.contains("The lookup failed"))
+        XCTAssertTrue(fake.submissions.isEmpty)
+    }
+
+    func testGPTLiveLookUpMarkerNeedsItsOwnStart() {
+        XCTAssertEqual(GPTLiveDelegationBridge.lookUpMarker(in: " Look up: the score"), "the score")
+        XCTAssertEqual(GPTLiveDelegationBridge.lookUpMarker(in: "Look-up:"), "")
+        XCTAssertNil(GPTLiveDelegationBridge.lookUpMarker(in: "please look up: the score"))
+        XCTAssertNil(GPTLiveDelegationBridge.lookUpMarker(in: "Look up the score"))
     }
 
     func testGPTLiveResultOfAJobWhoseCallEndedArrivesAsIdleSessionContext() async {
@@ -1985,6 +2030,90 @@ extension AppStateVoiceCapabilityTests {
         XCTAssertGreaterThan(Drag.lift(for: CGSize(width: 0, height: -1_000)), -Drag.maxLift)
         XCTAssertEqual(Drag.lift(for: CGSize(width: -100, height: -40)), 0, "a sideways drag leaves the bar")
         XCTAssertGreaterThan(Drag.lift(for: CGSize(width: 20, height: -40)), Drag.lift(for: CGSize(width: 0, height: -40)), "sideways movement takes from the rise")
+    }
+
+    // MARK: Waiting call
+
+    /// Conduit reconnecting with GPT-Live chosen over a fake call, and
+    /// Siri's request for a call pending in the shared store.
+    private func makeSiriWaitingAppState() -> (AppState, FakeGPTLiveSessionControl) {
+        let suite = "GPTLiveSiriWaiting.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let appState = AppState(defaults: defaults, loadSavedConnection: false)
+        _ = appState.handleScenePhase(.active)
+        appState.showLogin = false
+        appState.connection = HermesConnection(baseUrl: "https://example.com", ticket: "test-ticket")
+        appState.isConnecting = true
+        appState.setGPTLiveEnabled(true)
+        let (_, session) = installFakeGPTLive(in: appState)
+        PendingVoiceIntentStore.shared.enqueue(PendingVoiceLaunchPolicy.makeSiriPendingIntent(profile: nil))
+        return (appState, session)
+    }
+
+    /// Siri's call shows its screen while Conduit connects, and the call
+    /// starts on it once Hermes answers.
+    func testSiriCallWaitsOnItsOwnScreenAndStartsThere() async {
+        let store = PendingVoiceIntentStore.shared
+        defer { store.clear() }
+        let (appState, session) = makeSiriWaitingAppState()
+
+        // What the app's route does as Siri's request arrives.
+        appState.presentWaitingCallIfNeeded()
+
+        XCTAssertTrue(appState.showGPTLiveSheet, "Siri's call shows its screen at once")
+        XCTAssertEqual(appState.waitingCall?.engine, .gptLive)
+        XCTAssertFalse(appState.isVoiceCallInProgress, "a screen waiting for its call is no call yet")
+        XCTAssertEqual(session.started, 0, "the call waits for Hermes")
+
+        appState.isConnecting = false
+        appState.isConnected = true
+        guard let claim = store.takeClaim() else { return XCTFail("Siri's request should still be pending") }
+        let opened = await appState.openVoiceConversation(claim.intent)
+        await settle(until: { session.started == 1 })
+
+        XCTAssertTrue(opened)
+        XCTAssertEqual(session.started, 1, "the call starts on the screen that waited for it")
+        XCTAssertTrue(appState.gptLiveController.isActive)
+        XCTAssertNil(appState.waitingCall)
+        // The route's outcome for a call that opened leaves it be.
+        appState.endWaitingCall(owner: .siri)
+        XCTAssertTrue(appState.showGPTLiveSheet)
+        appState.closeGPTLiveConversation()
+    }
+
+    /// Hanging up on Siri's waiting screen drops Siri's request. A request
+    /// that ends without its call takes the screen with it, and a sign-out
+    /// closes the screen but leaves the request to end as it would have.
+    func testSiriWaitingScreenGoesWithItsRequest() {
+        let store = PendingVoiceIntentStore.shared
+        defer { store.clear() }
+        let (appState, session) = makeSiriWaitingAppState()
+        appState.presentWaitingCallIfNeeded()
+        XCTAssertTrue(appState.showGPTLiveSheet)
+
+        appState.closeGPTLiveConversation()
+
+        XCTAssertFalse(store.hasPendingIntent, "hanging up drops Siri's request")
+        XCTAssertFalse(appState.showGPTLiveSheet)
+
+        store.enqueue(PendingVoiceLaunchPolicy.makeSiriPendingIntent(profile: nil))
+        appState.presentWaitingCallIfNeeded()
+        XCTAssertTrue(appState.showGPTLiveSheet)
+        appState.endWaitingCall(owner: .widget)
+        XCTAssertTrue(appState.showGPTLiveSheet, "a widget launch ending leaves Siri's screen")
+        appState.endWaitingCall(owner: .siri)
+        XCTAssertFalse(appState.showGPTLiveSheet, "Siri's request failed or expired")
+        XCTAssertNil(appState.waitingCall)
+
+        store.enqueue(PendingVoiceLaunchPolicy.makeSiriPendingIntent(profile: nil))
+        appState.presentWaitingCallIfNeeded()
+        XCTAssertTrue(appState.showGPTLiveSheet)
+        appState.disconnect()
+        XCTAssertFalse(appState.showGPTLiveSheet)
+        XCTAssertNil(appState.waitingCall)
+        XCTAssertTrue(store.hasPendingIntent)
+        XCTAssertEqual(session.started, 0)
     }
 }
 

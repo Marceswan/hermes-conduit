@@ -55,7 +55,9 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_IDENTITY: "Apple Distribution"
         CODE_SIGN_ENTITLEMENTS: Conduit/Conduit.entitlements
-        PROVISIONING_PROFILE_SPECIFIER: "Conduit App Store"
+        # Regenerated with HealthKit and the Location Push Service Extension
+        # capability (com.apple.developer.location.push).
+        PROVISIONING_PROFILE_SPECIFIER: "Hermes Conduit App Store"
         # The draft-stripping phase below deletes lprojs it can't declare
         # up front, which the user-script sandbox would refuse.
         ENABLE_USER_SCRIPT_SANDBOXING: NO
@@ -66,6 +68,9 @@ targets:
       - target: ConduitNotificationService
       # The configured launcher widgets are embedded with the app.
       - target: ConduitWidgets
+      # Answers the agent's on-demand locate while Conduit isn't running
+      # (designs/location-awareness.md section 12).
+      - target: ConduitLocationPush
     postBuildScripts:
       # A draft language (Info.plist ConduitDraftLanguages) is compiled from
       # the String Catalogs like any other; drop its lproj so it never ships.
@@ -87,6 +92,9 @@ targets:
     deploymentTarget: "10.0"
     sources:
       - path: ConduitWatch
+        # The widget extension's own code (ConduitWatchWidgets).
+        excludes:
+          - "Widgets/**"
       - path: Shared/WatchVoice
       # The iPhone's own Gemini Live code: the Watch runs the same session
       # (designs/apple-watch-voice-direct.md).
@@ -114,6 +122,37 @@ targets:
         # capability to the App ID. Production, as the iPhone's: the relay
         # sends only to production APNs.
         CODE_SIGN_ENTITLEMENTS: ConduitWatch/ConduitWatch.entitlements
+    dependencies:
+      # Embedded as ConduitWatch.app/PlugIns/ConduitWatchWidgets.appex.
+      - target: ConduitWatchWidgets
+  # The Watch's complication and its control for the Action button,
+  # Control Center and the Smart Stack: both start a call
+  # (ConduitWatch/TalkToHermesIntent.swift). watchOS 26, where Watch apps
+  # first get controls. Signed automatically, as the Watch app.
+  ConduitWatchWidgets:
+    type: app-extension
+    platform: watchOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: ConduitWatch/Widgets
+        excludes:
+          - "Info.plist"
+      # The control's intent runs in the app, so both build it.
+      - path: ConduitWatch/TalkToHermesIntent.swift
+      - path: ConduitWatch/Localizable.xcstrings
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.milim.relay.watchkitapp.widgets
+        PRODUCT_NAME: ConduitWatchWidgets
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: ConduitWatch/Widgets/Info.plist
+        TARGETED_DEVICE_FAMILY: "4"
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "Apple Development"
+        PROVISIONING_PROFILE_SPECIFIER: ""
   ConduitNotificationService:
     # Decrypts end-to-end encrypted notifications before iOS shows them
     # (#431). APNs still targets com.milim.relay; this App ID has no Push
@@ -124,13 +163,14 @@ targets:
     sources:
       - path: ConduitNotificationService
       - path: Shared
-        # The Watch app's code, Gemini Live and Grok Live, which the
-        # extension never uses.
+        # The Watch app's code, Gemini Live, Grok Live and location
+        # sharing, which the extension never uses.
         excludes:
           - "WatchVoice/**"
           - "GeminiLive/**"
           - "GrokLive/**"
           - "Widgets/**"
+          - "Location/**"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.milim.relay.NotificationService
@@ -140,6 +180,37 @@ targets:
         CODE_SIGN_IDENTITY: "Apple Distribution"
         CODE_SIGN_ENTITLEMENTS: ConduitNotificationService/ConduitNotificationService.entitlements
         PROVISIONING_PROFILE_SPECIFIER: "Conduit Notification Service App Store"
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+  ConduitLocationPush:
+    # The Location Push Service Extension: iOS launches it for a `location`
+    # push (the agent's on-demand locate) and it posts one sealed fix
+    # straight to the Hermes host. Reads the sharing binding, the device key
+    # and the host pass the app keeps in the App Group (Shared/Location).
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: ConduitLocationPush
+      - path: Shared
+        excludes:
+          - "WatchVoice/**"
+          - "GeminiLive/**"
+          - "GrokLive/**"
+          - "Widgets/**"
+    # Maps lookups the host asks this iPhone for run on MapKit
+    # (Shared/Location/MapsEngine.swift, designs/maps-v1-contract.md).
+    dependencies:
+      - sdk: MapKit.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.milim.relay.LocationPush
+        PRODUCT_NAME: ConduitLocationPush
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: ConduitLocationPush/Info.plist
+        CODE_SIGN_IDENTITY: "Apple Distribution"
+        CODE_SIGN_ENTITLEMENTS: ConduitLocationPush/ConduitLocationPush.entitlements
+        PROVISIONING_PROFILE_SPECIFIER: "Conduit Location Push App Store"
         APPLICATION_EXTENSION_API_ONLY: YES
         SKIP_INSTALL: YES
   ConduitWidgets:

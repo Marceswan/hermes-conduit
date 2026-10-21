@@ -21,7 +21,12 @@
 //  `conduit://settings/calls` opens Settings at Calls from Hermes: Hermes
 //  links it when the user asks for a call while calls are off.
 //  `conduit://settings/voice` opens Voice, where the user lets Hermes
-//  change settings. Only inside the app, like a bot link.
+//  change settings. `conduit://settings/plugin` opens Conduit plugin and
+//  `conduit://settings/location` opens Location sharing. Only inside the
+//  app, like a bot link.
+//
+//  `conduit://connect?url=…` is a dashboard sign-in code, read by
+//  DashboardConnectLink before these, inside the app and from outside.
 //
 
 import Foundation
@@ -41,6 +46,14 @@ enum ConduitAppLink: Equatable {
         case calls
         /// Voice, where "Let Hermes change settings" lives.
         case voice
+        /// The Conduit plugin on the dashboard's host.
+        case plugin
+        /// Health, where sharing Apple Health data is turned on.
+        case health
+        /// Location, where sharing the user's location with Hermes is set up.
+        case location
+        /// Calendar & phone: calendar, reminders, Focus and phone status.
+        case phone
     }
 
     static let scheme = "conduit"

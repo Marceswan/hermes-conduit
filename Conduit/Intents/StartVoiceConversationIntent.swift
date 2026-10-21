@@ -131,6 +131,16 @@ struct ConduitVoiceShortcuts: AppShortcutsProvider {
             systemImageName: "bubble.left.and.text.bubble.right"
         )
         #endif // MAC:
+        // Siri asks what to send, and speaks Hermes's answer.
+        AppShortcut(
+            intent: SendToHermesIntent(),
+            phrases: [
+                "Ask Hermes in \(.applicationName)",
+                "Send to Hermes in \(.applicationName)"
+            ],
+            shortTitle: "Ask Hermes",
+            systemImageName: "paperplane.fill"
+        )
     }
 }
 

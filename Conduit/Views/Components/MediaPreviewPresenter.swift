@@ -158,6 +158,18 @@ final class MediaPreviewPresenter {
         return presentStaged(staged, previewable: previewable)
     }
 
+    /// Previews a gateway file already downloaded into its own directory
+    /// (#569); the directory is removed when the preview closes.
+    @discardableResult
+    func present(downloaded download: DashboardDownloadedFile) -> Bool {
+        let previewable = Self.isPreviewable(filename: download.file.lastPathComponent, mimeType: download.mimeType)
+        return presentStaged((download.directory, download.file), previewable: previewable)
+    }
+
+    /// Where downloads for preview are staged. Reached through `shared`, so
+    /// the sweep of a previous run's leftovers has already happened.
+    var stagingDirectory: URL { Self.stagingRoot }
+
     private func presentStaged(_ staged: (directory: URL, file: URL)?, previewable: Bool) -> Bool {
         guard let staged else { return false }
         guard !Task.isCancelled else {
@@ -193,7 +205,17 @@ final class MediaPreviewPresenter {
         sessions[key] = session
         controller.dataSource = session
         controller.delegate = session
-        controller.modalPresentationStyle = .fullScreen
+        // Over, not in place of, the screens under it: a `.fullScreen`
+        // preview takes the app's views out of the window, and closing it
+        // puts them back, which re-laid out every live tab. Under the
+        // Artifacts page that re-layout of the Chats list never settled and
+        // the watchdog killed the app.
+        controller.modalPresentationStyle = .overFullScreen
+        // As `.fullScreen` did: Quick Look's chrome sets the status bar.
+        controller.modalPresentationCapturesStatusBarAppearance = true
+        // The rows under it stay on screen, so their `onDisappear` no longer
+        // stops an inline clip: Quick Look has its own player.
+        ChatAudioClipPlayer.shared.stop()
         presenter.present(controller, animated: true) {
             session.didPresent = true
         }

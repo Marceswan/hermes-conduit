@@ -4,6 +4,9 @@
 //
 
 import Foundation
+import OSLog
+
+private let hermesSpeechFallbackLog = Logger(subsystem: "com.milim.conduit", category: "OnDeviceSpeech")
 
 @MainActor
 final class HermesVoiceGateway: VoiceGatewayService {
@@ -28,14 +31,35 @@ final class HermesVoiceGateway: VoiceGatewayService {
     }
 
     let profile: String
-    private let bridge: DashboardTicketBridge
-    private let baseURL: String
+    let bridge: DashboardTicketBridge
+    let baseURL: String
+    /// Who speaks replies, read when each reply's stream opens so a change
+    /// in Settings applies to the next reply.
+    private let speechOutput: @MainActor () -> VoiceSpeechOutput
+    /// This iPhone's voice; nil leaves every reply to Hermes.
+    private let makeOnDeviceSpeech: FallbackSpeechStream.OpenOnDevice?
+    /// Whether a Hermes reply that fails before any audio is spoken on this
+    /// iPhone instead. Off for Settings' speech test, which checks Hermes.
+    private let fallsBackToOnDeviceSpeech: Bool
+    /// Set once Hermes speech failed and this iPhone spoke instead: later
+    /// replies go straight to the iPhone rather than waiting on Hermes.
+    private(set) var hermesSpeechFailed = false
 
-    init(bridge: DashboardTicketBridge, baseURL: String, profile: String) {
+    init(
+        bridge: DashboardTicketBridge,
+        baseURL: String,
+        profile: String,
+        speechOutput: @escaping @MainActor () -> VoiceSpeechOutput = { .hermes },
+        makeOnDeviceSpeech: FallbackSpeechStream.OpenOnDevice? = nil,
+        fallsBackToOnDeviceSpeech: Bool = false
+    ) {
         self.bridge = bridge
         self.baseURL = (try? ConnectionURLPolicy.normalizedBaseURL(baseURL))
             ?? baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         self.profile = profile
+        self.speechOutput = speechOutput
+        self.makeOnDeviceSpeech = makeOnDeviceSpeech
+        self.fallsBackToOnDeviceSpeech = fallsBackToOnDeviceSpeech
     }
 
     func transcribe(_ audio: VoiceCapturedAudio) async throws -> String {
@@ -50,7 +74,9 @@ final class HermesVoiceGateway: VoiceGatewayService {
                 dataURLCharacterCount: dataURL.utf8.count
             )
         )
-        if let error = response["error"] as? String, !error.isEmpty { throw DashboardTicketBridgeError.requestFailed(error) }
+        if let error = response["error"] as? String, !error.isEmpty {
+            throw DashboardTicketBridgeError.requestFailed(HermesSpeechFailure.message(error))
+        }
         guard let rawTranscript = response["transcript"] as? String ?? response["text"] as? String else {
             throw DashboardTicketBridgeError.requestFailed(AppLocalization.string("Hermes didn't send back what you said. Try again."))
         }
@@ -59,6 +85,9 @@ final class HermesVoiceGateway: VoiceGatewayService {
         // not a failed chat submission.
         return rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    /// Which host and profile this gateway speaks to.
+    var identity: String { baseURL + "|" + profile }
 
     private var profileQuery: String {
         DashboardPath.withProfile("", profile: profile)
@@ -69,10 +98,60 @@ final class HermesVoiceGateway: VoiceGatewayService {
         onPCM16: @escaping @MainActor (Data, Double) throws -> Void,
         onEncodedAudio: @escaping @MainActor (Data) throws -> Void
     ) async throws -> VoiceSpeechStream {
+        if speechOutput() == .speechServer {
+            guard let makeOnDeviceSpeech, fallsBackToOnDeviceSpeech else {
+                return try await openSpeechServerSpeech(onStart: onStart, onPCM16: onPCM16)
+            }
+            // A server that can't speak this reply leaves it to this iPhone,
+            // reply by reply: the next one tries the server again.
+            return try await FallbackSpeechStream.open(
+                hermes: { [weak self] start, pcm, _ in
+                    guard let self else { throw CancellationError() }
+                    return try await self.openSpeechServerSpeech(onStart: start, onPCM16: pcm)
+                },
+                onDevice: makeOnDeviceSpeech,
+                onFallback: { error in
+                    hermesSpeechFallbackLog.notice("Speech server speech failed, speaking on this iPhone: \(String(describing: error), privacy: .private)")
+                },
+                onStart: onStart,
+                onPCM16: onPCM16,
+                onEncodedAudio: onEncodedAudio
+            )
+        }
+        guard let makeOnDeviceSpeech else {
+            return try await openHermesSpeechStream(onStart: onStart, onPCM16: onPCM16, onEncodedAudio: onEncodedAudio)
+        }
+        if speechOutput() == .onDevice || (fallsBackToOnDeviceSpeech && hermesSpeechFailed) {
+            return makeOnDeviceSpeech(onStart, onPCM16)
+        }
+        guard fallsBackToOnDeviceSpeech else {
+            return try await openHermesSpeechStream(onStart: onStart, onPCM16: onPCM16, onEncodedAudio: onEncodedAudio)
+        }
+        return try await FallbackSpeechStream.open(
+            hermes: { [weak self] start, pcm, encoded in
+                guard let self else { throw CancellationError() }
+                return try await self.openHermesSpeechStream(onStart: start, onPCM16: pcm, onEncodedAudio: encoded)
+            },
+            onDevice: makeOnDeviceSpeech,
+            onFallback: { [weak self] error in
+                self?.hermesSpeechFailed = true
+                hermesSpeechFallbackLog.notice("Hermes speech failed, speaking on this iPhone: \(String(describing: error), privacy: .private)")
+            },
+            onStart: onStart,
+            onPCM16: onPCM16,
+            onEncodedAudio: onEncodedAudio
+        )
+    }
+
+    private func openHermesSpeechStream(
+        onStart: @escaping @MainActor (Double) throws -> Void,
+        onPCM16: @escaping @MainActor (Data, Double) throws -> Void,
+        onEncodedAudio: @escaping @MainActor (Data) throws -> Void
+    ) async throws -> VoiceSpeechStream {
         let ticket = try await bridge.mintTicket()
-        let request: URLRequest
+        let unauthorized: URLRequest
         do {
-            request = try Self.speechStreamRequest(
+            unauthorized = try Self.speechStreamRequest(
                 baseURL: baseURL,
                 ticket: ticket,
                 profile: profile,
@@ -81,7 +160,10 @@ final class HermesVoiceGateway: VoiceGatewayService {
         } catch {
             throw VoiceAudioError.unavailable(AppLocalization.string("Could not open the speech stream."))
         }
-        let task = URLSession.shared.webSocketTask(with: request)
+        // The dashboard's own session cookies (cookie mode), on the
+        // cookie-less, redirect-refusing dashboard socket session.
+        let request = try await bridge.requestAuthorizer.authorizeUpgrade(unauthorized)
+        let task = bridge.requestAuthorizer.webSocketTask(with: request)
         task.resume()
         return HermesSpeechStream(
             task: task,
@@ -121,7 +203,9 @@ final class HermesVoiceGateway: VoiceGatewayService {
             timeoutMilliseconds: 90_000,
             maxResponseBytes: DataURLLimits.maxJSONResponseBytes
         )
-        if let error = response["error"] as? String, !error.isEmpty { throw DashboardTicketBridgeError.requestFailed(error) }
+        if let error = response["error"] as? String, !error.isEmpty {
+            throw DashboardTicketBridgeError.requestFailed(HermesSpeechFailure.message(error))
+        }
         guard let dataURL = response["data_url"] as? String ?? response["dataUrl"] as? String,
               let data = DataURLLimits.decodeBase64DataURL(dataURL) else {
             throw DashboardTicketBridgeError.requestFailed(AppLocalization.string("Hermes returned invalid fallback audio."))
@@ -139,13 +223,14 @@ extension HermesVoiceGateway: VoiceLiveTranscriptionGateway {
         // A ticket or URL failure is not a verdict on the profile: this
         // utterance just uses the upload, and the next one tries again.
         guard let ticket = try? await bridge.mintTicket(),
-              let request = try? Self.liveTranscriptionRequest(
+              let unauthorized = try? Self.liveTranscriptionRequest(
                 baseURL: baseURL,
                 ticket: ticket,
                 profile: profile,
                 cloudflareAccess: bridge.cloudflareAccess
-              ) else { return nil }
-        let task = URLSession.shared.webSocketTask(with: request)
+              ),
+              let request = try? await bridge.requestAuthorizer.authorizeUpgrade(unauthorized) else { return nil }
+        let task = bridge.requestAuthorizer.webSocketTask(with: request)
         task.resume()
         return HermesLiveTranscription(
             socket: task,
@@ -389,7 +474,8 @@ final class HermesSpeechStream: VoiceSpeechStream {
             task.cancel(with: .goingAway, reason: nil)
             startFallbackIfNeeded()
         case "error":
-            complete(.failure(DashboardTicketBridgeError.requestFailed(object["message"] as? String ?? AppLocalization.string("Hermes speech stream failed."))))
+            let message = (object["message"] as? String).map(HermesSpeechFailure.message)
+            complete(.failure(DashboardTicketBridgeError.requestFailed(message ?? AppLocalization.string("Hermes speech stream failed."))))
         default:
             break
         }
@@ -437,5 +523,38 @@ final class HermesSpeechStream: VoiceSpeechStream {
         let continuation = completed
         completed = nil
         continuation?.resume(with: result)
+    }
+}
+
+/// Hermes passes its speech provider's error through as is, which can be
+/// a whole library exception: for Edge TTS that includes the Microsoft URL
+/// with its client token. People see what went wrong and what to do; links
+/// and tokens never reach the screen.
+enum HermesSpeechFailure {
+    static func message(_ raw: String) -> String {
+        let lowered = raw.lowercased()
+        let isEdge = lowered.contains("(edge)") || lowered.contains("speech.platform.bing.com")
+        // The handshake status as aiohttp words it ("403, message=…"), or
+        // spelled out; not any 401/403 that happens to be in the text.
+        let refusal = #"\b40[13],|\b(status|code|http)\W{0,3}40[13]\b|\b40[13] (forbidden|unauthorized)"#
+        if isEdge, lowered.range(of: refusal, options: .regularExpression) != nil {
+            // Microsoft changes Edge's read-aloud handshake from time to
+            // time and refuses older edge-tts releases (7.2.x stopped working
+            // in October 2026; 7.3.0 follows the new one).
+            return AppLocalization.string("Microsoft turned away Edge TTS because the edge-tts package on your Hermes host is out of date. Update it there (pip install -U edge-tts) and restart Hermes, or choose another speech provider in Settings > Voice.")
+        }
+        return cleaned(raw)
+    }
+
+    /// The text without links (and whatever query they carry), Python's
+    /// `url='…'` wrapper, or more than one short paragraph.
+    static func cleaned(_ raw: String) -> String {
+        var text = raw
+        for pattern in [#",?\s*(?<![\w-])url=(['"]).*?\1"#, #"\b(?:wss?|https?)://\S+"#] {
+            text = text.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        }
+        text = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard text.count > 240 else { return text.isEmpty ? AppLocalization.string("Hermes speech stream failed.") : text }
+        return String(text.prefix(240)) + "…"
     }
 }

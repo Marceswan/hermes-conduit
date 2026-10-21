@@ -1,91 +1,269 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "NSCalendarsFullAccessUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wenn du deinen Kalender teilst, sendet Conduit die von dir gewählten Ereignisse an deinen eigenen Hermes-Server, damit dein Agent Fragen zu deinem Terminplan beantworten kann, und fügt Ereignisse hinzu oder ändert sie, wenn du zustimmst. Nichts davon geht an den Entwickler von Conduit."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "When you share your calendar, Conduit sends the events you choose to your own Hermes server so your agent can answer questions about your schedule, and adds or changes events when you approve them. Nothing goes to Conduit's developer."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cuando compartes tu calendario, Conduit envía los eventos que elijas a tu propio servidor Hermes para que tu agente pueda responder preguntas sobre tu agenda, y añade o cambia eventos cuando los apruebas. Nada se envía al desarrollador de Conduit."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lorsque vous partagez votre calendrier, Conduit envoie les événements que vous choisissez à votre propre serveur Hermes pour que votre agent puisse répondre à des questions sur votre emploi du temps, et ajoute ou modifie des événements lorsque vous les approuvez. Rien n'est envoyé au développeur de Conduit."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saat Anda membagikan kalender, Conduit mengirim acara yang Anda pilih ke server Hermes Anda sendiri agar agen Anda dapat menjawab pertanyaan tentang jadwal Anda, serta menambahkan atau mengubah acara saat Anda menyetujuinya. Tidak ada yang dikirim ke developer Conduit."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando condividi il calendario, Conduit invia gli eventi che scegli al tuo server Hermes per permettere al tuo agente di rispondere a domande sui tuoi impegni, e aggiunge o modifica eventi quando li approvi. Nulla viene inviato allo sviluppatore di Conduit."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "カレンダーを共有すると、Conduitは選択したイベントをあなた自身のHermesサーバに送信し、エージェントが予定に関する質問に答えられるようにします。また、あなたが承認したイベントを追加または変更します。Conduitの開発者には何も送信されません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "캘린더를 공유하면 Conduit이 선택한 이벤트를 사용자의 Hermes 서버로 보내 에이전트가 일정에 관한 질문에 답할 수 있게 하고, 승인한 이벤트를 추가하거나 변경해요. Conduit 개발자에게는 아무것도 전송되지 않아요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gdy udostępniasz kalendarz, Conduit wysyła wybrane wydarzenia na Twój własny serwer Hermes, aby agent mógł odpowiadać na pytania o Twój plan dnia, oraz dodaje lub zmienia wydarzenia, gdy je zatwierdzisz. Nic nie trafia do dewelopera Conduit."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando você compartilha seu calendário, o Conduit envia os eventos que você escolher para o seu próprio servidor Hermes para que seu agente possa responder a perguntas sobre sua agenda, e adiciona ou altera eventos quando você os aprova. Nada é enviado ao desenvolvedor do Conduit."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Когда вы делитесь календарём, Conduit отправляет выбранные события на ваш собственный сервер Hermes, чтобы агент мог отвечать на вопросы о вашем расписании, а также добавляет или изменяет события, когда вы это одобряете. Разработчику Conduit ничего не передаётся."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Takviminizi paylaştığınızda Conduit, ajanınızın programınızla ilgili soruları yanıtlayabilmesi için seçtiğiniz etkinlikleri kendi Hermes sunucunuza gönderir ve onayladığınız etkinlikleri ekler veya değiştirir. Conduit'in geliştiricisine hiçbir şey gitmez."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当你共享日历时，Conduit 会将你选择的日程发送到你自己的 Hermes 服务器，以便你的代理回答有关你日程安排的问题，并在你批准后添加或更改日程。不会向 Conduit 的开发者发送任何内容。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "當你分享行事曆時，Conduit 會將你選擇的行程傳送到你自己的 Hermes 伺服器，讓你的代理能回答有關你行程安排的問題，並在你核准後加入或變更行程。不會傳送任何內容給 Conduit 的開發者。"
+          }
+        }
+      }
+    },
+    "NSCalendarsWriteOnlyAccessUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit fügt Ereignisse hinzu, die dein Hermes-Agent vorschlägt, wenn du zustimmst. Mit diesem Zugriff liest Conduit deinen Kalender nicht."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit adds events your Hermes agent suggests, when you approve them. It doesn't read your calendar with this access."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit añade los eventos que sugiere tu agente de Hermes cuando los apruebas. Con este acceso no lee tu calendario."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit ajoute les événements suggérés par votre agent Hermes lorsque vous les approuvez. Avec cet accès, il ne lit pas votre calendrier."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit menambahkan acara yang disarankan agen Hermes Anda saat Anda menyetujuinya. Dengan akses ini, Conduit tidak membaca kalender Anda."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit aggiunge gli eventi suggeriti dal tuo agente Hermes quando li approvi. Con questo accesso non legge il tuo calendario."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduitは、Hermesエージェントが提案したイベントをあなたが承認したときに追加します。このアクセス権でカレンダーを読み取ることはありません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit은 Hermes 에이전트가 제안한 이벤트를 승인하면 추가해요. 이 권한으로는 캘린더를 읽지 않아요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit dodaje wydarzenia proponowane przez Twojego agenta Hermes, gdy je zatwierdzisz. Z tym dostępem nie odczytuje Twojego kalendarza."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O Conduit adiciona os eventos que seu agente Hermes sugere, quando você os aprova. Com este acesso, ele não lê seu calendário."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit добавляет события, предложенные вашим агентом Hermes, когда вы их одобряете. С этим доступом он не читает ваш календарь."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit, Hermes ajanınızın önerdiği etkinlikleri siz onayladığınızda ekler. Bu erişimle takviminizi okumaz."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit 会在你批准后添加你的 Hermes 代理建议的日程。此权限下它不会读取你的日历。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit 會在你核准後加入你的 Hermes 代理建議的行程。此權限下它不會讀取你的行事曆。"
+          }
+        }
+      }
+    },
     "NSCameraUsageDescription" : {
       "extractionState" : "manual",
       "localizations" : {
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Conduit verwendet die Kamera nur, wenn du ein Foto aufnehmen möchtest, etwa für dein Profilbild oder einen Chat-Anhang."
+            "value" : "Conduit verwendet die Kamera nur, wenn du ein Foto aufnehmen möchtest, etwa für dein Profilbild oder einen Chat-Anhang, oder den Anmeldecode eines Dashboards scannen möchtest."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Conduit uses the camera only when you choose to take a photo, such as for your profile picture or a chat attachment."
+            "value" : "Conduit uses the camera only when you choose to take a photo, such as for your profile picture or a chat attachment, or to scan a dashboard's sign-in code."
           }
         },
         "es" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Conduit usa la cámara solo cuando eliges hacer una foto, por ejemplo para tu foto de perfil o para adjuntarla a un chat."
+            "value" : "Conduit usa la cámara solo cuando eliges hacer una foto, por ejemplo para tu foto de perfil o para adjuntarla a un chat, o escanear el código de inicio de sesión de un panel."
           }
         },
         "fr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Conduit utilise l'appareil photo uniquement lorsque vous choisissez de prendre une photo, par exemple pour votre photo de profil ou une pièce jointe de discussion."
+            "value" : "Conduit utilise l'appareil photo uniquement lorsque vous choisissez de prendre une photo, par exemple pour votre photo de profil ou une pièce jointe de discussion, ou de scanner le code de connexion d'un tableau de bord."
           }
         },
         "id" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Conduit menggunakan kamera hanya saat Anda memilih untuk mengambil foto, misalnya untuk foto profil atau lampiran obrolan."
+            "value" : "Conduit menggunakan kamera hanya saat Anda memilih untuk mengambil foto, misalnya untuk foto profil atau lampiran obrolan, atau memindai kode masuk dasbor."
           }
         },
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Conduit usa la fotocamera solo quando scegli di scattare una foto, ad esempio per l'immagine del profilo o un allegato della chat."
+            "value" : "Conduit usa la fotocamera solo quando scegli di scattare una foto, ad esempio per l'immagine del profilo o un allegato della chat, o di scansionare il codice di accesso di una dashboard."
           }
         },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Conduitは、プロフィール写真やチャットの添付ファイル用など、写真を撮ることを選んだときにだけカメラを使用します。"
+            "value" : "Conduitは、プロフィール写真やチャットの添付ファイル用など写真を撮るとき、またはダッシュボードのサインインコードをスキャンするときにだけカメラを使用します。"
           }
         },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Conduit은 프로필 사진이나 채팅 첨부 파일처럼 사진을 찍기로 선택했을 때만 카메라를 사용해요."
+            "value" : "Conduit은 프로필 사진이나 채팅 첨부 파일처럼 사진을 찍거나 대시보드의 로그인 코드를 스캔하기로 선택했을 때만 카메라를 사용해요."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Conduit używa aparatu tylko wtedy, gdy zdecydujesz się zrobić zdjęcie, na przykład do zdjęcia profilowego lub załącznika w czacie."
+            "value" : "Conduit używa aparatu tylko wtedy, gdy zdecydujesz się zrobić zdjęcie, na przykład do zdjęcia profilowego lub załącznika w czacie, albo zeskanować kod logowania do panelu."
           }
         },
         "pt-BR" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "O Conduit usa a câmera somente quando você escolhe tirar uma foto, como para sua foto de perfil ou um anexo de chat."
+            "value" : "O Conduit usa a câmera somente quando você escolhe tirar uma foto, como para sua foto de perfil ou um anexo de chat, ou escanear o código de login de um painel."
           }
         },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Conduit использует камеру, только когда вы решаете сделать снимок, например для фото профиля или вложения в чат."
+            "value" : "Conduit использует камеру, только когда вы решаете сделать снимок, например для фото профиля или вложения в чат, или отсканировать код для входа в дашборд."
           }
         },
         "tr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Conduit, kamerayı yalnızca profil resminiz veya bir sohbet eki gibi bir fotoğraf çekmeyi seçtiğinizde kullanır."
+            "value" : "Conduit, kamerayı yalnızca profil resminiz veya bir sohbet eki gibi bir fotoğraf çekmeyi ya da bir panelin giriş kodunu taramayı seçtiğinizde kullanır."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "仅当你选择拍照时（例如用作头像或聊天附件），Conduit 才会使用相机。"
+            "value" : "仅当你选择拍照（例如用作头像或聊天附件）或扫描仪表板的登录码时，Conduit 才会使用相机。"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "只有在你選擇拍照時（例如用於個人照片或聊天附件），Conduit 才會使用相機。"
+            "value" : "只有在你選擇拍照（例如用於個人照片或聊天附件）或掃描儀表板的登入碼時，Conduit 才會使用相機。"
           }
         }
       }
@@ -179,6 +357,184 @@
         }
       }
     },
+    "NSHealthShareUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wenn du das Teilen von Health-Daten einschaltest, liest Conduit die von dir gewählten Kategorien und sendet sie direkt an deinen eigenen Hermes-Server, damit dein Agent Fragen zu deiner Gesundheit beantworten kann. Nichts davon geht an den Entwickler von Conduit."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "When you turn on Health sharing, Conduit reads the categories you choose and sends them directly to your own Hermes server so your agent can answer questions about your health. Nothing goes to Conduit's developer."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cuando activas la opción de compartir datos de Salud, Conduit lee las categorías que elijas y las envía directamente a tu propio servidor Hermes para que tu agente pueda responder preguntas sobre tu salud. Nada se envía al desarrollador de Conduit."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lorsque vous activez le partage Santé, Conduit lit les catégories que vous choisissez et les envoie directement à votre propre serveur Hermes pour que votre agent puisse répondre à des questions sur votre santé. Rien n'est envoyé au développeur de Conduit."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saat Anda menyalakan berbagi Kesehatan, Conduit membaca kategori yang Anda pilih dan mengirimkannya langsung ke server Hermes Anda sendiri agar agen Anda dapat menjawab pertanyaan tentang kesehatan Anda. Tidak ada yang dikirim ke developer Conduit."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando attivi la condivisione di Salute, Conduit legge le categorie che scegli e le invia direttamente al tuo server Hermes, così il tuo agente può rispondere a domande sulla tua salute. Nulla viene inviato allo sviluppatore di Conduit."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ヘルスケアの共有をオンにすると、Conduitは選択したカテゴリを読み取り、エージェントがあなたの健康に関する質問に答えられるよう、あなた自身のHermesサーバに直接送信します。Conduitの開発者に送られることはありません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "건강 공유를 켜면 Conduit은 사용자가 선택한 카테고리를 읽고, 에이전트가 건강에 관한 질문에 답할 수 있도록 사용자의 Hermes 서버로 직접 보내요. Conduit 개발자에게는 아무것도 전송되지 않아요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gdy włączysz udostępnianie danych z aplikacji Zdrowie, Conduit odczyta wybrane przez Ciebie kategorie i wyśle je bezpośrednio na Twój własny serwer Hermes, aby Twój agent mógł odpowiadać na pytania o Twoje zdrowie. Nic nie trafia do dewelopera Conduit."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando você ativa o compartilhamento do app Saúde, o Conduit lê as categorias que você escolher e as envia diretamente para o seu próprio servidor Hermes para que seu agente possa responder perguntas sobre sua saúde. Nada é enviado ao desenvolvedor do Conduit."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Когда вы включаете отправку данных «Здоровья», Conduit считывает выбранные вами категории и отправляет их напрямую на ваш собственный сервер Hermes, чтобы ваш агент мог отвечать на вопросы о вашем здоровье. Разработчику Conduit ничего не передаётся."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sağlık paylaşımını açtığınızda Conduit seçtiğiniz kategorileri okur ve ajanınızın sağlığınızla ilgili soruları yanıtlayabilmesi için bunları doğrudan kendi Hermes sunucunuza gönderir. Conduit'in geliştiricisine hiçbir şey gitmez."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开启“健康”共享后，Conduit 会读取你选择的类别，并将其直接发送到你自己的 Hermes 服务器，让你的代理能够回答有关你健康状况的问题。任何数据都不会发送给 Conduit 的开发者。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "開啟「健康」分享後，Conduit 會讀取你選擇的類別，並直接傳送到你自己的 Hermes 伺服器，讓你的代理能回答有關你健康狀況的問題。任何資料都不會傳送給 Conduit 的開發者。"
+          }
+        }
+      }
+    },
+    "NSHealthUpdateUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit schreibt nie in Apple Health. Es liest nur die Kategorien, die du mit deinem Hermes-Server teilen möchtest."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit never writes to Apple Health. It only reads the categories you choose to share with your Hermes server."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit nunca escribe en Salud. Solo lee las categorías que elijas compartir con tu servidor Hermes."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit n'écrit jamais dans Santé. Il lit uniquement les catégories que vous choisissez de partager avec votre serveur Hermes."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit tidak pernah menulis ke Kesehatan. Conduit hanya membaca kategori yang Anda pilih untuk dibagikan dengan server Hermes Anda."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit non scrive mai in Salute. Legge solo le categorie che scegli di condividere con il tuo server Hermes."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduitがヘルスケアにデータを書き込むことはありません。Hermesサーバと共有するために選択したカテゴリを読み取るだけです。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit은 Apple 건강에 데이터를 기록하지 않아요. Hermes 서버와 공유하도록 선택한 카테고리만 읽어요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit nigdy nie zapisuje danych w aplikacji Zdrowie. Odczytuje tylko kategorie, które zdecydujesz się udostępnić swojemu serwerowi Hermes."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O Conduit nunca grava dados no app Saúde. Ele apenas lê as categorias que você escolher compartilhar com o seu servidor Hermes."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit никогда не записывает данные в «Здоровье». Он только считывает категории, которыми вы решили поделиться со своим сервером Hermes."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit, Apple Sağlık'a hiçbir zaman veri yazmaz. Yalnızca Hermes sunucunuzla paylaşmayı seçtiğiniz kategorileri okur."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit 绝不会向“健康”写入数据。它只会读取你选择与 Hermes 服务器共享的类别。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit 絕不會寫入「健康」。它只會讀取你選擇與 Hermes 伺服器分享的類別。"
+          }
+        }
+      }
+    },
     "NSMicrophoneUsageDescription" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -264,6 +620,95 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Conduit 會將麥克風用於語音對話，以及 App 在前景時偵測喚醒詞。"
+          }
+        }
+      }
+    },
+    "NSMotionUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wenn du den iPhone-Status teilst, teilt Conduit deinem eigenen Hermes-Server mit, ob du gehst, fährst oder stillstehst, damit dein Agent einen guten Moment wählen kann, um dich zu erreichen. Nichts davon geht an den Entwickler von Conduit."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "When you share phone status, Conduit tells your own Hermes server whether you're walking, driving or still, so your agent can choose a good moment to reach you. Nothing goes to Conduit's developer."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cuando compartes el estado del iPhone, Conduit le indica a tu propio servidor Hermes si estás caminando, conduciendo o quieto, para que tu agente pueda elegir un buen momento para contactarte. Nada se envía al desarrollador de Conduit."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lorsque vous partagez l'état de votre iPhone, Conduit indique à votre propre serveur Hermes si vous marchez, conduisez ou êtes immobile, pour que votre agent puisse choisir le bon moment pour vous joindre. Rien n'est envoyé au développeur de Conduit."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saat Anda membagikan status iPhone, Conduit memberi tahu server Hermes Anda sendiri apakah Anda sedang berjalan, berkendara, atau diam, agar agen Anda dapat memilih waktu yang tepat untuk menghubungi Anda. Tidak ada yang dikirim ke developer Conduit."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando condividi lo stato dell'iPhone, Conduit comunica al tuo server Hermes se stai camminando, guidando o sei fermo, così il tuo agente può scegliere il momento giusto per contattarti. Nulla viene inviato allo sviluppatore di Conduit."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iPhoneの状態を共有すると、Conduitはあなたが歩いているか、運転中か、静止しているかをあなた自身のHermesサーバに伝え、エージェントが連絡に適したタイミングを選べるようにします。Conduitの開発者には何も送信されません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iPhone 상태를 공유하면 Conduit이 걷는 중인지, 운전 중인지, 가만히 있는지를 사용자의 Hermes 서버에 알려 에이전트가 연락하기 좋은 때를 고를 수 있게 해요. Conduit 개발자에게는 아무것도 전송되지 않아요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gdy udostępniasz stan iPhone’a, Conduit informuje Twój własny serwer Hermes, czy idziesz, jedziesz, czy się nie ruszasz, aby agent mógł wybrać dobry moment na kontakt. Nic nie trafia do dewelopera Conduit."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando você compartilha o estado do iPhone, o Conduit informa ao seu próprio servidor Hermes se você está andando, dirigindo ou parado, para que seu agente possa escolher um bom momento para falar com você. Nada é enviado ao desenvolvedor do Conduit."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Когда вы делитесь состоянием iPhone, Conduit сообщает вашему собственному серверу Hermes, идёте ли вы, едете или находитесь на месте, чтобы агент мог выбрать удачный момент, чтобы связаться с вами. Разработчику Conduit ничего не передаётся."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iPhone durumunu paylaştığınızda Conduit, ajanınızın size ulaşmak için uygun bir an seçebilmesi amacıyla yürüyor, araç kullanıyor ya da hareketsiz olup olmadığınızı kendi Hermes sunucunuza bildirir. Conduit'in geliştiricisine hiçbir şey gitmez."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当你共享 iPhone 状态时，Conduit 会告诉你自己的 Hermes 服务器你是在步行、驾驶还是静止，以便你的代理挑选合适的时机联系你。不会向 Conduit 的开发者发送任何内容。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "當你分享 iPhone 狀態時，Conduit 會告訴你自己的 Hermes 伺服器你正在步行、開車還是靜止，讓你的代理挑選適合的時機聯絡你。不會傳送任何內容給 Conduit 的開發者。"
           }
         }
       }
@@ -357,6 +802,95 @@
         }
       }
     },
+    "NSRemindersFullAccessUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wenn du Erinnerungen teilst, sendet Conduit die von dir gewählten Listen an deinen eigenen Hermes-Server, damit dein Agent sieht, was darauf steht, und fügt Erinnerungen hinzu oder erledigt sie, wenn du zustimmst. Nichts davon geht an den Entwickler von Conduit."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "When you share reminders, Conduit sends the lists you choose to your own Hermes server so your agent can see what's on them, and adds or completes reminders when you approve them. Nothing goes to Conduit's developer."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cuando compartes recordatorios, Conduit envía las listas que elijas a tu propio servidor Hermes para que tu agente pueda ver lo que contienen, y añade o completa recordatorios cuando los apruebas. Nada se envía al desarrollador de Conduit."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lorsque vous partagez vos rappels, Conduit envoie les listes que vous choisissez à votre propre serveur Hermes pour que votre agent puisse voir leur contenu, et ajoute ou termine des rappels lorsque vous les approuvez. Rien n'est envoyé au développeur de Conduit."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saat Anda membagikan pengingat, Conduit mengirim daftar yang Anda pilih ke server Hermes Anda sendiri agar agen Anda dapat melihat isinya, serta menambahkan atau menyelesaikan pengingat saat Anda menyetujuinya. Tidak ada yang dikirim ke developer Conduit."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando condividi i promemoria, Conduit invia gli elenchi che scegli al tuo server Hermes per permettere al tuo agente di vederne il contenuto, e aggiunge o completa promemoria quando li approvi. Nulla viene inviato allo sviluppatore di Conduit."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "リマインダーを共有すると、Conduitは選択したリストをあなた自身のHermesサーバに送信し、エージェントがその内容を確認できるようにします。また、あなたが承認したリマインダーを追加または完了にします。Conduitの開発者には何も送信されません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "미리 알림을 공유하면 Conduit이 선택한 목록을 사용자의 Hermes 서버로 보내 에이전트가 내용을 볼 수 있게 하고, 승인한 미리 알림을 추가하거나 완료해요. Conduit 개발자에게는 아무것도 전송되지 않아요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gdy udostępniasz przypomnienia, Conduit wysyła wybrane listy na Twój własny serwer Hermes, aby agent widział, co na nich jest, oraz dodaje lub oznacza przypomnienia jako wykonane, gdy je zatwierdzisz. Nic nie trafia do dewelopera Conduit."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando você compartilha lembretes, o Conduit envia as listas que você escolher para o seu próprio servidor Hermes para que seu agente possa ver o que há nelas, e adiciona ou conclui lembretes quando você os aprova. Nada é enviado ao desenvolvedor do Conduit."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Когда вы делитесь напоминаниями, Conduit отправляет выбранные списки на ваш собственный сервер Hermes, чтобы агент видел их содержимое, а также добавляет или завершает напоминания, когда вы это одобряете. Разработчику Conduit ничего не передаётся."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anımsatıcılarınızı paylaştığınızda Conduit, ajanınızın içeriklerini görebilmesi için seçtiğiniz listeleri kendi Hermes sunucunuza gönderir ve onayladığınız anımsatıcıları ekler veya tamamlar. Conduit'in geliştiricisine hiçbir şey gitmez."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当你共享提醒事项时，Conduit 会将你选择的列表发送到你自己的 Hermes 服务器，以便你的代理查看其中的内容，并在你批准后添加或完成提醒事项。不会向 Conduit 的开发者发送任何内容。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "當你分享提醒事項時，Conduit 會將你選擇的列表傳送到你自己的 Hermes 伺服器，讓你的代理查看其中的內容，並在你核准後加入或完成提醒事項。不會傳送任何內容給 Conduit 的開發者。"
+          }
+        }
+      }
+    },
     "NSSpeechRecognitionUsageDescription" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -442,6 +976,273 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "當你選擇「在這部 iPhone 上」時，Conduit 會使用裝置上的 Apple 語音辨識，將你的語音轉換為文字。"
+          }
+        }
+      }
+    },
+    "NSLocationAlwaysAndWhenInUseUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wenn du die Freigabe im Hintergrund einschaltest, teilt Conduit deinem eigenen Hermes-Server mit, wann du deine gespeicherten Orte erreichst oder verlässt und wo du bist, wenn dein Agent fragt, in der gewählten Genauigkeit. Nichts geht an Conduits Entwickler."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "When you turn on background sharing, Conduit tells your own Hermes server when you arrive at or leave your saved places, and where you are when your agent asks, at the detail you choose. Nothing goes to Conduit's developer."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cuando activas compartir en segundo plano, Conduit avisa a tu propio servidor de Hermes cuando llegas a tus lugares guardados o sales de ellos, y de dónde estás cuando tu agente lo pregunta, con el detalle que elijas. Nada va al desarrollador de Conduit."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quand vous activez le partage en arrière-plan, Conduit indique à votre propre serveur Hermes quand vous arrivez à vos lieux enregistrés ou les quittez, et où vous êtes quand votre agent le demande, au niveau de détail choisi. Rien n'est envoyé au développeur de Conduit."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saat kamu menyalakan berbagi di latar belakang, Conduit memberi tahu server Hermes milikmu sendiri saat kamu tiba di atau pergi dari tempat tersimpanmu, dan di mana kamu berada saat agenmu bertanya, dengan tingkat detail pilihanmu. Tidak ada yang dikirim ke pengembang Conduit."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando attivi la condivisione in background, Conduit comunica al tuo server Hermes quando arrivi ai tuoi luoghi salvati o li lasci, e dove ti trovi quando il tuo agente lo chiede, con il dettaglio che scegli. Nulla va allo sviluppatore di Conduit."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "バックグラウンドでの共有をオンにすると、保存した場所への到着や出発、そしてエージェントが尋ねたときの現在地を、選んだ詳細度でConduitがあなた自身のHermesサーバに伝えます。Conduitの開発者には何も送信されません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "백그라운드 공유를 켜면 Conduit가 저장된 장소에 도착하거나 떠날 때, 그리고 에이전트가 물을 때 현재 위치를 선택한 상세도로 사용자의 Hermes 서버에 알립니다. Conduit 개발자에게는 아무것도 전송되지 않습니다."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gdy włączysz udostępnianie w tle, Conduit informuje twój własny serwer Hermes, kiedy przyjeżdżasz do zapisanych miejsc lub je opuszczasz oraz gdzie jesteś, gdy agent pyta, z wybraną dokładnością. Nic nie trafia do twórcy Conduit."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando você ativa o compartilhamento em segundo plano, o Conduit informa ao seu próprio servidor Hermes quando você chega aos seus lugares salvos ou sai deles, e onde você está quando seu agente pergunta, no detalhe que você escolher. Nada vai para o desenvolvedor do Conduit."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Когда вы включаете передачу в фоне, Conduit сообщает вашему собственному серверу Hermes, когда вы прибываете в сохранённые места или покидаете их, а также где вы, когда агент спрашивает, с выбранной точностью. Разработчику Conduit ничего не передаётся."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arka planda paylaşımı açtığında Conduit, kayıtlı yerlerine vardığında veya oradan ayrıldığında ve ajanın sorduğunda nerede olduğunu, seçtiğin ayrıntı düzeyinde kendi Hermes sunucuna bildirir. Conduit'in geliştiricisine hiçbir şey gitmez."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开启后台共享后，Conduit 会按你选择的详细程度，告诉你自己的 Hermes 服务器你何时到达或离开已保存的地点，以及智能体询问时你在哪里。不会向 Conduit 的开发者发送任何内容。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "開啟背景分享後，Conduit 會依你選擇的詳細程度，告訴你自己的 Hermes 伺服器你何時抵達或離開已儲存的地點，以及代理詢問時你在哪裡。不會傳送任何內容給 Conduit 的開發者。"
+          }
+        }
+      }
+    },
+    "NSLocationWhenInUseUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wenn du die Standortfreigabe einschaltest, sendet Conduit deinen Standort an deinen eigenen Hermes-Server, wenn du eine Nachricht sendest oder mit Hermes sprichst, damit dein Agent Fragen dazu beantworten kann, wo du bist. Nichts geht an Conduits Entwickler."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "When you turn on location sharing, Conduit sends your location to your own Hermes server as you send a message or talk to Hermes, so your agent can answer questions about where you are. Nothing goes to Conduit's developer."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cuando activas compartir la ubicación, Conduit envía tu ubicación a tu propio servidor de Hermes al enviar un mensaje o hablar con Hermes, para que tu agente pueda responder preguntas sobre dónde estás. Nada va al desarrollador de Conduit."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quand vous activez le partage de la position, Conduit envoie votre position à votre propre serveur Hermes lorsque vous envoyez un message ou parlez à Hermes, pour que votre agent puisse répondre aux questions sur l'endroit où vous êtes. Rien n'est envoyé au développeur de Conduit."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saat kamu menyalakan berbagi lokasi, Conduit mengirim lokasimu ke server Hermes milikmu sendiri saat kamu mengirim pesan atau berbicara dengan Hermes, agar agenmu dapat menjawab pertanyaan tentang di mana kamu berada. Tidak ada yang dikirim ke pengembang Conduit."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando attivi la condivisione della posizione, Conduit invia la tua posizione al tuo server Hermes quando invii un messaggio o parli con Hermes, così il tuo agente può rispondere a domande su dove ti trovi. Nulla va allo sviluppatore di Conduit."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "位置情報の共有をオンにすると、メッセージを送信したりHermesと話したりするときに、Conduitがあなた自身のHermesサーバへ位置情報を送信し、エージェントが現在地に関する質問に答えられるようになります。Conduitの開発者には何も送信されません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "위치 공유를 켜면 메시지를 보내거나 Hermes와 대화할 때 Conduit가 사용자의 Hermes 서버로 위치를 보내, 에이전트가 사용자의 위치에 관한 질문에 답할 수 있게 합니다. Conduit 개발자에게는 아무것도 전송되지 않습니다."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gdy włączysz udostępnianie lokalizacji, Conduit wysyła twoją lokalizację na twój własny serwer Hermes, gdy wysyłasz wiadomość lub rozmawiasz z Hermesem, aby agent mógł odpowiadać na pytania o to, gdzie jesteś. Nic nie trafia do twórcy Conduit."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando você ativa o compartilhamento de localização, o Conduit envia sua localização ao seu próprio servidor Hermes ao enviar uma mensagem ou falar com o Hermes, para que seu agente possa responder perguntas sobre onde você está. Nada vai para o desenvolvedor do Conduit."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Когда вы включаете передачу геопозиции, Conduit отправляет её на ваш собственный сервер Hermes, когда вы отправляете сообщение или говорите с Hermes, чтобы агент мог отвечать на вопросы о том, где вы. Разработчику Conduit ничего не передаётся."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Konum paylaşımını açtığında Conduit, mesaj gönderdiğinde veya Hermes ile konuştuğunda konumunu kendi Hermes sunucuna gönderir; böylece ajanın nerede olduğunla ilgili soruları yanıtlayabilir. Conduit'in geliştiricisine hiçbir şey gitmez."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开启位置共享后，当你发送消息或与 Hermes 交谈时，Conduit 会将你的位置发送到你自己的 Hermes 服务器，让你的智能体能回答与你所在位置有关的问题。不会向 Conduit 的开发者发送任何内容。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "開啟位置分享後，當你傳送訊息或與 Hermes 交談時，Conduit 會將你的位置傳送到你自己的 Hermes 伺服器，讓你的代理能回答與你所在位置有關的問題。不會傳送任何內容給 Conduit 的開發者。"
+          }
+        }
+      }
+    },
+    "NSAlarmKitUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wenn du Hermes Wecker und Timer stellen lässt, stellt Conduit die, um die dein Agent bittet, nachdem du zugestimmt hast, außer du hast Hinzufügen ohne Nachfrage gewählt."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "When you let Hermes set alarms and timers, Conduit sets the ones your agent asks for, after you approve them unless you chose to add without asking."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Si permites que Hermes ponga alarmas y temporizadores, Conduit pone los que pide tu agente después de que los apruebes, salvo que hayas elegido añadir sin preguntar."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Si vous autorisez Hermes à régler des alarmes et minuteurs, Conduit règle ceux que votre agent demande, après votre accord, sauf si vous avez choisi d’ajouter sans demander."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jika Anda mengizinkan Hermes memasang alarm dan timer, Conduit memasang yang diminta agen Anda setelah Anda menyetujuinya, kecuali Anda memilih menambahkan tanpa bertanya."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Se consenti a Hermes di impostare sveglie e timer, Conduit imposta quelli richiesti dal tuo agente dopo la tua approvazione, a meno che tu abbia scelto di aggiungere senza chiedere."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermesにアラームとタイマーの設定を許可すると、エージェントが求めたものをあなたの承認後にConduitが設定します（確認なしで追加する設定の場合を除く）。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes가 알람과 타이머를 설정하도록 허용하면, 묻지 않고 추가하도록 설정하지 않은 한 에이전트가 요청한 알람을 승인 후 Conduit가 설정합니다."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gdy pozwolisz Hermesowi ustawiać alarmy i minutniki, Conduit ustawia te, o które prosi twój agent, po twojej zgodzie, chyba że wybrano dodawanie bez pytania."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando você permite que o Hermes defina alarmes e timers, o Conduit define os que seu agente pedir, depois que você aprovar, a menos que tenha escolhido adicionar sem perguntar."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Если вы разрешите Hermes ставить будильники и таймеры, Conduit будет ставить те, что попросит ваш агент, после вашего одобрения, если вы не выбрали добавление без вопроса."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hermes'in alarm ve zamanlayıcı kurmasına izin verdiğinizde Conduit, sormadan eklemeyi seçmediyseniz, ajanınızın istediklerini onayınızdan sonra kurar."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当你允许 Hermes 设置闹钟和计时器时，Conduit 会在你批准后设置你的代理请求的闹钟，除非你选择了无需询问直接添加。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "當你允許 Hermes 設定鬧鐘與計時器時，Conduit 會在你核准後設定你的代理要求的鬧鐘，除非你選擇了無需詢問直接加入。"
           }
         }
       }

@@ -179,6 +179,8 @@ struct RelayMetaInfo: Decodable, Equatable {
     let gateways: [Gateway]
 
     var supportsDecisionCards: Bool { capabilities.contains("decisions") }
+    /// The relay sends the agent's on-demand locate to a location push token.
+    var supportsLocationPush: Bool { capabilities.contains("location-push") }
 
     /// One malformed gateway record must not hide the whole section: decode
     /// gateway rows lossily so a single incompatible record degrades to just
@@ -426,6 +428,8 @@ final class PushNotificationService: ObservableObject {
 
     @Published private(set) var authorizationStatus: UNAuthorizationStatus = .notDetermined
     @Published private(set) var isWorking = false
+    /// A pairing with a host is running (the button or the automatic one).
+    @Published private(set) var isPairing = false
     @Published private(set) var lastError: String?
     @Published private(set) var pairingCode: String?
     @Published private(set) var pairingExpiry: String?
@@ -444,6 +448,8 @@ final class PushNotificationService: ObservableObject {
         // trusted once it holds an encryption key (#431). Kept on failure.
         didSet {
             guard let relayMeta else { return }
+            // A relay that sends locates now (or no longer) gets the token.
+            if relayMeta.supportsLocationPush != oldValue?.supportsLocationPush { queueVoIPTokenUpdate() }
             NotificationSharedSettings.knownGatewayIDs = NotificationE2E.knownGatewayIDs(
                 listed: Set(relayMeta.gateways.map(\.id)),
                 previous: NotificationSharedSettings.knownGatewayIDs,
@@ -930,6 +936,51 @@ final class PushNotificationService: ObservableObject {
         case released
     }
 
+    // MARK: - Live Activities (#605)
+
+    /// The installation whose relay answered 404 for the Live Activity
+    /// route; pairing with another relay tries again.
+    private var liveActivitiesUnsupportedInstallation: String?
+
+    /// Registers the push token of the Live Activity Conduit started for a
+    /// chat, under the ids the chat is known by (at most 6, the relay's
+    /// limit), so the host's progress reports reach it. Best effort: without
+    /// notifications, or on a relay without the route, the activity is only
+    /// updated while Conduit runs.
+    func registerLiveActivity(token: String, sessionIDs: [String]) async {
+        guard let registration, liveActivitiesUnsupportedInstallation != registration.installationID,
+              !sessionIDs.isEmpty else { return }
+        await sendLiveActivity(
+            LiveActivityRegistration(pushToken: token, sessionIDs: Array(sessionIDs.prefix(6))),
+            method: "PUT",
+            registration: registration
+        )
+    }
+
+    /// The activity ended on the phone: the relay forgets its token.
+    func unregisterLiveActivity(token: String) async {
+        guard let registration, liveActivitiesUnsupportedInstallation != registration.installationID else { return }
+        await sendLiveActivity(LiveActivityRemoval(pushToken: token), method: "DELETE", registration: registration)
+    }
+
+    private func sendLiveActivity<Body: Encodable>(_ body: Body, method: String, registration: StoredRegistration) async {
+        do {
+            let request = try jsonRequest(
+                path: "/v1/installations/\(registration.installationID)/live-activities",
+                method: method,
+                body: body,
+                credential: registration.credential
+            )
+            let (_, response) = try await URLSession.shared.data(for: request)
+            // Only a registration's 404 means the relay has no route.
+            if method == "PUT", (response as? HTTPURLResponse)?.statusCode == 404 {
+                liveActivitiesUnsupportedInstallation = registration.installationID
+            }
+        } catch {
+            // The activity still updates while Conduit runs.
+        }
+    }
+
     /// Answers a plugin-minted clarify decision through the relay. The gateway
     /// polls the relay for this answer while its clarify middleware blocks, so
     /// the agent thread unblocks exactly as if `clarify.respond` had been used.
@@ -1024,7 +1075,7 @@ final class PushNotificationService: ObservableObject {
     func enable() async {
         // The Enable button is disabled while working, but a second tap can
         // land before that state reaches the view.
-        guard !isWorking else { return }
+        guard !isWorking, !isPairing else { return }
         lastError = nil
         relayNotice = nil
         preferences.enabled = true
@@ -1047,8 +1098,10 @@ final class PushNotificationService: ObservableObject {
         // Same one-operation-at-a-time rule as enable(), so a revoke never
         // interleaves with an in-flight registration. A tap that lands
         // mid-operation is dropped rather than queued; the button is
-        // disabled while working, so this only catches the race window.
-        guard !isWorking else { return }
+        // disabled while working or pairing, so this only catches the race
+        // window. Not mid-pairing: the plugin would claim for a revoked
+        // installation.
+        guard !isWorking, !isPairing else { return }
         lastError = nil
         relayNotice = nil
         isWorking = true
@@ -1073,6 +1126,13 @@ final class PushNotificationService: ObservableObject {
     func applyRelayChange() async {
         // One move at a time: overlapping moves would each register, and
         // all but the last installation would be orphaned on the new relay.
+        guard !isWorking else { return }
+        // A pairing in flight claims for the current installation; the move
+        // waits for it rather than being dropped.
+        while isPairing {
+            try? await Task.sleep(for: .milliseconds(200))
+            if Task.isCancelled { return }
+        }
         guard !isWorking else { return }
         // A failure against the previous relay no longer describes the
         // current setup, whether or not there is a registration to move.
@@ -1154,8 +1214,8 @@ final class PushNotificationService: ObservableObject {
     /// Conduit just never creates new ones.)
     func createPairingCode(dashboardID: UUID) async {
         // Not mid-move: a code created against the old relay would be
-        // cleared (and useless) once the move lands.
-        guard !isWorking else { return }
+        // cleared (and useless) once the move lands. Not mid-pairing either.
+        guard !isWorking, !isPairing else { return }
         pairingCode = nil
         pairingExpiry = nil
         lastError = nil
@@ -1166,25 +1226,86 @@ final class PushNotificationService: ObservableObject {
         isWorking = true
         defer { isWorking = false }
         do {
-            var request = authorizedRequest(
-                url: try authenticatedRelayURL("/v1/installations/\(registration.installationID)/pairings"),
-                credential: registration.credential
-            )
-            request.httpMethod = "POST"
-            // Bind the pairing to the dashboard (#148): the relay persists
-            // this UUID at claim time, and every later push derived from that
-            // gateway credential is stamped with it. Older relays ignore the
-            // body, which keeps pre-dashboard relays working.
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONEncoder().encode(PairingCreateRequest(dashboardID: dashboardID.uuidString))
-            let (data, response) = try await URLSession.shared.data(for: request)
-            try validate(response: response, data: data)
-            let pairing = try JSONDecoder().decode(PairingResponse.self, from: data)
+            let pairing = try await requestPairingCode(registration: registration, dashboardID: dashboardID)
             pairingCode = pairing.pairingCode
             pairingExpiry = pairing.expiresAt
         } catch {
             lastError = UserFacingError.message(for: error)
         }
+    }
+
+    /// A new one-time pairing code from the relay, bound to `dashboardID`.
+    private func requestPairingCode(registration: StoredRegistration, dashboardID: UUID) async throws -> PairingResponse {
+        var request = authorizedRequest(
+            url: try authenticatedRelayURL("/v1/installations/\(registration.installationID)/pairings"),
+            credential: registration.credential
+        )
+        request.httpMethod = "POST"
+        // Bind the pairing to the dashboard (#148): the relay persists
+        // this UUID at claim time, and every later push derived from that
+        // gateway credential is stamped with it. Older relays ignore the
+        // body, which keeps pre-dashboard relays working.
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(PairingCreateRequest(dashboardID: dashboardID.uuidString))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(PairingResponse.self, from: data)
+    }
+
+    /// This iPhone's relay installation, which a profile's pairing names.
+    var installationID: String? { registration?.installationID }
+
+    static let pairPath = "/api/plugins/conduit_push/pair"
+
+    /// Who a profile's notifications go to, from the plugin's
+    /// `GET /e2e?profile=` answer.
+    enum ProfilePairing: Equatable {
+        case unpaired
+        case thisDevice
+        /// Another iPhone, or this one before it re-registered.
+        case otherDevice
+    }
+
+    static func profilePairing(status: [String: Any], installationID: String) -> ProfilePairing {
+        guard status["paired"] as? Bool == true else { return .unpaired }
+        return status["installation_id"] as? String == installationID ? .thisDevice : .otherDevice
+    }
+
+    /// Pairs `profile` on the dashboard's host without a code to type
+    /// (plugin 0.24+): a new code from the relay goes to the plugin over
+    /// the signed-in dashboard connection, and the plugin claims it, the
+    /// same claim `hermes conduit-push pair` makes. `request` reaches that
+    /// dashboard.
+    func pairProfile(
+        _ profile: String,
+        dashboardID: UUID,
+        request: (_ path: String, _ method: String, _ body: [String: Any]?) async throws -> [String: Any]
+    ) async throws {
+        // Not mid-move: a code from the old relay is useless once the move lands.
+        guard !isWorking, !isPairing, let registration else { throw DashboardTicketBridgeError.notReady }
+        // One pairing at a time: the button and the automatic one can't
+        // overlap. Its own flag, so the notifications switch doesn't read
+        // "Updating" meanwhile.
+        isPairing = true
+        defer { isPairing = false }
+        // The relay the code is minted at is the one the host claims it at,
+        // even if a relay move lands meanwhile.
+        let relay = relayURL
+        let pairing = try await requestPairingCode(registration: registration, dashboardID: dashboardID)
+        guard self.registration?.installationID == registration.installationID else {
+            throw DashboardTicketBridgeError.notReady
+        }
+        let body: [String: Any] = ["pairing_code": pairing.pairingCode, "relay_url": relay.absoluteString]
+        let response = try await request(DashboardPath.withProfile(Self.pairPath, profile: profile), "POST", body)
+        // Notifications turned off or moved meanwhile: that installation is
+        // gone, so its pairing is nothing to confirm or refresh.
+        guard self.registration?.installationID == registration.installationID else {
+            throw DashboardTicketBridgeError.notReady
+        }
+        guard response["ok"] as? Bool == true, response["installation_id"] as? String == registration.installationID else {
+            throw DashboardTicketBridgeError.requestFailed(AppLocalization.string("The plugin didn't confirm the pairing."))
+        }
+        await refreshMeta()
     }
 
     func didReceiveDeviceToken(_ tokenData: Data) {
@@ -1326,6 +1447,22 @@ final class PushNotificationService: ObservableObject {
         queueVoIPTokenUpdate()
     }
 
+    /// The APNs token for the agent's on-demand locate (the Location Push
+    /// extension), while background location sharing is on; nil otherwise.
+    private(set) var locationToken: String?
+
+    /// LocationBackgroundMonitor has a new location push token, or none.
+    func updateLocationToken(_ token: String?) {
+        guard token != locationToken else { return }
+        locationToken = token
+        queueVoIPTokenUpdate()
+    }
+
+    /// The token the relay gets: only one whose relay says it sends locates.
+    private var relayLocationToken: String? {
+        relayMeta?.supportsLocationPush == true ? locationToken : nil
+    }
+
     private var ringingWatchVoIPToken: String? {
         Self.ringingWatchToken(phone: voipToken, watch: watchVoIPToken, engine: watchEngine, voices: watchCallVoices)
     }
@@ -1348,7 +1485,8 @@ final class PushNotificationService: ObservableObject {
         voipTokenUpdate = Task {
             await previous?.value
             guard let registration,
-                  registration.voipToken != voipToken || registration.watchVoipToken != ringingWatchVoIPToken else { return }
+                  registration.voipToken != voipToken || registration.watchVoipToken != ringingWatchVoIPToken
+                    || registration.locationToken != relayLocationToken else { return }
             try? await updateRegistration()
         }
     }
@@ -1683,7 +1821,8 @@ final class PushNotificationService: ObservableObject {
         }
         let voipToken = self.voipToken
         let watchToken = ringingWatchVoIPToken
-        let body = RegistrationRequest(bundleID: bundleID, deviceToken: deviceToken, environment: "production", preferences: preferences, voipToken: voipToken, watchVoipToken: watchToken)
+        let locationToken = relayLocationToken
+        let body = RegistrationRequest(bundleID: bundleID, deviceToken: deviceToken, environment: "production", preferences: preferences, voipToken: voipToken, watchVoipToken: watchToken, locationToken: locationToken)
         var request = try jsonRequest(path: "/v1/installations", method: "POST", body: body)
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(response: response, data: data)
@@ -1694,11 +1833,16 @@ final class PushNotificationService: ObservableObject {
         registration?.voipToken = responseBody.installation.voip == true ? voipToken : nil
         // Likewise the Watch's, on a relay that rings it (0.10+).
         registration?.watchVoipToken = responseBody.installation.watchVoip == true ? watchToken : nil
+        // And the location push token, which goes only to a relay that
+        // says it sends locates (`location-push`).
+        registration?.locationToken = responseBody.installation.location != false ? locationToken : nil
         preferences = registration!.preferences
         persistRegistration()
         // A PushKit token that came while this was on its way goes next
         // (at first launch both arrive together).
-        if self.voipToken != voipToken || ringingWatchVoIPToken != watchToken { queueVoIPTokenUpdate() }
+        if self.voipToken != voipToken || ringingWatchVoIPToken != watchToken || relayLocationToken != locationToken {
+            queueVoIPTokenUpdate()
+        }
     }
 
     private func updateRegistration(deviceToken: String? = nil) async throws {
@@ -1707,7 +1851,9 @@ final class PushNotificationService: ObservableObject {
         let voipChange: VoIPTokenChange = registration.voipToken == voipToken ? .keep : (voipToken.map(VoIPTokenChange.set) ?? .clear)
         let watchToken = ringingWatchVoIPToken
         let watchChange: VoIPTokenChange = registration.watchVoipToken == watchToken ? .keep : (watchToken.map(VoIPTokenChange.set) ?? .clear)
-        let body = UpdateRegistrationRequest(deviceToken: deviceToken ?? self.deviceToken, preferences: preferences, voipToken: voipChange, watchVoipToken: watchChange)
+        let locationToken = relayLocationToken
+        let locationChange: VoIPTokenChange = registration.locationToken == locationToken ? .keep : (locationToken.map(VoIPTokenChange.set) ?? .clear)
+        let body = UpdateRegistrationRequest(deviceToken: deviceToken ?? self.deviceToken, preferences: preferences, voipToken: voipChange, watchVoipToken: watchChange, locationToken: locationChange)
         var request = try jsonRequest(path: "/v1/installations/\(registration.installationID)", method: "PUT", body: body, credential: registration.credential)
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(response: response, data: data)
@@ -1725,6 +1871,11 @@ final class PushNotificationService: ObservableObject {
             let rings = installation?.watchVoip == true
             self.registration?.watchVoipToken = rings ? watchToken : nil
             newerToken = newerToken || (rings && watchToken != ringingWatchVoIPToken)
+        }
+        if locationChange != .keep {
+            let locates = installation?.location != false
+            self.registration?.locationToken = locates ? locationToken : nil
+            newerToken = newerToken || (locates && locationToken != relayLocationToken)
         }
         persistRegistration()
         if newerToken { queueVoIPTokenUpdate() }
@@ -1760,6 +1911,24 @@ final class PushNotificationService: ObservableObject {
     }
 }
 
+private struct LiveActivityRegistration: Encodable {
+    let pushToken: String
+    let sessionIDs: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case pushToken = "push_token"
+        case sessionIDs = "session_ids"
+    }
+}
+
+private struct LiveActivityRemoval: Encodable {
+    let pushToken: String
+
+    enum CodingKeys: String, CodingKey {
+        case pushToken = "push_token"
+    }
+}
+
 private struct StoredRegistration: Codable {
     let credential: String
     let installationID: String
@@ -1771,6 +1940,8 @@ private struct StoredRegistration: Codable {
     var voipToken: String? = nil
     /// The Apple Watch's PushKit token the relay rings too.
     var watchVoipToken: String? = nil
+    /// The location push token the relay sends locates to.
+    var locationToken: String? = nil
 }
 
 private struct RegistrationRequest: Encodable {
@@ -1780,9 +1951,10 @@ private struct RegistrationRequest: Encodable {
     let preferences: ConduitNotificationPreferences
     var voipToken: String? = nil
     var watchVoipToken: String? = nil
+    var locationToken: String? = nil
     enum CodingKeys: String, CodingKey {
         case bundleID = "bundle_id", deviceToken = "device_token", environment, preferences, voipToken = "voip_token"
-        case watchVoipToken = "watch_voip_token"
+        case watchVoipToken = "watch_voip_token", locationToken = "location_token"
     }
 }
 
@@ -1798,14 +1970,18 @@ struct UpdateRegistrationRequest: Encodable {
     let preferences: ConduitNotificationPreferences
     var voipToken: VoIPTokenChange = .keep
     var watchVoipToken: VoIPTokenChange = .keep
-    enum CodingKeys: String, CodingKey { case deviceToken = "device_token", preferences, voipToken = "voip_token", watchVoipToken = "watch_voip_token" }
+    var locationToken: VoIPTokenChange = .keep
+    enum CodingKeys: String, CodingKey {
+        case deviceToken = "device_token", preferences, voipToken = "voip_token", watchVoipToken = "watch_voip_token"
+        case locationToken = "location_token"
+    }
 
     /// A token is left out to keep it, null to clear it.
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(deviceToken, forKey: .deviceToken)
         try container.encode(preferences, forKey: .preferences)
-        for (change, key) in [(voipToken, CodingKeys.voipToken), (watchVoipToken, CodingKeys.watchVoipToken)] {
+        for (change, key) in [(voipToken, CodingKeys.voipToken), (watchVoipToken, CodingKeys.watchVoipToken), (locationToken, CodingKeys.locationToken)] {
             switch change {
             case .keep: break
             case .clear: try container.encodeNil(forKey: key)
@@ -1821,7 +1997,8 @@ private struct RegistrationResponse: Decodable {
         let preferences: ConduitNotificationPreferences?
         let voip: Bool?
         let watchVoip: Bool?
-        enum CodingKeys: String, CodingKey { case id, preferences, voip, watchVoip = "watch_voip" }
+        let location: Bool?
+        enum CodingKeys: String, CodingKey { case id, preferences, voip, watchVoip = "watch_voip", location }
     }
     let credential: String
     let installation: Installation
@@ -1831,7 +2008,8 @@ private struct UpdateRegistrationResponse: Decodable {
     struct Installation: Decodable {
         let voip: Bool?
         let watchVoip: Bool?
-        enum CodingKeys: String, CodingKey { case voip, watchVoip = "watch_voip" }
+        let location: Bool?
+        enum CodingKeys: String, CodingKey { case voip, watchVoip = "watch_voip", location }
     }
     let installation: Installation?
 }

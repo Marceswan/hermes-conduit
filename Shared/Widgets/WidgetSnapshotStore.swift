@@ -4,7 +4,7 @@ struct WidgetSnapshotStore {
     #if os(macOS) // MAC: a macOS app group is `<TeamID>.<name>`; `group.` ids need a provisioning profile and prompt on macOS 15 (docs/macos/DECISIONS.md D25)
     static let appGroup = "58XKRG9VMA.com.meswan.hermes.mac.widgets"
     #else
-    static let appGroup = "group.com.milim.relay.widgets"
+    static let appGroup = "group.com.milim.relay.launcher"
     #endif // MAC:
     static let filename = "launcher-v1.json"
     private let directory: URL

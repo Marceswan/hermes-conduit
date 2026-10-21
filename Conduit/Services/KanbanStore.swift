@@ -191,7 +191,7 @@ final class KanbanStore: ObservableObject {
         let generation = loadGeneration
         guard let service else {
             if board == nil {
-                errorMessage = AppLocalization.string("Connect to a Hermes dashboard to use Kanban.")
+                setIfChanged(\.errorMessage, AppLocalization.string("Connect to a Hermes dashboard to use Kanban."))
             }
             return
         }
@@ -200,7 +200,9 @@ final class KanbanStore: ObservableObject {
         // /boards returns and invalid-selection validation runs, so the fetch
         // below always carries an explicit ?board= that matches what we record.
         isLoading = true
-        errorMessage = nil
+        // An explicit switch starts a new context, so the last one's error
+        // goes now. A background poll keeps it until a load succeeds.
+        if superseding { setIfChanged(\.errorMessage, nil) }
         defer {
             if generation == loadGeneration { isLoading = false }
         }
@@ -209,8 +211,8 @@ final class KanbanStore: ObservableObject {
             let boardResponse = try await service.fetchBoards()
             guard generation == loadGeneration else { return }
 
-            boards = boardResponse.boards
-            currentServerBoardSlug = boardResponse.current
+            setIfChanged(\.boards, boardResponse.boards)
+            setIfChanged(\.currentServerBoardSlug, boardResponse.current)
 
             if !selectedBoardSlug.isEmpty && !boards.contains(where: { $0.slug == selectedBoardSlug }) {
                 selectedBoardSlug = ""
@@ -234,19 +236,32 @@ final class KanbanStore: ObservableObject {
             let resolvedOrchestration = await loadedOrchestration
             guard generation == loadGeneration else { return }
 
-            board = resolvedBoard
+            // A poll usually brings back the same snapshot; only what changed
+            // is written, since every @Published write redraws the board.
+            setIfChanged(\.board, resolvedBoard)
             // Exactly the slug used in GET /board?board=... above.
-            loadedBoardSlug = resolvedSlug
-            if let resolvedProfiles { profiles = resolvedProfiles }
-            if let resolvedProjects { projects = resolvedProjects }
-            if let resolvedOrchestration { orchestration = resolvedOrchestration }
+            setIfChanged(\.loadedBoardSlug, resolvedSlug)
+            if let resolvedProfiles { setIfChanged(\.profiles, resolvedProfiles) }
+            if let resolvedProjects { setIfChanged(\.projects, resolvedProjects) }
+            if let resolvedOrchestration { setIfChanged(\.orchestration, resolvedOrchestration) }
+            // Cleared on success rather than as the load starts: a failure
+            // that persists keeps its banner steady between polls instead of
+            // blinking off and on.
+            setIfChanged(\.errorMessage, nil)
         } catch is CancellationError {
             return
         } catch {
             guard generation == loadGeneration else { return }
             // Keep the last successful board visible during refresh failures.
-            errorMessage = UserFacingError.message(for: error)
+            // A failure that persists reads the same each poll.
+            setIfChanged(\.errorMessage, UserFacingError.message(for: error))
         }
+    }
+
+    /// @Published fires on equal writes too, so a background reload writes
+    /// only the values that changed.
+    private func setIfChanged<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<KanbanStore, Value>, _ value: Value) {
+        if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
     }
 
     func poll(includeArchived: Bool = false) async {

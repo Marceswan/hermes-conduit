@@ -107,6 +107,12 @@ final class WatchVoiceCall: ObservableObject {
     /// A call on open was skipped for the microphone permission: logged
     /// once a launch.
     private var loggedOpenSkip = false
+    /// The scene's last phase, nil until SwiftUI reports the first.
+    private var scenePhase: ScenePhase?
+    /// A call asked for from outside the app (`requestCall`) while the app
+    /// wasn't in front yet: it starts once the app is. Only the latest
+    /// request is kept; every source asks for the same call.
+    private var pendingRequest: (source: String, at: Date)?
     /// The engine of the call on screen, which a change of `engine` during
     /// the call doesn't move.
     @Published private(set) var callEngine: WatchVoiceEngine
@@ -231,6 +237,7 @@ final class WatchVoiceCall: ObservableObject {
         caption = nil
         transcript = []
         liveSince = nil
+        endedAt = nil
     }
 
     func scenePhaseChanged(_ newPhase: ScenePhase) {
@@ -238,9 +245,23 @@ final class WatchVoiceCall: ObservableObject {
         bridge.scenePhaseChanged(newPhase)
         // Opened: the first active since launch, or the first since the
         // app went to the background (either can pass through inactive on
-        // the way). A wrist raise never left inactive and starts nothing.
+        // the way). A wrist raise never left inactive and starts nothing:
+        // watchOS keeps the app frontmost (inactive) with the wrist down,
+        // and only backgrounds it on a press of the crown or once Return
+        // to Clock runs out (WatchKit, "Taking advantage of frontmost app
+        // state").
+        scenePhase = newPhase
         if newPhase == .background { wasBackgrounded = true }
         if newPhase == .active {
+            if let request = pendingRequest {
+                pendingRequest = nil
+                let age = Date().timeIntervalSince(request.at)
+                if age < Self.requestLifetime {
+                    startRequested(source: request.source)
+                } else {
+                    WatchCallLog.shared.note("callRequestExpired", ["source": request.source, "seconds": Int(age)])
+                }
+            }
             if !hasBeenActive || wasBackgrounded { startOnOpenIfWanted() }
             hasBeenActive = true
             wasBackgrounded = false
@@ -250,14 +271,45 @@ final class WatchVoiceCall: ObservableObject {
         WatchCallLog.shared.note("scenePhase", ["phase": "\(newPhase)", "reachable": WatchLink.shared.isReachable])
     }
 
-    static let openAfterEndPause: TimeInterval = 120
+    /// How long a call asked for before the app came to the front still
+    /// starts when it does.
+    static let requestLifetime: TimeInterval = 60
+
+    /// A call asked for from outside the app: the Action button or a
+    /// control (watchOS 26), the watch face complication or a shortcut
+    /// (TalkToHermesIntent, WatchCallURL). It starts whatever Call on open
+    /// says, and from a wrist raise too: the press asked for it.
+    func requestCall(source: String) {
+        WatchCallLog.shared.note("callRequested", ["source": source, "screen": scenePhase.map { "\($0)" } ?? "launching"])
+        guard scenePhase == .active else {
+            if let older = pendingRequest {
+                WatchCallLog.shared.note("callRequestReplaced", ["source": older.source, "by": source])
+            }
+            pendingRequest = (source, Date())
+            return
+        }
+        startRequested(source: source)
+    }
+
+    private func startRequested(source: String) {
+        // A call from Hermes ringing or answered is the call.
+        guard !isActive, !HermesWatchCalls.shared.holdsCall else {
+            WatchCallLog.shared.note("callRequestDropped", ["source": source, "callOn": isActive, "hermesCall": HermesWatchCalls.shared.holdsCall])
+            return
+        }
+        WatchCallLog.shared.note("callStartedOnRequest", ["source": source, "engine": engine.rawValue])
+        dismissEnded()
+        start()
+    }
 
     private func startOnOpenIfWanted() {
         // A call from Hermes ringing or answered is the call.
         guard startsOnOpen, !isActive, !HermesWatchCalls.shared.holdsCall else { return }
-        // Back in front soon after a call ended (the wrist went down on
-        // its summary): the user is reading it, not calling again.
-        if let endedAt, Date().timeIntervalSince(endedAt) < Self.openAfterEndPause { return }
+        // Back from the background is an open, however soon after a call
+        // ended: reading the summary with the wrist down and up again
+        // never leaves inactive. Return to Clock running out on the summary
+        // does background the app; opening it after that is an open too
+        // (the call is saved on the iPhone).
         // The microphone prompt is left to a tap on Start.
         guard WatchAudio.hasPermission else {
             if !loggedOpenSkip {

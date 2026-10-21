@@ -209,28 +209,48 @@ struct GeminiLiveSettingsSection: View {
     }
 }
 
-/// Gemini Live's sheet, which Grok Live shares: they run on the same
-/// conversation controller.
+/// Gemini Live's sheet, which Grok Live and Local Live share: they run on
+/// the same conversation controller.
 struct GeminiLiveVoiceSheet: View {
     enum Engine {
         case gemini
         case grok
+        case local
+
+        var title: String {
+            switch self {
+            case .gemini: return "Gemini Live"
+            case .grok: return "Grok Live"
+            case .local: return AppLocalization.string("Local Live")
+            }
+        }
     }
 
     @ObservedObject var controller: GeminiLiveConversationController
     let jobs: VoiceBackgroundJobSupervisor
+    /// Passed to the call screen for its own sheets; not observed.
+    let appState: AppState
     var engine: Engine = .gemini
+    /// Up before its call opens, for a widget's Talk or Siri waiting on
+    /// Hermes (`AppState.waitingCall`).
+    var waitsToStart = false
     let onClose: () -> Void
     let onRetry: () -> Void
 
+    /// The screen shows its call connecting, without the last call's lines,
+    /// until the call's own connecting state takes over.
+    private var isWaiting: Bool { waitsToStart && !controller.isActive }
+
     var body: some View {
         LiveVoiceCallSheet(
-            title: engine == .grok ? "Grok Live" : "Gemini Live",
-            phase: Self.callPhase(controller.phase, microphoneMuted: controller.isMicrophoneMuted),
-            statusText: statusText,
-            transcript: controller.transcript,
+            title: engine.title,
+            phase: isWaiting ? .connecting : Self.callPhase(controller.phase, microphoneMuted: controller.isMicrophoneMuted),
+            waitsToStart: isWaiting,
+            statusText: isWaiting ? AppLocalization.string("Connecting…") : statusText,
+            transcript: isWaiting ? [] : controller.transcript,
             assistantLabel: speakerLabel,
             jobs: jobs,
+            appState: appState,
             isMicrophoneMuted: controller.isMicrophoneMuted,
             isSpeakerMuted: controller.isSpeakerMuted,
             canMute: controller.isActive && !controller.isEnding,
@@ -281,16 +301,23 @@ struct GeminiLiveVoiceSheet: View {
     }
 
     private func speakerLabel(_ text: String) -> String {
-        engine == .grok ? AppLocalization.string("Grok: \(text)") : AppLocalization.string("Gemini: \(text)")
+        switch engine {
+        case .gemini: return AppLocalization.string("Gemini: \(text)")
+        case .grok: return AppLocalization.string("Grok: \(text)")
+        // Hermes writes a Local Live call's replies; the server only speaks them.
+        case .local: return AppLocalization.string("Hermes: \(text)")
+        }
     }
 
     private var statusText: String {
         switch controller.phase {
         case .idle: return AppLocalization.string("Not connected")
         case .connecting:
-            return engine == .grok
-                ? AppLocalization.string("Connecting to Grok Live…")
-                : AppLocalization.string("Connecting to Gemini Live…")
+            switch engine {
+            case .gemini: return AppLocalization.string("Connecting to Gemini Live…")
+            case .grok: return AppLocalization.string("Connecting to Grok Live…")
+            case .local: return AppLocalization.string("Connecting to your speech server…")
+            }
         case .reconnecting: return AppLocalization.string("Reconnecting…")
         case .listening: return controller.isMicrophoneMuted ? AppLocalization.string("Microphone muted") : AppLocalization.string("Listening")
         case .speaking: return controller.isSpeakerMuted ? AppLocalization.string("Speaking, silenced") : AppLocalization.string("Speaking")

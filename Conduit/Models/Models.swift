@@ -88,6 +88,10 @@ struct Attachment: Codable, Identifiable, Equatable {
     var uri: String
     var mimeType: String?
     var kind: Kind
+    /// A picture Hermes also stored inside the message itself. Chats load
+    /// without those copies (#652); this says where to fetch one when its
+    /// file is gone from the server.
+    var inlineImage: InlineImageRef? = nil
 
     enum Kind: String, Codable {
         case image
@@ -96,12 +100,32 @@ struct Attachment: Codable, Identifiable, Equatable {
     }
 }
 
+/// One picture stored inside a persisted Hermes message: the row's durable
+/// id, the picture's place among the row's pictures, and the session and
+/// profile whose database holds the row.
+struct InlineImageRef: Codable, Equatable, Hashable {
+    let sessionId: String
+    let profile: String
+    let rowId: Int
+    let index: Int
+}
+
+/// The session and profile a page of persisted rows was read from, so the
+/// pictures inside those rows can be fetched again later.
+struct TranscriptImageScope: Equatable {
+    let sessionId: String
+    let profile: String
+}
+
 struct ToolActivity: Codable, Equatable {
     var id: String?
     var name: String
     var input: String?
     var output: String?
     var status: Status
+    /// How long the call took, in seconds, when Conduit saw it start and
+    /// finish or Hermes' history times both ends. Nil when unknown.
+    var duration: TimeInterval? = nil
 
     enum Status: String, Codable {
         case running
@@ -558,6 +582,9 @@ struct ChatMessage: Identifiable, Equatable {
     var rowId: Int?
     /// Tapback reactions persisted on the row, at most one per author.
     var reactions: [MessageReaction]
+    /// How long a thinking step took, in seconds, when Conduit watched it
+    /// stream (tool calls keep theirs on `tool`). Nil when unknown.
+    var stepDuration: TimeInterval? = nil
 
     // Non-codable because it contains closures in some uses; serialization
     // is handled by the gateway, not by us. We construct these from RPC results.
@@ -615,7 +642,7 @@ struct ChatMessage: Identifiable, Equatable {
 /// One emoji reaction on a message (Hermes `MessageReaction`, persisted in
 /// the row's `display_metadata.reactions`). Tapback rules: one reaction per
 /// author, the same emoji again retracts it, a different one replaces it.
-struct MessageReaction: Equatable, Hashable {
+struct MessageReaction: Codable, Equatable, Hashable {
     static let userAuthor = "user"
     static let agentAuthor = "agent"
 
@@ -770,7 +797,7 @@ struct DelegateAgentActivity: Identifiable, Equatable {
 
 // MARK: - Session
 
-struct SessionSummary: Identifiable, Equatable {
+struct SessionSummary: Identifiable, Equatable, Codable {
     let id: String
     /// The durable database identity used by `session.resume`. Hermes stream
     /// events and notifications may carry the live runtime identity instead.
@@ -802,12 +829,15 @@ struct SessionSummary: Identifiable, Equatable {
     /// `session.list` RPC, hosts older than the flag).
     var isPinned: Bool? = nil
     var lineageRootId: String?
+    /// The listing's one-line `preview` (the opening message), when the row
+    /// carried one apart from its title. The V2 session list's second line.
+    var preview: String? = nil
 }
 
 /// A server-owned workspace from Hermes' `projects.*` capability. Projects are
 /// profile-scoped and define session membership by their folders; Conduit only
 /// presents that authoritative grouping and never tries to infer it locally.
-struct ProjectSummary: Identifiable, Equatable {
+struct ProjectSummary: Identifiable, Equatable, Codable {
     let id: String
     var title: String
     var primaryPath: String?
@@ -825,6 +855,9 @@ struct ProjectSessionLane: Identifiable, Equatable {
     let id: String
     var title: String
     var sessions: [SessionSummary]
+    /// The folder the lane's sessions ran in (a worktree or the repo), when
+    /// Hermes names one apart from the label.
+    var path: String? = nil
 }
 
 struct ProjectSessionDetail: Identifiable, Equatable {
@@ -884,10 +917,40 @@ enum CronJobAction: String {
     case pause, resume, trigger
 }
 
+/// Hermes' parsed schedule: `cron` carries `expr`, `interval` its
+/// `minutes`, `once` its `run_at`; `display` is Hermes' own wording (for a
+/// cron job, the expression itself).
 struct CronSchedule: Codable {
     var display: String?
     var expr: String?
     var kind: String?
+    var minutes: Int?
+    var runAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case display, expr, kind, minutes
+        case runAt = "run_at"
+    }
+
+    init(display: String? = nil, expr: String? = nil, kind: String? = nil, minutes: Int? = nil, runAt: String? = nil) {
+        self.display = display
+        self.expr = expr
+        self.kind = kind
+        self.minutes = minutes
+        self.runAt = runAt
+    }
+
+    /// Lenient: a field of an unexpected type is dropped rather than
+    /// dropping the whole job from the list.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        display = try? container.decodeIfPresent(String.self, forKey: .display)
+        expr = try? container.decodeIfPresent(String.self, forKey: .expr)
+        kind = try? container.decodeIfPresent(String.self, forKey: .kind)
+        minutes = (try? container.decodeIfPresent(Int.self, forKey: .minutes))
+            ?? (try? container.decodeIfPresent(Double.self, forKey: .minutes)).flatMap { Int(exactly: $0.rounded()) }
+        runAt = try? container.decodeIfPresent(String.self, forKey: .runAt)
+    }
 }
 
 struct CronRun: Codable, Identifiable {
@@ -1015,6 +1078,8 @@ enum ProfileSettingValue: Equatable {
     case bool(Bool)
     case text(String)
     case number(Double)
+    /// A list of plain strings, such as `command_allowlist`.
+    case list([String])
 
     var boolValue: Bool? {
         if case .bool(let value) = self { return value }
@@ -1024,9 +1089,110 @@ enum ProfileSettingValue: Equatable {
     var textValue: String? {
         switch self {
         case .text(let value): return value
-        case .number(let value): return String(value)
+        case .number(let value): return Self.numberText(value)
         case .bool(let value): return value ? "true" : "false"
+        case .list(let value): return value.joined(separator: "\n")
         }
+    }
+
+    var listValue: [String]? {
+        if case .list(let value) = self { return value }
+        return nil
+    }
+
+    /// Whole numbers read "300", not "300.0": most Hermes number settings
+    /// are counts, seconds, or characters.
+    static func numberText(_ value: Double) -> String {
+        value.rounded() == value && abs(value) < 1e15 ? String(Int64(value)) : String(value)
+    }
+}
+
+/// The gateway's `GET /api/config/schema`: every config key it knows, by dot
+/// path, with its type and any fixed choices. Hermes Desktop builds its
+/// settings pages from it; Conduit uses it to hide settings an older Hermes
+/// doesn't have and to fill in choices Hermes discovers at runtime.
+struct ProfileConfigSchema: Equatable {
+    struct Field: Equatable {
+        /// "boolean", "number", "string", "list", "object" or "select".
+        var type: String
+        var options: [String] = []
+    }
+
+    var fields: [String: Field] = [:]
+
+    var isEmpty: Bool { fields.isEmpty }
+
+    init(fields: [String: Field] = [:]) {
+        self.fields = fields
+    }
+
+    init(json: [String: Any]) {
+        let raw = json["fields"] as? [String: Any] ?? [:]
+        var fields: [String: Field] = [:]
+        for (key, value) in raw {
+            guard let entry = value as? [String: Any] else { continue }
+            let options = (entry["options"] as? [Any] ?? []).compactMap { $0 as? String }
+            fields[key] = Field(type: entry["type"] as? String ?? "string", options: options)
+        }
+        self.fields = fields
+    }
+
+    subscript(key: String) -> Field? { fields[key] }
+}
+
+/// One `fallback_providers` entry: the model Hermes tries when the default
+/// fails. Entries can carry hand-written routing (`base_url`, `key_env`,
+/// `api_mode`…); `extras` keeps it so a save never drops it.
+struct ProfileFallbackModel: Equatable, Identifiable {
+    let id = UUID()
+    var provider: String
+    var model: String
+    var extras: [String: AnyCodable] = [:]
+
+    static func == (lhs: ProfileFallbackModel, rhs: ProfileFallbackModel) -> Bool {
+        lhs.provider == rhs.provider && lhs.model == rhs.model && lhs.extras == rhs.extras
+    }
+
+    /// Reads the raw config value: a list of `{provider, model, …}` objects,
+    /// or legacy "provider/model" strings.
+    static func list(from value: Any?) -> [ProfileFallbackModel] {
+        guard let items = value as? [Any] else { return [] }
+        return items.compactMap { item in
+            if let object = item as? [String: Any] {
+                var extras = object.mapValues(AnyCodable.init(jsonObject:))
+                extras["provider"] = nil
+                extras["model"] = nil
+                return ProfileFallbackModel(
+                    provider: object["provider"] as? String ?? "",
+                    model: object["model"] as? String ?? "",
+                    extras: extras
+                )
+            }
+            if let text = item as? String {
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return nil }
+                guard let slash = trimmed.firstIndex(of: "/"), slash != trimmed.startIndex else {
+                    return ProfileFallbackModel(provider: "", model: trimmed)
+                }
+                return ProfileFallbackModel(
+                    provider: String(trimmed[..<slash]),
+                    model: String(trimmed[trimmed.index(after: slash)...])
+                )
+            }
+            return nil
+        }
+    }
+
+    var jsonObject: [String: Any] {
+        var object = extras.mapValues(\.anyValue)
+        object["provider"] = provider
+        object["model"] = model
+        return object
+    }
+
+    var isComplete: Bool {
+        !provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 
@@ -1039,19 +1205,19 @@ struct ProfileModelDefaults: Equatable {
     /// The picker selection for the saved default. The saved provider can be
     /// spelled differently from the row slug (display name, `custom:<key>`,
     /// or `auto`), so match like Hermes Desktop and then fall back to the row
-    /// Hermes marks current or the row listing the saved model, before the
-    /// first row. A saved model missing from the row's list is kept as is
-    /// rather than replaced by the row's first model, except on the last
-    /// resort first row, which never vouched for it.
+    /// Hermes marks current or the only row listing the saved model. A saved
+    /// default no row vouches for is shown as saved, never swapped for the
+    /// first row: Desktop keeps it the same way, and Save would otherwise pin
+    /// the first provider's first model. The first row is used only when
+    /// nothing is saved. A saved model missing from its row's list is kept.
     var selection: (provider: String, model: String) {
         if let row = providers.first(where: { $0.matches(provider) })
             ?? providers.first(where: \.isCurrent)
             ?? uniqueRow(listing: model) {
             return (row.name, model.isEmpty ? row.models.first?.id ?? "" : model)
         }
-        guard let row = providers.first else { return (provider, model) }
-        let listed = row.models.contains(where: { $0.id == model })
-        return (row.name, listed ? model : row.models.first?.id ?? "")
+        guard ProviderInfo.normalized(provider).isEmpty, ProviderInfo.normalized(model).isEmpty, let row = providers.first else { return (provider, model) }
+        return (row.name, row.models.first?.id ?? "")
     }
 
     /// The delegate picker selection for saved `delegation.provider` and

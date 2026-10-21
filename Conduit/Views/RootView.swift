@@ -36,6 +36,13 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: appState.showLogin)
+        // A sign-in code link asks here, above both the sign-in screen and
+        // the app, so it survives the sign-in screen giving way to the app
+        // while a saved dashboard connects at launch.
+        .sheet(item: $appState.pendingConnectLink) { link in
+            ConnectLinkSheet(link: link)
+                .environmentObject(appState)
+        }
         .onChange(of: scenePhase) { _, newPhase in
             // Only the primary window drives the process-wide lifecycle: a
             // transient duplicate window's .background must never suspend a
@@ -70,6 +77,9 @@ struct RootView: View {
 struct MainView: View {
     @EnvironmentObject var appState: AppState
     @AppStorage("conduit.ipadPersistentSidebar") private var prefersPersistentSidebar = false
+    /// Conduit V2's tab shell (V2Shell.swift). Off brings back the drawer
+    /// shell, the fallback while V2 is on its branch.
+    @AppStorage(V2ShellPreference.key) private var useV2Shell = V2ShellPreference.defaultValue
     @AppStorage(VoiceScreenAwake.preferenceKey) private var keepScreenAwake = false
     @State private var availableWindowWidth: CGFloat = 0
     @State private var settingsPresentation: SettingsSnapshot?
@@ -91,7 +101,7 @@ struct MainView: View {
         #endif // MAC:
     }
 
-    private var isPersistentSidebarActive: Bool { sidebarPresentation == .persistent }
+    private var isPersistentSidebarActive: Bool { !useV2Shell && sidebarPresentation == .persistent }
 
     #if os(macOS) // MAC: route-aware chat chrome (D6): a chat hidden under Bots/Cron/Kanban adds no toolbar items, title or backdrop motion
     @AppStorage(MacSidebarState.tabDefaultsKey) private var macTabRaw = SidebarTab.sessions.rawValue
@@ -103,31 +113,57 @@ struct MainView: View {
         sidebarLayoutContent
         // Changes Hermes asked for or just made (AgentSettings.swift).
         .overlay(alignment: .top) {
-            AgentSettingsBanner(sync: appState.agentSettings)
+            VStack(spacing: 0) {
+                AgentSettingsBanner(sync: appState.agentSettings)
+                // A newer Conduit plugin for this dashboard's host.
+                NotifierPluginUpdateBanner()
+                // Calendar changes Hermes asked for (AppState+PhoneSync.swift);
+                // a call's screen shows them over the call.
+                if !appState.isVoiceCallScreenPresented {
+                    PhoneChangeOverlay(engine: appState.phoneSync)
+                }
+            }
+        }
+        // Confirmations Hermes asks to present (PresentedScreens.swift); a
+        // call's screen shows its own over the call.
+        .overlay(alignment: .bottom) {
+            if !appState.isVoiceCallScreenPresented {
+                presentedConfirmOverlay(inCall: false)
+            }
         }
         .sheet(isPresented: $appState.showModelPicker) {
             ModelPickerView()
                 .presentationDetents([.medium, .large])
                 .presentationBackground(.clear)
                 .presentationDragIndicator(.visible)
+                .environmentObject(appState)
         }
         .sheet(isPresented: $appState.showContextSheet) {
             ContextSheet()
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
+                .environmentObject(appState)
         }
         .sheet(isPresented: $appState.showWorkspaceSheet) {
             WorkspaceBrowserSheet()
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
+                .environmentObject(appState)
         }
         .sheet(isPresented: $appState.showGatewaySheet) {
             GatewayDiagnosticsSheet()
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
+                .environmentObject(appState)
         }
         .sheet(isPresented: $appState.showAgentsSheet) {
             DelegateAgentsSheet()
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .environmentObject(appState)
+        }
+        .sheet(item: $appState.chatCallTranscript) { call in
+            VoiceChatCallTranscriptSheet(call: call)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -138,6 +174,7 @@ struct MainView: View {
                 enabled: keepScreenAwake,
                 voiceSheetShown: appState.showVoiceSheet,
                 liveSheetShown: appState.showGeminiLiveSheet || appState.showGPTLiveSheet || appState.showGrokLiveSheet
+                    || appState.showLocalLiveSheet
             ),
             initial: true
         ) { _, holds in
@@ -150,10 +187,13 @@ struct MainView: View {
             GeminiLiveVoiceSheet(
                 controller: appState.geminiLiveController,
                 jobs: appState.voiceBackgroundJobSupervisor,
+                appState: appState,
+                waitsToStart: appState.waitingCall?.engine == .geminiLive,
                 onClose: appState.closeGeminiLiveConversation,
                 onRetry: { Task { await appState.geminiLiveController.start() } }
             )
-            .safeAreaInset(edge: .top, spacing: 0) { voiceScreenshotBanner }
+            .safeAreaInset(edge: .top, spacing: 0) { callTopBanners }
+            .overlay(alignment: .bottom) { presentedConfirmOverlay(inCall: true) }
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
         }
@@ -161,11 +201,29 @@ struct MainView: View {
             GeminiLiveVoiceSheet(
                 controller: appState.grokLiveController,
                 jobs: appState.voiceBackgroundJobSupervisor,
+                appState: appState,
                 engine: .grok,
+                waitsToStart: appState.waitingCall?.engine == .grokLive,
                 onClose: appState.closeGrokLiveConversation,
                 onRetry: { Task { await appState.grokLiveController.start() } }
             )
-            .safeAreaInset(edge: .top, spacing: 0) { voiceScreenshotBanner }
+            .safeAreaInset(edge: .top, spacing: 0) { callTopBanners }
+            .overlay(alignment: .bottom) { presentedConfirmOverlay(inCall: true) }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $appState.showLocalLiveSheet, onDismiss: { appState.liveVoiceSheetDismissed(.localLive) }) {
+            GeminiLiveVoiceSheet(
+                controller: appState.localLiveController,
+                jobs: appState.voiceBackgroundJobSupervisor,
+                appState: appState,
+                engine: .local,
+                waitsToStart: appState.waitingCall?.engine == .localLive,
+                onClose: appState.closeLocalLiveConversation,
+                onRetry: { Task { await appState.localLiveController.start() } }
+            )
+            .safeAreaInset(edge: .top, spacing: 0) { callTopBanners }
+            .overlay(alignment: .bottom) { presentedConfirmOverlay(inCall: true) }
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
         }
@@ -173,10 +231,13 @@ struct MainView: View {
             GPTLiveVoiceSheet(
                 controller: appState.gptLiveController,
                 jobs: appState.voiceBackgroundJobSupervisor,
+                appState: appState,
+                waitsToStart: appState.waitingCall?.engine == .gptLive,
                 onClose: appState.closeGPTLiveConversation,
                 onRetry: { Task { await appState.gptLiveController.start() } }
             )
-            .safeAreaInset(edge: .top, spacing: 0) { voiceScreenshotBanner }
+            .safeAreaInset(edge: .top, spacing: 0) { callTopBanners }
+            .overlay(alignment: .bottom) { presentedConfirmOverlay(inCall: true) }
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
         }
@@ -185,10 +246,19 @@ struct MainView: View {
                 controller: appState.voiceConversationController,
                 backgroundJobs: appState.voiceBackgroundJobSupervisor,
                 profile: appState.activeProfile,
+                chatTitle: appState.activeChatSessionSummary?.title,
+                appState: appState,
                 onClose: appState.closeVoiceConversation,
                 shouldAutoListen: { appState.consumeVoiceSheetAutoListenIfPresenting() }
             )
-                .safeAreaInset(edge: .top, spacing: 0) { voiceScreenshotBanner }
+                .safeAreaInset(edge: .top, spacing: 0) { callTopBanners }
+                .overlay(alignment: .bottom) { presentedConfirmOverlay(inCall: true) }
+                // What Hermes put on screen (conduit_show), over the conversation.
+                .sheet(item: $appState.classicVoiceCard) { card in
+                    LiveVoiceScreenCardSheet(title: card.title, markdown: card.markdown, cards: RichCard.cards(card.cards))
+                        .environmentObject(appState)
+                        .presentationDetents([.medium, .large])
+                }
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
@@ -217,6 +287,7 @@ struct MainView: View {
                 disconnect: { appState.disconnect() }
             )
                 .presentationDetents([.large])
+                .environmentObject(appState)
         }
         // Settings can go with this screen (switching or adding a dashboard
         // swaps in sign-in), and SwiftUI doesn't promise the sheet's
@@ -232,6 +303,12 @@ struct MainView: View {
             // activate the persistent layout while the drawer is presented.
             if persistentActive { appState.dismissSidebarDrawer() }
         }
+        // Back to the list (V2) or the drawer opening covers the chat: the
+        // list reads the catalog again, so a conversation started in that
+        // chat, or a turn that ran there, shows without a pull to refresh.
+        .onChange(of: appState.showSidebar) { _, covered in
+            if covered { appState.refreshCatalogAfterLeavingChat() }
+        }
         .task(id: voiceCapabilityRefreshKey) {
             await appState.refreshVoiceCapabilities()
         }
@@ -246,8 +323,17 @@ struct MainView: View {
         .onChange(of: appState.preferredReturnSurfaceRequest) { _, _ in
             presentPreferredReturnSurfaceIfNeeded()
         }
+        // A widget's New Chat or Talk asks Settings out of the way
+        // (revealChatForWidgetLaunch); the chat it opens must end up on top.
+        .onChange(of: appState.settingsDismissRequest) { _, _ in
+            // A drawer closing on its way to Settings doesn't open it either.
+            shouldPresentSettingsAfterSidebarDismissal = false
+            settingsOpensAt = nil
+            settingsPresentation = nil
+        }
         .onChange(of: appState.settingsLinkRequest) { _, page in
-            guard let page else { return }
+            // V2 opens the page in its Settings tab (V2Shell).
+            guard !useV2Shell, let page else { return }
             appState.settingsLinkRequest = nil
             openSettings(at: page)
         }
@@ -273,12 +359,16 @@ struct MainView: View {
         let otherSheetUp = appState.showModelPicker || appState.showContextSheet || appState.showWorkspaceSheet
             || appState.showGatewaySheet || appState.showAgentsSheet || appState.showVoiceSheet
             || appState.showGeminiLiveSheet || appState.showGrokLiveSheet || appState.showGPTLiveSheet
+            || appState.showLocalLiveSheet
         guard !otherSheetUp else { return }
         // A host without calls (or not heard from yet) has no such page:
         // Settings opens at its start.
         switch page {
         case .calls: settingsOpensAt = appState.supportsHermesCalls ? page : nil
-        case .voice: settingsOpensAt = page
+        case .voice, .plugin: settingsOpensAt = page
+        case .health: settingsOpensAt = appState.showsHealthSettings ? page : nil
+        case .location: settingsOpensAt = appState.showsLocationSettings ? page : nil
+        case .phone: settingsOpensAt = appState.showsPhoneSettings ? page : nil
         }
         if appState.showSidebar, !isPersistentSidebarActive {
             presentSettingsFromDrawer()
@@ -304,7 +394,11 @@ struct MainView: View {
     /// column beside the chat.
     @ViewBuilder
     private var sidebarLayoutContent: some View {
-        if isPersistentSidebarActive {
+        if useV2Shell {
+            // V2 always opens on the Chats list (Eric, 2026-10-15); a chat
+            // a notification or widget opens is pushed over it.
+            V2Shell()
+        } else if isPersistentSidebarActive {
             #if os(macOS) // MAC: native resizable split view (D6)
             MacSplitLayout(
                 sidebar: {
@@ -392,7 +486,8 @@ struct MainView: View {
                 #if os(iOS) // MAC: no second glass layer over the system platter (D7)
                 .conduitGlassControl(cornerRadius: 20, tint: .conduitAccent.opacity(0.10))
                 #endif // MAC:
-                .disabled(!appState.isConnected || appState.isChatRefreshing)
+                // A New Chat on its way has nothing to refresh yet.
+                .disabled(!appState.isConnected || appState.isChatRefreshing || appState.showsPendingNewChat)
                 .accessibilityLabel("Refresh conversation")
             }
         }
@@ -468,10 +563,11 @@ struct MainView: View {
         .sheet(isPresented: $appState.showSidebar, onDismiss: presentSettingsAfterSidebarDismissal) {
             SidebarView(onRequestSettings: presentSettingsFromDrawer)
                 .environmentObject(appState)
+                // No blanket .transaction animation here: forcing one onto
+                // every update made the drawer's first layout passes animate,
+                // so the glass header and tab bar visibly grew across the
+                // screen as the sheet opened. Rows animate via withAnimation.
                 .presentationDetents([.large])
-                .transaction { transaction in
-                    transaction.animation = .easeInOut(duration: 0.15)
-                }
         }
     }
 
@@ -519,6 +615,31 @@ struct MainView: View {
         appState.showSidebar = true
     }
 
+    /// A call screen's top: the screenshot banner, then calendar changes
+    /// Hermes asked for (under the call screen, they were hidden until the
+    /// call was minimised).
+    private var callTopBanners: some View {
+        VStack(spacing: 0) {
+            voiceScreenshotBanner
+            PhoneChangeOverlay(engine: appState.phoneSync)
+                .environmentObject(appState)
+        }
+    }
+
+    /// The confirmation Hermes is waiting on, answered by tap.
+    private func presentedConfirmOverlay(inCall: Bool) -> some View {
+        PresentedConfirmOverlay(
+            sync: appState.presentedScreens,
+            inCall: inCall,
+            onAnswer: { prompt, outcome in
+                Task { await appState.answerPresentedConfirm(prompt, outcome: outcome, via: .tap) }
+            },
+            onEdit: inCall ? nil : { prompt in
+                Task { await appState.editPresentedConfirm(prompt) }
+            }
+        )
+    }
+
     private var windowWidthReader: some View {
         GeometryReader { proxy in
             Color.clear.preference(key: MainViewWindowWidthKey.self, value: proxy.size.width)
@@ -548,10 +669,13 @@ private struct MainViewWindowWidthKey: PreferenceKey {
 /// leaving the chat (#446), cron runs included (#512). A chat without a row of
 /// its own (a new chat, a Bot Chat, an offline copy) keeps the plain tap-only
 /// title.
-private struct ChatTitleControl: View {
+struct ChatTitleControl: View {
     @EnvironmentObject var appState: AppState
     let onRename: (SessionSummary) -> Void
     let onDelete: (SessionSummary) -> Void
+    /// Plain title without its capsule, for a header that also carries a
+    /// subtitle line (V2's link back to a child session's parent).
+    var compact = false
 
     var body: some View {
         if let session = appState.activeChatSessionSummary {
@@ -590,20 +714,29 @@ private struct ChatTitleControl: View {
         }
     }
 
+    @ViewBuilder
     private var titleLabel: some View {
-        Text(appState.displayedChatTitle)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.primary)
-            .lineLimit(1)
-            #if os(macOS) // MAC: flat pill on the system toolbar platter, standard item height (D7)
-            .macToolbarTitlePill()
-            #else // MAC:
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .conduitGlassSurface(cornerRadius: 16, tint: .conduitAccent.opacity(0.06))
-            #endif // MAC:
-            // The navigation bar doesn't grow; touch and hold shows it large.
-            .dynamicTypeSize(...DynamicTypeSize.xxLarge)
+        if compact {
+            Text(appState.displayedChatTitle)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .dynamicTypeSize(...DynamicTypeSize.xxLarge)
+        } else {
+            Text(appState.displayedChatTitle)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                #if os(macOS) // MAC: flat pill on the system toolbar platter, standard item height (D7)
+                .macToolbarTitlePill()
+                #else // MAC:
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .conduitGlassSurface(cornerRadius: 16, tint: .conduitAccent.opacity(0.06))
+                #endif // MAC:
+                // The navigation bar doesn't grow; touch and hold shows it large.
+                .dynamicTypeSize(...DynamicTypeSize.xxLarge)
+        }
     }
 }
 
@@ -616,7 +749,7 @@ struct ConnectionStatusIndicator: View {
     private var color: Color {
         if appState.isConnected {
             return .green
-        } else if appState.isConnecting {
+        } else if appState.isRecoveringConnection {
             return .orange
         } else {
             return .red
@@ -644,7 +777,9 @@ struct ConnectionStatusIndicator: View {
         .conduitGlassControl(cornerRadius: 20, tint: color.opacity(0.10))
         #endif // MAC:
         .animation(ConduitMotion.response, value: appState.isConnected)
-        .accessibilityLabel(appState.isConnected ? AppLocalization.string("Gateway connected") : AppLocalization.string("Gateway disconnected"))
+        .accessibilityLabel(appState.isConnected
+            ? AppLocalization.string("Gateway connected")
+            : (appState.isRecoveringConnection ? AppLocalization.string("Reconnecting…") : AppLocalization.string("Gateway disconnected")))
     }
 }
 

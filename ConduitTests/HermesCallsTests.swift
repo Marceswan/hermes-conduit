@@ -8,10 +8,11 @@
 //  ended untold, posts Conduit's own notification. Steps 2 to 4: a ringing
 //  call's plan, the call's reason and what it waits on in the model's
 //  brief, voice answers, the VoIP token and missed-call notifications.
-//  Written as extensions of existing suites: the CI test planner is at
-//  capacity for new classes.
+//  Written as extensions of existing suites: the CI test planner was
+//  at capacity for new classes when this file landed.
 //
 
+import CallKit
 import CryptoKit
 import XCTest
 @testable import Conduit
@@ -650,11 +651,34 @@ extension VoiceConversationControllerTests {
         XCTAssertTrue(plan(target, sentAgo: 91).startsTrace)
         XCTAssertFalse(plan(target, replayed: true).startsTrace, "A replay leaves the last call's trace alone")
         XCTAssertFalse(plan(nil).startsTrace)
+        // iOS 26.4+ says whether a push needs a CallKit call: one that
+        // rings always shows, one that wouldn't only when iOS needs it.
+        XCTAssertTrue(HermesNativeCalls.showsCall(.ring, mustReport: false))
+        XCTAssertTrue(HermesNativeCalls.showsCall(.endAtOnce(.missed), mustReport: true))
+        XCTAssertFalse(HermesNativeCalls.showsCall(.endAtOnce(.talk), mustReport: false))
+        XCTAssertFalse(HermesNativeCalls.showsCall(.endAtOnce(.none), mustReport: false))
+        if #available(iOS 26.4, *) {
+            let selector = NSSelectorFromString("pushRegistry:didReceiveIncomingVoIPPushWithPayload:metadata:withCompletionHandler:")
+            XCTAssertTrue(HermesNativeCalls.instancesRespond(to: selector), "PushKit finds the delegate method that says whether to report")
+        }
         XCTAssertTrue(HermesNativeCallStorefront.allowsCalls("USA"))
         XCTAssertTrue(HermesNativeCallStorefront.allowsCalls(nil))
         XCTAssertFalse(HermesNativeCallStorefront.allowsCalls("CHN"))
         XCTAssertEqual(HermesCallCopy.callerName(profile: nil, mainName: nil, title: nil), "Hermes")
         XCTAssertEqual(HermesCallCopy.callerName(profile: nil, mainName: "Ada", title: "Check \"it\""), "Hermes · Check 'it'")
+    }
+
+    func testInTheCarOrSilencedTheWatchStopsRinging() {
+        XCTAssertTrue(HermesNativeCalls.stopsWatchRing(plan: .ring, inCar: true), "Driving: the call rings on CarPlay, not the wrist")
+        XCTAssertFalse(HermesNativeCalls.stopsWatchRing(plan: .ring, inCar: false))
+        XCTAssertTrue(HermesNativeCalls.stopsWatchRing(plan: .endAtOnce(.talk), inCar: false), "Busy in voice here")
+        XCTAssertFalse(HermesNativeCalls.stopsWatchRing(plan: .endAtOnce(.missed), inCar: true), "A late push: the Watch judges its own")
+        XCTAssertFalse(HermesNativeCalls.stopsWatchRing(plan: .endAtOnce(.none), inCar: true))
+        XCTAssertTrue(HermesNativeCalls.stopsWatchRing(after: .filteredByDoNotDisturb), "A Focus silenced it here")
+        XCTAssertTrue(HermesNativeCalls.stopsWatchRing(after: .filteredByBlockList))
+        XCTAssertFalse(HermesNativeCalls.stopsWatchRing(after: .callUUIDAlreadyExists))
+        XCTAssertFalse(HermesNativeCalls.stopsWatchRing(after: .unknown))
+        XCTAssertFalse(HermesNativeCalls.stopsWatchRing(after: nil))
     }
 
     func testACallSaysWhichProfileIsCalling() throws {

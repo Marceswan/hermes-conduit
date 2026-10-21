@@ -117,11 +117,13 @@ final class MessageReadAloudController: ObservableObject {
     static func unavailableReason(
         isConnected: Bool,
         isVoiceEnabled: Bool,
-        snapshot: VoiceCapabilitySnapshot
+        snapshot: VoiceCapabilitySnapshot,
+        speechOutput: VoiceSpeechOutput = .hermes
     ) -> String? {
         if !isConnected { return AppLocalization.string("Connect to Hermes before reading responses aloud.") }
         if !isVoiceEnabled { return VoiceSetupIssue.voiceOff.message }
-        if !snapshot.supportsSpeech {
+        // This iPhone's voice needs nothing from Hermes' speech setup.
+        if speechOutput == .hermes, !snapshot.supportsSpeech {
             return VoiceSetupIssue.noTextToSpeech.message
         }
         return nil
@@ -144,7 +146,7 @@ final class MessageReadAloudController: ObservableObject {
             return
         }
         // `MEDIA:` file tags are attachments, not words (#439).
-        let readable = GatewayMediaTags.removingTags(from: content)
+        let readable = TranscriptDirectives.removingPreviews(from: GatewayMediaTags.removingTags(from: content))
         guard !readable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         // Starting is an on-screen action; a reply already playing is not
         // tied to the foreground and keeps going in the background.

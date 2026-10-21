@@ -17,18 +17,21 @@ struct VoiceSettingsRoute: View {
     let voiceEnabled: Bool
     let transcriptionMode: VoiceTranscriptionMode
     let transcriptionModeChosen: Bool
+    let speechOutput: VoiceSpeechOutput?
     let appleSpeechAvailability: AppleSpeechRecognitionAvailability
     let continuousConversation: Bool
     let spokenStopPhrases: [String]
     let spokenEndConversationPhrases: [String]
     let setVoiceEnabled: (Bool) async -> Bool
     let setTranscriptionMode: (VoiceTranscriptionMode) async -> Bool
+    let setSpeechOutput: (VoiceSpeechOutput) async -> Bool
     let setContinuousConversation: (Bool) async -> Bool
     let setStopPhrases: ([String]) -> Bool
     let setEndConversationPhrases: ([String]) -> Bool
     let geminiLive: GeminiLiveSettingsModel?
     let gptLive: GPTLiveSettingsModel?
     let grokLive: GrokLiveSettingsModel?
+    let localLive: LocalLiveSettingsModel?
     let liveStyle: LiveVoiceStyleSettingsModel?
     let voiceJobs: VoiceJobModelSettingsModel?
     let voiceReplies: VoiceReplyModelSettingsModel?
@@ -48,18 +51,21 @@ struct VoiceSettingsRoute: View {
         voiceEnabled: Bool,
         transcriptionMode: VoiceTranscriptionMode,
         transcriptionModeChosen: Bool = false,
+        speechOutput: VoiceSpeechOutput? = nil,
         appleSpeechAvailability: AppleSpeechRecognitionAvailability,
         continuousConversation: Bool = true,
         spokenStopPhrases: [String] = VoiceSpokenCommandDefaults.stopPhrases,
         spokenEndConversationPhrases: [String] = VoiceSpokenCommandDefaults.endConversationPhrases,
         setVoiceEnabled: @escaping (Bool) async -> Bool,
         setTranscriptionMode: @escaping (VoiceTranscriptionMode) async -> Bool,
+        setSpeechOutput: @escaping (VoiceSpeechOutput) async -> Bool = { _ in false },
         setContinuousConversation: @escaping (Bool) async -> Bool = { _ in true },
         setStopPhrases: @escaping ([String]) -> Bool = { _ in true },
         setEndConversationPhrases: @escaping ([String]) -> Bool = { _ in true },
         geminiLive: GeminiLiveSettingsModel? = nil,
         gptLive: GPTLiveSettingsModel? = nil,
         grokLive: GrokLiveSettingsModel? = nil,
+        localLive: LocalLiveSettingsModel? = nil,
         liveStyle: LiveVoiceStyleSettingsModel? = nil,
         voiceJobs: VoiceJobModelSettingsModel? = nil,
         voiceReplies: VoiceReplyModelSettingsModel? = nil,
@@ -73,6 +79,7 @@ struct VoiceSettingsRoute: View {
         self.geminiLive = geminiLive
         self.gptLive = gptLive
         self.grokLive = grokLive
+        self.localLive = localLive
         self.liveStyle = liveStyle
         self.voiceJobs = voiceJobs
         self.voiceReplies = voiceReplies
@@ -86,12 +93,14 @@ struct VoiceSettingsRoute: View {
         self.voiceEnabled = voiceEnabled
         self.transcriptionMode = transcriptionMode
         self.transcriptionModeChosen = transcriptionModeChosen
+        self.speechOutput = speechOutput
         self.appleSpeechAvailability = appleSpeechAvailability
         self.continuousConversation = continuousConversation
         self.spokenStopPhrases = spokenStopPhrases
         self.spokenEndConversationPhrases = spokenEndConversationPhrases
         self.setVoiceEnabled = setVoiceEnabled
         self.setTranscriptionMode = setTranscriptionMode
+        self.setSpeechOutput = setSpeechOutput
         self.setContinuousConversation = setContinuousConversation
         self.setStopPhrases = setStopPhrases
         self.setEndConversationPhrases = setEndConversationPhrases
@@ -105,18 +114,21 @@ struct VoiceSettingsRoute: View {
             voiceEnabled: voiceEnabled,
             transcriptionMode: transcriptionMode,
             transcriptionModeChosen: transcriptionModeChosen,
+            speechOutput: speechOutput,
             appleSpeechAvailability: appleSpeechAvailability,
             continuousConversation: continuousConversation,
             spokenStopPhrases: spokenStopPhrases,
             spokenEndConversationPhrases: spokenEndConversationPhrases,
             setVoiceEnabled: setVoiceEnabled,
             setTranscriptionMode: setTranscriptionMode,
+            setSpeechOutput: setSpeechOutput,
             setContinuousConversation: setContinuousConversation,
             setStopPhrases: setStopPhrases,
             setEndConversationPhrases: setEndConversationPhrases,
             geminiLive: geminiLive,
             gptLive: gptLive,
             grokLive: grokLive,
+            localLive: localLive,
             liveStyle: liveStyle,
             voiceJobs: voiceJobs,
             voiceReplies: voiceReplies,
@@ -155,16 +167,27 @@ struct VoiceSettingsView: View {
     var actions = VoiceSettingsActions()
     let setVoiceEnabled: (Bool) async -> Bool
     let setTranscriptionMode: (VoiceTranscriptionMode) async -> Bool
+    let setSpeechOutput: (VoiceSpeechOutput) async -> Bool
     let setContinuousConversation: (Bool) async -> Bool
 
     @State private var values: [String: String] = [:]
-    @State private var credentialDrafts: [String: String] = [:]
     @State private var savingField: String?
+    @State private var scrollTarget: String?
+    /// The voice server address typed into the Private voice card before
+    /// OpenAI speech is picked; nil while the field is hidden.
+    @State private var voiceServerDraft: String?
+    /// Hermes' error for the last failed address save, shown under the field.
+    @State private var voiceServerSaveError: String?
     @State private var testStatus: String?
     @State private var isRunningTest = false
     @State private var isRecordingASRTest = false
     @State private var voiceEnabled: Bool
     @State private var transcriptionMode: VoiceTranscriptionMode
+    /// Who speaks replies as saved; nil is automatic.
+    @State private var speechOutputChoice: VoiceSpeechOutput?
+    /// The saved choice as the host last rendered it, so a profile switch
+    /// or a choice made elsewhere shows here too.
+    let savedSpeechOutput: VoiceSpeechOutput?
     @State private var appleSpeechAvailability: AppleSpeechRecognitionAvailability
     @State private var continuousConversation: Bool
     /// Whether the profile has a saved speech-to-text choice. Turning voice
@@ -174,6 +197,7 @@ struct VoiceSettingsView: View {
     /// elsewhere while this page is open is kept too.
     let savedTranscriptionModeChosen: Bool
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var voiceMode: VoiceMode
     @State private var isApplyingDefaults = false
     @State private var microphonePermission: AVAudioApplication.recordPermission
@@ -188,6 +212,7 @@ struct VoiceSettingsView: View {
     var geminiLive: GeminiLiveSettingsModel?
     var gptLive: GPTLiveSettingsModel?
     var grokLive: GrokLiveSettingsModel?
+    var localLive: LocalLiveSettingsModel?
     var liveStyle: LiveVoiceStyleSettingsModel?
     var voiceJobs: VoiceJobModelSettingsModel?
     var voiceReplies: VoiceReplyModelSettingsModel?
@@ -217,18 +242,21 @@ struct VoiceSettingsView: View {
         voiceEnabled: Bool = false,
         transcriptionMode: VoiceTranscriptionMode = .hermes,
         transcriptionModeChosen: Bool = false,
+        speechOutput: VoiceSpeechOutput? = nil,
         appleSpeechAvailability: AppleSpeechRecognitionAvailability = .permissionRequired(localeIdentifier: Locale.current.identifier),
         continuousConversation: Bool = true,
         spokenStopPhrases: [String] = VoiceSpokenCommandDefaults.stopPhrases,
         spokenEndConversationPhrases: [String] = VoiceSpokenCommandDefaults.endConversationPhrases,
         setVoiceEnabled: @escaping (Bool) async -> Bool = { _ in false },
         setTranscriptionMode: @escaping (VoiceTranscriptionMode) async -> Bool = { _ in false },
+        setSpeechOutput: @escaping (VoiceSpeechOutput) async -> Bool = { _ in false },
         setContinuousConversation: @escaping (Bool) async -> Bool = { _ in true },
         setStopPhrases: @escaping ([String]) -> Bool = { _ in true },
         setEndConversationPhrases: @escaping ([String]) -> Bool = { _ in true },
         geminiLive: GeminiLiveSettingsModel? = nil,
         gptLive: GPTLiveSettingsModel? = nil,
         grokLive: GrokLiveSettingsModel? = nil,
+        localLive: LocalLiveSettingsModel? = nil,
         liveStyle: LiveVoiceStyleSettingsModel? = nil,
         voiceJobs: VoiceJobModelSettingsModel? = nil,
         voiceReplies: VoiceReplyModelSettingsModel? = nil,
@@ -242,6 +270,7 @@ struct VoiceSettingsView: View {
         self.geminiLive = geminiLive
         self.gptLive = gptLive
         self.grokLive = grokLive
+        self.localLive = localLive
         self.liveStyle = liveStyle
         self.voiceJobs = voiceJobs
         self.voiceReplies = voiceReplies
@@ -256,6 +285,7 @@ struct VoiceSettingsView: View {
         self.actions = actions
         self.setVoiceEnabled = setVoiceEnabled
         self.setTranscriptionMode = setTranscriptionMode
+        self.setSpeechOutput = setSpeechOutput
         self.setContinuousConversation = setContinuousConversation
         self.spokenStopPhrases = spokenStopPhrases
         self.spokenEndConversationPhrases = spokenEndConversationPhrases
@@ -268,12 +298,15 @@ struct VoiceSettingsView: View {
         _voiceEnabled = State(initialValue: voiceEnabled)
         _transcriptionMode = State(initialValue: transcriptionMode)
         _transcriptionModeChosen = State(initialValue: transcriptionModeChosen)
+        _speechOutputChoice = State(initialValue: speechOutput)
+        self.savedSpeechOutput = speechOutput
         self.savedTranscriptionModeChosen = transcriptionModeChosen
         _microphonePermission = State(initialValue: AVAudioApplication.shared.recordPermission)
         _voiceMode = State(initialValue: Self.mode(
             gemini: geminiLive?.enabled == true,
             gpt: gptLive?.enabled == true,
-            grok: grokLive?.enabled == true
+            grok: grokLive?.enabled == true,
+            local: localLive?.enabled == true
         ))
         _appleSpeechAvailability = State(initialValue: appleSpeechAvailability)
         _continuousConversation = State(initialValue: continuousConversation)
@@ -281,28 +314,49 @@ struct VoiceSettingsView: View {
 
     var body: some View {
         ZStack {
-            ConduitBackdrop()
-            ScrollView {
-                // Setup first, then what most people change. Provider
-                // detail, models and tuning wait under Advanced.
-                VStack(alignment: .leading, spacing: 14) {
-                    if let callSaves, callSaves.pendingCount > 0 {
-                        VoiceCallSaveStatusSection(model: callSaves)
+            SettingsBackdrop()
+            ScrollViewReader { proxy in
+                ScrollView {
+                    // Setup first, then what most people change. Provider
+                    // detail, models and tuning wait under Advanced.
+                    VStack(alignment: .leading, spacing: 24) {
+                        if let callSaves, callSaves.pendingCount > 0 {
+                            VoiceCallSaveStatusSection(model: callSaves)
+                        }
+                        setupSection
+                        voiceModeSection
+                        liveModeSettings
+                        conversationSection
+                        if let agentSettingsChanged {
+                            AgentSettingsModeSection(onChange: agentSettingsChanged)
+                        }
+                        wakeSection
+                        CarPlaySettingsSection()
+                        WatchSettingsSection()
+                        readAloudSection
+                        DictationSettingsSection()
+                        advancedSection
                     }
-                    setupSection
-                    voiceModeSection
-                    liveModeSettings
-                    conversationSection
-                    if let agentSettingsChanged {
-                        AgentSettingsModeSection(onChange: agentSettingsChanged)
-                    }
-                    wakeSection
-                    CarPlaySettingsSection()
-                    WatchSettingsSection()
-                    readAloudSection
-                    advancedSection
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .padding(.bottom, 24)
                 }
-                .padding(16)
+                .scrollDismissesKeyboard(.interactively)
+                .modifier(V2SoftTopScrollEdge(isOn: true))
+                // The Private voice card's buttons open Advanced, then bring
+                // the provider section they set up into view. A newer tap or
+                // leaving the screen cancels a pending scroll.
+                .task(id: scrollTarget) {
+                    // One scroll once Advanced has opened, so a user who then
+                    // scrolls away is never pulled back.
+                    guard let target = scrollTarget else { return }
+                    try? await Task.sleep(for: .milliseconds(350))
+                    guard !Task.isCancelled else { return }
+                    withAnimation(.snappy) { proxy.scrollTo(target, anchor: .top) }
+                    scrollTarget = nil
+                    // Tell VoiceOver the page moved under it.
+                    UIAccessibility.post(notification: .layoutChanged, argument: nil)
+                }
             }
         }
         .navigationTitle("Voice")
@@ -337,6 +391,9 @@ struct VoiceSettingsView: View {
         .onChange(of: savedTranscriptionModeChosen) { _, chosen in
             if chosen { transcriptionModeChosen = true }
         }
+        .onChange(of: savedSpeechOutput) { _, saved in
+            speechOutputChoice = saved
+        }
         // Back from iPhone Settings: the permission steps show what was allowed.
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
@@ -358,7 +415,7 @@ struct VoiceSettingsView: View {
             .accessibilityIdentifier("voice.enableToggle")
             Text(voiceEnabled
                  ? AppLocalization.string("Voice is on for \(profileDisplayName) on this iPhone. Each step below turns green when it's ready; an orange step has a fix.")
-                 : AppLocalization.string("Turn this on to talk to \(profileDisplayName). Conduit asks for the microphone and Speech Recognition, uses this iPhone for speech to text, and switches the assistant's voice to Edge TTS on Hermes if the current one isn't ready."))
+                 : AppLocalization.string("Turn this on to talk to \(profileDisplayName). Conduit asks for the microphone and Speech Recognition, and uses this iPhone to hear you and to speak the replies. Nothing to set up on Hermes."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if isApplyingDefaults {
@@ -396,9 +453,8 @@ struct VoiceSettingsView: View {
                 Task { await load() }
             } label: {
                 Label(service.isLoading ? AppLocalization.string("Checking…") : AppLocalization.string("Check again"), systemImage: "arrow.clockwise")
-                    .font(.footnote.weight(.semibold))
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.settings)
             .disabled(service.isLoading || isApplyingDefaults)
         }
     }
@@ -462,6 +518,15 @@ struct VoiceSettingsView: View {
                 )
             }
         }
+        if transcriptionMode == .speechServer {
+            if let server = service.speechServer, server.available, let url = server.url {
+                return setupStep(title, detail: url, state: .done)
+            }
+            if let server = service.speechServer, server.configured || server.pluginMissing {
+                return setupStep(title, detail: server.reason ?? AppLocalization.string("Your speech server. Use Test connection under Speech to text to check it."), state: .attention)
+            }
+            return setupStep(title, detail: AppLocalization.string("Your speech server. Use Test connection under Speech to text to check it."), state: .pending)
+        }
         if service.isLoading || !service.snapshot.capability.isGatewayConnected {
             return setupStep(title, detail: AppLocalization.string("Not checked yet"), state: .pending)
         }
@@ -495,30 +560,38 @@ struct VoiceSettingsView: View {
 
     private var assistantVoiceStep: some View {
         let title = AppLocalization.string("Assistant voice")
+        if resolvedSpeechOutput == .onDevice {
+            return setupStep(title, detail: AppLocalization.string("On this iPhone"), state: .done)
+        }
+        if resolvedSpeechOutput == .speechServer {
+            let waiting = AppLocalization.string("Your speech server. Give it the model address and key shown under Assistant speech.")
+            guard let voice = service.speechServerVoice else {
+                return setupStep(title, detail: waiting, state: .pending)
+            }
+            if voice.pluginMissing || !voice.available || voice.modelAddress == nil {
+                return setupStep(title, detail: voice.reason ?? waiting, state: .attention)
+            }
+            return voice.lastRequestAt == nil
+                ? setupStep(title, detail: waiting, state: .pending)
+                : setupStep(title, detail: AppLocalization.string("Your speech server"), state: .done)
+        }
         let name = providerName(service.snapshot.selectedTTSProvider, kind: .tts)
         if service.snapshot.capability.supportsSpeech {
             return setupStep(title, detail: AppLocalization.string("\(name) on Hermes"), state: .done)
-        }
-        if VoiceSetupDefaults.canSwitchSpeechToEdge(service.snapshot) {
-            return setupStep(
-                title,
-                detail: service.snapshot.selectedTTSProvider.isEmpty
-                    ? AppLocalization.string("No assistant voice is set up yet. Edge TTS is free and ready.")
-                    : AppLocalization.string("\(name) isn't ready on Hermes. Edge TTS is free and ready."),
-                state: .attention,
-                fix: (label: AppLocalization.string("Use Edge TTS"), action: { selectProvider(VoiceSetupDefaults.edgeTTSProviderID, kind: .tts) })
-            )
         }
         if service.isLoading || !service.snapshot.capability.isGatewayConnected {
             return setupStep(title, detail: AppLocalization.string("Not checked yet"), state: .pending)
         }
         return setupStep(
             title,
-            detail: service.snapshot.selectedTTSProvider.isEmpty
-                ? AppLocalization.string("No assistant voice is set up yet. Choose one under Assistant speech below.")
-                : AppLocalization.string("\(name) isn't ready on Hermes. Choose another under Assistant speech below."),
-            state: .attention
+            detail: AppLocalization.string("\(name) isn't ready on Hermes. This iPhone can speak the replies instead, with nothing to set up."),
+            state: .attention,
+            fix: (label: AppLocalization.string("Use this iPhone"), action: { selectProvider(Self.iPhoneVoiceProviderID, kind: .tts) })
         )
+    }
+
+    private var resolvedSpeechOutput: VoiceSpeechOutput {
+        .resolved(chosen: speechOutputChoice, snapshot: service.snapshot.capability)
     }
 
     private enum SetupStepState {
@@ -564,8 +637,7 @@ struct VoiceSettingsView: View {
             Spacer(minLength: 8)
             if let fix {
                 Button(fix.label, action: fix.action)
-                    .font(.footnote.weight(.semibold))
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.settings)
                     .disabled(savingField != nil || isApplyingDefaults)
             }
         }
@@ -588,7 +660,7 @@ struct VoiceSettingsView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6).frame(minHeight: 46)
                 }
-                .disabled(actions.runTTSTest == nil || isRunningTest || !service.snapshot.capability.supportsSpeech)
+                .disabled(actions.runTTSTest == nil || isRunningTest || !supportsSelectedSpeech)
                 .conduitGlassControl(cornerRadius: 16, tint: .conduitAccent.opacity(0.14))
                 .accessibilityHint(AppLocalization.string("Plays a short sample in the assistant's voice"))
             }
@@ -651,16 +723,13 @@ struct VoiceSettingsView: View {
         if plan.usesOnDeviceTranscription {
             await applyProvider(Self.appleProviderID, kind: .stt)
         }
-        if plan.switchesSpeechToEdge {
-            await applyProvider(VoiceSetupDefaults.edgeTTSProviderID, kind: .tts)
-        }
         await load()
     }
 
     // MARK: Voice mode
 
     private enum VoiceMode: String, CaseIterable {
-        case classic, gemini, gpt, grok
+        case classic, gemini, gpt, grok, local
 
         var title: String {
             switch self {
@@ -668,6 +737,7 @@ struct VoiceSettingsView: View {
             case .gemini: return AppLocalization.string("Gemini Live")
             case .gpt: return AppLocalization.string("GPT-Live")
             case .grok: return AppLocalization.string("Grok Live")
+            case .local: return AppLocalization.string("Local Live")
             }
         }
 
@@ -681,19 +751,22 @@ struct VoiceSettingsView: View {
                 return AppLocalization.string("A real-time conversation on your Hermes server's ChatGPT sign-in that hands the work to Hermes. Needs the Hermes notifier plugin.")
             case .grok:
                 return AppLocalization.string("A real-time conversation with Grok through your Hermes server's SuperGrok sign-in that hands the work to Hermes. Needs the Hermes notifier plugin.")
+            case .local:
+                return AppLocalization.string("A real-time conversation through a speech server you run, with Hermes answering each turn. Needs the Hermes notifier plugin.")
             }
         }
     }
 
     /// The mode the profile's saved preferences say is on.
     private var modelVoiceMode: VoiceMode {
-        Self.mode(gemini: geminiLive?.enabled == true, gpt: gptLive?.enabled == true, grok: grokLive?.enabled == true)
+        Self.mode(gemini: geminiLive?.enabled == true, gpt: gptLive?.enabled == true, grok: grokLive?.enabled == true, local: localLive?.enabled == true)
     }
 
-    private static func mode(gemini: Bool, gpt: Bool, grok: Bool) -> VoiceMode {
+    private static func mode(gemini: Bool, gpt: Bool, grok: Bool, local: Bool) -> VoiceMode {
         if gemini { return .gemini }
         if gpt { return .gpt }
         if grok { return .grok }
+        if local { return .local }
         return .classic
     }
 
@@ -704,6 +777,7 @@ struct VoiceSettingsView: View {
             case .gemini: return geminiLive != nil
             case .gpt: return gptLive != nil
             case .grok: return grokLive != nil
+            case .local: return localLive != nil
             }
         }
     }
@@ -732,13 +806,244 @@ struct VoiceSettingsView: View {
     private var liveModeSettings: some View {
         switch voiceMode {
         case .classic:
-            EmptyView()
+            privateVoiceSection
         case .gemini:
-            if let geminiLive { GeminiLiveSettingsSection(model: geminiLive, showsModeToggle: false) }
+            if let geminiLive {
+                GeminiLiveSettingsSection(model: geminiLive, showsModeToggle: false)
+                liveModeKey(Self.geminiKeys, note: AppLocalization.string("Gemini Live connects to Google with this key on your Hermes server."))
+            }
         case .gpt:
-            if let gptLive { GPTLiveSettingsSection(model: gptLive, showsModeToggle: false) }
+            if let gptLive {
+                GPTLiveSettingsSection(model: gptLive, showsModeToggle: false)
+                liveModeKey(Self.openAIVoiceKeys, note: AppLocalization.string("Only used for calls billed to the API key. Calls on your ChatGPT plan don't need it."))
+            }
         case .grok:
-            if let grokLive { GrokLiveSettingsSection(model: grokLive, showsModeToggle: false) }
+            if let grokLive {
+                GrokLiveSettingsSection(model: grokLive, showsModeToggle: false)
+                liveModeKey(Self.xAIKeys, note: AppLocalization.string("Not needed when your Hermes server is signed in with SuperGrok."))
+            }
+        case .local:
+            if localLive != nil {
+                LocalLiveSettingsSection(service: service)
+            }
+        }
+    }
+
+    static let sttSectionID = "voice.provider.stt"
+    static let ttsSectionID = "voice.provider.tts"
+
+    /// Classic voice on servers the user runs: their own speech server for
+    /// recognition and an OpenAI-compatible voice server (Chatterbox) for
+    /// replies. Both settings live under Advanced; this card picks them
+    /// and opens the section to finish setup.
+    @ViewBuilder
+    private var privateVoiceSection: some View {
+        if service.isLoading || service.snapshot.capability.isGatewayConnected {
+            ConduitSettingsSection(title: AppLocalization.string("Private voice"), symbol: "lock.shield", tint: .conduitAura) {
+                Text(AppLocalization.string("Keep your voice on machines you run. Hermes still does the work."))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                privateVoiceRow(
+                    title: AppLocalization.string("Your speech server"),
+                    detail: AppLocalization.string("Understands what you say. For example, the speech-to-speech server Hermes Live Voice runs."),
+                    inUse: transcriptionMode == .speechServer,
+                    chosen: transcriptionMode == .speechServer,
+                    available: true,
+                    identifier: "voice.private.speechServer"
+                ) { usePrivateProvider(Self.speechServerProviderID, kind: .stt) }
+                privateVoiceRow(
+                    title: AppLocalization.string("Your voice server"),
+                    detail: AppLocalization.string("Speaks the replies. Any OpenAI-compatible speech server, such as Chatterbox."),
+                    inUse: usesOwnVoiceServer,
+                    chosen: service.snapshot.selectedTTSProvider == Self.openAITTSProviderID,
+                    available: service.snapshot.ttsProviders.contains { $0.descriptor.id == Self.openAITTSProviderID },
+                    identifier: "voice.private.voiceServer"
+                ) { useVoiceServer() }
+                if voiceServerDraft != nil { voiceServerAddressField }
+                privateVoiceRow(
+                    title: AppLocalization.string("Your speech server speaks too"),
+                    detail: AppLocalization.string("Replies in your speech server's own voice, so one server listens and speaks. Needs plugin 0.42 or later."),
+                    inUse: resolvedSpeechOutput == .speechServer,
+                    chosen: resolvedSpeechOutput == .speechServer,
+                    available: true,
+                    identifier: "voice.private.speechServerVoice"
+                ) { usePrivateProvider(Self.speechServerVoiceProviderID, kind: .tts) }
+            }
+        }
+    }
+
+    static let openAITTSProviderID = "openai"
+
+    /// OpenAI speech pointed at a server other than OpenAI's, as saved on
+    /// Hermes (not an unsaved draft). The managed Nous row shares the
+    /// tts.openai section but is the gateway's own voice, so it never counts.
+    private var usesOwnVoiceServer: Bool {
+        resolvedSpeechOutput == .hermes
+            && service.snapshot.selectedTTSProvider == Self.openAITTSProviderID
+            && Self.isOwnVoiceServer(service.snapshot.values["tts.openai.base_url"] ?? "")
+    }
+
+    /// A Base URL that isn't empty and isn't OpenAI's own API.
+    static func isOwnVoiceServer(_ baseURL: String) -> Bool {
+        let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        // "api.openai.com/v1" has no scheme, so URL finds no host in it.
+        let withScheme = trimmed.contains("://") ? trimmed : "http://" + trimmed
+        let host = (URL(string: withScheme)?.host?.lowercased() ?? "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return !host.isEmpty && host != "api.openai.com"
+    }
+
+    /// OpenAI speech is only picked once a private Base URL is saved, so
+    /// no reply is ever sent to OpenAI's cloud on the way to setting it up.
+    /// Without one, the card asks for the address first.
+    private func useVoiceServer() {
+        guard savingField == nil else { return }
+        let chosen = service.snapshot.selectedTTSProvider == Self.openAITTSProviderID
+        if chosen || Self.isOwnVoiceServer(service.snapshot.values["tts.openai.base_url"] ?? "") {
+            usePrivateProvider(Self.openAITTSProviderID, kind: .tts)
+        } else {
+            withAnimation(.snappy) { voiceServerDraft = voiceServerDraft ?? "" }
+        }
+    }
+
+    private var voiceServerAddressField: some View {
+        let draft = (voiceServerDraft ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return VStack(alignment: .leading, spacing: 8) {
+            TextField(AppLocalization.string("Voice server address"), text: Binding(
+                get: { voiceServerDraft ?? "" },
+                set: {
+                    voiceServerDraft = $0
+                    voiceServerSaveError = nil
+                }
+            ), prompt: Text(verbatim: "http://192.168.1.20:4123/v1"))
+                .textContentType(.URL)
+                .keyboardType(.URL)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .submitLabel(.done)
+                .onSubmit { saveVoiceServerAddress() }
+                .accessibilityIdentifier("voice.private.voiceServer.address")
+            if !draft.isEmpty, !Self.isOwnVoiceServer(draft) {
+                Text(AppLocalization.string("Enter your own server's address, not OpenAI's."))
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if let voiceServerSaveError {
+                Text(verbatim: voiceServerSaveError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Button(AppLocalization.string("Cancel"), role: .cancel) {
+                    voiceServerSaveError = nil
+                    withAnimation(.snappy) { voiceServerDraft = nil }
+                }
+                .disabled(savingField != nil)
+                Spacer()
+                Button { saveVoiceServerAddress() } label: {
+                    if savingField == "tts.openai.base_url" { ProgressView() } else { Text(AppLocalization.string("Save and use")) }
+                }
+                .accessibilityLabel(Text(AppLocalization.string("Save and use")))
+                .buttonStyle(.borderedProminent)
+                .disabled(savingField != nil || !Self.isOwnVoiceServer(draft))
+                .accessibilityIdentifier("voice.private.voiceServer.save")
+            }
+        }
+    }
+
+    /// Saves the address, then picks OpenAI speech and opens its section
+    /// for the key. A failed save keeps the field, with Hermes' error under
+    /// it.
+    private func saveVoiceServerAddress() {
+        let address = (voiceServerDraft ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard savingField == nil, Self.isOwnVoiceServer(address) else { return }
+        let key = "tts.openai.base_url"
+        savingField = key
+        Task { @MainActor in
+            voiceServerSaveError = nil
+            let saved = await service.save(value: address, for: key)
+            values[key] = service.snapshot.values[key]
+            savingField = nil
+            guard saved, Self.isOwnVoiceServer(service.snapshot.values[key] ?? "") else {
+                voiceServerSaveError = service.errorMessage ?? AppLocalization.string("Could not save \(key).")
+                return
+            }
+            voiceServerDraft = nil
+            usePrivateProvider(Self.openAITTSProviderID, kind: .tts)
+        }
+    }
+
+    private func privateVoiceRow(
+        title: String, detail: String, inUse: Bool, chosen: Bool, available: Bool, identifier: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        // Once picked, the button leads to the rest of setup (for the voice
+        // server, its Base URL) rather than offering to pick it again.
+        let buttonTitle = chosen || inUse ? AppLocalization.string("Set up") : AppLocalization.string("Use")
+        // At accessibility text sizes the button goes under the text so
+        // neither is squeezed.
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(alignment: .center, spacing: 12))
+        return layout {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: title).font(.subheadline.weight(.semibold))
+                Text(verbatim: detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if inUse {
+                    Label(AppLocalization.string("In use"), systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                }
+            }
+            if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 8) }
+            Button(action: action) { Text(verbatim: buttonTitle) }
+                .buttonStyle(.bordered)
+                .disabled(service.isLoading || savingField != nil || !available)
+                .accessibilityLabel(Text(verbatim: "\(buttonTitle), \(title)"))
+                .accessibilityIdentifier(identifier)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    /// Picks the provider when it isn't already, then opens its section
+    /// under Advanced, where its address and key are set. A failed pick
+    /// stays put: its error shows in Set up voice, just above the card.
+    private func usePrivateProvider(_ provider: String, kind: VoiceProviderDescriptor.Kind) {
+        // One pick at a time; the buttons are also disabled while saving.
+        guard savingField == nil else { return }
+        let providers = kind == .stt ? service.snapshot.sttProviders : service.snapshot.ttsProviders
+        let selectable = provider == Self.speechServerProviderID || provider == Self.speechServerVoiceProviderID
+            || providers.contains { $0.descriptor.id == provider }
+        if selectable, provider != selectedProviderChoice(kind) {
+            savingField = "\(kind.rawValue).provider"
+            Task { @MainActor in
+                await applyProvider(provider, kind: kind)
+                if provider == selectedProviderChoice(kind) { openProviderSection(kind) }
+            }
+        } else {
+            openProviderSection(kind)
+        }
+    }
+
+    private func openProviderSection(_ kind: VoiceProviderDescriptor.Kind) {
+        withAnimation(.snappy) { advancedExpanded = true }
+        scrollTarget = kind == .stt ? Self.sttSectionID : Self.ttsSectionID
+    }
+
+    /// Keys each live mode reads on the Hermes host, in the host's order.
+    static let geminiKeys = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+    static let openAIVoiceKeys = ["VOICE_TOOLS_OPENAI_KEY", "OPENAI_API_KEY"]
+    static let xAIKeys = ["XAI_API_KEY"]
+
+    /// The live mode's key, right under its settings. Hidden when this
+    /// Hermes can't take voice settings at all, since saving would fail.
+    @ViewBuilder
+    private func liveModeKey(_ keys: [String], note: String) -> some View {
+        if service.isLoading || service.snapshot.capability.isGatewayConnected {
+            VoiceAPIKeySection(service: service, keys: keys, note: note)
         }
     }
 
@@ -753,9 +1058,15 @@ struct VoiceSettingsView: View {
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 10) {
-                    Label(AppLocalization.string("Advanced"), systemImage: "slider.horizontal.3")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.conduitAura)
+                    Label {
+                        Text(AppLocalization.string("Advanced"))
+                            .foregroundStyle(.primary)
+                    } icon: {
+                        Image(systemName: "slider.horizontal.3")
+                            .foregroundStyle(Color.conduitAccent)
+                            .accessibilityHidden(true)
+                    }
+                    .font(.callout.weight(.semibold))
                     Spacer(minLength: 8)
                     Image(systemName: "chevron.right")
                         .font(.footnote.weight(.semibold))
@@ -775,7 +1086,7 @@ struct VoiceSettingsView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .conduitGlassSurface(cornerRadius: 24, tint: Color.conduitAura.opacity(0.07))
+        .settingsCard()
         .accessibilityValue(Text(advancedExpanded ? AppLocalization.string("Expanded") : AppLocalization.string("Collapsed")))
         .accessibilityIdentifier("voice.advancedToggle")
         if advancedExpanded {
@@ -790,7 +1101,9 @@ struct VoiceSettingsView: View {
                         .padding(.horizontal, 4)
                 } else if service.snapshot.capability.isGatewayConnected {
                     providerSection(title: AppLocalization.string("Speech to text"), symbol: "waveform", kind: .stt, providers: service.snapshot.sttProviders)
+                        .id(Self.sttSectionID)
                     providerSection(title: AppLocalization.string("Assistant speech"), symbol: "speaker.wave.3", kind: .tts, providers: service.snapshot.ttsProviders)
+                        .id(Self.ttsSectionID)
                     credentialsSection
                 }
                 if let voiceReplies {
@@ -808,7 +1121,11 @@ struct VoiceSettingsView: View {
     private var classicSpeechNeedsAttention: Bool {
         guard voiceEnabled, voiceMode == .classic, !service.isLoading,
               service.snapshot.capability.isGatewayConnected else { return false }
-        return !supportsSelectedTranscription || !service.snapshot.capability.supportsSpeech
+        return !supportsSelectedTranscription || !supportsSelectedSpeech
+    }
+
+    private var supportsSelectedSpeech: Bool {
+        resolvedSpeechOutput != .hermes || service.snapshot.capability.supportsSpeech
     }
 
     private func selectVoiceMode(_ id: String) {
@@ -821,9 +1138,11 @@ struct VoiceSettingsView: View {
             geminiLive?.setEnabled(false)
             gptLive?.setEnabled(false)
             grokLive?.setEnabled(false)
+            localLive?.setEnabled(false)
         case .gemini: geminiLive?.setEnabled(true)
         case .gpt: gptLive?.setEnabled(true)
         case .grok: grokLive?.setEnabled(true)
+        case .local: localLive?.setEnabled(true)
         }
     }
 
@@ -944,17 +1263,25 @@ struct VoiceSettingsView: View {
                 ) {
                     Text("Provider").foregroundStyle(.secondary)
                 }
-                .disabled(service.isLoading || savingField == "\(kind.rawValue).provider")
+                // Any save in flight, including a Private voice pick of the
+                // other kind, holds both pickers so picks never overlap.
+                .disabled(service.isLoading || savingField != nil)
                 .accessibilityHint(kind == .stt ? AppLocalization.string("Choose on-device Apple speech or a provider reported by Hermes") : AppLocalization.string("Provider options are reported by Hermes for this profile"))
 
                 if kind == .stt, transcriptionMode == .appleOnDevice {
                     appleOnDeviceDetail
+                } else if kind == .tts, resolvedSpeechOutput == .onDevice {
+                    iPhoneVoiceDetail
+                } else if kind == .tts, resolvedSpeechOutput == .speechServer {
+                    SpeechServerVoiceSettingsView(service: service)
+                } else if kind == .stt, transcriptionMode == .speechServer {
+                    SpeechServerSettingsView(service: service)
                 } else if let selected = providers.first(where: { $0.descriptor.id == selectedProvider(kind) }) {
                     providerDetail(selected)
                 } else if let fallback = providers.first {
                     providerDetail(fallback)
                 }
-                if kind == .stt, transcriptionMode != .appleOnDevice {
+                if kind == .stt, transcriptionMode == .hermes {
                     liveTranscriptionToggle
                 }
             }
@@ -970,6 +1297,17 @@ struct VoiceSettingsView: View {
             ))
             .disabled(service.isLoading)
             Text("Hermes transcribes while you talk, so your words show up as you say them and are ready as soon as you stop. Works with OpenAI, xAI and ElevenLabs speech to text. This is a Hermes setting, so Hermes Desktop and the terminal use it too.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var iPhoneVoiceDetail: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(AppLocalization.string("Replies are spoken with the voices built into iOS, on this iPhone. Nothing to set up or pay for on Hermes."), systemImage: "iphone")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Text(AppLocalization.string("For a more natural voice, download an Enhanced or Premium voice in iPhone Settings > Accessibility: search Settings for “Voices” to find them. Conduit uses the best one installed for the reply's language."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -1022,6 +1360,14 @@ struct VoiceSettingsView: View {
                 valueColor: isReady ? .green : .secondary,
                 statusDot: isReady ? .green : nil
             )
+            ForEach(Self.keyGroups(readiness.requiredCredentials)) { group in
+                VoiceAPIKeyRow(service: service, keys: group.keys, note: group.note)
+            }
+        }
+        if descriptor.id == "openai", descriptor.kind == .tts {
+            Text(AppLocalization.string("Using your own OpenAI-compatible speech server, such as Chatterbox? Set its address in Base URL below. If the server doesn't check keys, any placeholder key works."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         if descriptor.id == "local", descriptor.kind == .stt {
             Label("Runs on the Hermes host using its local Whisper installation—not on this iPhone.", systemImage: "server.rack")
@@ -1057,61 +1403,55 @@ struct VoiceSettingsView: View {
         }
     }
 
+    /// Keys not already shown next to the selected providers above.
+    @ViewBuilder
     private var credentialsSection: some View {
-        ConduitSettingsSection(title: AppLocalization.string("Credentials on Hermes"), symbol: "key.fill", tint: .conduitAura) {
-            Text("Keys stay on your Hermes host. Conduit only receives whether each key is set; it never reads a key back.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            if service.snapshot.credentials.isEmpty {
-                Text("No StepFun or Xiaomi credential metadata was reported by this gateway.")
+        let shown = keysShownWithProviders
+        let others = service.snapshot.credentials.filter { !shown.contains($0.key) }
+        if service.snapshot.credentials.isEmpty || !others.isEmpty {
+            ConduitSettingsSection(title: AppLocalization.string("Credentials on Hermes"), symbol: "key.fill", tint: .conduitAura) {
+                Text(AppLocalization.string("Keys stay on your Hermes host. Conduit only shows the masked key Hermes reports, never the whole key."))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-            }
-            ForEach(service.snapshot.credentials) { credential in
-                credentialEditor(credential)
+                if service.snapshot.credentials.isEmpty {
+                    Text(AppLocalization.string("Hermes didn’t report any voice keys for this profile."))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(Self.keyGroups(others)) { group in
+                    VoiceAPIKeyRow(service: service, keys: group.keys)
+                }
             }
         }
     }
 
-    @ViewBuilder
-    private func credentialEditor(_ credential: VoiceCredentialStatus) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(credential.key).font(.subheadline.weight(.semibold))
-                    Text(credential.isSet ? AppLocalization.string("Configured on Hermes") : AppLocalization.string("Not configured"))
-                        .font(.caption)
-                        .foregroundStyle(credential.isSet ? .green : .secondary)
-                }
-                Spacer()
-                Image(systemName: credential.isSet ? "checkmark.shield.fill" : "key")
-                    .foregroundStyle(credential.isSet ? .green : .secondary)
-                    .accessibilityHidden(true)
+    /// Keys the provider sections show beside the provider they belong to.
+    private var keysShownWithProviders: Set<String> {
+        var keys = Set(providerKeys(.tts, service.snapshot.ttsProviders))
+        if transcriptionMode == .hermes { keys.formUnion(providerKeys(.stt, service.snapshot.sttProviders)) }
+        return keys
+    }
+
+    private func providerKeys(_ kind: VoiceProviderDescriptor.Kind, _ providers: [VoiceProviderConfiguration]) -> [String] {
+        let provider = providers.first { $0.descriptor.id == selectedProvider(kind) } ?? providers.first
+        return Self.keyGroups(provider?.readiness?.requiredCredentials ?? []).flatMap(\.keys)
+    }
+
+    /// One row per key Hermes reads, with variables it reads in order kept
+    /// together, so a save goes to the one it reads first and a shared
+    /// fallback (OPENAI_API_KEY, also used for chat) is never overwritten.
+    static func keyGroups(_ credentials: [VoiceCredentialStatus]) -> [VoiceKeyGroup] {
+        var groups: [VoiceKeyGroup] = []
+        for credential in credentials {
+            let keys = [openAIVoiceKeys, geminiKeys].first { $0.contains(credential.key) } ?? [credential.key]
+            let note = credential.description == credential.key ? nil : credential.description
+            if let index = groups.firstIndex(where: { $0.keys == keys }) {
+                if groups[index].note == nil, let note { groups[index] = .init(keys: keys, note: note) }
+                continue
             }
-            SecureField("Replace credential", text: Binding(
-                get: { credentialDrafts[credential.key, default: ""] },
-                set: { credentialDrafts[credential.key] = $0 }
-            ))
-            .textContentType(.password)
-            .autocorrectionDisabled()
-            .textInputAutocapitalization(.never)
-            HStack {
-                Text("Enter a replacement only if needed.").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("Save") {
-                    let candidate = credentialDrafts[credential.key, default: ""]
-                    Task {
-                        savingField = credential.key
-                        let saved = await service.saveCredential(candidate, key: credential.key)
-                        if saved { credentialDrafts[credential.key] = "" }
-                        savingField = nil
-                    }
-                }
-                .disabled(credentialDrafts[credential.key, default: ""].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || savingField == credential.key)
-            }
+            groups.append(.init(keys: keys, note: note))
         }
-        .padding(.vertical, 4)
-        .accessibilityElement(children: .contain)
+        return groups
     }
 
     private var spokenControlsSection: some View {
@@ -1160,9 +1500,8 @@ struct VoiceSettingsView: View {
                     endPhrasesCustomized = false
                 } label: {
                     Label(AppLocalization.string("Use the built-in phrases"), systemImage: "arrow.counterclockwise")
-                        .font(.footnote.weight(.semibold))
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.settings)
                 .accessibilityIdentifier("voice.spokenPhrasesReset")
             }
         }
@@ -1197,7 +1536,18 @@ struct VoiceSettingsView: View {
     }
 
     private func selectedProviderChoice(_ kind: VoiceProviderDescriptor.Kind) -> String {
-        kind == .stt && transcriptionMode == .appleOnDevice ? Self.appleProviderID : selectedProvider(kind)
+        guard kind == .stt else {
+            switch resolvedSpeechOutput {
+            case .onDevice: return Self.iPhoneVoiceProviderID
+            case .speechServer: return Self.speechServerVoiceProviderID
+            case .hermes: return selectedProvider(kind)
+            }
+        }
+        switch transcriptionMode {
+        case .appleOnDevice: return Self.appleProviderID
+        case .speechServer: return Self.speechServerProviderID
+        case .hermes: return selectedProvider(kind)
+        }
     }
 
     private func providerChoices(
@@ -1205,19 +1555,25 @@ struct VoiceSettingsView: View {
         providers: [VoiceProviderConfiguration]
     ) -> [(id: String, title: String)] {
         let hermes = providers.map { (id: $0.descriptor.id, title: $0.descriptor.displayName) }
-        guard kind == .stt else { return hermes }
+        guard kind == .stt else {
+            return [(id: Self.iPhoneVoiceProviderID, title: AppLocalization.string("On this iPhone"))] + hermes
+                + [(id: Self.speechServerVoiceProviderID, title: AppLocalization.string("Your speech server"))]
+        }
         return [(id: Self.appleProviderID, title: AppLocalization.string("On this iPhone"))] + hermes
+            + [(id: Self.speechServerProviderID, title: AppLocalization.string("Your speech server"))]
     }
 
     private var supportsSelectedTranscription: Bool {
-        transcriptionMode == .appleOnDevice
-            ? appleSpeechAvailability.canAttemptRecognition
-            : service.snapshot.capability.supportsTranscription
+        switch transcriptionMode {
+        case .appleOnDevice: return appleSpeechAvailability.canAttemptRecognition
+        case .speechServer: return true
+        case .hermes: return service.snapshot.capability.supportsTranscription
+        }
     }
 
     private func selectProvider(_ provider: String, kind: VoiceProviderDescriptor.Kind, force: Bool = false) {
         // `force` re-runs a selection already shown, to ask iOS again.
-        guard force || provider != selectedProviderChoice(kind) else { return }
+        guard savingField == nil, force || provider != selectedProviderChoice(kind) else { return }
         Task { await applyProvider(provider, kind: kind) }
     }
 
@@ -1239,6 +1595,26 @@ struct VoiceSettingsView: View {
             } else if case .unsupported = appleSpeechAvailability {
                 testStatus = AppLocalization.string("On-device speech recognition is not available for your current language locale.")
             }
+        } else if kind == .stt, provider == Self.speechServerProviderID {
+            if await setTranscriptionMode(.speechServer) {
+                transcriptionMode = .speechServer
+                transcriptionModeChosen = true
+                testStatus = nil
+            }
+        } else if kind == .tts, provider == Self.iPhoneVoiceProviderID {
+            if await setSpeechOutput(.onDevice) {
+                speechOutputChoice = .onDevice
+                testStatus = nil
+            } else {
+                testStatus = AppLocalization.string("Connect to Hermes to configure voice for this profile.")
+            }
+        } else if kind == .tts, provider == Self.speechServerVoiceProviderID {
+            if await setSpeechOutput(.speechServer) {
+                speechOutputChoice = .speechServer
+                testStatus = nil
+            } else {
+                testStatus = AppLocalization.string("Connect to Hermes to configure voice for this profile.")
+            }
         } else {
             let providerSaved: Bool
             if provider == selectedProvider(kind) {
@@ -1250,6 +1626,14 @@ struct VoiceSettingsView: View {
                 if (await setTranscriptionMode(.hermes)) {
                     transcriptionMode = .hermes
                     transcriptionModeChosen = true
+                }
+            }
+            if providerSaved, kind == .tts {
+                if await setSpeechOutput(.hermes) {
+                    speechOutputChoice = .hermes
+                    testStatus = nil
+                } else {
+                    testStatus = AppLocalization.string("Connect to Hermes to configure voice for this profile.")
                 }
             }
         }
@@ -1272,6 +1656,9 @@ struct VoiceSettingsView: View {
         microphonePermission = AVAudioApplication.shared.recordPermission
         await service.reload()
         values = service.snapshot.values
+        if resolvedSpeechOutput == .speechServer, service.speechServerVoice == nil {
+            _ = await service.speechServerVoiceStatus()
+        }
     }
 
     private func save(value: String, field: VoiceTypedField) async {
@@ -1304,6 +1691,16 @@ struct VoiceSettingsView: View {
     }
 
     private static let appleProviderID = "apple_on_device"
+    private static let speechServerProviderID = "conduit_speech_server"
+    private static let iPhoneVoiceProviderID = "conduit_iphone_voice"
+    private static let speechServerVoiceProviderID = "conduit_speech_server_voice"
+}
+
+/// Variables Hermes reads in order for one key, shown as one row.
+struct VoiceKeyGroup: Equatable, Identifiable {
+    let keys: [String]
+    let note: String?
+    var id: String { keys.joined(separator: ",") }
 }
 
 /// Compact phrase-list editor for one spoken-command category: view, add,
@@ -1511,6 +1908,7 @@ private struct SpokenPhraseListEditor: View {
                     .onSubmit(commitDraft)
                     .accessibilityLabel(Text(editingIndex == nil ? AppLocalization.string("Add \(title)") : AppLocalization.string("Edit \(title)")))
                 Button(editingIndex == nil ? AppLocalization.string("Add") : AppLocalization.string("Save"), action: commitDraft)
+                    .buttonStyle(.settingsPrimary)
                     .disabled(draftCanonicalized.isEmpty)
             }
         }
@@ -1526,22 +1924,12 @@ private struct SpokenPhraseListEditor: View {
             Text(phrase)
                 .font(.subheadline)
             Spacer()
-            Button {
+            SettingsRowMenu(itemName: phrase, onEdit: {
                 draft = phrase
                 editingIndex = phrases.firstIndex(of: phrase)
-            } label: {
-                Image(systemName: "pencil")
-            }
-            .buttonStyle(.borderless)
-            .accessibilityLabel(Text(AppLocalization.string("Edit phrase \(phrase)")))
-            Button {
+            }, onDelete: {
                 deletePhrase(phrase)
-            } label: {
-                Image(systemName: "minus.circle.fill")
-                    .foregroundStyle(.red)
-            }
-            .buttonStyle(.borderless)
-            .accessibilityLabel(Text("Delete phrase \(phrase)"))
+            })
         }
         .padding(.vertical, 2)
     }
@@ -1677,6 +2065,8 @@ struct VoiceCallSaveStatusModel {
     /// The host answered that it can't store voice calls.
     var blocked: Bool
     var isSaving: Bool
+    /// What the last Save Now did, when calls are still waiting after it.
+    var lastResult: String? = nil
     /// Saves wait while a live call runs: a save would stall it.
     var isWaitingOnCall: Bool = false
     var saveNow: () async -> Void
@@ -1703,6 +2093,15 @@ struct VoiceCallSaveStatusSection: View {
             }
             .disabled(model.isSaving || model.isWaitingOnCall)
             .conduitGlassControl(cornerRadius: 16, tint: .orange.opacity(0.14))
+            if model.isWaitingOnCall {
+                Text(AppLocalization.string("Calls save once the live call ends."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if let result = model.lastResult, !model.isSaving {
+                Text(result)
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+            }
         }
     }
 }

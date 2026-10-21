@@ -12,6 +12,7 @@ import XCTest
 final class ConnectionSetupSettingsUITests: XCTestCase {
     private enum Identity {
         static let stubDashboardURL = "https://conduit-uitest.example"
+        static let stubDashboardHost = "conduit-uitest.example"
         static let settingsRow = "settings.connection-setup"
         static let gatewayRow = "settings.gateway"
         static let urlField = "setup.url"
@@ -32,7 +33,7 @@ final class ConnectionSetupSettingsUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += [
             "-CONDUIT_UI_TEST_CONNECTED_DASHBOARD", Identity.stubDashboardURL,
-            "-CONNECTION_SETUP_TEST_RESULT", "success"
+            "-CONNECTION_SETUP_TEST_RESULT", "auth:password"
         ]
         app.launch()
 
@@ -56,7 +57,12 @@ final class ConnectionSetupSettingsUITests: XCTestCase {
         XCTAssertTrue(urlField.waitForExistence(timeout: 5), "Details screen did not appear. Tree:\n\(app.debugDescription)")
         XCTAssertEqual(urlField.value as? String, Identity.stubDashboardURL)
 
+        // Continue goes straight back to the staged test (discovery
+        // first); the password dashboard then asks for credentials.
         tapVisible(app.buttons[Identity.next], in: app)
+        XCTAssertTrue(app.buttons[Identity.testRun].waitForExistence(timeout: 5), "Test screen did not appear. Tree:\n\(app.debugDescription)")
+        tapVisible(app.buttons[Identity.testRun], in: app)
+        tapVisible(app.buttons["setup.test.enter-credentials"], in: app)
         let username = app.textFields[Identity.username]
         XCTAssertTrue(username.waitForExistence(timeout: 5))
         tapVisible(username, in: app)
@@ -85,12 +91,14 @@ final class ConnectionSetupSettingsUITests: XCTestCase {
         // The active connection is intact: still inside Settings, still the
         // stubbed connected session, never bounced to the login card.
         XCTAssertFalse(app.textFields["login.server-url"].exists, "The live session must never be disrupted by the wizard")
+        // V2's Connection row names the dashboard by its host.
         let gatewayRow = app.buttons[Identity.gatewayRow]
         XCTAssertTrue(gatewayRow.waitForExistence(timeout: 5))
         XCTAssertTrue(
-            gatewayRow.label.contains(Identity.stubDashboardURL),
+            gatewayRow.label.contains(Identity.stubDashboardHost),
             "The Gateway row still shows the current dashboard, got: \(gatewayRow.label)"
         )
+        XCTAssertFalse(gatewayRow.label.contains("https://"), "V2 shows the host, not the address, got: \(gatewayRow.label)")
     }
 
     func testInteractiveSignInOutcomeFromSettingsOffersDoneAndDismissesSafely() {
@@ -178,13 +186,12 @@ final class ConnectionSetupSettingsUITests: XCTestCase {
     // MARK: - Walk helpers
 
     private func openSettings(_ app: XCUIApplication) {
-        let sessions = app.buttons["Open sessions"]
-        XCTAssertTrue(sessions.waitForExistence(timeout: 10), "Main app shell did not appear. Tree:\n\(app.debugDescription)")
-        sessions.tap()
-
-        let settings = app.buttons["Settings"]
-        XCTAssertTrue(settings.waitForExistence(timeout: 5), "Sidebar did not appear. Tree:\n\(app.debugDescription)")
-        settings.tap()
+        // Settings is a tab: a tab bar button on iOS 26, a capsule bar button
+        // before it; both are buttons.
+        let tab = app.buttons["Settings"].firstMatch
+        app.returnToV2Tabs(revealing: tab)
+        XCTAssertTrue(tab.waitForExistence(timeout: 10), "Tab bar did not appear. Tree:\n\(app.debugDescription)")
+        tab.tap()
     }
 
     /// The address preview is a single `Text` element, which XCTest exposes

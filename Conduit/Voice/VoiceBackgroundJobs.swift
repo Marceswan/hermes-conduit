@@ -9,6 +9,7 @@
 //  starts, watches, and cancels sessions it created.
 //
 
+import Combine
 import Foundation
 import OSLog
 
@@ -234,13 +235,17 @@ struct VoiceJobCallAnchor: Equatable {
 }
 
 /// Something a live voice model put on the call screen (its
-/// `show_on_screen` tool): a chart, a table, steps, images, as Markdown.
+/// `show_on_screen` tool): a chart, a table, steps, images, as Markdown,
+/// and maps and places as rich cards.
 struct VoiceScreenCard: Identifiable, Equatable {
     let id: UUID
     let title: String
     let markdown: String
     let callAnchor: VoiceJobCallAnchor
     let shownAt: Date
+    var cards: [RichCard] = []
+    /// The cards as normalized JSON, which the saved call keeps.
+    var cardsJSON: Data? = nil
 }
 
 /// What the voice conversation should do with a pending job update.
@@ -331,6 +336,14 @@ struct VoiceThreadTarget: Equatable, Codable {
         guard !sessionID.isEmpty else { return false }
         return sessionID == runtimeSessionID || sessionID == storedSessionID
     }
+
+    /// The link that opens this chat. A Bot Chat opens through its bot,
+    /// never by its id on this profile.
+    var appLink: ConduitAppLink? {
+        if let bot = profile, !bot.isEmpty { return .bot(profile: bot) }
+        guard let id = [storedSessionID, runtimeSessionID].compactMap({ $0 }).first(where: { !$0.isEmpty }) else { return nil }
+        return .session(id: id)
+    }
 }
 
 /// Seam the Voice controller uses for spoken job commands and hand-backs.
@@ -394,6 +407,11 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
     /// through its jobs' completion events, so the poll settles nearly all
     /// of them.
     var readsRepliesWhenSettling = false
+    /// The same for a phone Grok Live call (#599): its start_job is
+    /// answered at once, so a job the poll settles would otherwise be
+    /// heard as a pointer to its chat. Kept apart from the Watch's flag so
+    /// neither call's end turns the other's off.
+    var liveCallReadsReplies = false
 
     /// Called whenever a notice becomes pending, so the host can let an
     /// idle voice conversation deliver it.
@@ -415,9 +433,22 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
     /// A call only CarPlay shows, a minimised one, or a backgrounded app
     /// has nowhere to show it. Nil counts as up.
     var liveCallScreenIsVisible: (@MainActor () -> Bool)?
+    /// A card the live model just put on screen, for the saved call.
+    var onScreenCardShown: (@MainActor (VoiceScreenCard) -> Void)?
     /// Opens a chat a call's search found, the call going on minimised.
     /// False when Conduit can't open chats right now. Nil: no chat opens.
     var openChat: (@MainActor (_ match: VoiceChatMatch) -> Bool)?
+    /// Tools the running live call may call directly (the user's shared
+    /// health data, calendar and phone status from the host, and the phone's
+    /// own calendar tools), set by AppState as each call starts.
+    var hostTools: [VoiceHostTool] = []
+    /// The mode `hostTools` were prepared for.
+    var hostToolsMode: LiveVoiceModeName?
+    /// Runs one of `hostTools` (AppState: a sealed /voice-tools/call).
+    var runHostTool: (@MainActor (_ tool: VoiceHostTool, _ arguments: [String: Any]) async -> [String: String])?
+    /// What keeps an eye on the phone for the running call (Hermes' calendar
+    /// changes while it runs); dropping it stops the watch.
+    var hostToolsWatch: AnyCancellable?
     /// The running call's last chat search, numbered from 1 as the model
     /// heard it.
     private(set) var chatMatches: [VoiceChatMatch] = []
@@ -427,6 +458,8 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
     /// The running (or last) live call; jobs it starts carry it, so the
     /// call screen shows only its own jobs.
     @Published private(set) var liveCallID: UUID?
+    /// When the running call began, for the call screen's clock.
+    @Published private(set) var liveCallStartedAt: Date?
     /// What live calls put on screen, newest last.
     @Published private(set) var screenCards: [VoiceScreenCard] = []
     /// Whether the running call holds each new request for the user's OK
@@ -481,6 +514,7 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
         if callbackCallID != nil { finishCallbacks() }
         let callID = UUID()
         liveCallID = callID
+        liveCallStartedAt = Date()
         self.asksBeforeSending = asksBeforeSending
         callbackCallID = callID
         callbackLater = .none
@@ -944,23 +978,49 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
 
     /// Puts `markdown` on the running live call's screen. Nil when no live
     /// call is running or there is nothing to show.
+    /// `cards` are rich cards RichCardSchema has normalized; with them,
+    /// the Markdown may be empty.
     @discardableResult
-    func showOnScreen(title: String, markdown: String) -> VoiceScreenCard? {
+    func showOnScreen(title: String, markdown: String, cards: [[String: Any]] = []) -> VoiceScreenCard? {
+        showOnScreen(title: title, markdown: markdown, cards: cards, evenIfHidden: false)
+    }
+
+    /// `evenIfHidden`: the call screen is minimised or the phone locked, and
+    /// Hermes has already told the user it's there, so the card waits in the
+    /// call's strip (and opens if the screen comes back soon) instead of
+    /// being dropped.
+    @discardableResult
+    func showOnScreen(title: String, markdown: String, cards: [[String: Any]] = [],
+                      evenIfHidden: Bool) -> VoiceScreenCard? {
         let body = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !body.isEmpty, liveCallScreenIsVisible?() ?? true, let anchor = currentCallAnchor else { return nil }
+        let rich = RichCard.cards(cards)
+        guard !body.isEmpty || !rich.isEmpty, evenIfHidden || liveCallScreenIsVisible?() ?? true,
+              let anchor = currentCallAnchor else { return nil }
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let card = VoiceScreenCard(
             id: UUID(),
             title: String(trimmedTitle.prefix(Self.maximumTitleCharacters)),
-            markdown: Self.clippedScreenMarkdown(body),
+            markdown: body.isEmpty ? "" : Self.clippedScreenMarkdown(body),
             callAnchor: anchor,
-            shownAt: Date()
+            shownAt: Date(),
+            cards: rich,
+            cardsJSON: rich.isEmpty ? nil : try? JSONSerialization.data(withJSONObject: cards)
         )
+        onScreenCardShown?(card)
         screenCards.append(card)
         if screenCards.count > Self.maximumScreenCards {
             screenCards.removeFirst(screenCards.count - Self.maximumScreenCards)
         }
         return card
+    }
+
+    func callHostTool(_ tool: VoiceHostTool, arguments: [String: Any]) async -> [String: String] {
+        // Only a tool this call was given: its runner checks that tool's
+        // consent, so another one must not reach it.
+        guard hostTools.contains(where: { $0.name == tool.name && $0.key == tool.key }), let runHostTool else {
+            return ["error": "That isn't available on this call."]
+        }
+        return await runHostTool(tool, arguments)
     }
 
     /// Looks up the user's earlier chats for the running call. A query that
@@ -1384,6 +1444,17 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
         liveThread = thread
     }
 
+    /// A call that says nothing but its own replies (Local Live) drops what
+    /// would be said to it: notes on the attached chat's turns, its own turns
+    /// among them, and any job update.
+    func dropPendingNotices() {
+        chatNotes.removeAll()
+        // Each take consumes a notice; the cap only guards the loop, far
+        // above what the job limits (3 running, 10 settled) can queue.
+        var dropped = 0
+        while dropped < 256, takePendingNotice() != nil { dropped += 1 }
+    }
+
     func detachLiveThread() {
         liveThread = nil
         chatNotes.removeAll()
@@ -1764,6 +1835,11 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
     /// boundaries, where the ledger no longer belongs to the active gateway.
     func reset() {
         generation &+= 1
+        // A call's host tools carry its mode's consent: never the next call's.
+        hostTools = []
+        hostToolsMode = nil
+        runHostTool = nil
+        hostToolsWatch = nil
         pollTask?.cancel()
         pollTask = nil
         threadTask?.cancel()
@@ -1779,6 +1855,7 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
         noticesInFlight.removeAll()
         liveThread = nil
         liveCallID = nil
+        liveCallStartedAt = nil
         callOpening = nil
         // Watches the host holds lapse there and call as usual.
         callbackCallID = nil
@@ -1999,6 +2076,12 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
         if screenshotNotesHeard.removeValue(forKey: replacedURI) ?? inInstructions {
             screenshotNotesHeard[attachmentURI] = true
         }
+    }
+
+    /// Hermes asked for a calendar change while the call runs: the model
+    /// hears it at the next turn and asks the user.
+    func notePhoneChange(_ text: String) {
+        queueChatNote(ChatNote(text: text))
     }
 
     static let screenshotRemovedPrompt = "[Background only. The user removed the screenshot they shared: the chat's next turn won't carry one. Don't respond to this note now.]"
@@ -2270,7 +2353,7 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
                 settledThreadTurns.append(job.id)
                 continue
             }
-            if readsRepliesWhenSettling, !job.isThreadTurn, job.result == nil {
+            if readsRepliesWhenSettling || liveCallReadsReplies, !job.isThreadTurn, job.result == nil {
                 settledJobs.append(job.id)
                 continue
             }

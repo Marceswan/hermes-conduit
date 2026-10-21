@@ -225,8 +225,16 @@ final class AppStateVoiceCapabilityTests: XCTestCase {
 
     // MARK: - Composer voice button visibility (#194)
 
-    func testComposerHidesVoiceButtonWhenVoiceWasNeverEnabled() {
+    /// Voice is on out of the box: a switch never touched shows the button.
+    func testComposerShowsVoiceButtonWhenVoiceWasNeverTouched() {
         let appState = makeAppState(snapshot: readySnapshot, isVoiceEnabled: false)
+
+        XCTAssertTrue(appState.showsComposerVoiceButton)
+    }
+
+    func testComposerHidesVoiceButtonWhenTheUserTurnedVoiceOff() async {
+        let appState = makeAppState(snapshot: readySnapshot, isVoiceEnabled: false)
+        _ = await appState.setVoiceEnabled(false)
 
         XCTAssertFalse(appState.showsComposerVoiceButton)
     }
@@ -271,8 +279,12 @@ final class AppStateVoiceCapabilityTests: XCTestCase {
 
     /// Switching away from a voice-enabled profile must not leak its state
     /// while `isVoiceEnabled` still holds the previous profile's value.
-    func testSwitchingToNeverEnabledProfileHidesVoiceButton() async {
+    func testSwitchingToProfileWithVoiceOffHidesVoiceButton() async {
         let appState = makeAppState(snapshot: readySnapshot, isVoiceEnabled: false)
+        let original = appState.activeProfile
+        appState.setActiveProfileForTesting("other-profile")
+        _ = await appState.setVoiceEnabled(false)
+        appState.setActiveProfileForTesting(original)
         _ = await appState.setVoiceEnabled(true)
 
         appState.setActiveProfileForTesting("other-profile")
@@ -376,16 +388,16 @@ final class AppStateVoiceCapabilityTests: XCTestCase {
         XCTAssertEqual(lastWord.text, "Meet me at the stadium")
     }
 
-    func testACallFromANewEmptyChatIsNotAttachedToIt() {
-        XCTAssertFalse(AppState.attachesLiveVoiceCall(chatHasMessages: false, turnState: .idle),
-                       "an empty chat has nothing to continue")
-        XCTAssertTrue(AppState.attachesLiveVoiceCall(chatHasMessages: true, turnState: .idle))
-        XCTAssertTrue(AppState.attachesLiveVoiceCall(chatHasMessages: false, turnState: .synchronizing),
-                      "a chat still loading may have history")
-        XCTAssertTrue(AppState.attachesLiveVoiceCall(chatHasMessages: false, turnState: .running),
-                      "its first message is on its way")
-        XCTAssertFalse(AppState.attachesLiveVoiceCall(chatHasMessages: false, turnState: .reconnecting),
-                       "reconnecting doesn't give an empty chat anything to continue")
+    func testVoiceInASavedCallsRowResumesThatCall() {
+        XCTAssertEqual(AppState.savedCallToResume(source: .composer, openCallID: "call-1", canResume: true), "call-1",
+                       "the chat's voice button picks the call up rather than starting another row")
+        XCTAssertNil(AppState.savedCallToResume(source: .composer, openCallID: nil, canResume: true),
+                     "a chat that isn't a saved call gets a call attached to it")
+        XCTAssertNil(AppState.savedCallToResume(source: .composer, openCallID: "call-1", canResume: false),
+                     "with saving off (or no live mode) there is no row to add to")
+        XCTAssertNil(AppState.savedCallToResume(source: .siri, openCallID: "call-1", canResume: true),
+                     "only the chat's own buttons resume it")
+        XCTAssertNil(AppState.savedCallToResume(source: .newCall, openCallID: "call-1", canResume: true))
     }
 
     func testTheQuickHintCountsEachAttachedCallOnce() {
@@ -435,6 +447,17 @@ final class AppStateVoiceCapabilityTests: XCTestCase {
         for phase in [LiveVoiceCallPhase.idle, .muted, .ending, .failed] {
             XCTAssertEqual(LiveVoiceOrb.liquidLook(for: phase), .init(state: .idle, speech: 0), "\(phase)")
         }
+    }
+
+    func testBackdropGlowMatchesABlurredDisc() {
+        let radius = 181.0, blur = 72.0
+        let values = ConduitGlowProfile.computeIntensities(radius: radius, blur: blur)
+        XCTAssertEqual(values.count, ConduitGlowProfile.stopCount)
+        // A disc blurred by a Gaussian is 1 - e^(-R²/2σ²) bright at its centre.
+        XCTAssertEqual(values[0], 1 - exp(-radius * radius / (2 * blur * blur)), accuracy: 0.005)
+        XCTAssertEqual(values.last ?? 1, 0, accuracy: 0.005, "Three blurs out, the glow has faded")
+        XCTAssertEqual(zip(values, values.dropFirst()).filter { $0.0 < $0.1 }.count, 0, "Brightness only falls outwards")
+        XCTAssertEqual(ConduitGlowProfile.intensities(radius: radius, blur: blur), values)
     }
 
     func testBackdropMotionPolicyGatesPowerAndLifecycle() {
@@ -640,6 +663,13 @@ final class AppStateVoiceCapabilityTests: XCTestCase {
         }
         XCTAssertEqual(LiveVoiceCallSheet.captionLines(from: lines).map(\.text), ["two", "three"])
         XCTAssertEqual(LiveVoiceCallSheet.captionLines(from: Array(lines.prefix(1))).map(\.text), ["one"])
+    }
+
+    func testTheV2CallClockShowsMinutesThenHours() {
+        XCTAssertEqual(V2CallHeaderTitle.clock(0), "0:00")
+        XCTAssertEqual(V2CallHeaderTitle.clock(12.9), "0:12")
+        XCTAssertEqual(V2CallHeaderTitle.clock(245), "4:05")
+        XCTAssertEqual(V2CallHeaderTitle.clock(3729), "1:02:09")
     }
 
     func testTheDictateButtonStartsStopsAndCallsOffAStart() {

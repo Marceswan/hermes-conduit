@@ -105,11 +105,13 @@ The two are kept apart so nobody pays for the one they didn't pick:
 
 ### Ending a live call by voice
 
-Gemini Live, Grok Live and GPT-Live end hands-free. One of your goodbye phrases ends the call even with courtesies around it or several in a row ("Cool. Okay, goodbye.", "Bye. Goodbye."). On GPT-Live, asking it to "hang up" or "end the call" works too (English only), unless you've emptied the End Conversation phrases. When the goodbye is part of a longer sentence, the model decides: it says a short goodbye, then ends the call. Gemini and Grok do this with their end_conversation tool. GPT-Live has no tools, so it delegates an "End call:" marker instead; with the End Conversation phrases emptied, GPT-Live doesn't end the call that way either. Background jobs keep running on Hermes after the call ends.
+Gemini Live, Grok Live and GPT-Live end hands-free. One of your goodbye phrases ends the call even with courtesies around it or several in a row ("Cool. Okay, goodbye.", "Bye. Goodbye."). Asking it to "hang up" or "end the call" works too (English only), unless you've emptied the End Conversation phrases. On Grok Live the transcript needn't end in punctuation, so a lone "bye" ends the call too. When the goodbye is part of a longer sentence, the model decides: it says a short goodbye, then ends the call. Gemini and Grok do this with their end_conversation tool. GPT-Live has no tools, so it delegates an "End call:" marker instead; with the End Conversation phrases emptied, GPT-Live doesn't end the call that way either. Background jobs keep running on Hermes after the call ends.
 
 ## Talking over the agent (barge-in)
 
 Every voice mode lets you cut in by speaking when you wear headphones, AirPods or a wired headset: the microphone stays open while the agent talks, and the agent stops when you start. GPT-Live also allows it on the phone's speaker and in the car, because WebRTC cancels the speaker's echo.
+
+Grok Live sometimes speaks a tool call as text ("<tool_call>…") instead of calling it. Conduit stops the speech at the markup, keeps it out of the transcript, and tells Grok after its turn that nothing ran, so it can call the tool properly. Grok is told to say a job has started only once start_job answers. A call whose arguments aren't valid JSON runs nothing and gets an error saying so. Diagnostics & logs (Last connection) shows the last Grok Live call's tool steps: the setup, which functions xAI took, each call's name and how it was answered (started, error…), and any markup that was cut. It never shows what was said or a call's arguments.
 
 Classic Voice, Gemini Live and Grok Live close the microphone while the agent talks on the speaker, in the car or over AirPlay (plus a short echo tail), because their microphone would hear the agent and it would keep interrupting itself. Use the Interrupt button there instead.
 

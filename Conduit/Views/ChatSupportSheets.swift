@@ -15,45 +15,61 @@ struct GatewayDiagnosticsSheet: View {
     /// The report copied last, so "Copied" clears once a newer step lands.
     @State private var copiedTimelineReport: String?
     @State private var confirmingRestart = false
+    /// Pushed inside Settings > Gateway rather than shown as its own sheet.
+    var embedded = false
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                ConduitBackdrop()
-                ScrollView {
-                    VStack(spacing: 14) {
-                        summary
-                        lastConnection
-                        connectors
-                        logs
-                    }
-                    .padding(16)
-                }
-            }
-            .navigationTitle("Gateway")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.hidden, for: .navigationBar)
-            .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button { confirmingRestart = true } label: {
-                        Image(systemName: "restart")
-                    }
-                    .disabled(!appState.canRestartGateway)
-                    .accessibilityLabel("Restart Gateway")
-                    .accessibilityIdentifier("gateway.restart")
-                    Button { Task { await appState.refreshGatewayDiagnostics() } } label: {
-                        if appState.gatewayDiagnosticsLoading {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                    }
-                    .accessibilityLabel("Refresh gateway diagnostics")
-                }
-            }
-            .gatewayRestartConfirmation(isPresented: $confirmingRestart)
+        if embedded {
+            page
+        } else {
+            NavigationStack { page }
         }
-        .task { await appState.loadGatewayDiagnostics() }
+    }
+
+    private var page: some View {
+        ZStack {
+            ConduitBackdrop()
+            ScrollView {
+                VStack(spacing: 22) {
+                    summary
+                    lastConnection
+                    connectors
+                    logs
+                }
+                .padding(16)
+            }
+        }
+        .navigationTitle(embedded ? AppLocalization.string("Diagnostics & logs") : AppLocalization.string("Gateway"))
+        .navigationBarTitleDisplayMode(.inline)
+        // Pushed, it keeps the Settings pages' bar.
+        .toolbarBackground(embedded ? .automatic : .hidden, for: .navigationBar)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button { confirmingRestart = true } label: {
+                    Image(systemName: "restart")
+                }
+                .disabled(!appState.canRestartGateway)
+                .accessibilityLabel(AppLocalization.string("Restart Gateway"))
+                .accessibilityIdentifier("gateway.restart")
+                Button { Task { await appState.refreshGatewayDiagnostics() } } label: {
+                    if appState.gatewayDiagnosticsLoading {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+                .accessibilityLabel(AppLocalization.string("Refresh gateway diagnostics"))
+            }
+        }
+        .gatewayRestartConfirmation(isPresented: $confirmingRestart)
+        // Pushed from Settings it only reloads; loading also raises the sheet.
+        .task {
+            if embedded {
+                await appState.refreshGatewayDiagnostics()
+            } else {
+                await appState.loadGatewayDiagnostics()
+            }
+        }
     }
 
     private var summary: some View {
@@ -69,7 +85,7 @@ struct GatewayDiagnosticsSheet: View {
             GatewayRestartStatusView()
             if !running && !appState.activeGatewayRestart.isInProgress {
                 Button { Task { await appState.reconnect() } } label: {
-                    Label("Retry connection", systemImage: "arrow.clockwise")
+                    Label(AppLocalization.string("Retry connection"), systemImage: "arrow.clockwise")
                         .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6).frame(minHeight: 44)
@@ -96,10 +112,10 @@ struct GatewayDiagnosticsSheet: View {
         }
     }
 
-    /// The connection timeline, then the last call from Hermes (#449), so
-    /// one Copy takes both.
+    /// The connection timeline, then the last call from Hermes (#449) and
+    /// the last Grok Live call's tool steps, so one Copy takes them all.
     private var lastConnectionReport: String? {
-        let reports = [appState.connectionTimeline?.report, HermesCallTrace.shared.timeline?.report].compactMap { $0 }
+        let reports = [appState.connectionTimeline?.report, HermesCallTrace.shared.timeline?.report, LiveCallTrace.shared.report].compactMap { $0 }
         return reports.isEmpty ? nil : reports.joined(separator: "\n\n")
     }
 
@@ -118,8 +134,8 @@ struct GatewayDiagnosticsSheet: View {
                     copiedTimelineReport = report
                 } label: {
                     Label("Copy", systemImage: copiedTimelineReport == report ? "checkmark" : "doc.on.doc")
-                        .font(.footnote.weight(.semibold))
                 }
+                .buttonStyle(.settings)
                 .accessibilityLabel("Copy connection timeline")
                 .accessibilityValue(copiedTimelineReport == report ? AppLocalization.string("Copied") : "")
                 if copiedTimelineReport == report {
@@ -129,7 +145,6 @@ struct GatewayDiagnosticsSheet: View {
                 }
                 Spacer()
             }
-            .buttonStyle(.borderless)
         } else {
             Text("No connection has been timed since Conduit opened.")
                 .font(.footnote)
@@ -243,6 +258,7 @@ struct WorkspaceBrowserSheet: View {
         .sheet(isPresented: $previewOpen) {
             WorkspaceFilePreviewSheet()
                 .presentationDetents([.medium, .large])
+                .environmentObject(appState)
         }
     }
 
@@ -272,7 +288,7 @@ private struct WorkspaceFilePreviewSheet: View {
             ZStack {
                 ConduitBackdrop()
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 22) {
                         if appState.workspaceFileLoading {
                             ProgressView("Loading preview…").frame(maxWidth: .infinity, minHeight: 180)
                         } else if let error = appState.workspaceFileError {
@@ -336,7 +352,7 @@ struct DelegateAgentsSheet: View {
             ZStack {
                 ConduitBackdrop()
                 ScrollView {
-                    VStack(spacing: 12) {
+                    VStack(spacing: 22) {
                         ConduitSettingsSection(title: AppLocalization.string("Delegate agents"), symbol: "person.2", tint: .conduitAccent) {
                             Text(activeSummary).font(.footnote).foregroundStyle(.secondary)
                         }

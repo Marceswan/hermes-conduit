@@ -207,6 +207,7 @@ struct SidebarView: View {
             ProfilePickerSheet()
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
+                .environmentObject(appState)
         }
         .onAppear {
             // Explicitly migrate removed raw values such as Capabilities.
@@ -229,6 +230,14 @@ struct SessionList: View {
     @State private var selectedProject: ProjectSummary?
     @State private var projectPendingRename: ProjectSummary?
     @State private var projectPendingDeletion: ProjectSummary?
+    /// Parents the user expanded in the nested list (#556). Not persisted:
+    /// every nest starts collapsed. Entries for rows that left the list
+    /// are kept for the profile's lifetime, so a row that returns keeps
+    /// its expansion.
+    @State private var expandedNestIDs: Set<String> = []
+    /// The last activation the reveal served and the ancestor path it
+    /// revealed (NestRevealLatch).
+    @State private var revealLatch = NestRevealLatch()
     @AppStorage("conduit.sessionSourceFilter") private var selectedSourceRaw: String = "all"
     @AppStorage("conduit.sessionPresentation") private var sessionPresentationRaw = "sessions"
     /// Quick status filter (#454), layered on top of the source filter.
@@ -268,8 +277,7 @@ struct SessionList: View {
             HStack(spacing: sidebarRowGap) { // MAC: was spacing: 10
                 Button {
                     Haptics.medium()
-                    appState.dismissSidebarDrawer()
-                    Task { await appState.createNewSession() }
+                    appState.startNewChat()
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "plus.circle.fill")
@@ -298,9 +306,8 @@ struct SessionList: View {
                 .disabled(appState.macNewChatDisabled)
                 .opacity(appState.macNewChatDisabled ? 0.6 : 1)
                 #else // MAC:
-                // The saved copy has no live gateway to create a chat on.
-                .disabled(appState.turnState == .synchronizing || appState.offlineChatPresentation != nil)
-                .opacity(appState.turnState == .synchronizing || appState.offlineChatPresentation != nil ? 0.6 : 1)
+                .disabled(!appState.canTapNewChat)
+                .opacity(appState.canTapNewChat ? 1 : 0.6)
                 #endif // MAC:
 
                 // A call of its own, not tied to the open chat: its work
@@ -336,9 +343,9 @@ struct SessionList: View {
                     #endif // MAC:
                     .disabled(!appState.canStartPhoneVoiceConversation || appState.isVoiceInUse)
                     .accessibilityShowsLargeContentViewer {
-                        Label("New voice call", systemImage: "waveform")
+                        Label(AppLocalization.string("New voice call"), systemImage: "waveform")
                     }
-                    .accessibilityLabel("New voice call")
+                    .accessibilityLabel(AppLocalization.string("New voice call"))
                     .accessibilityHint(appState.phoneVoiceUnavailableReason ?? AppLocalization.string("Starts a voice call that isn't tied to a chat"))
                 }
 
@@ -347,32 +354,33 @@ struct SessionList: View {
                         Haptics.selection()
                         showFilterOrder = true
                     } label: {
-                        Label("Reorder filters", systemImage: "arrow.left.arrow.right")
+                        Label(AppLocalization.string("Reorder filters"), systemImage: "arrow.left.arrow.right")
                     }
 
                     Button {
                         Haptics.selection()
                         showArchivedSessions = true
                     } label: {
-                        Label("Archived conversations", systemImage: "archivebox")
+                        Label(AppLocalization.string("Archived conversations"), systemImage: "archivebox")
                     }
 
                     Button {
                         Haptics.light()
                         appState.markAllSessionsRead()
                     } label: {
-                        Label("Mark all as read", systemImage: "envelope.open")
+                        Label(AppLocalization.string("Mark all as read"), systemImage: "envelope.open")
                     }
-                    .disabled(!sourceRows(nil).contains { appState.isSessionUnread($0) })
+                    // The saved rows aren't the live list it marks.
+                    .disabled(appState.isShowingSavedChatList || !sourceRows(nil).contains { appState.isSessionUnread($0) })
 
                     Button {
                         Haptics.selection()
                         sessionPresentationRaw = SessionPresentation.projects.rawValue
                         showProjectCreator = true
                     } label: {
-                        Label("New project", systemImage: "folder.badge.plus")
+                        Label(AppLocalization.string("New project"), systemImage: "folder.badge.plus")
                     }
-                    .disabled(!appState.supportsProjects)
+                    .disabled(!appState.supportsProjects || appState.projectsSeededFromSavedList)
                 } label: {
                     Image(systemName: "ellipsis.circle")
                         #if os(macOS) // MAC: density
@@ -411,7 +419,7 @@ struct SessionList: View {
                     #else // MAC:
                     .conduitGlassControl(cornerRadius: 14)
                     #endif // MAC:
-                    .disabled(!appState.supportsProjects)
+                    .disabled(!appState.supportsProjects || appState.projectsSeededFromSavedList)
                     .accessibilityLabel("New project")
                 }
 
@@ -452,8 +460,8 @@ struct SessionList: View {
             }
             let layout = SidebarOfflineLayout.visibility(
                 showingProjects: showingProjects,
-                hasOfflineCopy: appState.offlineChatPresentation != nil,
-                displayedSessionsEmpty: displayedSessions.isEmpty
+                displayedSessionsEmpty: displayedSessions.isEmpty,
+                isLoadingList: appState.isLoadingChatList
             )
             List {
                 if showingProjects {
@@ -469,45 +477,46 @@ struct SessionList: View {
                     }
                     projectContent(hasPinnedSessions: !pinned.isEmpty)
                 }
-                if layout.savedSection, let offline = appState.offlineChatPresentation {
-                    // While the saved copy is up (#99), its saved session list
-                    // shows ABOVE the live sections, which keep rendering as
-                    // soon as the live catalog arrives. Read-only — only
-                    // conversations with a saved transcript open, and they
-                    // open inside the offline copy.
-                    Section {
-                        ForEach(offline.snapshot.sessions) { session in
-                            offlineSessionRow(session, presentation: offline)
-                        }
-                    } header: {
-                        Text("Saved on this device")
-                    } footer: {
-                        Text("Read-only copies from your last connection.")
-                    }
+                if layout.loadingState {
+                    ProgressView(AppLocalization.string("Loading chats…"))
+                        .frame(maxWidth: .infinity, minHeight: 140)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                 }
                 if layout.emptyState {
-                    ContentUnavailableView(
-                        statusFilter?.emptyTitle
+                    SessionListPlaceholderView(
+                        placeholder: SessionListPlaceholder.resolve(
+                            hasRows: false,
+                            hasOfflineCopy: false,
+                            catalogPhase: appState.sessionCatalogPhase,
+                            isRefreshing: appState.isRefreshingSessionCatalog,
+                            filteredOutRows: !appState.listedSessions.isEmpty || !appState.listedCronSessions.isEmpty
+                        ),
+                        emptyTitle: statusFilter?.emptyTitle
                             ?? (selectedSource == nil ? AppLocalization.string("No Sessions") : AppLocalization.string("No \(selectedSource!.label) Sessions")),
-                        systemImage: statusFilter?.emptySystemImage ?? "tray",
-                        description: Text(searchText.isEmpty
+                        emptyDescription: searchText.isEmpty
                             ? statusFilter?.emptyDescription ?? AppLocalization.string("Sessions will appear here once created.")
-                            : AppLocalization.string("Try a different search."))
+                            : AppLocalization.string("Try a different search."),
+                        emptySystemImage: statusFilter?.emptySystemImage ?? "tray",
+                        retry: { Task { await appState.refreshSessionCatalog() } }
                     )
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                 }
 
-                if layout.liveSections && !pinnedSessions.isEmpty {
+                let sections = nestedSessionSections
+                if layout.liveSections && !sections.pinned.isEmpty {
                     Section("Pinned") {
-                        ForEach(pinnedSessions) { session in
-                            sessionRow(session)
+                        ForEach(sections.pinned) { node in
+                            sessionNestRow(node, depth: 0)
                         }
                     }
                 }
 
-                if layout.liveSections && !unpinnedSessions.isEmpty {
-                    Section(pinnedSessions.isEmpty ? AppLocalization.string("Sessions") : AppLocalization.string("Recent")) {
-                        ForEach(unpinnedSessions) { session in
-                            sessionRow(session)
+                if layout.liveSections && !sections.recent.isEmpty {
+                    Section(sections.pinned.isEmpty ? AppLocalization.string("Sessions") : AppLocalization.string("Recent")) {
+                        ForEach(sections.recent) { node in
+                            sessionNestRow(node, depth: 0)
                         }
                     }
                 }
@@ -528,25 +537,52 @@ struct SessionList: View {
                 }
             ))
             #endif // MAC:
+            .onAppear { revealActiveNestAncestors() }
+            .onChange(of: appState.activeSessionId) { _, _ in revealActiveNestAncestors() }
+            // The row list covers a parent arriving, leaving, or changing
+            // shape; a stored id backfilled into it can parent a row
+            // without changing any id.
+            .onChange(of: displayedSessions) { _, _ in revealActiveNestAncestors() }
+            // Pinning a row moves it out of the nest it sat in.
+            .onChange(of: appState.pinnedSessionIDs) { _, _ in revealActiveNestAncestors() }
+            // Tags and call-chat links can parent a row without changing
+            // the row list, so the reveal re-runs when they land too.
+            .onChange(of: appState.voiceSessionTagsByKey) { _, _ in revealActiveNestAncestors() }
+            .onChange(of: appState.voiceCallChatLinksRevision) { _, _ in revealActiveNestAncestors() }
+            // Nest keys are ids, which another profile can reuse.
+            .onChange(of: appState.activeProfile) { _, _ in
+                expandedNestIDs = []
+                revealLatch = NestRevealLatch()
+                revealActiveNestAncestors()
+            }
         }
         .sheet(isPresented: $showFilterOrder) {
             SessionFilterOrderSheet()
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
+                .environmentObject(appState)
         }
         .sheet(isPresented: $showArchivedSessions) {
             ArchivedSessionsSheet()
+                .environmentObject(appState)
         }
         .sheet(item: $selectedProject) { project in
             ProjectSessionsSheet(project: project)
+                .environmentObject(appState)
         }
         .sheet(isPresented: $showProjectCreator) {
             ProjectCreateSheet()
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
+                .environmentObject(appState)
         }
         .task(id: appState.activeProfile) {
             await appState.refreshProjects()
+        }
+        // The list's first read once the connection is up, when the
+        // connect's own catalog sync settled without publishing one.
+        .task(id: "\(appState.activeProfile)|\(appState.isConnected)|\(appState.turnState == .synchronizing)") {
+            await appState.loadSessionCatalogIfNeeded()
         }
         // Working / Needs input (#454) follow the gateway's live registry
         // while the list is on screen.
@@ -631,11 +667,12 @@ struct SessionList: View {
     }
 
     /// The rows a source filter lists: cron runs only under Cron, plus the
-    /// pinned ones in All (#485).
+    /// pinned ones in All (#485). Until this profile's live list lands, the
+    /// rows it showed last time.
     private func sourceRows(_ source: SessionSource?) -> [SessionSummary] {
         SidebarSourceRows.rows(
-            sessions: appState.activeProfileSessions,
-            cronSessions: appState.activeProfileCronSessions,
+            sessions: appState.listedSessions,
+            cronSessions: appState.listedCronSessions,
             source: source,
             category: appState.sessionCategory,
             isPinned: appState.isSessionPinned
@@ -706,14 +743,14 @@ struct SessionList: View {
                             Haptics.selection()
                             DispatchQueue.main.async { projectPendingRename = project }
                         } label: {
-                            Label("Rename…", systemImage: "pencil")
+                            Label(AppLocalization.string("Rename…"), systemImage: "pencil")
                         }
                         .disabled(appState.isProjectMutationInFlight)
                         Button(role: .destructive) {
                             Haptics.warning()
                             projectPendingDeletion = project
                         } label: {
-                            Label("Delete", systemImage: "trash")
+                            Label(AppLocalization.string("Delete"), systemImage: "trash")
                         }
                         .disabled(appState.isProjectMutationInFlight)
                     }
@@ -723,14 +760,14 @@ struct SessionList: View {
                                 Haptics.warning()
                                 projectPendingDeletion = project
                             } label: {
-                                Label("Delete", systemImage: "trash")
+                                Label(AppLocalization.string("Delete"), systemImage: "trash")
                             }
                             .disabled(appState.isProjectMutationInFlight)
                             Button {
                                 Haptics.selection()
                                 DispatchQueue.main.async { projectPendingRename = project }
                             } label: {
-                                Label("Rename…", systemImage: "pencil")
+                                Label(AppLocalization.string("Rename…"), systemImage: "pencil")
                             }
                             .tint(.conduitAccent)
                             .disabled(appState.isProjectMutationInFlight)
@@ -757,12 +794,18 @@ struct SessionList: View {
         appState.sessionFilterOrder.filter { !sourceRows($0).isEmpty }
     }
 
-    private var pinnedSessions: [SessionSummary] {
-        displayedSessions.filter { appState.isSessionPinned($0) }
-    }
-
-    private var unpinnedSessions: [SessionSummary] {
-        displayedSessions.filter { !appState.isSessionPinned($0) }
+    /// The Pinned and Recent rows, voice-spawned sessions nested under the
+    /// session that started them (#556), a pinned chat's included (#606).
+    /// A search or a status filter is a lookup, not a browse: it flattens
+    /// the list to the matching rows.
+    private var nestedSessionSections: (pinned: [SessionNesting.Node], recent: [SessionNesting.Node]) {
+        SessionNesting.sections(
+            displayedSessions,
+            query: searchText,
+            statusFilterActive: statusFilter != nil,
+            isPinned: appState.isSessionPinned,
+            parentKeyOf: appState.sessionNestingParentKey
+        )
     }
 
     private var sourceFilters: some View {
@@ -872,106 +915,264 @@ struct SessionList: View {
                 Haptics.selection()
                 showFilterOrder = true
             } label: {
-                Label("Reorder filters", systemImage: "arrow.left.arrow.right")
+                Label(AppLocalization.string("Reorder filters"), systemImage: "arrow.left.arrow.right")
             }
         }
-    }
-
-    private func offlineSessionRow(
-        _ session: OfflineCachedSession,
-        presentation: OfflineChatPresentation
-    ) -> some View {
-        let isSaved = presentation.snapshot.transcript(for: session.id) != nil
-        let isDisplayed = presentation.displayedSessionID == session.id
-        return Button {
-            Haptics.selection()
-            appState.showOfflineCachedSession(session.id)
-            appState.dismissSidebarDrawer()
-        } label: {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(session.title)
-                    .font(.subheadline.weight(isDisplayed ? .semibold : .regular))
-                    .lineLimit(1)
-                Text(isSaved ? session.displayUpdatedLabel() : AppLocalization.string("Not saved offline"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .buttonStyle(.plain)
-        .disabled(!isSaved)
-        .opacity(isSaved ? 1 : 0.5)
-        .accessibilityHint(isSaved ? "" : AppLocalization.string("This conversation has no saved copy on this device"))
     }
 
     private func sessionRow(_ session: SessionSummary) -> some View {
+        sessionRowChrome(sessionRowButton(session, nest: nil), session: session, nest: nil)
+    }
+
+    /// A row of the nested list's presentation (#556): the aggregate of
+    /// its own and its children's signals, so a collapsed nest never hides
+    /// a child's activity, and whether a parent's expander replaces the
+    /// row's own chevron — a leaf keeps it. The unread dot is a summary,
+    /// and a parent's "Mark as read" clears it honestly: the toggle marks
+    /// the whole nest read (AppState.markSessionNestRead).
+    private struct SessionNestPresentation {
+        var isUnread: Bool
+        var liveStatus: SessionLiveStatus?
+        var showsDisclosureIndicator: Bool
+    }
+
+    /// Row chrome metrics: each nested generation indents by this much.
+    private enum SessionNestMetrics {
+        static let indent: CGFloat = 26
+    }
+
+    /// The stable identity a nest's expansion is keyed on (see
+    /// SessionNesting.nestKey).
+    private func nestKey(_ session: SessionSummary) -> String {
+        SessionNesting.nestKey(of: session)
+    }
+
+    /// The row's tap target: the card button itself. `nestParentTitle`
+    /// names the row above for VoiceOver on a nested row whose own second
+    /// line doesn't.
+    private func sessionRowButton(_ session: SessionSummary, nest: SessionNestPresentation?, nestParentTitle: String? = nil) -> some View {
         Button {
             Haptics.light()
             appState.dismissSidebarDrawer()
-            appState.requestOpenSession(session.id)
+            appState.openListedSession(session)
         } label: {
             SessionRow(
                 session: session,
                 isSelected: session.id == appState.activeSessionId,
                 isPinned: appState.isSessionPinned(session),
-                isUnread: appState.isSessionUnread(session),
-                liveStatus: appState.sessionLiveStatus(session),
+                isUnread: nest?.isUnread ?? appState.isSessionUnread(session),
+                liveStatus: nest?.liveStatus ?? appState.sessionLiveStatus(session),
                 isVoiceJob: appState.isVoiceJobSession(session),
                 category: appState.sessionCategory(for: session),
-                detail: appState.voiceSessionDetail(for: session)
+                detail: appState.voiceSessionDetail(for: session),
+                showsDisclosureIndicator: nest?.showsDisclosureIndicator ?? true
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityValue(Text(nestParentTitle.map { AppLocalization.string("From \($0)") } ?? ""))
         .accessibilityHint("Swipe or touch and hold for conversation actions.")
-        .contextMenu {
-            SessionActionMenuItems(
-                session: session,
-                onRename: { sessionPendingRename = session },
-                onDelete: { sessionPendingDeletion = session }
-            )
-        }
-        .swipeActions(edge: .leading, allowsFullSwipe: false) {
-            Button {
-                Haptics.light()
-                appState.toggleSessionPinned(session)
-            } label: {
-                Label(appState.isSessionPinned(session) ? AppLocalization.string("Unpin") : AppLocalization.string("Pin"), systemImage: appState.isSessionPinned(session) ? "pin.slash" : "pin")
-            }
-            .tint(.conduitAccent)
+    }
 
-            ReadStateToggleButton(session: session)
-                .tint(.blue)
-        }
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button {
-                Task {
-                    Haptics.mutationCompleted(await appState.archiveSession(session))
+    /// What every row of the sessions list carries — the touch-and-hold
+    /// menu, the swipes, the row chrome — applied at the row's root,
+    /// whether that root is the card alone or the card with its expander
+    /// beside it. `nest` comes from the nested list, where a parent
+    /// displays its children's activity and its "Mark as read" clears
+    /// the nest. The saved list's rows (up while Conduit connects) take
+    /// no actions: they would act on a list Hermes hasn't sent yet.
+    private func sessionRowChrome<V: View>(
+        _ content: V,
+        session: SessionSummary,
+        nest: NestReadToggle?
+    ) -> some View {
+        let isSavedRow = appState.isSavedChatRow(session)
+        return content
+            .contextMenu {
+                if !isSavedRow {
+                    SessionActionMenuItems(
+                        session: session,
+                        nest: nest,
+                        onRename: { sessionPendingRename = session },
+                        onDelete: { sessionPendingDeletion = session }
+                    )
                 }
-            } label: {
-                Label("Archive", systemImage: "archivebox")
             }
-            .tint(.orange)
-            .disabled(appState.isSessionMutationInFlight(session))
+            .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                if !isSavedRow {
+                    Button {
+                        Haptics.light()
+                        appState.toggleSessionPinned(session)
+                    } label: {
+                        Label(appState.isSessionPinned(session) ? AppLocalization.string("Unpin") : AppLocalization.string("Pin"), systemImage: appState.isSessionPinned(session) ? "pin.slash" : "pin")
+                    }
+                    .tint(.conduitAccent)
 
-            Button(role: .destructive) {
-                Haptics.warning()
-                sessionPendingDeletion = session
-            } label: {
-                Label("Delete", systemImage: "trash")
+                    ReadStateToggleButton(session: session, nest: nest)
+                        .tint(.blue)
+                }
             }
-            .disabled(appState.isSessionMutationInFlight(session))
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                if !isSavedRow {
+                    Button {
+                        Task {
+                            Haptics.mutationCompleted(await appState.archiveSession(session))
+                        }
+                    } label: {
+                        Label(AppLocalization.string("Archive"), systemImage: "archivebox")
+                    }
+                    .tint(.orange)
+                    .disabled(appState.isSessionMutationInFlight(session))
+
+                    Button(role: .destructive) {
+                        Haptics.warning()
+                        sessionPendingDeletion = session
+                    } label: {
+                        Label(AppLocalization.string("Delete"), systemImage: "trash")
+                    }
+                    .disabled(appState.isSessionMutationInFlight(session))
+                }
+            }
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            #if os(macOS) // MAC: density
+            .listRowInsets(EdgeInsets(top: MacSidebarMetrics.sessionRowInset, leading: 0, bottom: MacSidebarMetrics.sessionRowInset, trailing: 0))
+            #else // MAC:
+            .listRowInsets(EdgeInsets(top: 3, leading: 0, bottom: 3, trailing: 0))
+            #endif // MAC:
+            #if os(macOS) // MAC: ring on the keyboard cursor row (D10)
+            .modifier(MacSessionCursorRow(id: session.id))
+            #endif // MAC:
+    }
+
+    /// One row of the nested list: the row itself plus, for a parent, its
+    /// expander beside it, and its children once expanded (#556). The
+    /// expander sits outside the row's own button so both keep clean hit
+    /// targets. A nested row's VoiceOver value names the row above it —
+    /// unless its own second line already does (a job's "From ‹call›").
+    private func sessionNestRow(_ node: SessionNesting.Node, depth: Int, parentTitle: String? = nil) -> some View {
+        let isExpanded = expandedNestIDs.contains(nestKey(node.session))
+        let signals = SessionNesting.signals(
+            node,
+            isUnread: appState.isSessionUnread,
+            liveStatus: appState.sessionLiveStatus
+        )
+        let nestParentTitle = SessionNesting.parentAccessibilityValueTitle(
+            detail: appState.voiceSessionDetail(for: node.session),
+            parentTitle: depth > 0 ? parentTitle : nil
+        )
+        let readToggle = SessionNesting.readToggleInputs(for: node, aggregateIsUnread: signals.isUnread)
+        return Group {
+            sessionRowChrome(
+                HStack(spacing: 6) {
+                    sessionRowButton(
+                        node.session,
+                        nest: SessionNestPresentation(
+                            isUnread: signals.isUnread,
+                            liveStatus: signals.liveStatus,
+                            showsDisclosureIndicator: node.children.isEmpty
+                        ),
+                        nestParentTitle: nestParentTitle
+                    )
+                    if !node.children.isEmpty {
+                        nestExpander(node: node, isExpanded: isExpanded)
+                    }
+                }
+                // Today's chains stop at chat → call → job; the cap keeps
+                // any future deeper shape from indenting off the screen.
+                .padding(.leading, CGFloat(min(depth, 3)) * SessionNestMetrics.indent),
+                session: node.session,
+                nest: readToggle
+            )
+            if isExpanded {
+                ForEach(node.children) { child in
+                    // AnyView breaks the recursion: a nest row's opaque
+                    // type can't be defined in terms of itself.
+                    AnyView(sessionNestRow(child, depth: depth + 1, parentTitle: node.session.title))
+                }
+            }
         }
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-        #if os(macOS) // MAC: density
-        .listRowInsets(EdgeInsets(top: MacSidebarMetrics.sessionRowInset, leading: 0, bottom: MacSidebarMetrics.sessionRowInset, trailing: 0))
-        #else // MAC:
-        .listRowInsets(EdgeInsets(top: 3, leading: 0, bottom: 3, trailing: 0))
-        #endif // MAC:
-        #if os(macOS) // MAC: ring on the keyboard cursor row (D10)
-        .modifier(MacSessionCursorRow(id: session.id))
-        #endif // MAC:
+    }
+
+    /// Expands the parents and grandparents of the open conversation, so a
+    /// chat the drawer would otherwise hide reveals itself — even when the
+    /// rows or the links that parent them land after the list first
+    /// appeared. A collapse the user chose stands while they stay inside
+    /// the nest and behind background triggers, but never hides the row
+    /// they just opened; a path that grows under them — a late-landing
+    /// parent link — still reveals, since the alternative is hiding the
+    /// open row (NestRevealLatch). A runtime-id rebind of the same
+    /// conversation counts as a new activation and reveals too.
+    private func revealActiveNestAncestors() {
+        let nest = activeNestAncestors
+        guard let toExpand = revealLatch.reveal(
+            active: appState.activeSessionId,
+            ancestors: nest.keys,
+            listHasRows: !displayedSessions.isEmpty,
+            rowIsListed: nest.rowIsListed,
+            hiddenAncestors: nest.keys.subtracting(expandedNestIDs)
+        ) else { return }
+        // The reveal moves rows the same way the expander does.
+        withAnimation(ConduitMotion.response) {
+            expandedNestIDs.formUnion(toExpand)
+        }
+    }
+
+    /// The ancestors of the open conversation within the nested list, and
+    /// whether its row is listed at all, ranked like the grouping itself
+    /// (SessionNesting.ancestorKeys).
+    private var activeNestAncestors: (keys: Set<String>, rowIsListed: Bool) {
+        let sections = nestedSessionSections
+        return SessionNesting.ancestorKeys(of: appState.activeSessionId ?? "", in: sections.pinned + sections.recent)
+    }
+
+    /// The expander's hint names the tap's effect (#556): hiding an
+    /// expanded nest, showing a collapsed one.
+    static func nestExpanderHint(isExpanded: Bool) -> String {
+        AppLocalization.string(isExpanded ? "Hide sessions" : "Show sessions")
+    }
+
+    /// The parent's expand control: a count of everything it hides while
+    /// collapsed, and a chevron that turns with the nest. Names the row
+    /// it expands for VoiceOver.
+    private func nestExpander(node: SessionNesting.Node, isExpanded: Bool) -> some View {
+        Button {
+            Haptics.light()
+            withAnimation(ConduitMotion.response) {
+                if isExpanded {
+                    expandedNestIDs.remove(nestKey(node.session))
+                } else {
+                    expandedNestIDs.insert(nestKey(node.session))
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                // The count keeps its slot while expanded, so the chevron
+                // doesn't jump sideways on the toggle.
+                Text(String(node.descendantCount))
+                    .font(.caption2.weight(.semibold))
+                    .dynamicTypeSize(...DynamicTypeSize.listRowCap)
+                    .foregroundStyle(Color.conduitAccent)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.conduitAccent.opacity(0.15), in: Capsule())
+                    .opacity(isExpanded ? 0 : 1)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .conduitFixedGlyph()
+                    .foregroundStyle(Color.secondary.opacity(0.6))
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+            }
+            // The target keeps its HIG minimum and grows with an
+            // accessibility-size count.
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(node.session.title) + Text(verbatim: ", ") + Text("\(node.descendantCount) sessions"))
+        .accessibilityHint(Self.nestExpanderHint(isExpanded: isExpanded))
+        .accessibilityValue(Text(AppLocalization.string(isExpanded ? "Expanded" : "Collapsed")))
     }
 }
 
@@ -1011,7 +1212,7 @@ private struct SessionFilterOrderSheet: View {
     }
 }
 
-private struct ArchivedSessionsSheet: View {
+struct ArchivedSessionsSheet: View {
     @ObservedObject var appLanguage = AppLanguageStore.shared
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
@@ -1274,9 +1475,14 @@ private extension View {
 /// offer the same menu. Rename and Delete need a host-owned sheet or alert,
 /// so the host supplies those two actions.
 struct SessionActionMenuItems: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
     @EnvironmentObject private var appState: AppState
     let session: SessionSummary
     var excludingProjectID: String? = nil
+    /// What the row's read toggle addresses (#556 follow-up): nil = the
+    /// row's own state (the chat title and project sheets), or the whole
+    /// nest for a drawer parent whose dot is lit.
+    var nest: NestReadToggle? = nil
     let onRename: () -> Void
     let onDelete: () -> Void
     /// Runs after a mutation that changes which list the row belongs in.
@@ -1289,7 +1495,7 @@ struct SessionActionMenuItems: View {
             // isn't presented in the same update as the menu's dismissal.
             DispatchQueue.main.async { onRename() }
         } label: {
-            Label("Rename…", systemImage: "pencil")
+            Label(AppLocalization.string("Rename…"), systemImage: "pencil")
         }
         .disabled(appState.isSessionMutationInFlight(session))
 
@@ -1300,7 +1506,7 @@ struct SessionActionMenuItems: View {
             Label(appState.isSessionPinned(session) ? AppLocalization.string("Unpin") : AppLocalization.string("Pin"), systemImage: appState.isSessionPinned(session) ? "pin.slash" : "pin")
         }
 
-        ReadStateToggleButton(session: session)
+        ReadStateToggleButton(session: session, nest: nest)
 
         // A cron run keeps the job's workspace (#485).
         if session.source != .cron {
@@ -1314,7 +1520,7 @@ struct SessionActionMenuItems: View {
                 if archived { onChanged() }
             }
         } label: {
-            Label("Archive", systemImage: "archivebox")
+            Label(AppLocalization.string("Archive"), systemImage: "archivebox")
         }
         .disabled(appState.isSessionMutationInFlight(session))
 
@@ -1322,7 +1528,7 @@ struct SessionActionMenuItems: View {
             Haptics.warning()
             onDelete()
         } label: {
-            Label("Delete", systemImage: "trash")
+            Label(AppLocalization.string("Delete"), systemImage: "trash")
         }
         .disabled(appState.isSessionMutationInFlight(session))
     }
@@ -1331,15 +1537,26 @@ struct SessionActionMenuItems: View {
 /// Mark as read / Mark as unread for one conversation (#454). Writes Hermes'
 /// shared read flag too, so Hermes Desktop follows.
 struct ReadStateToggleButton: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
     @EnvironmentObject private var appState: AppState
     let session: SessionSummary
+    /// What the toggle addresses (#556): a parent displays its children's
+    /// activity, and its "Mark as read" clears the whole nest — non-nil
+    /// IS the lit dot. Nil reads the row's own state, as every flat row.
+    var nest: NestReadToggle? = nil
 
     var body: some View {
-        let isUnread = appState.isSessionUnread(session)
-        Button {
+        // A nest rides along only with its lit dot: non-nil is the
+        // displayed-unread state itself.
+        let isUnread = nest != nil || appState.isSessionUnread(session)
+        let button = Button {
             Haptics.light()
             if isUnread {
-                appState.markSessionRead(session)
+                if let nest {
+                    appState.markSessionNestRead(nest.sessions)
+                } else {
+                    appState.markSessionRead(session)
+                }
             } else {
                 appState.markSessionUnread(session)
             }
@@ -1348,6 +1565,13 @@ struct ReadStateToggleButton: View {
                 isUnread ? AppLocalization.string("Mark as read") : AppLocalization.string("Mark as unread"),
                 systemImage: isUnread ? "envelope.open" : "envelope.badge"
             )
+        }
+        if nest != nil {
+            // A parent's read toggle speaks its wider scope: this clears
+            // the whole nest, not just the row.
+            button.accessibilityHint(AppLocalization.string("Marks this conversation and its sessions as read"))
+        } else {
+            button
         }
     }
 }
@@ -1415,6 +1639,7 @@ enum SessionStatusFilter: String, CaseIterable, Identifiable {
 /// The session row's "Move to Project" submenu. Hidden when the gateway has
 /// no projects capability or no project with a folder to move into.
 struct MoveToProjectMenu: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
     @EnvironmentObject private var appState: AppState
     let session: SessionSummary
     var excludingProjectID: String? = nil
@@ -1482,6 +1707,7 @@ private struct ProjectRow: View {
 }
 
 private struct ProjectSessionsSheet: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
     let project: ProjectSummary
@@ -1496,18 +1722,18 @@ private struct ProjectSessionsSheet: View {
                 ConduitBackdrop()
                 List {
                     if isLoading {
-                        ProgressView("Loading conversations…")
+                        ProgressView(AppLocalization.string("Loading conversations…"))
                             .frame(maxWidth: .infinity, minHeight: 140)
                             .listRowBackground(Color.clear)
                             .listRowSeparator(.hidden)
                     } else if let detail, detail.lanes.isEmpty {
                         ContentUnavailableView {
-                            Label("No Conversations", systemImage: "tray")
+                            Label(AppLocalization.string("No Conversations"), systemImage: "tray")
                         } description: {
-                            Text("This project does not have any conversations yet.")
+                            Text(AppLocalization.string("This project does not have any conversations yet."))
                         } actions: {
                             if newConversationPath != nil {
-                                Button("New conversation", action: startNewConversation)
+                                Button(AppLocalization.string("New conversation"), action: startNewConversation)
                                     .buttonStyle(.borderedProminent)
                             }
                         }
@@ -1535,7 +1761,7 @@ private struct ProjectSessionsSheet: View {
                                             .contentShape(Rectangle())
                                     }
                                     .buttonStyle(.plain)
-                                    .accessibilityHint("Swipe or touch and hold for conversation actions.")
+                                    .accessibilityHint(AppLocalization.string("Swipe or touch and hold for conversation actions."))
                                     .contextMenu {
                                         SessionActionMenuItems(
                                             session: session,
@@ -1562,7 +1788,7 @@ private struct ProjectSessionsSheet: View {
                                                 if archived { reloadDetail() }
                                             }
                                         } label: {
-                                            Label("Archive", systemImage: "archivebox")
+                                            Label(AppLocalization.string("Archive"), systemImage: "archivebox")
                                         }
                                         .tint(.orange)
                                         .disabled(appState.isSessionMutationInFlight(session))
@@ -1571,7 +1797,7 @@ private struct ProjectSessionsSheet: View {
                                             Haptics.warning()
                                             sessionPendingDeletion = session
                                         } label: {
-                                            Label("Delete", systemImage: "trash")
+                                            Label(AppLocalization.string("Delete"), systemImage: "trash")
                                         }
                                         .disabled(appState.isSessionMutationInFlight(session))
                                     }
@@ -1602,10 +1828,10 @@ private struct ProjectSessionsSheet: View {
                 }
             }
         }
-        .task(id: project.id) {
-            isLoading = true
-            detail = await appState.loadProjectSessions(project)
-            isLoading = false
+        .task(id: project.id) { await load() }
+        .onChange(of: appState.isConnected) { _, isConnected in
+            guard isConnected, detail == nil else { return }
+            Task { await load() }
         }
         .alert("Delete conversation?", isPresented: Binding(
             get: { sessionPendingDeletion != nil },
@@ -1631,6 +1857,15 @@ private struct ProjectSessionsSheet: View {
         }
     }
 
+    /// A page opened from the saved Chats list before Hermes answered says
+    /// it's loading until Hermes is connected, then loads.
+    private func load() async {
+        guard appState.isConnected else { return }
+        isLoading = true
+        detail = await appState.loadProjectSessions(project)
+        isLoading = false
+    }
+
     private func reloadDetail() {
         Task { detail = await appState.loadProjectSessions(project) }
     }
@@ -1649,7 +1884,8 @@ private struct ProjectSessionsSheet: View {
     }
 }
 
-private struct ProjectCreateSheet: View {
+struct ProjectCreateSheet: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
@@ -1696,7 +1932,7 @@ private struct ProjectCreateSheet: View {
                             }
                             showFolderPicker = true
                         } label: {
-                            Label("Add folder", systemImage: "plus")
+                            Label(AppLocalization.string("Add folder"), systemImage: "plus")
                         }
                     }
 
@@ -1743,6 +1979,7 @@ private struct ProjectCreateSheet: View {
             }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
+            .environmentObject(appState)
         }
     }
 
@@ -1901,6 +2138,7 @@ struct CronList: View {
 
             if !jobs.isEmpty {
                 let shown = CronJobFilter.shownJobs(jobs, showAll: showAllJobs, isSearching: isSearching)
+                let zoneLabel = ProfileTimeZone.scheduleZoneLabel(profileSetting: appState.activeProfileTimeZoneSetting)
                 HStack {
                     Text("Jobs").font(.headline)
                     Spacer()
@@ -1911,7 +2149,7 @@ struct CronList: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 ForEach(shown) { job in
-                    Button { selectedJob = job } label: { CronJobRow(job: job) }
+                    Button { selectedJob = job } label: { CronJobRow(job: job, notifies: appState.cronJobNotifies(job), zoneLabel: zoneLabel) }
                         .buttonStyle(.plain)
                         .listRowBackground(Color.clear).listRowSeparator(.hidden)
                 }
@@ -1976,9 +2214,16 @@ struct CronList: View {
         #endif // MAC:
         .scrollContentBackground(.hidden)
         .listStyle(.plain)
-        .task(id: appState.activeProfile) { await appState.refreshCronContent() }
+        .task(id: "\(appState.activeDashboardID?.uuidString ?? "")|\(appState.activeProfile)") { await appState.refreshCronContent() }
+        // The plugin's capability report can land after the tab opened.
+        .task(id: appState.supportsCronNotifications) {
+            if appState.supportsCronNotifications { await appState.refreshCronNotifications() }
+        }
         .refreshable { await appState.refreshCronContent() }
-        .sheet(item: $selectedJob) { CronJobDetailSheet(job: $0) }
+        .sheet(item: $selectedJob) {
+            CronJobDetailSheet(job: $0)
+                .environmentObject(appState)
+        }
     }
 
     private var isSearching: Bool {
@@ -2058,7 +2303,7 @@ enum CronJobFilter: String, CaseIterable, Identifiable {
     }
 
     static func matches(_ job: CronJob, query: String) -> Bool {
-        [job.displayName, job.prompt ?? "", job.scheduleDisplay ?? job.schedule?.display ?? "", job.deliver ?? ""]
+        [job.displayName, job.prompt ?? "", job.scheduleDisplay ?? job.schedule?.display ?? "", CronScheduleText.describe(job, zoneLabel: nil) ?? "", job.deliver ?? ""]
             .contains { $0.localizedCaseInsensitiveContains(query) }
     }
 
@@ -2095,6 +2340,10 @@ enum CronJobFilter: String, CaseIterable, Identifiable {
 private struct CronJobRow: View {
     @ObservedObject var appLanguage = AppLanguageStore.shared
     let job: CronJob
+    /// Whether the job's runs notify (the host's per-job setting).
+    var notifies = true
+    /// The profile zone the schedule's times are in, when not this iPhone's.
+    var zoneLabel: String? = nil
     var body: some View {
         HStack(spacing: 11) {
             Image(systemName: "clock")
@@ -2103,10 +2352,16 @@ private struct CronJobRow: View {
                 .frame(width: 30, height: 30).background((job.isActive ? Color.green : .secondary).opacity(0.13), in: Circle())
             VStack(alignment: .leading, spacing: 3) {
                 Text(job.displayName).font(.subheadline.weight(.medium)).lineLimit(1)
-                Text(job.scheduleDisplay ?? job.schedule?.display ?? job.schedule?.expr ?? AppLocalization.string("No schedule"))
+                Text(CronScheduleText.describe(job, zoneLabel: zoneLabel) ?? AppLocalization.string("No schedule"))
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
+            if !notifies {
+                Image(systemName: "bell.slash")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(AppLocalization.string("Notifications off"))
+            }
             Text(job.statusLabel).font(.caption2.weight(.semibold)).foregroundStyle(job.isActive ? .green : .secondary)
             Image(systemName: "chevron.right").font(.caption2.weight(.bold)).foregroundStyle(.tertiary)
         }
@@ -2116,13 +2371,14 @@ private struct CronJobRow: View {
     }
 }
 
-private struct CronJobDetailSheet: View {
+struct CronJobDetailSheet: View {
     @ObservedObject var appLanguage = AppLanguageStore.shared
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
     /// The job as it was tapped; `job` follows the live list so Pause and
     /// Resume flip the sheet as soon as Hermes answers.
     let selectedJob: CronJob
+    @State private var confirmingDelete = false
 
     init(job: CronJob) {
         selectedJob = job
@@ -2130,6 +2386,13 @@ private struct CronJobDetailSheet: View {
 
     private var job: CronJob {
         appState.cronJobs.first { $0.id == selectedJob.id } ?? selectedJob
+    }
+
+    /// A run time as a date and time on this iPhone's clock; Hermes' raw
+    /// value when it isn't one Conduit can read.
+    private func runTime(_ raw: String?) -> String {
+        guard let raw, !raw.isEmpty else { return "—" }
+        return CronScheduleText.parseDate(raw).map { CronScheduleText.absoluteDateText($0) } ?? raw
     }
 
     var body: some View {
@@ -2140,10 +2403,26 @@ private struct CronJobDetailSheet: View {
                     VStack(alignment: .leading, spacing: 16) {
                         ConduitSettingsSection(title: job.displayName, symbol: "clock.fill", tint: .conduitAccent) {
                             SettingsMetricRow(label: AppLocalization.string("Status"), value: job.statusLabel)
-                            SettingsMetricRow(label: AppLocalization.string("Schedule"), value: job.scheduleDisplay ?? job.schedule?.display ?? job.schedule?.expr ?? "—")
-                            SettingsMetricRow(label: AppLocalization.string("Next run"), value: job.isFinished ? "—" : job.nextRunAt ?? "—")
-                            SettingsMetricRow(label: AppLocalization.string("Last run"), value: job.lastRunAt ?? "—")
+                            SettingsMetricRow(label: AppLocalization.string("Schedule"), value: CronScheduleText.describe(job, zoneLabel: ProfileTimeZone.scheduleZoneLabel(profileSetting: appState.activeProfileTimeZoneSetting)) ?? "—")
+                            SettingsMetricRow(label: AppLocalization.string("Next run"), value: job.isFinished ? "—" : runTime(job.nextRunAt))
+                            SettingsMetricRow(label: AppLocalization.string("Last run"), value: runTime(job.lastRunAt))
                             SettingsMetricRow(label: AppLocalization.string("Delivery"), value: job.deliver ?? AppLocalization.string("Local"))
+                        }
+                        if appState.supportsCronNotifications {
+                            ConduitSettingsSection(title: AppLocalization.string("Notifications"), symbol: "bell.fill", tint: .conduitAura) {
+                                Toggle(isOn: Binding(
+                                    get: { appState.cronJobNotifies(job) },
+                                    set: { notify in Task { await appState.setCronJobNotifies(notify, for: job) } }
+                                )) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(AppLocalization.string("Notify me when it runs")).font(.subheadline.weight(.medium))
+                                        Text(AppLocalization.string("Runs that answer [SILENT] never notify.")).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                                .tint(.conduitAccent)
+                                .disabled(appState.cronNotificationsChangingJobID != nil)
+                                .padding(.vertical, 2)
+                            }
                         }
                         AdaptiveStack(spacing: 10) {
                             // A finished one-shot job has nothing left to pause
@@ -2166,6 +2445,14 @@ private struct CronJobDetailSheet: View {
                             .conduitGlassControl(cornerRadius: 16, tint: .conduitAccent, prominent: true)
                         }
                         .font(.subheadline.weight(.semibold))
+                        Button(role: .destructive) { confirmingDelete = true } label: {
+                            Label(AppLocalization.string("Delete job"), systemImage: "trash").frame(maxWidth: .infinity)
+                        }
+                        .foregroundStyle(.red)
+                        .disabled(appState.cronJobActionID != nil)
+                        .frame(minHeight: 48)
+                        .conduitGlassControl(cornerRadius: 16, tint: .red.opacity(0.14))
+                        .font(.subheadline.weight(.semibold))
                         if let prompt = job.prompt, !prompt.isEmpty {
                             ConduitSettingsSection(title: AppLocalization.string("Prompt"), symbol: "text.quote", tint: .conduitAura) { Text(prompt).textSelection(.enabled).font(.callout) }
                         }
@@ -2187,7 +2474,23 @@ private struct CronJobDetailSheet: View {
                 ConduitSheetHeader(title: AppLocalization.string("Scheduled job"), close: { dismiss() })
             }
         }
-        .task { await appState.loadCronRuns(for: job) }
+        .alert("Delete scheduled job?", isPresented: $confirmingDelete) {
+            Button("Delete", role: .destructive) {
+                Task {
+                    let deleted = await appState.deleteCronJob(job)
+                    Haptics.mutationCompleted(deleted)
+                    if deleted { dismiss() }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(AppLocalization.string("This removes \(job.displayName) from Hermes, so it won't run again. Chats from its past runs are kept."))
+        }
+        .task {
+            async let runs: Void = appState.loadCronRuns(for: job)
+            async let notifications: Void = appState.refreshCronNotifications()
+            _ = await (runs, notifications)
+        }
     }
 }
 
@@ -2233,27 +2536,63 @@ enum SidebarPinnedSessions {
     }
 }
 
-/// Which session-list parts the sidebar shows while a saved offline copy
-/// (#99) may be up. The saved section never replaces the live sections: a
-/// live catalog published before the live transcript replaces the copy (the
-/// owed-bootstrap window) renders alongside it.
+/// Which session-list parts the sidebar shows before the live list lands.
+/// The rows saved last time draw through the live sections themselves, so
+/// there is no separate saved section; with nothing saved and the list on
+/// its way, a loading state stands in for "no chats".
 enum SidebarOfflineLayout {
     struct Visibility: Equatable {
-        let savedSection: Bool
         let liveSections: Bool
         let emptyState: Bool
+        let loadingState: Bool
     }
 
     static func visibility(
         showingProjects: Bool,
-        hasOfflineCopy: Bool,
-        displayedSessionsEmpty: Bool
+        displayedSessionsEmpty: Bool,
+        isLoadingList: Bool
     ) -> Visibility {
-        Visibility(
-            savedSection: !showingProjects && hasOfflineCopy,
+        let empty = !showingProjects && displayedSessionsEmpty
+        return Visibility(
             liveSections: !showingProjects,
-            emptyState: !showingProjects && !hasOfflineCopy && displayedSessionsEmpty
+            emptyState: empty && !isLoadingList,
+            loadingState: empty && isLoadingList
         )
+    }
+}
+
+/// The Chats list without rows: loading until the catalog arrives, the
+/// failure with Try Again when the read failed, and the empty state only once
+/// Hermes answered an empty catalog (SessionListPlaceholder).
+struct SessionListPlaceholderView: View {
+    let placeholder: SessionListPlaceholder
+    let emptyTitle: String
+    let emptyDescription: String
+    var emptySystemImage = "tray"
+    let retry: () -> Void
+
+    var body: some View {
+        switch placeholder {
+        case .none:
+            EmptyView()
+        case .loading:
+            ProgressView(AppLocalization.string("Loading chats…"))
+                .frame(maxWidth: .infinity, minHeight: 140)
+        case .failed(let message):
+            ContentUnavailableView {
+                Label(AppLocalization.string("Couldn’t Load Chats"), systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(message)
+            } actions: {
+                Button(AppLocalization.string("Try Again"), action: retry)
+            }
+        case .empty:
+            ContentUnavailableView(
+                emptyTitle,
+                systemImage: emptySystemImage,
+                description: Text(emptyDescription)
+            )
+        }
     }
 }
 

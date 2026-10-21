@@ -43,6 +43,9 @@ struct MarkdownText: View {
     /// the same value, so the whole stream stays at one size. The
     /// `.default` environment default keeps non-chat subtrees untouched.
     @Environment(\.chatTextSize) private var chatTextSize
+    @Environment(\.markdownJoinsProseRuns) private var joinsProseRuns
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+    @Environment(\.accessibilitySwitchControlEnabled) private var switchControlEnabled
 
     var body: some View {
         // Path fork is centralized here: ordinary messages keep the exact
@@ -56,9 +59,15 @@ struct MarkdownText: View {
                 usesAccentSurface: usesAccentSurface,
                 gatewayMediaDataURL: gatewayMediaDataURL
             )
+            .environment(\.textSelectionTint, selectionTint)
         } else {
             normalBody
         }
+    }
+
+    /// A selection on a sent bubble would take the bubble's own colour (#697).
+    private var selectionTint: UIColor? {
+        usesAccentSurface ? UIColor.conduitSelectionOnAccent : nil
     }
 
     /// A streaming reply or a cut preview can end inside a block.
@@ -75,8 +84,23 @@ struct MarkdownText: View {
             isStreaming: isStreaming,
             chatTextSize: chatTextSize
         )
+        // A settled answer in the chat draws its prose runs in one text
+        // view each. A streaming reply keeps a view per block, so a new
+        // delta never re-lays out the paragraphs above it, and so does
+        // every answer under VoiceOver or Switch Control, which step
+        // through each block's view. Voice Control can't be detected; it
+        // targets controls, and the links inside a run stay targets.
+        let proseRuns = joinsProseRuns
+            && !voiceOverEnabled
+            && !switchControlEnabled
+            && !isStreaming
+            && newestCharacterOpacities.isEmpty
+            && rendering.selectableText == nil
+            && !rendering.needsRichBounding
+            ? rendering.proseRuns
+            : []
         let selectionSegments = rendering.selectableText == nil
-            ? MarkdownSelectionSegmentPlan.descriptors(for: rendering.blocks)
+            ? MarkdownSelectionSegmentPlan.descriptors(for: rendering.blocks, joiningRuns: proseRuns)
             : []
 
         Group {
@@ -115,27 +139,49 @@ struct MarkdownText: View {
                     lastBlockMayBePartial: lastBlockMayBePartial
                 )
             } else {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(Array(rendering.blocks.enumerated()), id: \.offset) { index, block in
-                        MarkdownBlockView(
-                            block: block,
-                            blockIndex: index,
-                            foregroundStyle: foregroundStyle,
-                            usesAccentSurface: usesAccentSurface,
-                            gatewayMediaDataURL: gatewayMediaDataURL,
-                            selectionCoordinator: selectionCoordinator,
-                            selectionSegments: selectionSegments,
-                            newestCharacterOpacities: index == rendering.blocks.count - 1
-                                ? newestCharacterOpacities
-                                : [],
-                            isStreamingTail: lastBlockMayBePartial && index == rendering.blocks.count - 1
-                        )
+                VStack(alignment: .leading, spacing: MarkdownProseRun.Spacing.betweenBlocks) {
+                    ForEach(MarkdownProseRun.pieces(blockCount: rendering.blocks.count, runs: proseRuns)) { piece in
+                        let index = piece.blocks.lowerBound
+                        if piece.isRun {
+                            MarkdownProseRunView(
+                                text: rendering.proseRunText(
+                                    for: piece.blocks,
+                                    foregroundStyle: foregroundStyle,
+                                    usesAccentSurface: usesAccentSurface,
+                                    chatTextSize: chatTextSize
+                                ),
+                                topPadding: MarkdownProseRun.topPadding(for: rendering.blocks[index]),
+                                foregroundStyle: foregroundStyle,
+                                usesAccentSurface: usesAccentSurface,
+                                selectionCoordinator: selectionCoordinator,
+                                selectionSegment: selectionSegments.first { $0.id == "block-\(index)" }
+                            )
+                        } else {
+                            MarkdownBlockView(
+                                block: rendering.blocks[index],
+                                blockIndex: index,
+                                foregroundStyle: foregroundStyle,
+                                usesAccentSurface: usesAccentSurface,
+                                gatewayMediaDataURL: gatewayMediaDataURL,
+                                selectionCoordinator: selectionCoordinator,
+                                selectionSegments: selectionSegments,
+                                newestCharacterOpacities: index == rendering.blocks.count - 1
+                                    ? newestCharacterOpacities
+                                    : [],
+                                isStreamingTail: lastBlockMayBePartial && index == rendering.blocks.count - 1
+                            )
+                        }
                     }
                 }
                 .onAppear {
                     selectionCoordinator.replaceSegments(selectionSegments, revision: source)
                 }
                 .onChange(of: source) { _, _ in
+                    selectionCoordinator.replaceSegments(selectionSegments, revision: source)
+                }
+                // A reply that settles joins its prose runs with the same
+                // source: the plan changes shape, the text doesn't.
+                .onChange(of: proseRuns) { _, _ in
                     selectionCoordinator.replaceSegments(selectionSegments, revision: source)
                 }
                 .modifier(MarkdownSelectionHost(coordinator: selectionCoordinator))
@@ -146,6 +192,7 @@ struct MarkdownText: View {
         // the same message-level context without threading it through each
         // container view. Scoped to this MarkdownText subtree only.
         .environment(\.markdownReferences, rendering.references)
+        .environment(\.textSelectionTint, selectionTint)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -189,7 +236,8 @@ private struct MarkdownSelectionHighlightOverlay: UIViewRepresentable {
 
     func updateUIView(_ uiView: MarkdownSelectionHighlightView, context: Context) {
         uiView.coordinator = coordinator
-        uiView.setNeedsDisplay()
+        uiView.selectionTint = context.environment.textSelectionTint
+        uiView.refresh()
     }
 
     /// Match the content exactly — see MarkdownSelectionHandleOverlay.
@@ -198,33 +246,58 @@ private struct MarkdownSelectionHighlightOverlay: UIViewRepresentable {
     }
 }
 
+/// Covers the whole message, so the highlight is a shape layer's path: a
+/// view that drew its own content kept a transparent bitmap the size of
+/// the message, made again each time its row scrolled into view.
 private final class MarkdownSelectionHighlightView: UIView {
     weak var coordinator: MarkdownSelectionCoordinator?
+    /// Nil draws the standard blue.
+    var selectionTint: UIColor?
+
+    override class var layerClass: AnyClass { CAShapeLayer.self }
+
+    private var shapeLayer: CAShapeLayer { layer as! CAShapeLayer }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         isOpaque = false
         backgroundColor = .clear
         isUserInteractionEnabled = false
-        contentMode = .redraw
+        registerForTraitChanges([UITraitUserInterfaceStyle.self, ConduitAccentTrait.self]) { (view: MarkdownSelectionHighlightView, _: UITraitCollection) in
+            view.refresh()
+        }
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    override func draw(_ rect: CGRect) {
-        guard let coordinator, let window else { return }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        refresh()
+    }
 
-        UIColor.systemBlue.withAlphaComponent(0.24).setFill()
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        refresh()
+    }
+
+    func refresh() {
+        guard let coordinator, let window else {
+            shapeLayer.path = nil
+            return
+        }
+        let path = UIBezierPath()
         for windowRect in coordinator.highlightRects(in: window) {
             let localRect = convert(windowRect, from: window)
             guard localRect.intersects(bounds) else { continue }
-            UIBezierPath(
+            path.append(UIBezierPath(
                 roundedRect: localRect.intersection(bounds).insetBy(dx: -0.5, dy: -0.5),
                 cornerRadius: 2
-            ).fill()
+            ))
         }
+        shapeLayer.fillColor = (selectionTint ?? .systemBlue).withAlphaComponent(0.24).resolvedColor(with: traitCollection).cgColor
+        shapeLayer.path = path.isEmpty ? nil : path.cgPath
     }
 }
 #endif // MAC:
@@ -253,11 +326,48 @@ final class MarkdownRendering {
         MarkdownRichContentPolicy.needsBounding(unitsByBlock: richUnitsByBlock)
     }
 
+    /// Found and built on first use, by the main actor's view bodies only.
+    @MainActor private var foundProseRuns: [Range<Int>]?
+    /// Each run's text, built once per settled rendering so a row that
+    /// scrolls back in hands its text view the same string. The render
+    /// cache keys a rendering on its surface and text size, so the style a
+    /// run's text was built with never changes under it.
+    @MainActor private var proseRunTexts: [Range<Int>: NSAttributedString] = [:]
+
     init(blocks: [MarkdownBlock], references: MarkdownReferenceContext, selectableText: NSAttributedString?) {
         self.blocks = blocks
         self.references = references
         self.selectableText = selectableText
         self.richUnitsByBlock = MarkdownRichContentPolicy.richUnitsByBlock(blocks)
+    }
+
+    /// The prose runs a chat draws in one text view each.
+    @MainActor
+    var proseRuns: [Range<Int>] {
+        if let foundProseRuns { return foundProseRuns }
+        let runs = MarkdownProseRun.ranges(in: blocks)
+        foundProseRuns = runs
+        return runs
+    }
+
+    /// A run's text, built with these styles the first time it's asked for.
+    @MainActor
+    func proseRunText(
+        for run: Range<Int>,
+        foregroundStyle: Color,
+        usesAccentSurface: Bool,
+        chatTextSize: ChatTextSize
+    ) -> NSAttributedString {
+        if let text = proseRunTexts[run] { return text }
+        let text = MarkdownProseRun.attributedText(
+            for: blocks[run],
+            references: references,
+            foregroundStyle: foregroundStyle,
+            usesAccentSurface: usesAccentSurface,
+            chatTextSize: chatTextSize
+        )
+        proseRunTexts[run] = text
+        return text
     }
 }
 
@@ -338,7 +448,9 @@ enum MarkdownRenderCache {
             // Approximate byte cost: source bytes + attributed-string storage
             // (each char carries attribute runs), so a few large messages can't
             // crowd out many small ones within totalCostLimit.
-            let cost = source.utf8.count + (rendering.selectableText?.length ?? 0) * 4
+            // A rich answer's prose runs build their text later, about the
+            // size a flow message's text is.
+            let cost = source.utf8.count + (rendering.selectableText?.length ?? source.utf16.count) * 4
             cache.setObject(rendering, forKey: key, cost: cost)
         }
         return rendering
@@ -388,6 +500,9 @@ enum MarkdownBlock: Equatable {
     case columns([String])
     case code(language: String, source: String)
     case divider
+    /// An HTML file on the Hermes host the reply asked to show in place
+    /// (`::preview{file="…"}`).
+    case htmlPreview(path: String)
 }
 
 struct MarkdownQuoteLine: Equatable {
@@ -646,6 +761,24 @@ enum MarkdownTableAlignment {
         case .trailing: .right
         }
     }
+
+    /// The same alignment for a cell drawn as plain text: its wrapped
+    /// lines, and its place in the column.
+    var text: TextAlignment {
+        switch self {
+        case .leading: .leading
+        case .center: .center
+        case .trailing: .trailing
+        }
+    }
+
+    var frame: Alignment {
+        switch self {
+        case .leading: .leading
+        case .center: .center
+        case .trailing: .trailing
+        }
+    }
 }
 
 /// Shared heading font logic used by both MarkdownSelectionFormatter
@@ -768,6 +901,11 @@ struct MarkdownBlockView: View {
 
         case .image(let url, let alt):
             RemoteMarkdownImage(url: url, alt: alt, gatewayMediaDataURL: gatewayMediaDataURL)
+
+        case .htmlPreview(let path):
+            HTMLPreviewBlock(path: path, gatewayMediaDataURL: gatewayMediaDataURL, isComplete: !isStreamingTail) {
+                RemoteMarkdownImage(url: "MEDIA: \(path)", alt: MarkdownParser.mediaName(path), gatewayMediaDataURL: gatewayMediaDataURL)
+            }
 
         case .math(let source):
             // The #88 oversized-math guard applies to the block itself,
@@ -943,6 +1081,145 @@ enum InlineMarkdownContent {
         }
         return attributed
     }
+
+    /// Everything a bridged fragment depends on, boxed for NSCache. It keys
+    /// on the text color itself, not only the accent surface the render
+    /// cache keys on: quotes pass a dimmed color. Two equal colors stored
+    /// differently can only cost a miss.
+    private final class BridgedKey: NSObject {
+        let source: String
+        let definitions: String
+        let foregroundStyle: Color
+        let font: UIFont
+        let usesAccentSurface: Bool
+
+        init(source: String, definitions: String, foregroundStyle: Color, font: UIFont, usesAccentSurface: Bool) {
+            self.source = source
+            self.definitions = definitions
+            self.foregroundStyle = foregroundStyle
+            self.font = font
+            self.usesAccentSurface = usesAccentSurface
+        }
+
+        override var hash: Int {
+            var hasher = Hasher()
+            hasher.combine(source)
+            hasher.combine(definitions)
+            hasher.combine(foregroundStyle)
+            hasher.combine(font)
+            hasher.combine(usesAccentSurface)
+            return hasher.finalize()
+        }
+
+        override func isEqual(_ object: Any?) -> Bool {
+            guard let other = object as? BridgedKey else { return false }
+            return source == other.source
+                && definitions == other.definitions
+                && foregroundStyle == other.foregroundStyle
+                && font == other.font
+                && usesAccentSurface == other.usesAccentSurface
+        }
+    }
+
+    /// Settled fragments parsed and bridged once. LazyVStack takes a row
+    /// down when it scrolls out of view and builds it again when it comes
+    /// back, and each block used to run Foundation's Markdown parser and
+    /// the UIKit bridge again on the way in. Returning the same string also
+    /// lets the text view's presentation check match on identity.
+    private static let bridgedCache: NSCache<BridgedKey, NSAttributedString> = {
+        let cache = NSCache<BridgedKey, NSAttributedString>()
+        cache.countLimit = 2048
+        cache.totalCostLimit = 8 * 1024 * 1024
+        return cache
+    }()
+
+    @MainActor
+    static func bridged(
+        source: String,
+        references: MarkdownReferenceContext,
+        foregroundStyle: Color,
+        usesAccentSurface: Bool,
+        font: UIFont,
+        trailingCharacterOpacities: [Double]
+    ) -> NSAttributedString {
+        func build() -> NSAttributedString {
+            SelectableTextView.bridge(
+                attributed(
+                    source: source,
+                    references: references,
+                    foregroundStyle: foregroundStyle,
+                    trailingCharacterOpacities: trailingCharacterOpacities
+                ),
+                defaultFont: font,
+                defaultColor: usesAccentSurface ? .white : UIColor(foregroundStyle),
+                linkColor: usesAccentSurface ? .white : .link
+            )
+        }
+        // A streaming tail fades its newest characters each frame.
+        guard trailingCharacterOpacities.isEmpty else { return build() }
+
+        let key = BridgedKey(
+            source: source,
+            definitions: references.definitionsMarkdown,
+            foregroundStyle: foregroundStyle,
+            font: font,
+            usesAccentSurface: usesAccentSurface
+        )
+        if let cached = bridgedCache.object(forKey: key) { return cached }
+        // The bridge builds a mutable string; every row shares the cached
+        // one, so it's kept as an immutable copy.
+        let value = NSAttributedString(attributedString: build())
+        bridgedCache.setObject(value, forKey: key, cost: value.length * 2)
+        return value
+    }
+
+    private final class PlainTextBox {
+        let value: AttributedString
+        init(_ value: AttributedString) { self.value = value }
+    }
+
+    private static let plainTextCache: NSCache<NSAttributedString, PlainTextBox> = {
+        let cache = NSCache<NSAttributedString, PlainTextBox>()
+        cache.countLimit = 2048
+        cache.totalCostLimit = 8 * 1024 * 1024
+        return cache
+    }()
+
+    /// A bridged fragment as SwiftUI text, for a table cell drawn as plain
+    /// text. SwiftUI's Text reads its own attributes, not UIKit's, so the
+    /// fonts, colors, links and strikethrough the bridge set carry over run
+    /// by run. Keyed on the bridged string, which `bridged` returns from
+    /// its cache.
+    @MainActor
+    static func plainText(_ bridged: NSAttributedString) -> AttributedString {
+        if let cached = plainTextCache.object(forKey: bridged) { return cached.value }
+        var result = AttributedString()
+        bridged.enumerateAttributes(in: NSRange(location: 0, length: bridged.length)) { attributes, range, _ in
+            typealias SwiftUIKeys = AttributeScopes.SwiftUIAttributes
+            var run = AttributedString(bridged.attributedSubstring(from: range).string)
+            if let font = attributes[.font] as? UIFont {
+                run[SwiftUIKeys.FontAttribute.self] = Font(font as CTFont)
+            }
+            if let color = attributes[.foregroundColor] as? UIColor {
+                run[SwiftUIKeys.ForegroundColorAttribute.self] = Color(uiColor: color)
+            }
+            if let url = attributes[.link] as? URL {
+                run.link = url
+            } else if let string = attributes[.link] as? String, let url = URL(string: string) {
+                run.link = url
+            }
+            // Underlined, as a text view's link attributes draw a link.
+            if run.link != nil || attributes[.underlineStyle] != nil {
+                run[SwiftUIKeys.UnderlineStyleAttribute.self] = .single
+            }
+            if attributes[.strikethroughStyle] != nil {
+                run[SwiftUIKeys.StrikethroughStyleAttribute.self] = .single
+            }
+            result.append(run)
+        }
+        plainTextCache.setObject(PlainTextBox(result), forKey: bridged, cost: bridged.length * 2)
+        return result
+    }
 }
 
 private struct InlineMarkdown: View {
@@ -966,11 +1243,13 @@ private struct InlineMarkdown: View {
         font ?? ChatTypography.font(for: .body, chatSize: chatTextSize)
     }
 
-    private var attributed: AttributedString {
-        InlineMarkdownContent.attributed(
+    private var attributed: NSAttributedString {
+        InlineMarkdownContent.bridged(
             source: source,
             references: references,
             foregroundStyle: foregroundStyle,
+            usesAccentSurface: usesAccentSurface,
+            font: effectiveFont,
             trailingCharacterOpacities: trailingCharacterOpacities
         )
     }
@@ -1025,7 +1304,11 @@ private struct MarkdownList: View {
         VStack(alignment: .leading, spacing: 7) {
             ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                 let task = MarkdownParser.taskItem(item)
-                HStack(alignment: .firstTextBaseline, spacing: 9) {
+                // Top-aligned with the marker in a box at least one text
+                // line tall: the item is a UIKit text view, which reports no
+                // text baseline to SwiftUI, so a first-baseline row put the
+                // marker a line above its text.
+                HStack(alignment: .top, spacing: 9) {
                     if let task {
                         Image(systemName: task.complete ? "checkmark.square.fill" : "square")
                             .font(.system(size: markerFont.pointSize))
@@ -1033,11 +1316,13 @@ private struct MarkdownList: View {
                                              ? (usesAccentSurface ? Color.white : Color.conduitAccent)
                                              : (usesAccentSurface ? Color.white.opacity(0.82) : Color.secondary))
                             .frame(width: ChatTypography.dimension(16, chatSize: chatTextSize), alignment: .trailing)
+                            .frame(minHeight: markerFont.lineHeight)
                     } else {
                         Text(ordered ? "\(index + 1)." : "•")
                             .font(.system(size: markerFont.pointSize, weight: .semibold))
                             .foregroundStyle(usesAccentSurface ? Color.white.opacity(0.92) : Color.conduitAccent)
                             .frame(width: ChatTypography.dimension(ordered ? 24 : 12, chatSize: chatTextSize), alignment: .trailing)
+                            .frame(minHeight: markerFont.lineHeight)
                     }
                     InlineMarkdown(
                         source: task?.text ?? item,
@@ -1307,6 +1592,23 @@ enum MarkdownTableLayout {
         return halfPointRounded(capped.map { $0 - max($0 - shrinkFloorContentWidth, 0) * factor })
     }
 
+    /// The table as tab-separated lines, each cell's Markdown resolved to
+    /// its text, so it pastes into a spreadsheet as a grid. A tab or line
+    /// break inside a cell becomes a space, so it can't split the grid.
+    /// Safe off the main thread, where Copy Table runs it.
+    static func plainText(headers: [String], rows: [[String]], references: MarkdownReferenceContext) -> String {
+        ([headers] + rows)
+            .map { row in
+                row.map { cell in
+                    String(InlineMarkdownContent.attributed(source: cell, references: references).characters)
+                        .split(omittingEmptySubsequences: false) { $0 == "\t" || $0.isNewline }
+                        .joined(separator: " ")
+                }
+                .joined(separator: "\t")
+            }
+            .joined(separator: "\n")
+    }
+
     private static func halfPointRounded(_ widths: [CGFloat]) -> [CGFloat] {
         widths.map { ($0 * 2).rounded() / 2 }
     }
@@ -1349,15 +1651,27 @@ enum MarkdownTableLayout {
 /// knowledge — crossing the structural complexity threshold must not
 /// change whether a previously fitting table fits.
 private struct MarkdownTableWidthProbe: View {
+    /// The width the last table read. A table mounting again as its row
+    /// scrolls back into view starts from it, so its columns are laid out
+    /// once instead of at the fallback width and again a frame later. After
+    /// the chat's width changes, the first table to mount re-resolves once,
+    /// as every table used to. Only read and written on the main thread.
+    nonisolated(unsafe) static var lastWidth: CGFloat = 0
+
     @Binding var width: CGFloat
 
     var body: some View {
         GeometryReader { proxy in
             Color.clear
-                .onAppear { width = proxy.size.width }
-                .onChange(of: proxy.size.width) { _, newWidth in width = newWidth }
+                .onAppear { record(proxy.size.width) }
+                .onChange(of: proxy.size.width) { _, newWidth in record(newWidth) }
         }
         .frame(height: 0)
+    }
+
+    private func record(_ newWidth: CGFloat) {
+        if newWidth > 0 { Self.lastWidth = newWidth }
+        width = newWidth
     }
 }
 
@@ -1374,12 +1688,18 @@ struct MarkdownTable: View {
     let selectionSegments: [MarkdownSelectionSegmentDescriptor]
 
     /// The chat's proposed width for this block, read by a zero-height
-    /// probe above the scroll view. Zero means "unknown yet" (first pass);
-    /// the layout then falls back to cap-and-scroll and re-resolves a frame
-    /// later, once the width is known.
-    @State private var availableWidth: CGFloat = 0
+    /// probe above the scroll view. It starts from the last width a table
+    /// read; zero means "unknown yet" (first pass), and the layout then
+    /// falls back to cap-and-scroll and re-resolves a frame later, once the
+    /// width is known.
+    @State private var availableWidth: CGFloat = MarkdownTableWidthProbe.lastWidth
+    /// Turned on from the long-press menu; kept until the row is taken down.
+    @State private var selectionTurnedOn = false
+    @Environment(\.markdownTablePlainCells) private var drawsPlainCells
     @Environment(\.markdownReferences) private var references
     @Environment(\.chatTextSize) private var chatTextSize
+
+    private var selectsText: Bool { !drawsPlainCells || selectionTurnedOn }
 
     private var columnWidths: [CGFloat] {
         MarkdownTableLayout.columnWidths(
@@ -1413,6 +1733,13 @@ struct MarkdownTable: View {
                         .strokeBorder(usesAccentSurface ? Color.white.opacity(0.26) : Color.secondary.opacity(0.20), lineWidth: 1)
                 }
             }
+            .modifier(MarkdownTableMenu(
+                isOn: !selectsText,
+                copyText: { [headers, rows, references] in
+                    MarkdownTableLayout.plainText(headers: headers, rows: rows, references: references)
+                },
+                selectText: { selectionTurnedOn = true }
+            ))
         }
     }
 
@@ -1424,13 +1751,10 @@ struct MarkdownTable: View {
             alignments: alignments,
             foregroundStyle: foregroundStyle,
             usesAccentSurface: usesAccentSurface,
+            selectsText: selectsText,
             selectionCoordinator: selectionCoordinator,
             segmentFor: { selectionSegment(row: rowIndex, column: $0) }
         )
-    }
-
-    private func alignment(at index: Int) -> MarkdownTableAlignment {
-        alignments.indices.contains(index) ? alignments[index] : .leading
     }
 
     private func selectionSegment(row: Int, column: Int) -> MarkdownSelectionSegmentDescriptor? {
@@ -1449,6 +1773,9 @@ struct MarkdownTableRowView: View {
     let alignments: [MarkdownTableAlignment]
     let foregroundStyle: Color
     let usesAccentSurface: Bool
+    /// Each cell a selectable text view, or plain text: the chat's tables,
+    /// until the reader turns on selection from the long-press menu.
+    let selectsText: Bool
     let selectionCoordinator: MarkdownSelectionCoordinator?
     let segmentFor: (Int) -> MarkdownSelectionSegmentDescriptor?
     @Environment(\.chatTextSize) private var chatTextSize
@@ -1459,24 +1786,38 @@ struct MarkdownTableRowView: View {
                 let width = widths.indices.contains(index)
                     ? widths[index]
                     : MarkdownTableLayout.shrinkFloorContentWidth
-                InlineMarkdown(
-                    source: cell,
-                    foregroundStyle: foregroundStyle,
-                    usesAccentSurface: usesAccentSurface,
-                    font: ChatTypography.font(
-                        for: isHeader ? .tableHeader : .tableBody,
-                        chatSize: chatTextSize
-                    ),
-                    textAlignment: alignments.indices.contains(index) ? alignments[index].nsText : .natural,
-                    // The exact shared column width — a single-value range keeps
-                    // the cell's measured/committed height deterministic from the
-                    // first layout pass, and .frame(width:) below pins the
-                    // displayed width so every row's dividers align.
-                    selfSizingWidthRange: width...width,
-                    selectionCoordinator: selectionCoordinator,
-                    selectionSegment: segmentFor(index)
+                let alignment = alignments.indices.contains(index) ? alignments[index] : .leading
+                let font = ChatTypography.font(
+                    for: isHeader ? .tableHeader : .tableBody,
+                    chatSize: chatTextSize
                 )
-                    .frame(width: width)
+                Group {
+                    if selectsText {
+                        InlineMarkdown(
+                            source: cell,
+                            foregroundStyle: foregroundStyle,
+                            usesAccentSurface: usesAccentSurface,
+                            font: font,
+                            textAlignment: alignment.nsText,
+                            // The exact shared column width — a single-value range keeps
+                            // the cell's measured/committed height deterministic from the
+                            // first layout pass, and .frame(width:) below pins the
+                            // displayed width so every row's dividers align.
+                            selfSizingWidthRange: width...width,
+                            selectionCoordinator: selectionCoordinator,
+                            selectionSegment: segmentFor(index)
+                        )
+                    } else {
+                        MarkdownPlainCell(
+                            source: cell,
+                            foregroundStyle: foregroundStyle,
+                            usesAccentSurface: usesAccentSurface,
+                            font: font,
+                            alignment: alignment
+                        )
+                    }
+                }
+                    .frame(width: width, alignment: alignment.frame)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 9)
                 if index < cells.count - 1 {
@@ -1484,6 +1825,86 @@ struct MarkdownTableRowView: View {
                 }
             }
         }
+    }
+}
+
+/// A table cell drawn as plain text, from the attributed content the
+/// selectable cell shows. A selectable text view per cell made a table
+/// most of what a long answer cost to build as it scrolled in; plain text
+/// costs a fraction of that. Links stay tappable: SwiftUI opens them
+/// through the environment's openURL, as the text views do.
+private struct MarkdownPlainCell: View {
+    let source: String
+    let foregroundStyle: Color
+    let usesAccentSurface: Bool
+    let font: UIFont
+    let alignment: MarkdownTableAlignment
+    @Environment(\.markdownReferences) private var references
+
+    var body: some View {
+        let _ = TranscriptPerf.note(.plainTableCellBody)
+        Text(InlineMarkdownContent.plainText(InlineMarkdownContent.bridged(
+            source: source,
+            references: references,
+            foregroundStyle: foregroundStyle,
+            usesAccentSurface: usesAccentSurface,
+            font: font,
+            trailingCharacterOpacities: []
+        )))
+            .multilineTextAlignment(alignment.text)
+            .tint(usesAccentSurface ? .white : Color(uiColor: .link))
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// A long press on a table whose cells are plain text copies the table or
+/// turns on text selection, which draws its cells as selectable text views
+/// until its row is taken down. VoiceOver offers both as actions.
+private struct MarkdownTableMenu: ViewModifier {
+    let isOn: Bool
+    let copyText: @Sendable () -> String
+    let selectText: () -> Void
+
+    func body(content: Content) -> some View {
+        if isOn {
+            content
+                .contextMenu {
+                    Button(action: copyTable) {
+                        Label("Copy Table", systemImage: "doc.on.doc")
+                    }
+                    Button(action: selectText) {
+                        Label("Select Text", systemImage: "character.cursor.ibeam")
+                    }
+                }
+                .accessibilityAction(named: Text("Copy Table"), copyTable)
+                .accessibilityAction(named: Text("Select Text"), selectText)
+        } else {
+            content
+        }
+    }
+
+    /// Resolving every cell's Markdown is the user's wait on a big table,
+    /// so it runs off the main thread.
+    private func copyTable() {
+        let copyText = copyText
+        Task.detached(priority: .userInitiated) {
+            let text = copyText()
+            await MainActor.run { UIPasteboard.general.string = text }
+        }
+    }
+}
+
+/// Tables draw their cells as plain text, with selection a long press
+/// away. Set by the chat, where tables mount and unmount as the transcript
+/// scrolls; elsewhere cells stay selectable text views.
+private struct MarkdownTablePlainCellsKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var markdownTablePlainCells: Bool {
+        get { self[MarkdownTablePlainCellsKey.self] }
+        set { self[MarkdownTablePlainCellsKey.self] = newValue }
     }
 }
 
@@ -1509,11 +1930,17 @@ struct LargeMarkdownTable: View {
     /// complexity threshold (rows/cells/bytes) must not change whether a
     /// previously fitting table fits: with the real container width the
     /// shared layout engine's fit-or-shrink behavior applies identically in
-    /// both presentations. Zero means "unknown yet" (first pass); the
-    /// cap-and-scroll fallback re-resolves a frame later.
-    @State private var availableWidth: CGFloat = 0
+    /// both presentations. It starts from the last width a table read;
+    /// zero means "unknown yet" (first pass), and the cap-and-scroll
+    /// fallback re-resolves a frame later.
+    @State private var availableWidth: CGFloat = MarkdownTableWidthProbe.lastWidth
+    /// Turned on from the long-press menu; kept until the row is taken down.
+    @State private var selectionTurnedOn = false
+    @Environment(\.markdownTablePlainCells) private var drawsPlainCells
     @Environment(\.markdownReferences) private var references
     @Environment(\.chatTextSize) private var chatTextSize
+
+    private var selectsText: Bool { !drawsPlainCells || selectionTurnedOn }
 
     init(
         headers: [String],
@@ -1587,6 +2014,7 @@ struct LargeMarkdownTable: View {
                         alignments: alignments,
                         foregroundStyle: foregroundStyle,
                         usesAccentSurface: usesAccentSurface,
+                        selectsText: selectsText,
                         selectionCoordinator: selectionCoordinator,
                         segmentFor: { segmentDescriptor(row: 0, column: $0) }
                     )
@@ -1599,6 +2027,7 @@ struct LargeMarkdownTable: View {
                             alignments: alignments,
                             foregroundStyle: foregroundStyle,
                             usesAccentSurface: usesAccentSurface,
+                            selectsText: selectsText,
                             selectionCoordinator: selectionCoordinator,
                             segmentFor: { segmentDescriptor(row: rowOffset + 1, column: $0) }
                         )
@@ -1613,6 +2042,13 @@ struct LargeMarkdownTable: View {
                         .strokeBorder(usesAccentSurface ? Color.white.opacity(0.26) : Color.secondary.opacity(0.20), lineWidth: 1)
                 }
             }
+            .modifier(MarkdownTableMenu(
+                isOn: !selectsText,
+                copyText: { [headers, rows, references] in
+                    MarkdownTableLayout.plainText(headers: headers, rows: rows, references: references)
+                },
+                selectText: { selectionTurnedOn = true }
+            ))
             if renderedRowCount < rows.count {
                 Button {
                     renderedRowCount = min(renderedRowCount + Self.rowBatch, rows.count)
@@ -1827,8 +2263,10 @@ private struct GatewayMediaFileCard: View {
     let name: String
     let kind: GatewayMediaKind
     let gatewayMediaDataURL: ((String) async -> String?)?
+    @Environment(\.gatewayMediaFiles) private var gatewayMediaFiles
     @State private var loading = false
     @State private var failed = false
+    @State private var tooLarge = false
     @State private var openTask: Task<Void, Never>?
 
     var body: some View {
@@ -1868,7 +2306,7 @@ private struct GatewayMediaFileCard: View {
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(verbatim: failed ? AppLocalization.string("Couldn't open this file") : kind.label)
+                Text(verbatim: failed ? failureLabel : kind.label)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1895,33 +2333,78 @@ private struct GatewayMediaFileCard: View {
         name.isEmpty ? MediaPreviewPresenter.sanitizedFilename(path) : name
     }
 
-    /// The clip's bytes for inline playback, decoded off the main actor.
+    private var failureLabel: String {
+        tooLarge
+            ? AppLocalization.string("Too large to open on this phone")
+            : AppLocalization.string("Couldn't open this file")
+    }
+
+    /// The clip's bytes for inline playback, read or decoded off the main
+    /// actor. The player holds them in memory, so a clip over
+    /// `maxInlineAudioBytes` only opens full screen.
     private func loadAudio() async -> Data? {
-        guard let gatewayMediaDataURL, let dataURL = await gatewayMediaDataURL(path) else { return nil }
+        if let gatewayMediaFiles {
+            switch await gatewayMediaFiles.file(for: path, maxBytes: DashboardFileDownloadLimits.maxInlineAudioBytes) {
+            case .downloaded(let download):
+                return await Task.detached(priority: .userInitiated) {
+                    defer { MediaPreviewPresenter.removeDirectory(download.directory) }
+                    return try? Data(contentsOf: download.file)
+                }.value
+            case .tooLarge:
+                return nil
+            case .unavailable:
+                break
+            }
+        }
+        // A cancelled download reads as unavailable; don't start the
+        // fallback for a card that has gone.
+        guard !Task.isCancelled, let gatewayMediaDataURL,
+              let dataURL = await gatewayMediaDataURL(path), !Task.isCancelled else { return nil }
         return await Task.detached(priority: .userInitiated) {
             DataURLLimits.decodeBase64DataURL(dataURL)
         }.value
     }
 
+    private enum OpenOutcome {
+        case presented
+        case tooLarge
+        case failed
+    }
+
     private func open() {
-        guard !loading, let gatewayMediaDataURL else { return }
+        guard !loading, gatewayMediaFiles != nil || gatewayMediaDataURL != nil else { return }
         loading = true
         failed = false
+        tooLarge = false
         // Cancelled on disappear, so a slow fetch can't pop a preview over
         // whatever screen the user moved on to.
         openTask = Task {
-            let dataURL = await gatewayMediaDataURL(path)
-            guard !Task.isCancelled else { return }
-            let presented: Bool
-            if let dataURL {
-                presented = await MediaPreviewPresenter.shared.present(dataURL: dataURL, filename: path)
-            } else {
-                presented = false
-            }
+            let outcome = await fetchAndPresent()
             guard !Task.isCancelled else { return }
             loading = false
-            failed = !presented
+            failed = outcome != .presented
+            tooLarge = outcome == .tooLarge
+            openTask = nil
         }
+    }
+
+    /// The file itself, downloaded to disk, so a video over the 16 MB data
+    /// URL ceiling still opens (#569); the data URL when the download is
+    /// unavailable (an older Hermes, or no sign-in yet).
+    private func fetchAndPresent() async -> OpenOutcome {
+        if let gatewayMediaFiles {
+            switch await gatewayMediaFiles.file(for: path) {
+            case .downloaded(let download):
+                return MediaPreviewPresenter.shared.present(downloaded: download) ? .presented : .failed
+            case .tooLarge:
+                return .tooLarge
+            case .unavailable:
+                break
+            }
+        }
+        guard !Task.isCancelled, let gatewayMediaDataURL,
+              let dataURL = await gatewayMediaDataURL(path), !Task.isCancelled else { return .failed }
+        return await MediaPreviewPresenter.shared.present(dataURL: dataURL, filename: path) ? .presented : .failed
     }
 }
 
@@ -2438,6 +2921,26 @@ enum MarkdownParser {
                 continue
             }
 
+            // `::preview{file="…"}` asks for a host HTML file drawn in
+            // place; any other file gets its card, as a MEDIA: tag would. A
+            // quoted one is an example, as with MEDIA: tags.
+            if recognizesGatewayMedia, !trimmed.hasPrefix(">"), !isTableHeader(lines, at: index), let segments = TranscriptDirectives.segments(in: trimmed) {
+                for segment in segments {
+                    switch segment {
+                    case .preview(let file):
+                        blocks.append(TranscriptDirectives.isHTML(file)
+                            ? .htmlPreview(path: file)
+                            : .image(url: "MEDIA: \(file)", alt: mediaName(file)))
+                    case .text(let text):
+                        // The text holds no previews any more, so this
+                        // cannot come back to this branch.
+                        blocks.append(contentsOf: parseBlocks([text], recognizesGatewayMedia: true))
+                    }
+                }
+                index += 1
+                continue
+            }
+
             // A line holding `MEDIA:` tags splits into media and the text
             // around them (#439); a line of only Hermes directives drops.
             if recognizesGatewayMedia, !isTableHeader(lines, at: index), let segments = GatewayMediaTags.segments(in: trimmed) {
@@ -2495,7 +2998,7 @@ enum MarkdownParser {
             while index < lines.count {
                 let candidate = lines[index]
                 let next = candidate.trimmingCharacters(in: .whitespaces)
-                if next.isEmpty || fenceStart(next) != nil || mathBlockOpening(next) != nil || singleLineMath(next) != nil || directiveStart(next) != nil || (recognizesGatewayMedia && GatewayMediaTags.segments(in: next) != nil) || imageMarkdown(next) != nil || directImageURL(next) != nil || isDivider(next) || heading(next) != nil || next.hasPrefix(">") || unorderedItem(next) != nil || orderedItem(next) != nil || isTableHeader(lines, at: index) { break }
+                if next.isEmpty || fenceStart(next) != nil || mathBlockOpening(next) != nil || singleLineMath(next) != nil || directiveStart(next) != nil || (recognizesGatewayMedia && (GatewayMediaTags.segments(in: next) != nil || (!next.hasPrefix(">") && TranscriptDirectives.segments(in: next) != nil))) || imageMarkdown(next) != nil || directImageURL(next) != nil || isDivider(next) || heading(next) != nil || next.hasPrefix(">") || unorderedItem(next) != nil || orderedItem(next) != nil || isTableHeader(lines, at: index) { break }
                 paragraph.append(candidate); index += 1
             }
             blocks.append(.paragraph(paragraph.joined(separator: "\n")))
@@ -2604,7 +3107,7 @@ enum MarkdownParser {
     static func gatewayMediaPath(_ value: String) -> String? {
         GatewayMediaTags.soleMediaPath(value)
     }
-    private static func mediaName(_ path: String) -> String {
+    static func mediaName(_ path: String) -> String {
         path.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init) ?? AppLocalization.string("Image")
     }
     private static func quoteLine(_ value: String) -> MarkdownQuoteLine? {
@@ -2630,7 +3133,7 @@ enum MarkdownParser {
         guard let range = value.range(of: #"^\d+[.)]\s+"#, options: .regularExpression) else { return nil }
         return String(value[range.upperBound...])
     }
-    private static func isTableHeader(_ lines: [String], at index: Int) -> Bool {
+    static func isTableHeader(_ lines: [String], at index: Int) -> Bool {
         guard index + 1 < lines.count, lines[index].contains("|") else { return false }
         return lines[index + 1].trimmingCharacters(in: .whitespaces).range(of: #"^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$"#, options: .regularExpression) != nil
     }

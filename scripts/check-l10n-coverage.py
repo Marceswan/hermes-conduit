@@ -148,6 +148,7 @@ STRING_DISPLAY_PARAMETERS = {
     "ConduitSettingsSection": ("title",),
     "ConduitSheetHeader": ("title",),
     "SettingsMetricRow": ("label", "value"),
+    "SessionListPlaceholderView": ("emptyTitle", "emptyDescription"),
     "NotificationSetupCommand": ("title",),
     "ModelPickerSection": ("title",),
     "BotModeNoticeRow": ("message",),
@@ -197,7 +198,7 @@ STRING_DISPLAY_PROPERTIES = (
 DISPLAY_BRAND_NAMES = frozenset({
     "Cloudflare Access", "Hermes Conduit", "Gemini Live", "Grok Live",
     "GPT-Live", "LaTeX", "Mermaid", "Discord", "Telegram", "API",
-    "Tailscale",
+    "Tailscale", "Apple",
 })
 
 # Dynamic sites the extractor cannot see: variable-key lookups where the
@@ -228,8 +229,19 @@ REGRESSION_KEYS = (
     "Noir",
     "Philosopher",
     "Hype",
+    "Off",
+    "Always",
+    "Start of each turn",
+    "First turn only",
+    "Keep them",
+    "Throw them away",
     "Session",
     "Skills & extensions",
+    # Sessions drawer nest expander (#556): the hint is a runtime ternary
+    # (isExpanded ? "Hide sessions" : "Show sessions") the extractor
+    # cannot see. "Show sessions" also has a static site elsewhere; this
+    # key exists only at the ternary.
+    "Hide sessions",
 )
 
 CALL_RE = re.compile(
