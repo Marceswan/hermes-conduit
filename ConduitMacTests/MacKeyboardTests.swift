@@ -1255,5 +1255,11 @@ extension MacSessionListKeyboardTests {
         pressReturn(window)
         HostedTestSupport.settle(0.2)
         XCTAssertTrue(model.opened.isEmpty, "the cursor was on a row that is gone: \(model.opened)")
+
+        // Control: key handling still works after the list changed. The open session is "p1", so Down moves to the
+        // next visible row, "p2", and Return opens it.
+        pressDown(window)
+        pressReturn(window)
+        XCTAssertTrue(HostedTestSupport.waitUntil { model.opened == ["p2"] }, "Down then Return after the collapse: \(model.opened)")
     }
 }

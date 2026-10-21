@@ -1,3 +1,4 @@
+// Mac twin of Conduit/CarPlay/CarPlayVoiceCoordinator.swift and CarPlayVoiceTemplateFactory.swift (R2); keep in sync (PORTING_LEDGER).
 import Foundation
 
 /// CarPlay has no Mac counterpart. Shared code reports voice state changes
