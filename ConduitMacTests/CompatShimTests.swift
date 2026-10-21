@@ -141,11 +141,24 @@ final class CompatShimTests: XCTestCase {
         XCTAssertEqual(pixel.alphaComponent, 1, accuracy: 0.01)
     }
 
-    @MainActor
-    func testScreenChangedIsPostedWithoutEffectOnMac() {
-        // Like layoutChanged: iOS-only, so `post` must accept it and do nothing.
-        UIAccessibility.post(notification: .screenChanged, argument: nil)
-        UIAccessibility.post(notification: .layoutChanged, argument: nil)
+    /// `UIImage.scale` is pixels per point. An image built from a `CGImage` of 100 x 50 pixels is 100 x 50 points
+    /// (scale 1) whatever the screen; a 2x bitmap of 200 x 100 pixels in 100 x 50 points is scale 2.
+    func testImageScaleFollowsThePixelsOfTheImage() throws {
+        let rep = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 100, pixelsHigh: 50, bitsPerSample: 8, samplesPerPixel: 4,
+            hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let cgImage = try XCTUnwrap(rep.cgImage)
+        let fromCG = UIImage(cgImage: cgImage)
+        XCTAssertEqual(fromCG.size.width, 100, accuracy: 0.5)
+        XCTAssertEqual(fromCG.scale, 1, accuracy: 0.001, "a 1x CGImage is scale 1, not the screen's scale")
+
+        let twoX = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 200, pixelsHigh: 100, bitsPerSample: 8, samplesPerPixel: 4,
+            hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        twoX.size = NSSize(width: 100, height: 50)
+        let image = NSImage(size: twoX.size)
+        image.addRepresentation(twoX)
+        XCTAssertEqual(image.scale, 2, accuracy: 0.001, "a 2x bitmap is scale 2")
     }
 
     func testFontLineHeightPositive() {

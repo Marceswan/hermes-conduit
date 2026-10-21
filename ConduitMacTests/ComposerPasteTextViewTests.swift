@@ -161,6 +161,59 @@ final class ComposerPasteTextViewTests: XCTestCase {
         XCTAssertEqual(images.first?.typeIdentifier, UTType.png.identifier)
     }
 
+    // MARK: Attachment limit before the read (review M10)
+
+    /// A PNG-named file of `bytes` bytes; sparse, so a large one costs nothing to make or to refuse.
+    private func imageFile(bytes: UInt64) throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).png")
+        XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: pngData()))
+        let handle = try FileHandle(forWritingTo: url)
+        if bytes > UInt64(pngData().count) { try handle.truncate(atOffset: bytes) }
+        try handle.close()
+        return url
+    }
+
+    private func boardWith(_ url: URL) -> NSPasteboard {
+        let pb = board()
+        pb.clearContents()
+        pb.writeObjects([url as NSURL])
+        pb.setString(url.lastPathComponent, forType: .string)
+        return pb
+    }
+
+    func testImageFileOverTheLimitIsNotReadAndIsNamed() throws {
+        let url = try imageFile(bytes: 3 * 1024 * 1024)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let pb = boardWith(url)
+        XCTAssertTrue(ComposerTextView.imageFileImages(from: pb, megabytes: 1).isEmpty)
+        XCTAssertEqual(ComposerTextView.oversizeImageFileNames(from: pb, megabytes: 1), [url.lastPathComponent])
+    }
+
+    func testImageFileWithinTheLimitIsStillRead() throws {
+        let url = try imageFile(bytes: 0)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let pb = boardWith(url)
+        XCTAssertEqual(ComposerTextView.imageFileImages(from: pb, megabytes: 1).count, 1)
+        XCTAssertTrue(ComposerTextView.oversizeImageFileNames(from: pb, megabytes: 1).isEmpty)
+    }
+
+    func testAnOversizeFileIsReportedWithTheLimitAndItsName() throws {
+        let url = try imageFile(bytes: 3 * 1024 * 1024)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let view = ComposerTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
+        var messages: [String] = []
+        view.onPastedImageError = { messages.append($0) }
+        XCTAssertTrue(view.reportOversizeImageFiles(on: boardWith(url), megabytes: 1))
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertTrue(messages[0].contains(url.lastPathComponent), messages[0])
+        XCTAssertTrue(messages[0].contains("1 MB"), messages[0])
+
+        let small = try imageFile(bytes: 0)
+        defer { try? FileManager.default.removeItem(at: small) }
+        XCTAssertFalse(view.reportOversizeImageFiles(on: boardWith(small), megabytes: 1), "nothing to report for a small file")
+        XCTAssertEqual(messages.count, 1)
+    }
+
     func testReturnDuringMarkedTextDoesNotSubmit() {
         // Hosted in a window so the input context exists and marked text sticks.
         let view = ComposerTextView()

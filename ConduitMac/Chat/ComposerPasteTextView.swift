@@ -1,3 +1,4 @@
+// Mac twin of Conduit/Views/Components/ComposerPasteTextView.swift (R2); keep in sync (PORTING_LEDGER).
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -115,6 +116,7 @@ struct ComposerPasteTextView: NSViewRepresentable {
         textView.canSubmitFromReturn = canSubmitFromReturn
         textView.onSubmitFromReturn = onSubmitFromReturn
         textView.onPastedImages = { images in images.forEach(onPastedImage) }
+        textView.onPastedImageError = onPastedImageError
         textView.dropSink = dropSink
         let focus = $isFocused
         textView.onFocusChange = { focused in
@@ -194,6 +196,8 @@ final class ComposerTextView: NSTextView {
     var canSubmitFromReturn = false
     var onSubmitFromReturn: (() -> Bool)?
     var onPastedImages: (([PastedImage]) -> Void)?
+    /// A pasted or dropped image file the composer refuses (over the attachment limit).
+    var onPastedImageError: ((String) -> Void)?
     /// When set, file and image drags belong to the chat pane's drop path
     /// (same attach routes as the picker); otherwise the legacy image-only
     /// drop below applies.
@@ -271,16 +275,46 @@ final class ComposerTextView: NSTextView {
         window.makeFirstResponder(self)
     }
 
-    /// Image file URLs (Finder copies). Checked before the string so filenames do not win.
-    static func imageFileImages(from pasteboard: NSPasteboard) -> [PastedImage] {
+    /// The attachment size limit (Settings > Chat) in megabytes; 0 means the default.
+    static var attachmentMegabytes: Int { UserDefaults.standard.integer(forKey: AttachmentSizeLimit.preferenceKey) }
+
+    private static func imageFiles(on pasteboard: NSPasteboard) -> [(url: URL, type: UTType)] {
         guard let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] else {
             return []
         }
-        return urls.compactMap { url -> PastedImage? in
-            guard let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .image),
-                  let data = try? Data(contentsOf: url) else { return nil }
-            return PastedImage(data: data, typeIdentifier: type.identifier)
+        return urls.compactMap { url in
+            guard let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .image) else { return nil }
+            return (url, type)
         }
+    }
+
+    /// Image file URLs (Finder copies). Checked before the string so filenames do not win. A file over the
+    /// attachment limit is not read: its size is checked first, as upstream's link path streams against the limit
+    /// (#892); the file is reported by `oversizeImageFileNames` instead.
+    static func imageFileImages(from pasteboard: NSPasteboard, megabytes: Int = attachmentMegabytes) -> [PastedImage] {
+        imageFiles(on: pasteboard).compactMap { file -> PastedImage? in
+            guard let size = AttachmentSizeLimit.fileSize(at: file.url),
+                  AttachmentSizeLimit.allows(byteCount: size, megabytes: megabytes),
+                  let data = try? Data(contentsOf: file.url) else { return nil }
+            return PastedImage(data: data, typeIdentifier: file.type.identifier)
+        }
+    }
+
+    /// Names of the pasted image files that are over the attachment limit.
+    static func oversizeImageFileNames(from pasteboard: NSPasteboard, megabytes: Int = attachmentMegabytes) -> [String] {
+        imageFiles(on: pasteboard).compactMap { file in
+            guard let size = AttachmentSizeLimit.fileSize(at: file.url),
+                  !AttachmentSizeLimit.allows(byteCount: size, megabytes: megabytes) else { return nil }
+            return file.url.lastPathComponent
+        }
+    }
+
+    /// Tells the user about image files that are over the limit; true when there were any.
+    func reportOversizeImageFiles(on pasteboard: NSPasteboard, megabytes: Int = ComposerTextView.attachmentMegabytes) -> Bool {
+        let names = Self.oversizeImageFileNames(from: pasteboard, megabytes: megabytes)
+        guard !names.isEmpty else { return false }
+        onPastedImageError?(AttachmentSizeLimit.tooLargeMessage(names: names, megabytes: megabytes))
+        return true
     }
 
     static func pastedImages(from pasteboard: NSPasteboard) -> [PastedImage] {
@@ -412,6 +446,8 @@ final class ComposerTextView: NSTextView {
         case .images(let images):
             onPastedImages?(images)
         case .text:
+            // A file over the limit says so instead of pasting its name.
+            if reportOversizeImageFiles(on: .general) { return }
             pasteAsPlainText(sender)
         }
     }
@@ -425,6 +461,7 @@ final class ComposerTextView: NSTextView {
             onPastedImages?(images)
             return true
         }
+        if reportOversizeImageFiles(on: sender.draggingPasteboard) { return true }
         return super.performDragOperation(sender)
     }
 }
