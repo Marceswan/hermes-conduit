@@ -35,7 +35,7 @@ struct MacSessionWindowView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     ForEach(controller.transcript.messages) { message in
-                        row(message).id(message.id)
+                        MacSessionWindowRow(message: message, controller: controller).id(message.id)
                     }
                     if !controller.transcript.streamingText.isEmpty {
                         StreamingBubble(text: controller.transcript.streamingText, active: true).id("streaming")
@@ -56,34 +56,6 @@ struct MacSessionWindowView: View {
                 if follow.shouldFollow(userJustSent: false) { scrollToEnd(proxy) }
             }
             .onAppear { scrollToEnd(proxy) }
-        }
-    }
-
-    @ViewBuilder
-    private func row(_ message: ChatMessage) -> some View {
-        switch message.role {
-        case .approval:
-            if let activity = message.approval {
-                MacWindowApprovalCard(activity: activity) { controller.approve(messageID: message.id, choice: $0) }
-            }
-        case .clarify:
-            if let activity = message.clarify {
-                MacWindowClarifyCard(activity: activity) { question, answer in
-                    controller.answerClarify(messageID: message.id, questionID: question, answer: answer)
-                }
-            }
-        case .inputPrompt:
-            if let activity = message.inputPrompt {
-                MacWindowInputPromptCard(activity: activity) { controller.answerInputPrompt(messageID: message.id, value: $0) }
-            }
-        case .assistant:
-            MacWindowAssistantRow(message: message, profile: controller.token.profile,
-                                  gatewayResolver: appState.gatewayMediaResolver)
-        case .system where Self.isVoiceCallMarker(message):
-            // MessageBubble's marker card opens the call transcript in the main window.
-            SystemBubble(message: message)
-        default:
-            MessageBubble(message: message, gatewayResolver: appState.gatewayMediaResolver)
         }
     }
 
@@ -108,6 +80,47 @@ struct MacSessionWindowView: View {
                           MacUntrustedText.sanitize(profileName(profile), maxGraphemes: 40))
         case .deleted: return AppLocalization.string("This conversation was deleted.")
         case .failed(let message): return message
+        }
+    }
+}
+
+/// One transcript row of a session window. The reused upstream rows (`MessageBubble`, the step
+/// and card rows) read their state and actions from the environment that `.chatRows()` sets, and
+/// stop with a precondition failure without it. A separate view so a test can lay out one row.
+struct MacSessionWindowRow: View {
+    let message: ChatMessage
+    @ObservedObject var controller: MacSessionWindowController
+    @EnvironmentObject private var appState: AppState
+
+    var body: some View {
+        content.chatRows()
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch message.role {
+        case .approval:
+            if let activity = message.approval {
+                MacWindowApprovalCard(activity: activity) { controller.approve(messageID: message.id, choice: $0) }
+            }
+        case .clarify:
+            if let activity = message.clarify {
+                MacWindowClarifyCard(activity: activity) { question, answer in
+                    controller.answerClarify(messageID: message.id, questionID: question, answer: answer)
+                }
+            }
+        case .inputPrompt:
+            if let activity = message.inputPrompt {
+                MacWindowInputPromptCard(activity: activity) { controller.answerInputPrompt(messageID: message.id, value: $0) }
+            }
+        case .assistant:
+            MacWindowAssistantRow(message: message, profile: controller.token.profile,
+                                  gatewayResolver: appState.gatewayMediaResolver)
+        case .system where MacSessionWindowView.isVoiceCallMarker(message):
+            // MessageBubble's marker card opens the call transcript in the main window.
+            SystemBubble(message: message)
+        default:
+            MessageBubble(message: message, gatewayResolver: appState.gatewayMediaResolver)
         }
     }
 }
