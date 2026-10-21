@@ -421,7 +421,7 @@ def _load_baseline(path: Optional[str]) -> List[str]:
     with open(path, encoding="utf-8") as fh:
         data = json.load(fh)
     if isinstance(data, dict):
-        data = data.get("failures", [])
+        data = data.get("failed", [])
     return [str(x) for x in data]
 
 

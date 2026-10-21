@@ -141,6 +141,26 @@ class ReportTests(GitFixture):
 
 
 class CliTests(GitFixture):
+    def test_baseline_in_mac_test_failures_format_is_listed(self):
+        import json
+        mtf = load_module("mac_test_failures_for_triage", "upstream-sync/mac-test-failures.py")
+        log = ("Test case 'ComposerToolCardContrastTests."
+               "testReasoningPickerHasAtLeast4_5ToOneContrastInLightAndDark()' failed on 'My Mac' (0.1 seconds)\n"
+               "** TEST FAILED **\n")
+        out = os.path.join(self._tmp.name, "out_baseline")
+        os.makedirs(out)
+        with open(os.path.join(out, "b.json"), "w") as fh:
+            json.dump(mtf.parse(log), fh)
+        rc = t.main(["--repo", self.repo, "--mac-ref", "mac", "--head", "main",
+                     "--json", os.path.join(out, "t.json"), "--report", os.path.join(out, "t.md"),
+                     "--baseline", os.path.join(out, "b.json")])
+        self.assertEqual(rc, 0)
+        with open(os.path.join(out, "t.md")) as fh:
+            report = fh.read()
+        section = report.split("## Baseline failures")[1].split("## Decisions")[0]
+        self.assertIn("ComposerToolCardContrastTests/testReasoningPickerHasAtLeast4_5ToOneContrastInLightAndDark",
+                      section)
+
     def test_main_writes_json_and_report(self):
         import json
         out = os.path.join(self._tmp.name, "out")
