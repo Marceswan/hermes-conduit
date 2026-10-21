@@ -16,7 +16,7 @@ final class LoginSignInRouteTests: XCTestCase {
         nativeCheck: Bool = false
     ) async throws -> LoginSignInRoute {
         try await LoginView.signInRoute(
-            for: discovery, credentialsArePresent: credentials, supportsNativeOAuth: { nativeCheck })
+            for: discovery, hasTypedCredentials: credentials, supportsNativeOAuth: { nativeCheck })
     }
 
     // MARK: B2
@@ -90,7 +90,7 @@ final class LoginSignInRouteTests: XCTestCase {
         struct Boom: Error {}
         do {
             _ = try await LoginView.signInRoute(
-                for: .providers([native], authFlows: nil), credentialsArePresent: false,
+                for: .providers([native], authFlows: nil), hasTypedCredentials: false,
                 supportsNativeOAuth: { throw Boom() })
             XCTFail("expected the check error")
         } catch {
@@ -101,19 +101,39 @@ final class LoginSignInRouteTests: XCTestCase {
     // MARK: B5
 
     func testSavedSignInOfferNamesTheSensorAndTheKind() {
-        let touch = LoginSavedSignInOffer.make(kind: .biometric, biometricKind: .touchID, biometricsAvailable: true)
+        let touch = LoginSavedSignInOffer.make(kind: .biometric, biometricKind: .touchID, biometricsAvailable: true, isConnected: false)
         XCTAssertEqual(touch?.title, "Signs in with Touch ID")
-        let face = LoginSavedSignInOffer.make(kind: .biometric, biometricKind: .faceID, biometricsAvailable: true)
+        let face = LoginSavedSignInOffer.make(kind: .biometric, biometricKind: .faceID, biometricsAvailable: true, isConnected: false)
         XCTAssertEqual(face?.title, "Signs in with Face ID")
-        XCTAssertEqual(LoginSavedSignInOffer.make(kind: .password, biometricKind: nil, biometricsAvailable: false)?.title,
+        XCTAssertEqual(LoginSavedSignInOffer.make(kind: .password, biometricKind: nil, biometricsAvailable: false, isConnected: false)?.title,
                        "Saved sign-in")
-        XCTAssertEqual(LoginSavedSignInOffer.make(kind: .session, biometricKind: nil, biometricsAvailable: false)?.title,
+        XCTAssertEqual(LoginSavedSignInOffer.make(kind: .session, biometricKind: nil, biometricsAvailable: false, isConnected: false)?.title,
                        "Saved sign-in")
     }
 
     func testNoSavedSignInOfferWhenNothingIsSavedOrBiometricsAreGone() {
-        XCTAssertNil(LoginSavedSignInOffer.make(kind: .signInNeeded, biometricKind: .touchID, biometricsAvailable: true))
-        XCTAssertNil(LoginSavedSignInOffer.make(kind: .biometric, biometricKind: .touchID, biometricsAvailable: false))
+        XCTAssertNil(LoginSavedSignInOffer.make(kind: .signInNeeded, biometricKind: .touchID, biometricsAvailable: true, isConnected: false))
+        XCTAssertNil(LoginSavedSignInOffer.make(kind: .biometric, biometricKind: .touchID, biometricsAvailable: false, isConnected: false))
+    }
+
+    func testNoSavedSignInOfferWhileTheSessionIsConnected() {
+        // switchDashboard(to:) does nothing for the connected dashboard: the button would be a no-op.
+        for kind in [SavedSignInKind.biometric, .password, .session] {
+            XCTAssertNil(LoginSavedSignInOffer.make(
+                kind: kind, biometricKind: .touchID, biometricsAvailable: true, isConnected: true), "\(kind)")
+            XCTAssertNotNil(LoginSavedSignInOffer.make(
+                kind: kind, biometricKind: .touchID, biometricsAvailable: true, isConnected: false), "\(kind)")
+        }
+    }
+
+    // MARK: M7
+
+    func testAPartlyTypedCredentialStaysOnThePasswordPath() async throws {
+        // "Typed" means a username or a password is in its field; the card then asks for the missing one.
+        for providers in [[password, legacy], [password, native]] {
+            let result = try await route(.providers(providers, authFlows: nil), credentials: true, nativeCheck: true)
+            XCTAssertEqual(result, .password, "\(providers)")
+        }
     }
 
     // MARK: M3

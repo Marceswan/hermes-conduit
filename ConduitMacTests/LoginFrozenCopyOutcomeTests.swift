@@ -3,6 +3,32 @@ import SwiftUI
 import XCTest
 @testable import ConduitMac
 
+/// A Keychain in memory, keyed by service and account (the scoped and the legacy query of one record share a key).
+private final class MemoryKeychainBackend: KeychainHelper.Backend {
+    private var items: [String: Data] = [:]
+
+    private func key(_ query: [String: Any]) -> String {
+        "\(query[kSecAttrService as String] ?? "")|\(query[kSecAttrAccount as String] ?? "")"
+    }
+
+    func data(for query: [String: Any]) -> Data? { items[key(query)] }
+
+    func update(_ data: Data, for query: [String: Any]) -> Int32 {
+        guard items[key(query)] != nil else { return errSecItemNotFound }
+        items[key(query)] = data
+        return errSecSuccess
+    }
+
+    func add(_ query: [String: Any]) -> Int32 {
+        items[key(query)] = query[kSecValueData as String] as? Data
+        return errSecSuccess
+    }
+
+    func delete(_ query: [String: Any]) { items[key(query)] = nil }
+
+    func setAccessibility(_ accessibility: CFString, for query: [String: Any]) -> Int32 { errSecSuccess }
+}
+
 /// R17 for the frozen sign-in copies in ConduitMac/Login: outcomes that had no visible way forward.
 @MainActor
 final class LoginFrozenCopyOutcomeTests: XCTestCase {
@@ -11,8 +37,10 @@ final class LoginFrozenCopyOutcomeTests: XCTestCase {
     private var appState: AppState!
     private var window: NSWindow?
     private var boostWasOn = false
-
     override func setUp() async throws {
+        // The registry and the saved sign-in records go to the Keychain, outside the defaults suite: keep every
+        // read and write of this class off the real one.
+        KeychainHelper.useBackendForTesting(MemoryKeychainBackend())
         suite = HostedTestSupport.makeSuite()
         boostWasOn = AccessibilityTreeBoost.isOn
         scratch = FileManager.default.temporaryDirectory
@@ -39,6 +67,7 @@ final class LoginFrozenCopyOutcomeTests: XCTestCase {
         appState = nil
         HostedTestSupport.dropSuite(suite)
         try? FileManager.default.removeItem(at: scratch)
+        KeychainHelper.useBackendForTesting(KeychainHelper.SystemKeychainBackend())
     }
 
     private var repoRoot: URL {
@@ -75,7 +104,7 @@ final class LoginFrozenCopyOutcomeTests: XCTestCase {
     // MARK: B5
 
     func testSavedSignInButtonIsAControlWithItsStatusText() throws {
-        let offer = try XCTUnwrap(LoginSavedSignInOffer.make(kind: .biometric, biometricKind: .touchID, biometricsAvailable: true))
+        let offer = try XCTUnwrap(LoginSavedSignInOffer.make(kind: .biometric, biometricKind: .touchID, biometricsAvailable: true, isConnected: false))
         let view = LoginSavedSignInButton(offer: offer, address: "https://hermes.example", isBusy: false, action: {})
         let ids = try identifiers(of: view, expecting: "login.saved-sign-in")
         XCTAssertTrue(ids.contains("login.saved-sign-in"), "\(ids)")
@@ -95,6 +124,24 @@ final class LoginFrozenCopyOutcomeTests: XCTestCase {
         appState.selectDashboardTarget(second)
         XCTAssertEqual(appState.activeDashboardID, second)
         XCTAssertGreaterThan(published, 0, "a view that reads activeDashboardID is told when it changes")
+    }
+
+    func testLoginCardFollowsADashboardSwitchWhileItIsOpen() throws {
+        let first = try XCTUnwrap(appState.resolveDashboardID(forURL: "https://a.example.com", registerIfMissing: true))
+        let second = try XCTUnwrap(appState.resolveDashboardID(forURL: "https://b.example.com", registerIfMissing: true))
+        appState.selectDashboardTarget(first)
+        appState.rememberDashboardURL("https://a.example.com")
+        try XCTSkipUnless(AccessibilityTreeBoost.isAvailable)
+        AccessibilityTreeBoost.set(true)
+        let w = HostedTestSupport.host(LoginView().environmentObject(appState).frame(width: 640, height: 900),
+                                       size: NSSize(width: 640, height: 900))
+        window = w
+        func address() -> String? { AccessibilityProbe.nodes(in: w).first { $0.identifier == "login.server-url" }?.value }
+        // The card fills the address from the last dashboard when it appears; switch only after that.
+        XCTAssertTrue(HostedTestSupport.waitUntil { address() == "https://a.example.com" }, "first fill: \(address() ?? "nil")")
+        appState.selectDashboardTarget(second)
+        let ok = HostedTestSupport.waitUntil { address()?.contains("b.example.com") == true }
+        XCTAssertTrue(ok, "address after the switch: \(address() ?? "nil")")
     }
 
     // MARK: B1 (wiring; the sheet itself is covered by AuthWebSignInSheetTests)

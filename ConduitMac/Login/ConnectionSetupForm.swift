@@ -317,25 +317,29 @@ struct ConnectionSetupForm: View {
                 if let settingsReview, settingsReview.offersSignInAgain {
                     // Sign In Again is the primary action.
                     settingsSignInAgain(settingsReview)
-                    Button(flow.testedSettingsUnchanged ? AppLocalization.string("Done") : AppLocalization.string("Use these settings")) {
-                        if let result = flow.complete() { onComplete(result) }
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(!reviewIsValid || settingsReview.isSigningIn)
-                    .accessibilityIdentifier("setup.use-settings")
+                    Button(useSettingsTitle) { applySettings() }
+                        .buttonStyle(.bordered)
+                        .disabled(!reviewIsValid || settingsReview.isSigningIn)
+                        .accessibilityIdentifier("setup.use-settings")
                 } else {
-                    Button(flow.testedSettingsUnchanged ? AppLocalization.string("Done") : AppLocalization.string("Use these settings")) {
-                        if let result = flow.complete() { onComplete(result) }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!reviewIsValid)
-                    .accessibilityIdentifier("setup.use-settings")
+                    Button(useSettingsTitle) { applySettings() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!reviewIsValid)
+                        .accessibilityIdentifier("setup.use-settings")
                 }
                 if flow.canUseSettings, flow.testState.requiresSignInChoice {
                     signInChoiceEnterCredentialsButton // R17
                 }
             }
         }
+    }
+
+    private var useSettingsTitle: String {
+        flow.testedSettingsUnchanged ? AppLocalization.string("Done") : AppLocalization.string("Use these settings")
+    }
+
+    private func applySettings() {
+        if let result = flow.complete() { onComplete(result) }
     }
 
     /// Settings' Sign In Again (ported from upstream): opens the sign-in the test decided for the active dashboard,

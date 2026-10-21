@@ -110,4 +110,46 @@ final class ConnectionSetupSettingsSignInTests: XCTestCase {
         XCTAssertTrue(out.ids.contains("setup.use-settings"), "\(out.ids)")
         XCTAssertFalse(out.ids.contains("setup.review.sign-in-again"), "\(out.ids)")
     }
+
+    // MARK: the address gate of Sign In Again
+
+    func testSignInAgainIsOfferedForTheActiveDashboardOnly() throws {
+        let flow = try flowAtReview(ending: interactive)
+        XCTAssertTrue(ConnectionSetupSettingsReview.offersSignInAgain(
+            for: flow, activeDashboardURL: "https://hermes.example.com"))
+        XCTAssertFalse(ConnectionSetupSettingsReview.offersSignInAgain(
+            for: flow, activeDashboardURL: "https://other.example.com"))
+        XCTAssertFalse(ConnectionSetupSettingsReview.offersSignInAgain(for: flow, activeDashboardURL: nil))
+    }
+
+    func testSignInAgainIsNotOfferedWithoutABrowserOutcome() throws {
+        let flow = try flowAtReview(ending: .succeeded(.authentication))
+        XCTAssertFalse(ConnectionSetupSettingsReview.offersSignInAgain(
+            for: flow, activeDashboardURL: "https://hermes.example.com"))
+    }
+
+    // MARK: the spoken result
+
+    func testSettingsAnnouncementNamesSignInAgainNotTheLoginScreen() {
+        let review = settingsReview(offers: true, connected: false)
+        let expected = ConnectionSetupSettingsReview.signInAgainMessage(connected: false)
+        for event in [interactive, choice] {
+            XCTAssertEqual(ConnectionSetupAnnouncement.completion(for: event, repairing: false, settingsReview: review), expected)
+        }
+    }
+
+    func testOtherAnnouncementsUseTheSharedWording() {
+        let none = settingsReview(offers: false)
+        XCTAssertEqual(ConnectionSetupAnnouncement.completion(for: interactive, repairing: false, settingsReview: none),
+                       ConnectionSetupTestState.interactiveReadyMessage)
+        XCTAssertEqual(ConnectionSetupAnnouncement.completion(for: interactive, repairing: true, settingsReview: nil),
+                       ConnectionSetupTestState.repairInteractiveMessage)
+        XCTAssertEqual(ConnectionSetupAnnouncement.completion(for: choice, repairing: true, settingsReview: nil),
+                       ConnectionSetupTestState.repairSignInChoiceMessage)
+        XCTAssertEqual(ConnectionSetupAnnouncement.completion(for: choice, repairing: false, settingsReview: nil),
+                       ConnectionSetupTestState.signInChoiceMessage)
+        XCTAssertEqual(ConnectionSetupAnnouncement.completion(for: .succeeded(.authentication), repairing: false, settingsReview: nil),
+                       ConnectionSetupTestState.readyMessage)
+        XCTAssertNil(ConnectionSetupAnnouncement.completion(for: .started(.server), repairing: false, settingsReview: nil))
+    }
 }
