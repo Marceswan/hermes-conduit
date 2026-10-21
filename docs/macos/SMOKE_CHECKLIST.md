@@ -247,9 +247,9 @@ Human pass at release time (agents never click or type into the running app, R18
 
 ## Artifacts (D26)
 - [ ] Artifacts pane against a host whose notifier plugin offers `artifacts` (0.40+): the pane lists the profile's artifacts under day headings, pictures and videos as a 3-column grid with thumbnails, the rest as rows; the chips (All, Images, Pages, Files, Links) filter; scrolling to the end reads the next page; typing in the search pill filters after a short pause.
-- [ ] Open: a picture or file downloads and Finder shows it selected (it carries the quarantine flag); a page opens in a sheet with a Done button that closes it; a link opens in the browser; a file the host no longer has shows the alert with its path; a very large file shows "Too large to open on this Mac".
+- [ ] Open: a picture or file downloads and Finder shows it selected (it carries the quarantine flag); a page opens in a sheet with a Done button that closes it; a page that is not UTF-8 text or is over the size limit is revealed in Finder instead; a link opens in the browser; a file the host no longer has shows the alert with its path; a very large file shows "Too large to open on this Mac".
 - [ ] Right-click an item: Open, Show in Chat (the pane returns to Sessions, opens that chat and scrolls to the message), Copy Link (links) or Copy Path (files).
-- [ ] More menu: Show Missing Files is off at first (missing files hidden); turn it on and missing files appear dimmed with a "Missing" badge on pictures; Refresh reads the list again.
+- [ ] More menu: Show Missing Files is off at first (missing files hidden; the request carries `missing=hide`); turn it on and the list reads again and missing files appear dimmed with a "Missing" badge on pictures; Refresh reads the list again.
 - [ ] A host whose plugin is older: the pane shows "Update the Conduit plugin" and no spinner; update the plugin, return to the pane, and the list loads.
 - [ ] Switch dashboard with the pane open: the old server's artifacts disappear at once. Light and dark, Reduce Transparency on, VoiceOver reads each tile as name, kind and chat.
 
