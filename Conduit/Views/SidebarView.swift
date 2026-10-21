@@ -639,9 +639,9 @@ struct SessionList: View {
     #if os(macOS) // MAC: rows the keyboard reaches, top to bottom, as listed (D10)
     private var keyboardNavigationIDs: [String] {
         if showingProjects { return projectsViewPinnedSessions.map(\.id) }
-        // One pass over displayedSessions, not one per section.
-        let shown = displayedSessions
-        return (shown.filter { appState.isSessionPinned($0) } + shown.filter { !appState.isSessionPinned($0) }).map(\.id)
+        // The rows the nested list draws: a nest's children only while it is expanded.
+        let sections = nestedSessionSections
+        return MacVisibleSessionRows.ids(pinned: sections.pinned, recent: sections.recent, expanded: expandedNestIDs)
     }
     #endif // MAC:
 

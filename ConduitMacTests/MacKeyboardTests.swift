@@ -1192,3 +1192,39 @@ final class MacComposerKeyboardTests: XCTestCase {
                       "composer -> list: \(String(describing: window.firstResponder))")
     }
 }
+
+/// The cursor order follows the nested session list: children only under an expanded parent.
+extension MacSessionListKeyboardTests {
+    private func nestRow(_ id: String, stored: String? = nil, activity: TimeInterval? = nil) -> SessionSummary {
+        SessionSummary(id: id, storedSessionId: stored, alternateIds: [], title: id, model: "claude",
+                       updatedLabel: "2h", lastActivityAt: activity, profile: "default", source: .chat,
+                       isActive: false, isArchived: false)
+    }
+
+    func testCursorSkipsChildrenOfACollapsedParent() {
+        let rows = [nestRow("p1"), nestRow("c1", activity: 20), nestRow("c2", activity: 10), nestRow("p2"), nestRow("g1")]
+        let parents = ["c1": "p1", "c2": "p1", "g1": "c1"]
+        let sections = SessionNesting.sections(rows, query: "", statusFilterActive: false,
+                                               isPinned: { _ in false }, parentKeyOf: { parents[$0.id] })
+        XCTAssertEqual(MacVisibleSessionRows.ids(pinned: sections.pinned, recent: sections.recent, expanded: []),
+                       ["p1", "p2"])
+        XCTAssertEqual(MacVisibleSessionRows.ids(pinned: sections.pinned, recent: sections.recent, expanded: ["p1"]),
+                       ["p1", "c1", "c2", "p2"])
+        XCTAssertEqual(MacVisibleSessionRows.ids(pinned: sections.pinned, recent: sections.recent, expanded: ["p1", "c1"]),
+                       ["p1", "c1", "g1", "c2", "p2"])
+    }
+
+    func testCursorListsPinnedNodesFirstAndUsesTheStoredIdAsNestKey() {
+        let rows = [nestRow("a"), nestRow("pinned-parent", stored: "st-1"), nestRow("pinned-child", activity: 5), nestRow("b")]
+        let parents = ["pinned-child": "st-1"]
+        let sections = SessionNesting.sections(rows, query: "", statusFilterActive: false,
+                                               isPinned: { $0.id == "pinned-parent" }, parentKeyOf: { parents[$0.id] })
+        let collapsed = MacVisibleSessionRows.ids(pinned: sections.pinned, recent: sections.recent, expanded: [])
+        XCTAssertEqual(collapsed.first, "pinned-parent")
+        XCTAssertFalse(collapsed.contains("pinned-child"))
+        // The old flat order listed every row, including the hidden child.
+        XCTAssertEqual(rows.count, 4)
+        XCTAssertEqual(MacVisibleSessionRows.ids(pinned: sections.pinned, recent: sections.recent, expanded: ["st-1"]).count,
+                       collapsed.count + 1)
+    }
+}
