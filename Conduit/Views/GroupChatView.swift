@@ -582,7 +582,7 @@ struct GroupUserBubble<Footer: View>: View {
                     if let timestamp {
                         Text(GroupBubbleTime.text(timestamp))
                             .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.conduitTertiary)
                     }
                     if !parts.text.isEmpty {
                         GroupMessageCopyButton(text: parts.text, label: .message)
@@ -627,7 +627,7 @@ struct GroupMemberBubble: View {
                         if let timestamp {
                             Text(GroupBubbleTime.text(timestamp))
                                 .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(.conduitTertiary)
                         }
                     }
                 }
@@ -665,7 +665,7 @@ struct GroupSystemEventCaption: View {
     var body: some View {
         Text(caption)
             .font(.caption2)
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(.conduitTertiary)
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.vertical, 2)
     }
@@ -1241,7 +1241,7 @@ struct DesktopGroupChatView: View {
                         if group.omitted > 0 {
                             Text(AppLocalization.string("Earlier messages are only in Hermes Desktop."))
                                 .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(.conduitTertiary)
                                 .frame(maxWidth: .infinity)
                         }
                         ForEach(group.messages) { message in

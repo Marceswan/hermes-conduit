@@ -666,6 +666,51 @@ final class AppStateChatResumeTests: XCTestCase {
         XCTAssertEqual(harness.appState.activeChatScrollSessionIdentity.canonicalSessionID, "stored-a")
     }
 
+    func testFailedPreserveCurrentRecoveryKeepsApprovalAnnouncedDuringResume() async {
+        // Hermes announces an approval once (`approval.request`) and never
+        // re-sends it. When it lands while a preserve-current resume is in
+        // flight it is buffered; a resume that then FAILS must not throw it
+        // away with the rest of the buffer, or the chat never draws the
+        // card while Hermes waits on it (seen on a new chat whose stored id
+        // was not saved yet: the resume answered "session not found").
+        let openGate = ControlledSuspension()
+        let harness = makeHarness(lifecycleOperations: ChatResumeLifecycleOperations(
+            loadCatalog: { _, _ in [self.session("unrelated"), self.session("stored-a")] },
+            openSession: { _, _, _ in
+                await openGate.suspend()
+                throw URLError(.timedOut)
+            },
+            refreshContext: { _, _ in }
+        ))
+        harness.appState.client = HermesClient(
+            connection: HermesConnection(baseUrl: "https://one.example", ticket: "ticket"), profile: "default")
+        harness.appState.sessions = [self.session("stored-a", alternateIDs: ["runtime-a"])]
+        harness.appState.activeSessionId = "runtime-a"
+
+        let sync = Task { @MainActor in
+            await harness.appState.syncSession()
+        }
+        await openGate.waitUntilSuspended()
+        harness.appState.handleStreamEvent(.approval(sessionId: "runtime-a", activity: ApprovalActivity(
+            sessionId: "runtime-a",
+            requestId: "req-1",
+            command: "chmod 777 /tmp/push-approval-test",
+            description: "world/other-writable permissions",
+            choices: nil,
+            allowPermanent: true,
+            smartDenied: false,
+            status: .pending,
+            choice: nil,
+            error: nil
+        )))
+        openGate.resume()
+        await sync.value
+
+        let card = harness.appState.messages.first { $0.approval?.requestId == "req-1" }?.approval
+        XCTAssertNotNil(card, "The approval announced during the failed resume must still be drawn")
+        XCTAssertEqual(card?.status, .pending)
+    }
+
     func testContradictoryResumeIsRejectedWithoutMutatingSelectedConversation() async {
         // Selected durable stored-a; the resume explicitly says stored-b.
         // The claim is rejected before transcript, identity, navigation, or
@@ -2211,6 +2256,82 @@ final class AppStateChatResumeTests: XCTestCase {
 
         XCTAssertFalse(opened)
         XCTAssertFalse(harness.appState.isOpeningNotificationSession)
+    }
+
+    /// #789: an open Hermes refuses for good is final, so the route doesn't
+    /// retry it; one that failed on the way can pass on the next try.
+    private func notificationOpenOutcome(
+        catalog: [SessionSummary],
+        open: @escaping (String) throws -> SessionResumeResult
+    ) async -> (outcome: AppState.NotificationOpenOutcome, appState: AppState) {
+        let harness = makeHarness(
+            lifecycleOperations: ChatResumeLifecycleOperations(
+                loadCatalog: { _, _ in catalog },
+                openSession: { _, sessionID, _ in try open(sessionID) },
+                refreshContext: { _, _ in }
+            )
+        )
+        let connection = HermesConnection(baseUrl: "https://one.example", ticket: "ticket")
+        harness.appState.connection = connection
+        harness.appState.client = HermesClient(connection: connection, profile: "default")
+        let outcome = await harness.appState.openNotificationTargetOutcome(
+            ConduitNotificationTarget(profile: nil, sessionId: "stored-a", type: "response_ready")
+        )
+        return (outcome, harness.appState)
+    }
+
+    func testNotificationOpenOfAMissingConversationIsFinal() async {
+        let result = await notificationOpenOutcome(catalog: [session("stored-a")]) { _ in
+            throw RpcError(code: 4007, message: "session not found")
+        }
+        XCTAssertEqual(result.outcome, .failed)
+    }
+
+    func testNotificationOpenThatResumesAnotherConversationIsFinal() async {
+        let catalog = [session("stored-a"), session("stored-b", alternateIDs: ["runtime-b"])]
+        let result = await notificationOpenOutcome(catalog: catalog) { _ in
+            SessionResumeResult(
+                sessionId: "runtime-b",
+                messages: [],
+                snapshot: SessionRuntimeSnapshot(object: ["running": .bool(false)])
+            )
+        }
+        XCTAssertEqual(result.outcome, .failed)
+    }
+
+    func testNotificationOpenThatFailsOnTheWayIsRetried() async {
+        let result = await notificationOpenOutcome(catalog: [session("stored-a")]) { _ in
+            throw ControlledLifecycleError.failed
+        }
+        XCTAssertEqual(result.outcome, .retry)
+    }
+
+    /// A refusal from an earlier resume doesn't carry over to this one.
+    func testNotificationOpenRetryAfterAnEarlierRefusalStaysRetryable() async {
+        var refuse = true
+        let harness = makeHarness(
+            lifecycleOperations: ChatResumeLifecycleOperations(
+                loadCatalog: { _, _ in [self.session("stored-a"), self.session("stored-c")] },
+                openSession: { _, sessionID, _ in
+                    if refuse { throw RpcError(code: 4007, message: "session not found") }
+                    throw ControlledLifecycleError.failed
+                },
+                refreshContext: { _, _ in }
+            )
+        )
+        let connection = HermesConnection(baseUrl: "https://one.example", ticket: "ticket")
+        harness.appState.connection = connection
+        harness.appState.client = HermesClient(connection: connection, profile: "default")
+        let first = await harness.appState.openNotificationTargetOutcome(
+            ConduitNotificationTarget(profile: nil, sessionId: "stored-c", type: "response_ready")
+        )
+        XCTAssertEqual(first, .failed)
+
+        refuse = false
+        let second = await harness.appState.openNotificationTargetOutcome(
+            ConduitNotificationTarget(profile: nil, sessionId: "stored-a", type: "response_ready")
+        )
+        XCTAssertEqual(second, .retry)
     }
 
     func testOpeningAnotherChatTakesDownTheChatsModelAndContextSheets() async {

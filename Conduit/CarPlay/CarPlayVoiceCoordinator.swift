@@ -324,6 +324,13 @@ final class CarPlayVoiceCoordinator {
         }
     }
 
+    /// The car's screen shows Conduit again. A connection lost meanwhile
+    /// reconnects now, so the driver's next request finds Hermes (#1060).
+    func handleSceneWillEnterForeground() {
+        guard isConnected else { return }
+        (lastBoundAppState ?? appStateProvider()).handleCarPlaySceneWillEnterForeground()
+    }
+
     /// `CPTemplateApplicationSceneDelegate` disconnect. Rotates the fence so
     /// in-flight establishment becomes stale, unbinds presentation, and hands
     /// the lifecycle decision to the BOUND AppState: an active phone Voice
@@ -521,7 +528,7 @@ final class CarPlayVoiceCoordinator {
                 // resolves, so it was built for the classic mode; the
                 // controls may also have changed while it was on its way.
                 // Either way the car gets a template built for them.
-                guard self.controls == builtControls else {
+                if self.controls != builtControls, !self.isBrowsing {
                     self.reinstallRootTemplate()
                     return
                 }
@@ -613,7 +620,7 @@ final class CarPlayVoiceCoordinator {
         controls = newControls
         // Before presentation the install completion compares the controls
         // and reinstalls itself.
-        guard isConnected, template != nil, isTemplatePresented,
+        guard isConnected, template != nil, isTemplatePresented, !isBrowsing,
               templateControls != newControls else { return }
         reinstallRootTemplate()
     }
@@ -778,16 +785,25 @@ final class CarPlayVoiceCoordinator {
         // sink, where the property still reads the phase being replaced.
         // The host is checked before the microphone is asked for, so a
         // host issue is what stopped this call even with the mic denied.
+        // Consent is asked before the host is checked (#827): only the
+        // phone can give it.
         case .geminiLive:
-            return liveIssue(appState.geminiLiveController.hostIssue, .geminiLive)
+            return consentIssue(appState.geminiLiveController.awaitingConsent)
+                ?? liveIssue(appState.geminiLiveController.hostIssue, .geminiLive)
                 ?? (isMicrophoneDenied ? .microphoneDenied : nil)
         case .gptLive:
-            return liveIssue(appState.gptLiveController.hostIssue, .gptLive)
+            return consentIssue(appState.gptLiveController.awaitingConsent)
+                ?? liveIssue(appState.gptLiveController.hostIssue, .gptLive)
                 ?? (isMicrophoneDenied ? .microphoneDenied : nil)
         case .grokLive:
-            return liveIssue(appState.grokLiveController.hostIssue, .grokLive)
+            return consentIssue(appState.grokLiveController.awaitingConsent)
+                ?? liveIssue(appState.grokLiveController.hostIssue, .grokLive)
                 ?? (isMicrophoneDenied ? .microphoneDenied : nil)
         }
+    }
+
+    private static func consentIssue(_ mode: LiveVoiceModeName?) -> VoiceSetupIssue? {
+        mode.map { .providerConsentNeeded($0) }
     }
 
     private static func liveIssue(_ hostIssue: LiveVoiceHostIssue?, _ mode: LiveVoiceModeName) -> VoiceSetupIssue? {
@@ -889,6 +905,10 @@ final class CarPlayVoiceCoordinator {
     func handleTemplateDidAppear(_ appeared: CPTemplate) {
         guard let template, appeared === template else { return }
         isBrowsing = false
+        if isTemplatePresented, templateControls != controls {
+            reinstallRootTemplate()
+            return
+        }
         // A chat picked or renamed while a list was up shows in the title.
         scheduleChatTitleRefresh()
     }
@@ -1249,7 +1269,7 @@ final class CarPlayVoiceCoordinator {
             settleUnopenedChat(opened)
             return
         }
-        let outcome = await prepareWaitingForConnection(appState: appState, generation: generation)
+        guard let outcome = await prepareWaitingForConnection(appState: appState, generation: generation) else { return }
         guard voiceStartRequest == startRequest else {
             closeStartEndedMeanwhile(outcome)
             return
@@ -1453,7 +1473,8 @@ final class CarPlayVoiceCoordinator {
                 }
             }
         } else {
-            outcome = await prepareWaitingForConnection(appState: appState, generation: generation)
+            guard let prepared = await prepareWaitingForConnection(appState: appState, generation: generation) else { return }
+            outcome = prepared
             guard voiceStartRequest == startRequest else {
                 closeStartEndedMeanwhile(outcome)
                 return
@@ -1488,11 +1509,11 @@ final class CarPlayVoiceCoordinator {
         // A new chat is no longer the one picked from the list.
         chosenChat = nil
         let startRequest = voiceStartRequest
-        let outcome = await prepareWaitingForConnection(
+        guard let outcome = await prepareWaitingForConnection(
             appState: appState,
             generation: generation,
             startsFreshConversation: true
-        )
+        ) else { return }
         guard voiceStartRequest == startRequest else {
             closeStartEndedMeanwhile(outcome)
             return
@@ -1687,7 +1708,7 @@ final class CarPlayVoiceCoordinator {
             return
         }
         let startRequest = voiceStartRequest
-        let outcome = await prepareWaitingForConnection(appState: appState, generation: generation)
+        guard let outcome = await prepareWaitingForConnection(appState: appState, generation: generation) else { return }
         guard voiceStartRequest == startRequest else {
             closeStartEndedMeanwhile(outcome)
             return
@@ -1705,6 +1726,7 @@ final class CarPlayVoiceCoordinator {
         attachingTo thread: VoiceThreadTarget? = nil
     ) async {
         let startRequest = voiceStartRequest
+        let driverRequest = driverStartRequest
         guard await waitForHermes(appState: appState, generation: generation) else { return }
         // The setting may have changed while Hermes was being reached; the
         // controls start whichever mode is current on the next tap. End
@@ -1732,7 +1754,9 @@ final class CarPlayVoiceCoordinator {
         }
         // End tapped while the call was starting: the call it closed may
         // not have been running yet, so close whatever started after it.
-        if isCurrent(generation), isConnected, voiceStartRequest != startRequest {
+        // A newer driver start now owns the call and must not be closed.
+        if isCurrent(generation), isConnected, voiceStartRequest != startRequest,
+           driverStartRequest == driverRequest {
             endConversation()
             forward(.ready)
         }
@@ -1741,12 +1765,15 @@ final class CarPlayVoiceCoordinator {
     /// Runs the shared prepare path; when it defers because Hermes is not
     /// connected yet, waits (bounded) for the connection and prepares once
     /// more. A connection that never arrives keeps `.deferred`, which the
-    /// callers settle into the error state.
+    /// callers settle into the error state. A wait cancelled by End, a
+    /// disconnect or a newer start returns nil without settling a terminal
+    /// state (the car may still show the Thinking state set before the
+    /// wait): whatever cancelled the wait owns the car's next state.
     func prepareWaitingForConnection(
         appState: AppState,
         generation: UInt64,
         startsFreshConversation: Bool = false
-    ) async -> AppState.VoiceConversationPrepareOutcome {
+    ) async -> AppState.VoiceConversationPrepareOutcome? {
         appState.keepVoiceFromHermesCallCleanup()
         let outcome = await appState.prepareVoiceConversation(
             profile: nil,
@@ -1759,7 +1786,7 @@ final class CarPlayVoiceCoordinator {
         appState.recoverTransportForCarPlayIfNeeded()
         // Show that Hermes is being reached instead of sitting on Ready.
         handleControllerState(.thinking)
-        let connected = await awaitConnectionCancellably(appState) ?? false
+        guard let connected = await awaitConnectionCancellably(appState) else { return nil }
         guard connected, isCurrent(generation), isConnected else {
             return .deferred
         }
