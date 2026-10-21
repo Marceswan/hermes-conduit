@@ -137,6 +137,8 @@ struct ConduitMacApp: App {
             .macIntentRouting(appState: appState)
             .task { SiriProfileShortcuts.refresh() }
             .task(id: voiceIntentRouteKey) {
+                // Siri's call shows its screen while it waits for Hermes (#711).
+                appState.presentWaitingCallIfNeeded()
                 while await resolvePendingVoiceIntent() {
                     do { try await Task.sleep(for: Self.settleRecheckInterval) } catch { return }
                 }
@@ -197,6 +199,8 @@ struct ConduitMacApp: App {
         }
         switch outcome {
         case .failed(let message):
+            // Its call screen, if one came up for it, goes (#711).
+            appState.endWaitingCall(owner: .siri)
             // A screenshot is kept when Hermes can't be reached: it is
             // attached once Hermes connects and Conduit settles.
             let request = routed?.screenQuestion
@@ -210,6 +214,7 @@ struct ConduitMacApp: App {
             }
         case .superseded:
             // A newer request took over while this one found Hermes gone.
+            // A call screen up for this one waits for that one instead.
             if screenQuestionOpened == false, let request = routed?.screenQuestion {
                 appState.settleSupersededScreenQuestion(
                     request,
@@ -220,7 +225,9 @@ struct ConduitMacApp: App {
         case .deferred:
             return routed?.screenQuestion != nil && connection.isSettling
         case .idle, .routed:
-            break
+            // A call screen that came up for a launch that didn't open its
+            // call (nothing pending now, or voice refused it) goes (#711).
+            appState.endWaitingCall(owner: .siri)
         }
         return false
     }
@@ -245,6 +252,7 @@ struct ConduitMacApp: App {
         guard let expired = pendingVoiceIntents.expireClaimIfCurrent(claim) else {
             return
         }
+        appState.endWaitingCall(owner: .siri)
         if expired.source == .siri {
             appState.errorMessage = PendingVoiceLaunchPolicy.expiredFailureMessage
         } else if let request = expired.screenQuestion {

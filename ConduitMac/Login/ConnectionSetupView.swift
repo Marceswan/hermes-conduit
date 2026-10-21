@@ -218,13 +218,10 @@ struct ConnectionSetupView: View {
                 dashboardIDProvider: { [appState, url = configuration.serverURL] in
                     appState.resolveDashboardID(forURL: url, registerIfMissing: true)
                 },
-                // Repair targets are always registered dashboards: reuse
-                // their own identified WebKit store (read-only resolution —
-                // no render-time registration).
-                websiteDataStoreIdentifier: appState.resolveDashboardID(
-                    forURL: configuration.serverURL,
-                    registerIfMissing: false
-                ),
+                // The dashboard registered before the sheet opened
+                // (`beginRepairSignIn`): its own identified WebKit store,
+                // never the shared default one (#1012).
+                websiteDataStoreIdentifier: repairNativeOAuthDashboardID,
                 onTicket: { ticket, baseURL in
                     Task { @MainActor in
                         showRepairSignIn = false
@@ -295,6 +292,17 @@ struct ConnectionSetupView: View {
                         provider: HermesProviderCheck.nativeOAuthProvider(providers)
                     )
                 } else {
+                    // The browser sign-in signs in to a registered dashboard too:
+                    // its own identified WebKit store, never the shared default one
+                    // (#1012). Registered before the sheet opens, as upstream does.
+                    guard let dashboardID = appState.resolveDashboardID(
+                        forURL: result.serverURL,
+                        registerIfMissing: true
+                    ) else {
+                        activationFailure = .unexpectedServerResponse
+                        return
+                    }
+                    repairNativeOAuthDashboardID = dashboardID
                     repairSignInMode = .browser
                 }
                 repairSignInConfiguration = result
