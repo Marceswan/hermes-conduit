@@ -351,6 +351,8 @@ targets:
           - "Views/ConnectionSetupComponents.swift"
           # ActivityKit is unavailable on macOS (R2): stub in ConduitMac/Stubs/LiveTurnActivitiesStub.swift.
           - "Services/LiveTurnActivities.swift"
+          # A Focus filter that only drives phone sharing, which is off on Mac (R2): nothing else uses the type.
+          - "Intents/HermesFocusFilter.swift"
     settings:
       base:
         PRODUCT_NAME: Conduit
