@@ -46,6 +46,9 @@ struct TurnSurface: Equatable {
 
     /// The device this app runs on.
     @MainActor static var device: Place {
+        #if os(macOS) // MAC: the UIKit shim reports the iPad idiom (wide layouts), so the idiom would name the iPad
+        return .mac
+        #else // MAC:
         if ProcessInfo.processInfo.isiOSAppOnMac { return .mac }
         switch UIDevice.current.userInterfaceIdiom {
         case .pad: return .ipad
@@ -53,6 +56,7 @@ struct TurnSurface: Equatable {
         case .mac: return .mac
         default: return .iphone
         }
+        #endif // MAC:
     }
 
     /// A message typed or spoken in the app. A spoken one counts as CarPlay's
