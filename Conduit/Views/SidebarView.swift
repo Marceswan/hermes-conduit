@@ -302,10 +302,10 @@ struct SessionList: View {
                     #endif // MAC:
                 }
                 .buttonStyle(.plain)
-                #if os(macOS) // MAC: upstream bug, candidate for upstream PR (ledger)
+                #if os(macOS) // MAC: upstream's canTapNewChat plus the saved-copy rule (ledger)
                 // The saved copy only lacks a live gateway while nothing is connected.
-                .disabled(appState.macNewChatDisabled)
-                .opacity(appState.macNewChatDisabled ? 0.6 : 1)
+                .disabled(appState.macNewChatButtonDisabled)
+                .opacity(appState.macNewChatButtonDisabled ? 0.6 : 1)
                 #else // MAC:
                 .disabled(!appState.canTapNewChat)
                 .opacity(appState.canTapNewChat ? 1 : 0.6)
