@@ -12,7 +12,10 @@ final class LiveTurnActivitiesStubTests: XCTestCase {
         XCTAssertEqual(ids, [])
     }
 
-    func testStartingATurnWithALinkIDDoesNothing() {
+    /// A signature pin, not a behavior test: `AppState` passes `linkID` to `turnStarted` (#1039), so the
+    /// stub must accept the label. The call can fail only as a compile error. The stub keeps no state, so
+    /// there is nothing to assert after it.
+    func testTurnStartedAcceptsALinkIDAsUpstreamsSignatureDoes() {
         LiveTurnActivities.shared.turnStarted(
             sessionIDs: ["s1"],
             primaryID: "s1",
@@ -20,6 +23,5 @@ final class LiveTurnActivitiesStubTests: XCTestCase {
             title: "Chat",
             profile: "default"
         )
-        XCTAssertFalse(LiveTurnActivities.shared.reconcile(liveSessionIDs: [], profile: "default", dashboardID: nil))
     }
 }

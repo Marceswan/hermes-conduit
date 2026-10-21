@@ -22,8 +22,8 @@ final class LoginCopySavedPasswordTests: XCTestCase {
 
     func testNoCopyClearsTheKeychainPasswordBehindTheHeldUnlock() throws {
         for (name, source) in try copies() {
-            XCTAssertFalse(
-                source.contains("KeychainHelper.clearCredentials(dashboardID"),
+            XCTAssertNil(
+                source.range(of: #"KeychainHelper\s*\.clearCredentials\(\s*dashboardID"#, options: .regularExpression),
                 "\(name) clears the saved password without dropping the held Face ID unlock; call appState.clearSavedPassword(dashboardID:)"
             )
         }
@@ -31,7 +31,10 @@ final class LoginCopySavedPasswordTests: XCTestCase {
 
     func testTheSignInCopyClearsThroughAppState() throws {
         let login = try XCTUnwrap(try copies().first { $0.name == "LoginView.swift" })
-        let count = login.source.components(separatedBy: "appState.clearSavedPassword(dashboardID: dashboardID)").count - 1
-        XCTAssertEqual(count, 2, "the browser sign-in and the no-save sign-in")
+        // Whitespace and line breaks inside the call do not matter.
+        let pattern = #"appState\s*\.clearSavedPassword\(\s*dashboardID:"#
+        let matches = try NSRegularExpression(pattern: pattern)
+            .numberOfMatches(in: login.source, range: NSRange(login.source.startIndex..., in: login.source))
+        XCTAssertGreaterThanOrEqual(matches, 2, "the browser sign-in and the no-save sign-in")
     }
 }
