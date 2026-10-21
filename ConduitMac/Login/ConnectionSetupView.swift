@@ -116,7 +116,8 @@ struct ConnectionSetupView: View {
                             onComplete(result)
                             dismiss()
                         },
-                        repairReview: repairReview
+                        repairReview: repairReview,
+                        settingsReview: settingsReview
                     )
                 default:
                     ScrollView {
@@ -182,6 +183,22 @@ struct ConnectionSetupView: View {
         )
     }
 
+    /// The Settings entry's review model, nil elsewhere (ported from upstream). Sign In Again goes through the same
+    /// explicit sign-in and activation as Repair's Sign In to Reconnect, so it needs the activation handler too.
+    private var settingsReview: ConnectionSetupSettingsReview? {
+        guard flow.enteredFromCurrentConnection else { return nil }
+        return ConnectionSetupSettingsReview(
+            isSessionConnected: appState.isConnected,
+            offersSignInAgain: onRepair != nil && ConnectionSetupSettingsReview.offersSignInAgain(
+                for: flow,
+                activeDashboardURL: appState.connection?.baseUrl ?? appState.lastDashboardURL
+            ),
+            isSigningIn: isActivating,
+            signInFailure: activationFailure,
+            signInAgain: { beginRepairSignIn() }
+        )
+    }
+
     /// Interactive repair sign-in, pointed at the tested address with the
     /// wizard's same-origin Cloudflare state. Native-capable OAuth providers
     /// use the external-browser PKCE flow; other interactive deployments keep
@@ -239,6 +256,7 @@ struct ConnectionSetupView: View {
                     activationFailure = classifiedFailure
                 }
                 )
+                .asSignInSheet()
             }
         } else {
             // Unreachable: the sheet is only presented with a configuration.
@@ -365,26 +383,12 @@ struct ConnectionSetupView: View {
                 guard flow.wrappedValue.applyTestEvent(event, generation: generation) else { return }
                 // One completion announcement per run; individual stage
                 // transitions stay quiet.
-                switch event {
-                case .succeeded(.authentication):
-                    UIAccessibility.post(
-                        notification: .announcement,
-                        argument: ConnectionSetupTestState.readyMessage
-                    )
-                case .requiresInteractiveSignIn(.authentication, _):
-                    UIAccessibility.post(
-                        notification: .announcement,
-                        argument: ConnectionSetupTestState.interactiveReadyMessage
-                    )
-                case .requiresCredentials(.authentication):
-                    UIAccessibility.post(
-                        notification: .announcement,
-                        argument: ConnectionSetupTestState.credentialsRequiredMessage
-                    )
-                case .failed(_, let failure):
-                    UIAccessibility.post(notification: .announcement, argument: failure.userTitle)
-                default:
-                    break
+                if let message = ConnectionSetupAnnouncement.completion(
+                    for: event,
+                    repairing: flow.wrappedValue.isRepairingConnection,
+                    settingsReview: settingsReview
+                ) {
+                    UIAccessibility.post(notification: .announcement, argument: message)
                 }
             })
             // Round 6 (Repair): promote the validated transaction into the

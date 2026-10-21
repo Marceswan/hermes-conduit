@@ -204,7 +204,12 @@ struct SavedDashboardsSettingsDetail: View {
     }
 
     private func addDashboard() {
+        #if os(macOS) // MAC: Add Dashboard raises the Mac sign-in (decision 2B) and closes the switcher; no AddDashboardSheet
+        appState.showLogin = true
+        close()
+        #else
         showsAddDashboard = true
+        #endif
     }
 
     private func signOut(_ row: SavedDashboardRowModel) {
