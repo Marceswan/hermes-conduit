@@ -2548,7 +2548,11 @@ private struct SettledToolCardContent: View, Equatable {
 
                         Image(systemName: "chevron.down")
                             .font(.caption.weight(.semibold))
+                            #if os(macOS) // MAC: tertiary is nearly invisible on the light card fill (1.65:1); primary 60% clears 3:1
+                            .foregroundStyle(Color.primary.opacity(0.6))
+                            #else // MAC:
                             .foregroundStyle(.tertiary)
+                            #endif // MAC:
                             .rotationEffect(.degrees(expanded ? 180 : 0))
                             .accessibilityHidden(true)
                     }

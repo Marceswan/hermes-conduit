@@ -1,4 +1,5 @@
 # Format: path | trimmed source line text   # reason
 # Content-keyed, so upstream line shifts do not matter. Entries matching no flagged site fail the test.
-Conduit/Views/ProfilePickerSheet.swift | Image(systemName: "camera.fill").font(.caption2.weight(.bold)).foregroundStyle(Color.conduitBackgroundColor)  # decorative badge inside avatar Button; upstream mis-indents the ZStack below the label line; Button has "Choose photo for ..." label
 Conduit/Views/ProfilePickerSheet.swift | Image(systemName: systemImage)  # reorderArrow helper; both call sites add "Move ... earlier/later" labels
+Conduit/Views/V2/V2BotsView.swift | Image(systemName: "plus")  # label is set on the Button ("New Bot"), 12 lines below the image; V2 file, not shown on Mac
+Conduit/Views/V2/V2VoiceButton.swift | Image(systemName: "square.and.pencil")  # label is set on the Button (`label`), below the image; V2 file, not shown on Mac
