@@ -72,25 +72,60 @@ final class MacChatArtifactsSheetTests: XCTestCase {
 
     func testMenuItemDisabledWithoutActiveChat() throws {
         XCTAssertTrue(appState.activeChatArtifactSessionIDs.isEmpty)
-        XCTAssertFalse(MacAppActions.canShowChatArtifacts(appState: appState))
+        XCTAssertFalse(MacAppActions.canShowChatArtifacts(appState: appState, window: primary(), tabRaw: "Sessions"))
         // The action itself refuses too, so an empty list never reads every chat.
         let store = MacChatArtifactsStore()
         XCTAssertFalse(MacAppActions.showChatArtifacts(window: nil, appState: appState, store: store))
         XCTAssertNil(store.sessionIDs)
         let commands = try source(of: "ConduitMac/App/ConduitCommands.swift")
-        XCTAssertTrue(commands.contains(".disabled(!MacAppActions.canShowChatArtifacts(appState: appState))"))
+        XCTAssertTrue(commands.contains(".disabled(!MacAppActions.canShowChatArtifacts(appState: appState, window: NSApp.keyWindow, tabRaw: sidebarTab))"))
     }
 
     func testActionPresentsTheGivenIDsFromTheMainWindow() {
         let store = MacChatArtifactsStore()
         let palette = MacPaletteStore(defaults: suite.defaults)
         XCTAssertTrue(MacAppActions.showChatArtifacts(
-            window: primary(), palette: palette, appState: appState, store: store, ids: ["s1", "s2"]))
+            window: primary(), palette: palette, appState: appState, store: store, ids: ["s1", "s2"], tabRaw: "Sessions"))
         XCTAssertEqual(store.sessionIDs, ["s1", "s2"])
         let other = MacChatArtifactsStore()
         XCTAssertFalse(MacAppActions.showChatArtifacts(
-            window: nil, palette: palette, appState: appState, store: other, ids: ["s1"]))
+            window: nil, palette: palette, appState: appState, store: other, ids: ["s1"], tabRaw: "Sessions"))
         XCTAssertNil(other.sessionIDs, "no chat window: nothing is presented")
+    }
+
+    func testSessionWindowIsRefused() {
+        let side = primary()
+        side.identifier = NSUserInterfaceItemIdentifier("conduit-session-AppWindow-1")
+        let store = MacChatArtifactsStore()
+        let palette = MacPaletteStore(defaults: suite.defaults)
+        XCTAssertFalse(MacAppActions.canShowChatArtifacts(appState: appState, window: side, tabRaw: "Sessions"))
+        XCTAssertFalse(MacAppActions.showChatArtifacts(
+            window: side, windows: [side, primary()], palette: palette, appState: appState, store: store,
+            ids: ["s1"], tabRaw: "Sessions"), "a session window never shows the main window's chat")
+        XCTAssertNil(store.sessionIDs)
+    }
+
+    func testOtherTabsAreRefused() {
+        let store = MacChatArtifactsStore()
+        let palette = MacPaletteStore(defaults: suite.defaults)
+        for tab in ["Home", "Artifacts", "Cron"] {
+            XCTAssertFalse(MacAppActions.showChatArtifacts(
+                window: primary(), palette: palette, appState: appState, store: store, ids: ["s1"], tabRaw: tab), tab)
+        }
+        XCTAssertNil(store.sessionIDs)
+    }
+
+    func testShowInChatClosesTheSheetAndRevealsInTheOpenChat() throws {
+        let item = try XCTUnwrap(ArtifactItem(ArtifactsTestSupport.row(["message_id": 12, "session_id": "s2"])))
+        var closed = 0
+        XCTAssertNil(appState.pendingArtifactReveal)
+        MacChatArtifactsView.showInChat(item, appState: appState, close: {
+            closed += 1
+            XCTAssertNil(self.appState.pendingArtifactReveal, "the sheet closes first")
+        })
+        XCTAssertEqual(closed, 1)
+        XCTAssertEqual(appState.pendingArtifactReveal?.messageID, 12)
+        XCTAssertNil(appState.pendingArtifactReveal?.opening, "the open chat, no switch to s2")
     }
 
     func testSheetScopesToChat() throws {

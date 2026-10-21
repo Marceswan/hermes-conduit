@@ -31,6 +31,12 @@ struct MacChatArtifactsView: View {
     /// The list's scope for these ids.
     static func scope(for ids: [String]) -> ArtifactScope { .chat(ids) }
 
+    /// Show in Chat: the sheet closes, then the open chat scrolls to the message (no chat switch).
+    static func showInChat(_ item: ArtifactItem, appState: AppState, close: () -> Void) {
+        close()
+        appState.showArtifactInChat(item, chatIsOpen: true)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             ConduitSheetHeader(title: AppLocalization.string("Artifacts"), close: close)
@@ -52,8 +58,7 @@ struct MacChatArtifactsView: View {
             } else {
                 // The list draws no horizontal padding of its own (the pane's router gives it 20 pt).
                 MacArtifactsList(scope: Self.scope(for: sessionIDs), chatIsOpen: true) { item in
-                    close()
-                    appState.showArtifactInChat(item, chatIsOpen: true)
+                    Self.showInChat(item, appState: appState, close: close)
                 }
                 .padding(.horizontal, 20)
             }
@@ -66,6 +71,8 @@ struct MacChatArtifactsView: View {
 private struct MacChatArtifactsModifier: ViewModifier {
     let appState: AppState
     @ObservedObject private var store: MacChatArtifactsStore
+    /// The ids of the last presentation, so the sheet keeps its content while it animates out.
+    @State private var lastIDs: [String] = []
 
     init(appState: AppState, store: MacChatArtifactsStore) {
         self.appState = appState
@@ -77,8 +84,11 @@ private struct MacChatArtifactsModifier: ViewModifier {
             get: { store.sessionIDs != nil },
             set: { if !$0 { store.dismiss() } }
         )) {
-            MacChatArtifactsView(sessionIDs: store.sessionIDs ?? [], close: { store.dismiss() })
+            MacChatArtifactsView(sessionIDs: store.sessionIDs ?? lastIDs, close: { store.dismiss() })
                 .environmentObject(appState)
+        }
+        .onChange(of: store.sessionIDs) { _, ids in
+            if let ids { lastIDs = ids }
         }
     }
 }

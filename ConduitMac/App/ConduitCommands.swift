@@ -18,6 +18,8 @@ struct ConduitCommands: Commands {
     @Environment(\.openWindow) private var openWindow
     @AppStorage(MacQuickAskHotKeyManager.enabledKey) private var quickAskEnabled = true
     @AppStorage(ConduitCommands.sidebarVisibleKey) private var sidebarVisible = true
+    /// The sidebar pane, for Chat > Artifacts... (enabled only while the chat tab shows).
+    @AppStorage(MacSidebarState.tabDefaultsKey) private var sidebarTab = SidebarTab.sessions.rawValue
     @AppStorage(HoverAccessibilityEngine.highlightDefaultsKey) private var hoverHighlight = true
     /// The sidebar list's rows in display order; nil while no list is mounted.
     @FocusedValue(\.macSessionOrder) private var sessionOrder
@@ -102,10 +104,10 @@ struct ConduitCommands: Commands {
                 Task { await MacAskAboutWindow.run(appState: appState, window: NSApp.keyWindow) }
             }
             .keyboardShortcut("w", modifiers: [.shift, .command])
-            // No key equivalent. Disabled without an open chat that has a row of its own; a
+            // No key equivalent. Disabled without an open chat on the chat tab, and for a session window (the menu is not rebuilt on a key-window change, so the action checks again); a
             // disabled item with no key cannot swallow a key (see the note above).
             Button("Artifacts\u{2026}") { MacAppActions.showChatArtifacts(window: NSApp.keyWindow, appState: appState) }
-                .disabled(!MacAppActions.canShowChatArtifacts(appState: appState))
+                .disabled(!MacAppActions.canShowChatArtifacts(appState: appState, window: NSApp.keyWindow, tabRaw: sidebarTab))
             Divider()
             // No key equivalent (the global hotkey is the shortcut) and never
             // `.disabled`: this is the way in when the hotkey could not register.

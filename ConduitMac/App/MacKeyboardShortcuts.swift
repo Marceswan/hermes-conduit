@@ -559,9 +559,14 @@ enum MacAppActions {
         return true
     }
 
-    /// Whether Chat > Artifacts... has a chat to show: the open chat has a row of its own.
-    static func canShowChatArtifacts(appState: AppState) -> Bool {
-        !appState.activeChatArtifactSessionIDs.isEmpty
+    /// Whether Chat > Artifacts... has a chat to show: the main window shows the chat tab and the open
+    /// chat has a row of its own. A popped-out session window (D21) is refused: its chat is not
+    /// `appState`'s active chat, and its controller's ids are not reachable from the window, so the
+    /// item would show the main window's chat for it.
+    static func canShowChatArtifacts(appState: AppState, window: NSWindow?, tabRaw: String?) -> Bool {
+        !MacSessionWindows.isSessionWindow(window)
+            && MacChatRoute.isChatActive(tabRaw: tabRaw)
+            && !appState.activeChatArtifactSessionIDs.isEmpty
     }
 
     /// Chat > Artifacts...: the open chat's artifacts in a sheet. With no ids the list would read
@@ -574,8 +579,10 @@ enum MacAppActions {
         appState: AppState,
         store: MacChatArtifactsStore? = nil,
         ids: [String]? = nil,
+        tabRaw: String? = UserDefaults.standard.string(forKey: MacSidebarState.tabDefaultsKey),
         openMainWindow: (() -> Void)? = nil
     ) -> Bool {
+        guard !MacSessionWindows.isSessionWindow(window), MacChatRoute.isChatActive(tabRaw: tabRaw) else { return false }
         let sessionIDs = ids ?? appState.activeChatArtifactSessionIDs
         guard !sessionIDs.isEmpty else { return false }
         guard prepare(window: window, windows: windows, palette: palette, openMainWindow: openMainWindow) else { return false }
