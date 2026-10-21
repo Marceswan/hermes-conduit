@@ -10,7 +10,19 @@ import XCTest
 /// changed; `MissingSessionRecoveryTests` pins it.
 @MainActor
 final class MacNewChatAvailabilityTests: XCTestCase {
-    private let notConnected = false
+    // The test host shares the Keychain service with the user's real app: these tests build an
+    // `AppState`, so they run on an in-memory Keychain (see MacMemoryKeychainBackend).
+    override func setUp() async throws {
+        MacMemoryKeychainBackend.install()
+    }
+
+    override func tearDown() async throws {
+        MacMemoryKeychainBackend.restore()
+    }
+
+    func testTheseTestsRunOnAnInMemoryKeychain() {
+        XCTAssertTrue(KeychainHelper.backend is MacMemoryKeychainBackend)
+    }
 
     private func makeAppState(connected: Bool = false, connecting: Bool = false) throws -> (AppState, SavedDashboard) {
         let suite = "MacNewChatAvailabilityTests.\(UUID().uuidString)"
