@@ -44,7 +44,7 @@ struct ConduitCommands: Commands {
                     MacQuickAskController.shared.newConversation()
                 } else {
                     // From a session window the new chat is the main window's: it comes forward first.
-                    MacAppActions.newChat(window: NSApp.keyWindow) { Task { await appState.createNewSession() } }
+                    MacAppActions.newChat(window: NSApp.keyWindow, appState: appState)
                 }
             }
             .keyboardShortcut("n", modifiers: .command)

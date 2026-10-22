@@ -529,6 +529,16 @@ enum MacAppActions {
         create()
     }
 
+    /// Cmd-N and File > New Chat. The chat starts the way the sidebar's New Chat button starts it: `startNewChat()`,
+    /// upstream's `canTapNewChat` rule (Ruling R39). Connected, it starts at once; while Conduit connects or
+    /// synchronizes it queues one chat that Hermes creates once it can (a second press shows the same chat); with no
+    /// connection on its way (the sign-in card is up) it does nothing. A direct `createNewSession()` returns at
+    /// once until the session is connected and queues nothing, so a Cmd-N at a cold launch created no chat (live
+    /// check F8).
+    static func newChat(window: NSWindow?, appState: AppState) {
+        newChat(window: window) { appState.startNewChat() }
+    }
+
     /// Cmd-,: the D18 observer in `RootView` presents Settings (it keeps its own
     /// "already presenting" guard). With the login screen showing there is no
     /// `MainView`, nobody observes, and nothing happens, as in the sidebar.
