@@ -31,11 +31,11 @@ struct NotchActions {
                 selectPane(tab)
             },
             newChat: {
-                guard !appState.macNewChatDisabled else { return }
+                guard appState.macCanStartChatAtOnce else { return }
                 NotchMainWindow.bringToFront()
                 Task { await appState.createNewSession() }
             },
-            newChatEnabled: { !appState.macNewChatDisabled },
+            newChatEnabled: { appState.macCanStartChatAtOnce },
             openConduit: { NotchMainWindow.bringToFront() })
     }
 }

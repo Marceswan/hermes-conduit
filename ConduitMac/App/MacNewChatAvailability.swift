@@ -1,9 +1,11 @@
 import Foundation
 
 // Gate for the Mac callers that create a chat at once: the Notch menu (`NotchActions`) and Home
-// (`MacHomeBinding`). The sidebar New Chat button does not use it. It follows upstream's
-// `canTapNewChat` as it is (Ruling R39), so a chat is queued at a cold launch while Conduit connects,
-// even with the saved copy on screen. Keep this gate in step with `createNewSession` (PORTING_LEDGER).
+// (`MacHomeBinding`). They call `createNewSession()`, so they show a disabled state while a chat cannot
+// start, rather than drop a click. The sidebar New Chat button, Cmd-N, the Cmd-K palette and the chat that
+// opens after the last tab closes do not use it: they call `startNewChat()` and follow upstream's
+// `canTapNewChat` as it is (Ruling R39), so a chat is queued at a cold launch while Conduit connects, even
+// with the saved copy on screen. Keep this gate in step with `createNewSession` (PORTING_LEDGER).
 extension AppState {
     /// Whether a caller that creates a chat at once may not do so on Mac. The
     /// Notch menu and Home call `createNewSession()` directly, which is a
@@ -43,6 +45,13 @@ extension AppState {
     /// not a live gateway.
     var macHasLiveGateway: Bool {
         isConnected && !isConnecting && client != nil
+    }
+
+    /// Whether a caller that creates a chat at once can do it now: not blocked by `macNewChatDisabled` and a
+    /// live gateway. `createNewSession()` returns at once without one, so the Notch offers its New Chat only
+    /// then, as Home does (`MacHomeBinding`: `!macNewChatDisabled && macHasLiveGateway`).
+    var macCanStartChatAtOnce: Bool {
+        !macNewChatDisabled && macHasLiveGateway
     }
 
     var macNewChatDisabled: Bool {
