@@ -3,32 +3,6 @@ import SwiftUI
 import XCTest
 @testable import ConduitMac
 
-/// A Keychain in memory, keyed by service and account (the scoped and the legacy query of one record share a key).
-private final class MemoryKeychainBackend: KeychainHelper.Backend {
-    private var items: [String: Data] = [:]
-
-    private func key(_ query: [String: Any]) -> String {
-        "\(query[kSecAttrService as String] ?? "")|\(query[kSecAttrAccount as String] ?? "")"
-    }
-
-    func data(for query: [String: Any]) -> Data? { items[key(query)] }
-
-    func update(_ data: Data, for query: [String: Any]) -> Int32 {
-        guard items[key(query)] != nil else { return errSecItemNotFound }
-        items[key(query)] = data
-        return errSecSuccess
-    }
-
-    func add(_ query: [String: Any]) -> Int32 {
-        items[key(query)] = query[kSecValueData as String] as? Data
-        return errSecSuccess
-    }
-
-    func delete(_ query: [String: Any]) { items[key(query)] = nil }
-
-    func setAccessibility(_ accessibility: CFString, for query: [String: Any]) -> Int32 { errSecSuccess }
-}
-
 /// R17 for the frozen sign-in copies in ConduitMac/Login: outcomes that had no visible way forward.
 @MainActor
 final class LoginFrozenCopyOutcomeTests: XCTestCase {
@@ -38,9 +12,8 @@ final class LoginFrozenCopyOutcomeTests: XCTestCase {
     private var window: NSWindow?
     private var boostWasOn = false
     override func setUp() async throws {
-        // The registry and the saved sign-in records go to the Keychain, outside the defaults suite: keep every
-        // read and write of this class off the real one.
-        KeychainHelper.useBackendForTesting(MemoryKeychainBackend())
+        // The registry and the saved sign-in records go to the Keychain, outside the defaults suite.
+        // MacTestKeychainGuard puts a fresh MacTestKeychainBackend in before this method and after the test.
         suite = HostedTestSupport.makeSuite()
         boostWasOn = AccessibilityTreeBoost.isOn
         scratch = FileManager.default.temporaryDirectory
@@ -67,7 +40,6 @@ final class LoginFrozenCopyOutcomeTests: XCTestCase {
         appState = nil
         HostedTestSupport.dropSuite(suite)
         try? FileManager.default.removeItem(at: scratch)
-        KeychainHelper.useBackendForTesting(KeychainHelper.SystemKeychainBackend())
     }
 
     private var repoRoot: URL {

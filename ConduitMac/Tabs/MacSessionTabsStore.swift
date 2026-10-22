@@ -32,7 +32,12 @@ struct MacSessionDeletionDetector {
 /// The session tabs of the current dashboard and profile (D11).
 @MainActor
 final class MacSessionTabsStore: ObservableObject {
+    #if DEBUG
+    // The host's root view binds this store to the host's AppState; under XCTest it saves to a throwaway suite.
+    static let shared = MacSessionTabsStore(defaults: MacXCTestDefaults.standardOrTestSuite("sessionTabs"))
+    #else
     static let shared = MacSessionTabsStore()
+    #endif
 
     @Published private(set) var model = MacSessionTabsModel()
     /// Sessions deleted while tabs were bound (D21: an open session window shows "deleted").
@@ -48,7 +53,8 @@ final class MacSessionTabsStore: ObservableObject {
     /// close a tab the user cannot see (D11).
     var isChatSurfaceShowing: () -> Bool = { true }
 
-    private let defaults: UserDefaults
+    /// Where the tabs are saved (internal so a test can check which domain it is).
+    let defaults: UserDefaults
     private let routeDefaults: UserDefaults
     private var scopeKey: String?
     private var deletionDetector = MacSessionDeletionDetector()

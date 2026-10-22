@@ -14,9 +14,9 @@ import XCTest
 @MainActor
 final class MacNewChatAvailabilityTests: XCTestCase {
     private func makeAppState(connected: Bool = false, connecting: Bool = false) throws -> (AppState, SavedDashboard) {
-        let suite = "MacNewChatAvailabilityTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let suite = HostedTestSupport.makeSuite()
+        let defaults = suite.defaults
+        addTeardownBlock { @MainActor in HostedTestSupport.dropSuite(suite) }
         let dashboard = SavedDashboard(id: UUID(), label: "One", normalizedURL: "https://one.example")
         let appState = AppState(
             defaults: defaults,

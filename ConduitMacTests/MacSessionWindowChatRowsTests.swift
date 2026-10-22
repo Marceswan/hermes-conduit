@@ -91,6 +91,36 @@ final class MacSessionWindowChatRowsTests: XCTestCase {
         XCTAssertTrue(texts().contains(name), "agent name \(name) missing: \(texts())")
     }
 
+    /// The self-improvement review card is a Mac region in `ChatView.swift` (ledger: `ReviewSummaryCard`). A card
+    /// with details is one button that expands; a card without details is plain text with the summary as its
+    /// label, not a disabled button that dims the summary.
+    func testReviewSummaryCardDrawsWithAndWithoutDetails() async throws {
+        try XCTSkipUnless(AccessibilityTreeBoost.isAvailable)
+        let boostWasOn = AccessibilityTreeBoost.isOn
+        AccessibilityTreeBoost.set(true)
+        defer { AccessibilityTreeBoost.set(boostWasOn) }
+        var withDetails = ChatMessage(id: "r1", role: .system, content: "Review", timestamp: Self.at)
+        withDetails.review = ReviewActivity(summary: "Memory and skills updated", details: ["Memory: added a note"], fullSessionId: nil)
+        var plain = ChatMessage(id: "r2", role: .system, content: "Review", timestamp: Self.at)
+        plain.review = ReviewActivity(summary: "Skill updated", details: nil, fullSessionId: nil)
+        let c = await controller(messages: [withDetails, plain])
+        for scheme in [ColorScheme.light, .dark] {
+            let host = Harness(controller: c)
+                .environmentObject(AppStateRuntimeRegistry.shared.appState)
+                .environment(\.colorScheme, scheme)
+            let window = HostedTestSupport.host(host, size: NSSize(width: 640, height: 900))
+            self.window = window
+            func texts() -> [String] { AccessibilityProbe.texts(in: window) }
+            let found = HostedTestSupport.waitUntil { texts().contains("Expand review details") }
+            HostedTestSupport.settle(0.3)
+            XCTAssertTrue(found, "the card with details is one expandable button (\(scheme)): \(texts())")
+            XCTAssertTrue(texts().contains("Skill updated"), "the card without details carries its summary as its label (\(scheme)): \(texts())")
+            XCTAssertEqual(texts().filter { $0 == "Expand review details" }.count, 1, "only the card with details can expand")
+            HostedTestSupport.tearDown(window)
+            self.window = nil
+        }
+    }
+
     func testVoiceCallMarkerRowLaysOutInTheSessionWindow() async {
         var marker = ChatMessage(id: "m1", role: .system, content: "Voice call", timestamp: Self.at)
         marker.displayKind = VoiceCallChatLink.displayKind

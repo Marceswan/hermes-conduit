@@ -193,13 +193,9 @@ final class MacHiddenChatFocusTests: XCTestCase {
     }
 
     func testComposerRefocusesWhenRouteReturnsToChat() {
-        // ComposerPasteTextView reads the standard defaults; put the key back after.
+        // The composer reads the standard defaults, not a suite: put the sidebar tab back after.
+        preserveStandardDefaults(MacSidebarState.tabDefaultsKey)
         let defaults = UserDefaults.standard
-        let original = defaults.object(forKey: MacSidebarState.tabDefaultsKey)
-        defer {
-            if let original { defaults.set(original, forKey: MacSidebarState.tabDefaultsKey) }
-            else { defaults.removeObject(forKey: MacSidebarState.tabDefaultsKey) }
-        }
         defaults.set(SidebarTab.sessions.rawValue, forKey: MacSidebarState.tabDefaultsKey)
         let window = HostedTestSupport.host(FocusedComposer(), size: NSSize(width: 300, height: 100))
         defer { HostedTestSupport.tearDown(window) }
@@ -222,12 +218,9 @@ final class MacHiddenChatFocusTests: XCTestCase {
     /// End to end: the hosted composer takes focus when its window becomes
     /// key, only while chat is shown.
     func testComposerFocusesWhenItsWindowBecomesKey() {
+        // The composer reads the standard defaults, not a suite: put the sidebar tab back after.
+        preserveStandardDefaults(MacSidebarState.tabDefaultsKey)
         let defaults = UserDefaults.standard
-        let original = defaults.object(forKey: MacSidebarState.tabDefaultsKey)
-        defer {
-            if let original { defaults.set(original, forKey: MacSidebarState.tabDefaultsKey) }
-            else { defaults.removeObject(forKey: MacSidebarState.tabDefaultsKey) }
-        }
         defaults.set(SidebarTab.kanban.rawValue, forKey: MacSidebarState.tabDefaultsKey)
         let window = HostedTestSupport.host(FocusedComposer(isFocused: false), size: NSSize(width: 300, height: 100))
         defer { HostedTestSupport.tearDown(window) }

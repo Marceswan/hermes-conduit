@@ -2114,6 +2114,7 @@ struct SystemBubble: View {
     }
 }
 
+#if os(macOS) // MAC: self-improvement review summary: ramp-coloured summary text, and no dimmed button on a card without details (PORTING_LEDGER: ReviewSummaryCard). iOS has upstream's card in the #else branch below
 /// Blue -> purple -> orange ramp for self-improvement (skill/memory update)
 /// summaries. Colored per composed character so the text stays a selectable
 /// UITextView; colors resolve to static RGB for the current scheme so the
@@ -2151,11 +2152,13 @@ private enum ReviewSummaryGradient {
     }
 }
 
+#endif // MAC:
 /// Review activity summary. Intentionally OUTSIDE the chat text-size
 /// preference (issue #85): these status/activity cards — like tool cards —
 /// are not ordinary transcript Markdown and keep their fixed typography.
 /// (Of the system-message surfaces, only `SystemBubble`'s Markdown body
 /// follows `ChatTypography`.)
+#if os(macOS) // MAC: see the gradient above
 private struct ReviewSummaryCard: View {
     @ObservedObject var appLanguage = AppLanguageStore.shared
     let activity: ReviewActivity
@@ -2255,6 +2258,93 @@ private struct ReviewSummaryCard: View {
         }
     }
 }
+#else // MAC:
+private struct ReviewSummaryCard: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
+    let activity: ReviewActivity
+    let timestamp: String
+    @Environment(\.chatRowActions) private var rowActions
+    /// Acted on, not observed (`ChatRowState`).
+    private var appState: AppState { rowActions.required }
+    @Environment(\.chatRowDisclosure) private var disclosure
+    @State private var expanded = false
+
+    private var details: [String] { activity.details?.filter { !$0.isEmpty } ?? [] }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                guard !details.isEmpty else { return }
+                disclosure?.willToggle(nil, to: !expanded)
+                withAnimation(ConduitMotion.response) { expanded.toggle() }
+            } label: {
+                HStack(alignment: .center, spacing: 10) {
+                    Image(systemName: "internaldrive.fill")
+                        .foregroundStyle(.conduitAura)
+                        .frame(width: 28, height: 28)
+                        .background(Color.conduitAura.opacity(0.14), in: Circle())
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("SELF-IMPROVEMENT REVIEW")
+                            .font(.caption2.weight(.bold))
+                            .tracking(0.6)
+                            .foregroundStyle(.secondary)
+                        SelectableTextView(
+                            text: activity.summary,
+                            font: .preferredFont(forTextStyle: .subheadline).withTraits(.traitBold),
+                            textColor: .label
+                        )
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    Spacer(minLength: 8)
+                    MessageTimestampLabel(timestamp: timestamp, tone: .supporting)
+                    if !details.isEmpty {
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.caption.weight(.semibold))
+                            .conduitFixedGlyph()
+                            .foregroundStyle(.secondary)
+                            .frame(width: 28, height: 28)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(details.isEmpty)
+            .accessibilityLabel(details.isEmpty ? activity.summary : (expanded ? AppLocalization.string("Collapse review details") : AppLocalization.string("Expand review details")))
+
+            if expanded, !details.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(Array(details.enumerated()), id: \.offset) { _, detail in
+                        SelectableTextView(
+                            text: detail,
+                            font: .preferredFont(forTextStyle: .callout),
+                            textColor: .secondaryLabel
+                        )
+                    }
+                }
+                .padding(.top, 2)
+            }
+
+            if let fullSessionId = activity.fullSessionId, !fullSessionId.isEmpty {
+                Button {
+                    appState.requestOpenSession(fullSessionId)
+                } label: {
+                    Label("Open full review", systemImage: "arrow.up.forward.square")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6).frame(minHeight: 42)
+                }
+                .background(Color.conduitAccent.opacity(0.14), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+        }
+        .padding(14)
+        .chatCard(cornerRadius: 18, tint: .conduitAura.opacity(0.09))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(Color.conduitAura.opacity(0.18), lineWidth: 1)
+        }
+    }
+}
+#endif // MAC:
 
 /// Model-change summary. Intentionally OUTSIDE the chat text-size
 /// preference (issue #85) — a status/activity card with fixed typography;

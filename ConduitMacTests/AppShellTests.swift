@@ -4,10 +4,11 @@ import XCTest
 
 @MainActor
 final class AppShellTests: XCTestCase {
+    /// Checks the registration domain so a stored user choice is left alone (and stays stored).
     func testPersistentSidebarDefaultsOn() {
-        UserDefaults.standard.removeObject(forKey: "conduit.ipadPersistentSidebar")
         MacDefaults.register()
-        XCTAssertTrue(UserDefaults.standard.bool(forKey: "conduit.ipadPersistentSidebar"))
+        let registered = UserDefaults.standard.volatileDomain(forName: UserDefaults.registrationDomain)
+        XCTAssertEqual(registered["conduit.ipadPersistentSidebar"] as? Bool, true)
     }
 
     /// Every Mac has a hardware keyboard, so Return sends unless the user turns it off.

@@ -287,11 +287,9 @@ final class ComposerPasteTextViewTests: XCTestCase {
     /// Sets the attachment limit for the test (the paste path reads it from the defaults) and restores it.
     private func withLimit(megabytes: Int, _ body: () throws -> Void) rethrows {
         let key = AttachmentSizeLimit.preferenceKey
-        let saved = UserDefaults.standard.object(forKey: key)
+        let snapshot = StandardDefaultsSnapshot(keys: [key])
+        defer { snapshot.restore() }
         UserDefaults.standard.set(megabytes, forKey: key)
-        defer {
-            if let saved { UserDefaults.standard.set(saved, forKey: key) } else { UserDefaults.standard.removeObject(forKey: key) }
-        }
         try body()
     }
 
