@@ -56,6 +56,22 @@ extension View {
     }
 }
 
+/// The Settings sheet on Mac. Upstream's `SettingsView` has no size of its own on Mac: its pages sit in
+/// `readableContentWidth` (a `GeometryReader`), so a sheet that takes the content's ideal size opened 470 x 80 pt
+/// (live check F1). The width is the one a content-sized sheet of this kind had before (the cron job detail
+/// sheet, 470 pt). The sheet can be resized larger; its height follows `MacFormSheet.idealHeight`.
+enum MacSettingsSheet {
+    static let idealWidth: CGFloat = 470
+    static let minHeight: CGFloat = 480
+}
+
+extension View {
+    func macSettingsSheetSize() -> some View {
+        macFormSheetSize(minWidth: MacSettingsSheet.idealWidth, idealWidth: MacSettingsSheet.idealWidth,
+                         minHeight: MacSettingsSheet.minHeight, idealHeight: MacFormSheet.idealHeight)
+    }
+}
+
 enum MacFormSheet {
     /// 760 pt, or the main screen's visible height less 120 pt when that is less.
     static var idealHeight: CGFloat {

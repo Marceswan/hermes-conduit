@@ -344,6 +344,9 @@ struct MainView: View {
             )
                 .presentationDetents([.large])
                 .environmentObject(appState)
+            #if os(macOS) // MAC: the pages sit in readableContentWidth (a GeometryReader), so a Mac sheet took 470 x 80 pt; give it a size (LC-A F1)
+                .macSettingsSheetSize()
+            #endif // MAC:
         }
         // Settings can go with this screen (switching or adding a dashboard
         // swaps in sign-in), and SwiftUI doesn't promise the sheet's
