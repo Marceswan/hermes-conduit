@@ -150,6 +150,35 @@ struct LoginSavedSignInButton: View {
     }
 }
 
+// MARK: - Cancel (F4, R17)
+
+/// Cmd-Shift-D > Add Dashboard raises this card over a connected session (`showLogin`), and the Mac card has no
+/// sheet to dismiss. Cancel closes the card and returns to the session; it sets `showLogin` and nothing else, so the
+/// running client, the active dashboard and the chats stay as they were. It is offered only while a session is
+/// connected: with no session there is nothing to return to, and `RootView` shows this card whatever `showLogin`
+/// says (the switcher, Cmd-Shift-D, is the way on then).
+enum LoginCancelOffer {
+    static func isAvailable(isConnected: Bool) -> Bool { isConnected }
+}
+
+/// Upstream's add-dashboard Cancel (`AddDashboardSheet`): the same string, disabled while a sign-in is working.
+/// Escape presses it, as it does a sheet's Cancel.
+struct LoginCancelButton: View {
+    @ObservedObject var appLanguage = AppLanguageStore.shared
+    let isBusy: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(AppLocalization.string("Cancel"), action: action)
+            .buttonStyle(.plain)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.conduitAccent)
+            .keyboardShortcut(.cancelAction)
+            .disabled(isBusy)
+            .accessibilityIdentifier("login.cancel")
+    }
+}
+
 // MARK: - Connection Setup announcement
 
 enum ConnectionSetupAnnouncement {

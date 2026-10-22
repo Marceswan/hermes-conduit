@@ -323,9 +323,18 @@ struct LoginView: View {
             Spacer()
 
             VStack(alignment: .leading, spacing: 16) {
-                Label("Connect a Hermes dashboard", systemImage: "link")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.conduitAccent)
+                HStack {
+                    Label("Connect a Hermes dashboard", systemImage: "link")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.conduitAccent)
+                    // F4 (LC-A, R17): Add Dashboard over a connected session has no other way back.
+                    if LoginCancelOffer.isAvailable(isConnected: appState.isConnected) {
+                        Spacer(minLength: 12)
+                        LoginCancelButton(isBusy: isConnecting || appState.isConnecting) {
+                            appState.showLogin = false
+                        }
+                    }
+                }
 
                 // Connection Setup entry point (visible, secondary to
                 // Connect, never auto-opened). Round 1 opens the shell;
