@@ -2,15 +2,22 @@
 """Three-way, key-by-key merge of .xcstrings catalogs.
 
 Usage: merge-xcstrings.py BASE OURS THEIRS -o OUT
+       merge-xcstrings.py --check-order OURS THEIRS
 
 A missing or empty BASE file means {}. OUT is always written. At a conflict
 the merged file keeps "ours", the script prints one line per conflict path,
 and the exit code is 1. A clean merge exits 0. Key order follows "ours";
 keys only in "theirs" are appended in their order.
+
+--check-order prints the number of keys in "strings" that both catalogs have
+and whose relative order differs from THEIRS. It always exits 0. The number
+is the count of common keys minus the longest run of common keys that has the
+same order in both files.
 """
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import os
 import sys
@@ -65,7 +72,29 @@ def _load(path: str, allow_missing: bool = False) -> dict:
     return json.loads(text)
 
 
+def order_differences(ours: dict, theirs: dict) -> int:
+    """Count the common keys whose relative order differs from "theirs"."""
+    their_index = {key: i for i, key in enumerate(theirs.get("strings", {}))}
+    positions = [their_index[key] for key in ours.get("strings", {}) if key in their_index]
+    # Longest increasing subsequence, O(n log n).
+    tails = []
+    for position in positions:
+        slot = bisect.bisect_left(tails, position)
+        if slot == len(tails):
+            tails.append(position)
+        else:
+            tails[slot] = position
+    return len(positions) - len(tails)
+
+
 def main(argv=None) -> int:
+    args_list = sys.argv[1:] if argv is None else list(argv)
+    if args_list and args_list[0] == "--check-order":
+        if len(args_list) != 3:
+            print("usage: merge-xcstrings.py --check-order OURS THEIRS", file=sys.stderr)
+            return 2
+        print(order_differences(_load(args_list[1]), _load(args_list[2])))
+        return 0
     parser = argparse.ArgumentParser(description="Three-way merge of .xcstrings catalogs.")
     parser.add_argument("base")
     parser.add_argument("ours")

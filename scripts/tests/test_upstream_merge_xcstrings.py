@@ -103,5 +103,38 @@ class MergeTests(unittest.TestCase):
                     self.assertEqual(list(json.load(handle)["strings"]), ["a", "b"])
 
 
+class CheckOrderTests(unittest.TestCase):
+    def keys(self, *names):
+        return cat({n: {} for n in names})
+
+    def test_same_order_is_zero(self):
+        self.assertEqual(m.order_differences(self.keys("a", "b", "c"), self.keys("a", "b", "c")), 0)
+
+    def test_keys_only_in_one_side_are_ignored(self):
+        self.assertEqual(m.order_differences(self.keys("a", "mac", "b"), self.keys("a", "new", "b")), 0)
+
+    def test_one_moved_key_counts_once(self):
+        self.assertEqual(m.order_differences(self.keys("b", "c", "d", "a"), self.keys("a", "b", "c", "d")), 1)
+
+    def test_reversed_order(self):
+        self.assertEqual(m.order_differences(self.keys("c", "b", "a"), self.keys("a", "b", "c")), 2)
+
+    def test_empty_catalogs(self):
+        self.assertEqual(m.order_differences({}, {}), 0)
+
+    def test_cli_prints_number_and_exits_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for name, obj in (("o.json", self.keys("b", "a")), ("t.json", self.keys("a", "b"))):
+                path = os.path.join(tmp, name)
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(m.dumps(obj))
+                paths.append(path)
+            result = subprocess.run([sys.executable, SCRIPT, "--check-order"] + paths,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "1")
+
+
 if __name__ == "__main__":
     unittest.main()

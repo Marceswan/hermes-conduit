@@ -42,6 +42,7 @@ This skill merges `kaishi00/hermes-conduit` (remote `upstream`) into the `macos`
 5. Run `df -h .`. Read the free space in the `Avail` column. Stop if it is under 20 GB. Tell the user.
 6. Run `git merge-base macos upstream/main`. Pass = it prints one SHA. Keep the SHA.
 7. Run `mkdir -p build/scratch/upstream-sync`.
+8. Run `xcodegen generate`. Then run the class command for `ConduitMacTests/MacTestKeychainGuardTests`. Pass = the class passes. If it fails, stop and tell the user. A test run must not read or write the login Keychain.
 
 ## Phase 1: Evaluate
 
@@ -51,6 +52,7 @@ This skill merges `kaishi00/hermes-conduit` (remote `upstream`) into the `macos`
    3. Run the parse command on that log with `-o build/scratch/upstream-sync/baseline.json`. Pass = the Gate rule holds. If it does not hold, the baseline is not valid. Stop and tell the user the log path.
    4. Run the class command for each class in `failed_classes`. Save each log as `build/scratch/upstream-sync/baseline-rerun-<Class>.log`. Parse each log. A rerun that breaks the Gate rule is not a pass.
    5. A test that passes on the rerun is a flake. Delete it from the baseline file. To do this, delete the test from `failed`. Delete its class from `failed_classes` when no failed test of that class remains.
+   6. Run `ls ~/Library/Preferences | grep -c '^conduit.mac.tests'`. Write the number in the report.
 2. **Triage.** Run:
    `python3 scripts/upstream-sync/triage.py --repo . --mac-ref macos --head upstream/main --baseline build/scratch/upstream-sync/baseline.json --json build/scratch/upstream-sync/triage.json --report docs/macos/upstream-sync/<date>.md`
    1. Pass = exit 0, and the report file exists.
@@ -59,6 +61,9 @@ This skill merges `kaishi00/hermes-conduit` (remote `upstream`) into the `macos`
 3. **Judge by reading.** Run `git show <sha>` for each commit in Gate off, Risk, and Needs a Mac entry point. Move a commit only with a written reason. Write the reason on the commit's line in the report.
    - For each Needs a Mac port commit, add the Mac file to its line. Take it from the "Mac side" column of the matching ledger row, or from the `keep in sync` marker's file.
    - For each new V2 route, menu item or sheet, look for a legacy entry point. Look in `SidebarView`, `ChatView`, `AuxiliaryViews` and the non-V2 path of `RootView`. With none, the commit goes under "Needs a Mac entry point" for the user.
+   - For each commit that changes a path in `## Kept off on Mac` (in `docs/macos/PORTING_LEDGER.md`), and that path has a frozen copy under `ConduitMac/`, run `git show <sha> -- <path>`. Write "port" or "skip: <reason>" on the commit's line in the report.
+     - A change to WebView scripts, tickets, credentials, the Keychain or an auth flow is always "port".
+     - Run `python3 scripts/upstream-sync/check-frozen-copies.py`. It prints the hunks of the current upstream `LoginView.swift`, `ConnectionSetupView.swift`, `ConnectionSetupForm.swift` and `ConnectionSetupComponents.swift` that the copies in `ConduitMac/Login/` do not contain. Use the hunks to find the lines to port.
    - Find the UI changes that upstream made in legacy views without the V2 switch. Examples are `V2RowDivider`, `.v2TabBarClearance()`, `.v2EdgeBar`, and new `Conduit/Views/Login/` screens. List them under "Decisions for the user", each with a proposed gate.
 4. **Stop.** Show a summary of at most 5 lines and the report path. Do not merge until the user approves.
    - Approval counts only after the user sees the report. A message that comes before the report exists is not approval, even when it says "go".
@@ -68,6 +73,8 @@ This skill merges `kaishi00/hermes-conduit` (remote `upstream`) into the `macos`
 ## Phase 2: Merge
 
 Start only after the user approves the report. Run the commands in the main checkout until item 2.
+
+After a task branch merges into the sync branch, remove its worktree and its branch at once.
 
 1. Commit the report on `macos`, so that the worktree has it:
    1. Run `git add docs/macos/upstream-sync/<date>.md`.
@@ -82,6 +89,7 @@ Start only after the user approves the report. Run the commands in the main chec
    - The last step is the pinned head. Its `sha` is the pinned `upstream/main`. Merge that SHA. Never merge the name `upstream/main`.
    - The number `<n>` of a merge step is its place in `steps`, counted from 1.
    1. Run `git merge --no-ff <step sha> -m "merge: upstream <label>"`. If it exits 0, go to item 6. If it reports conflicts, do items 2 to 5.
+      A merge step is one unit. The merge commit and the first fix commits of a step can fail to build. Only the last commit of a step must build. Tag that commit `sync/<date>/step-<n>` (item 9). Use `git bisect start --first-parent` between these tags only.
    2. Run `git diff --name-only --diff-filter=U`. The expected places for a conflict are only these:
       - lines tagged `// MAC:` in upstream files (under `Conduit/`, `Shared/` or `ConduitWidgets/`)
       - `docs/macos/PORTING_LEDGER.md`
@@ -100,6 +108,7 @@ Start only after the user approves the report. Run the commands in the main chec
       5. Exit 0 means the catalog merged clean. Exit 1 means it printed one conflict path per line. The file `<p>` holds "ours" at each of those paths.
       6. On exit 1, resolve each printed path by hand, preferring upstream for translations of upstream-owned keys. Edit only the lines at that path. Do not re-sort keys.
       7. Run `python3 -c "import json,sys; json.load(open(sys.argv[1]))" <p>`. Pass = exit 0.
+      8. Run `python3 scripts/upstream-sync/merge-xcstrings.py --check-order <p> build/scratch/upstream-sync/theirs.json`. It prints the number of keys whose order differs from upstream. Write the number in the report. Compare it with the number in the previous report. If it grows by more than 50, a tool re-sorted the catalog. Stop and ask the user.
    5. Run `git add` for each resolved file. Run `git grep -n '^<<<<<<< '`. Pass = no output. Then run `git commit --no-edit`.
    6. Run the build command. Pass = the output has `** BUILD SUCCEEDED **`. On a Mac compile error, apply rules R1 to R4 in order. See `docs/macos/DECISIONS.md` D1 to D4.
       - R1: add the missing member to a shim. Shims expose only members that upstream uses.
@@ -107,11 +116,19 @@ Start only after the user approves the report. Run the commands in the main chec
       - R3: gate one type with `#if os(iOS)` and add a Mac twin.
       - R4: gate one statement.
    7. Do the Mac ports and gate-offs that the report lists for this merge step. Each upstream edit gets a `// MAC:` tag and a ledger row. Each gate-off also gets a row in `## Kept off on Mac`. Put the upstream path in column 1 of that row.
-   8. Test only the classes this merge step touched. These are the `ConduitMacTests` classes for the Mac files you changed or ported in this merge step and the files you resolved in conflicts. Add each test class you wrote. Find a class with `grep -rl '<Type>' ConduitMacTests`.
-      1. For each class, run the class command. Save the log as `build/scratch/upstream-sync/step-<n>-<Class>.log`. Here `<n>` is the number of the merge step.
+   8. Test the affected classes. Make the list from these three sources:
+      - The `ConduitMacTests` classes for the Mac files that you changed, ported or resolved in this merge step. Add each test class that you wrote.
+      - Each class whose source names a type or member that this merge step changed in a shared file. Run `python3 scripts/upstream-sync/affected-tests.py --base <step parent> --head HEAD`. It prints the class names. The step parent is the first parent of the merge commit.
+      - The classes that check a Mac decision in `docs/macos/DECISIONS.md`.
+
+      Then do these items:
+      1. For each class in the list, run the class command. Save the log as `build/scratch/upstream-sync/step-<n>-<Class>.log`. Here `<n>` is the number of the merge step.
       2. Run the parse command on each log. Run the compare command with `baseline.json` and each parsed file. Pass = exit 0 and the Gate rule holds.
       3. On a new failure, rerun the class once. If it still fails, follow "Test-change rule". If you find no cause after one focused attempt, stop early. One focused attempt is one read of the failure, one fix and one rerun.
-   9. Commit the fixes of this merge step. Use the prefix `fix(mac):`, `feat(mac):` or `test(mac):`. End the message with `Co-Authored-By: Claude <noreply@anthropic.com>`. If you changed nothing after the merge commit, there is nothing to commit.
+      4. After the first merge step and after the last merge step, also run the full suite command. Save the log as `build/scratch/upstream-sync/step-<n>-full.log`. Parse it and compare it as in item 2.
+
+      A class in which every test skips (`XCTSkip`) is not a Gate rule failure. Leave it out of the class runs.
+   9. Commit the fixes of this merge step. Use the prefix `fix(mac):`, `feat(mac):` or `test(mac):`. End the message with `Co-Authored-By: Claude <noreply@anthropic.com>`. If you changed nothing after the merge commit, there is nothing to commit. Then tag the last commit of the step: `git tag sync/<date>/step-<n>`.
 
 ## Test-change rule
 
@@ -130,21 +147,27 @@ Run these in the sync worktree. No other agent can build at the same time.
 1. Run `xcodegen generate`. Run the full suite command with `2>&1 | tee build/scratch/upstream-sync/final.log`.
 2. Run the parse command with `-o build/scratch/upstream-sync/final.json`. Run the compare command with `baseline.json` and `final.json`. Pass = exit 0 and the Gate rule holds.
 3. For each class that `compare` lists, rerun the class once. If it still fails, follow "Test-change rule". If `AccessibilityLabelAuditTests` fails, follow step 5 of "Sync routine" in `docs/macos/PORTING_LEDGER.md`.
-4. Run `scripts/mac-verify-bundle.sh --archive`. Pass = exit 0, with every check line printing `ok:`.
+4. Run `scripts/mac-verify-bundle.sh --archive --keep`. Pass = exit 0, with every check line printing `ok:`. The Live check uses the kept archive in `build/mac-verify/`.
 
 ## Live check
 
 - **Prerequisite.** The user's Hermes host runs the Conduit Notifier plugin at the version the merged app recommends (`0.48.0` or newer). The skill reads the version from the app's Settings > Conduit plugin page. It asks the user before it updates the plugin or restarts the gateway.
-- **Build under test.** A Debug build from the sync worktree. Confirm the running binary path before checking.
-- **Method.** Drive the real app with the computer-use tools. In a new chat, send prompts that make Hermes produce each content type in the prompt list below (for example, ask for a place card, a chart, a Mermaid diagram, an equation, an HTML preview, a large code block, a table). Check each in light and dark appearance.
+- **Build under test.** The Developer ID signed Release archive that `scripts/mac-verify-bundle.sh --archive --keep` leaves in the sync worktree: `build/mac-verify/Conduit.xcarchive/Products/Applications/Conduit.app`. Do not use an ad hoc signed Debug build. The Keychain items trust only the Developer ID app, so a Debug build hangs on a Keychain prompt. Confirm the running binary path before checking.
+- **Test isolation.** Tests run inside the real app bundle. They must not touch the user's Keychain, defaults or Library. After a suspect run, ask the user to check the dashboard list and the saved sign-in in their own Conduit app.
+- **Method.** Drive the real app with the desktop-control tools that this session has. In a new chat, send prompts that make Hermes produce each content type in the prompt list below (for example, ask for a place card, a chart, a Mermaid diagram, an equation, an HTML preview, a large code block, a table). Check each in light and dark appearance.
 - **Pass, per type.** It renders as designed. No raw JSON, no raw directive text, no empty box, no crash, no hang. Links open through the existing allowlist (R11). Save one screenshot per type under the worktree's `build/scratch/live-check/` and list the results in the report.
 - A type that fails is fixed in the sync branch before landing, or reported as deferred with the reason. The user decides on a deferral.
 
 Do these items:
 
-1. Load the `agent-desktop` skill. Use it to drive the app.
-2. Start the Debug app from the worktree: `build/dd/Build/Products/Debug/Conduit.app`.
-3. Run `ps -o pid,lstart,comm -p $(pgrep -x Conduit)`. Pass = the `comm` path is under the worktree's `build/dd/`. If the app runs from another path (for example `/Volumes/Conduit`), quit it and start the right build.
+1. Find the driver. Use the desktop-control tools that this session has. If none of them works, ask the user to choose one of these:
+   - macOS UI scripting with `osascript` and `screencapture`
+   - install `agent-desktop`
+   - a manual check by the user
+
+   Do not install a tool without the consent of the user.
+2. Start the app from the kept archive: `build/mac-verify/Conduit.xcarchive/Products/Applications/Conduit.app`.
+3. Run `ps -o pid,lstart,comm -p $(pgrep -x Conduit)`. Pass = the `comm` path is under the worktree's `build/mac-verify/`. If the app runs from another path (for example `/Volumes/Conduit`), it can be the app of the user, with unsaved state. Ask the user before you quit it. Quit it only after the user agrees. Then start the build under test.
 4. Open Settings > Conduit plugin. Read the installed and recommended plugin versions. If the installed version is lower, stop and ask the user.
 5. In a new chat, send these prompts. Send one prompt for each type. Name the screenshot `build/scratch/live-check/<type>-<light|dark>.png`.
    - `place-card`: "Show me a place card for the Ferry Building in San Francisco."
@@ -156,12 +179,13 @@ Do these items:
    - `code-block`: "Print a 300-line Swift file in one code block."
    - `web-image`: "Read a web page and include one of its images."
    - `tool-row`: "Run a shell command that lists a directory."
-6. Check each reply in light and then in dark appearance. Change the appearance in System Settings. Restore the original setting when you finish.
+   - `artifacts`: "Write a short file and list it in Artifacts."
+6. Read the Theme setting in Conduit Settings and the OS appearance. Write both values down. Set Theme to System. Check each reply in light and then in dark appearance. Change the appearance in System Settings. When you finish, restore Theme and the OS appearance to the values that you wrote down.
 7. Fix each failed type in the sync branch. Write a test first when a test can show the cause. Then rerun the check for that type. Record a type you cannot fix as deferred, with the reason, under "Decisions for the user". Ask the user.
 
 ## Land
 
-Run these items after the Full gate and the Live check pass.
+Run these items after the Full gate and the Live check pass. Before item 1, run `git worktree list`. Pass = it shows only the main checkout and the sync worktree. Remove each other merged worktree and its branch. Ask the user about a worktree that is not merged.
 
 1. In the worktree, append the results to the report. Add the merge steps and the ports and gates (each with its ledger row). Add each test you changed and why. Add the gate results, the live-check table (type, light, dark, result) and anything deferred.
 2. Run `git add docs/macos/upstream-sync/<date>.md`. Run `git commit -m "docs(mac): upstream sync report <date>"`. End the message with `Co-Authored-By: Claude <noreply@anthropic.com>`.
