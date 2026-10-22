@@ -6,7 +6,11 @@ final class MacPaletteCommandsTests: XCTestCase {
     private var suite: (defaults: UserDefaults, name: String)!
     private var windows: [NSWindow] = []
 
-    override func setUp() async throws { suite = HostedTestSupport.makeSuite() }
+    override func setUp() async throws {
+        suite = HostedTestSupport.makeSuite()
+        // Running a palette command can switch the sidebar tab, which is @AppStorage on the standard defaults.
+        preserveStandardDefaults(MacSidebarState.tabDefaultsKey)
+    }
     override func tearDown() async throws {
         windows.forEach { $0.close() }; windows = []
         HostedTestSupport.dropSuite(suite)

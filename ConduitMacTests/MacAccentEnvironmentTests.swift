@@ -8,20 +8,11 @@ import XCTest
 /// on the pick.
 @MainActor
 final class MacAccentEnvironmentTests: XCTestCase {
-    private var savedPick: Any?
-
     override func setUp() {
         super.setUp()
-        savedPick = UserDefaults.standard.object(forKey: ConduitAccentChoice.storageKey)
-    }
-
-    override func tearDown() {
-        if let savedPick {
-            UserDefaults.standard.set(savedPick, forKey: ConduitAccentChoice.storageKey)
-        } else {
-            UserDefaults.standard.removeObject(forKey: ConduitAccentChoice.storageKey)
-        }
-        super.tearDown()
+        // The accent colour and `@AppStorage` read the standard defaults, so the pick is the user's own key:
+        // put it back (value or absence) when the test ends.
+        preserveStandardDefaults(ConduitAccentChoice.storageKey)
     }
 
     /// Draws `Color.conduitAccent`, the colour almost every accented view uses.

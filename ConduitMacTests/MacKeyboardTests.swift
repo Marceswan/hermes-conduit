@@ -1070,13 +1070,9 @@ final class MacComposerKeyboardTests: XCTestCase {
     /// Cmd-L from another pane, end to end: the route holds the hidden chat's
     /// focus, the command returns the route to chat and focus comes back.
     func testFocusRequestFromAnotherPaneReturnsToChatAndFocuses() throws {
-        // ComposerPasteTextView reads the standard defaults; put the key back after.
+        // The composer reads the standard defaults, not a suite: put the sidebar tab back after.
+        preserveStandardDefaults(MacSidebarState.tabDefaultsKey)
         let defaults = UserDefaults.standard
-        let original = defaults.object(forKey: MacSidebarState.tabDefaultsKey)
-        defer {
-            if let original { defaults.set(original, forKey: MacSidebarState.tabDefaultsKey) }
-            else { defaults.removeObject(forKey: MacSidebarState.tabDefaultsKey) }
-        }
         defaults.set(SidebarTab.sessions.rawValue, forKey: MacSidebarState.tabDefaultsKey)
         let center = NotificationCenter()
         let window = HostedTestSupport.host(Composer(center: center), size: NSSize(width: 300, height: 100))

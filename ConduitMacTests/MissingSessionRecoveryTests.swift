@@ -64,9 +64,9 @@ final class MissingSessionRecoveryTests: XCTestCase {
         persistedTranscript: (@MainActor (String, String, String) async -> PersistedTranscriptFetchOutcome)? = nil,
         requests: Requests
     ) -> Fixture {
-        let suite = "MissingSessionRecoveryTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let suite = HostedTestSupport.makeSuite()
+        let defaults = suite.defaults
+        addTeardownBlock { @MainActor in HostedTestSupport.dropSuite(suite) }
         let store = ChatResumeStore(defaults: defaults)
         store.setBehavior(.continueWhereLeftOff)
         let scheduler = Scheduler()

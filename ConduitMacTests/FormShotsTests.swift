@@ -67,7 +67,9 @@ final class FormShotsTests: XCTestCase {
     }
 
     private func store() -> KanbanStore {
-        KanbanStore(defaults: UserDefaults(suiteName: "conduit.mac.tests.\(UUID().uuidString)")!)
+        let suite = HostedTestSupport.makeSuite()
+        addTeardownBlock { @MainActor in HostedTestSupport.dropSuite(suite) }
+        return KanbanStore(defaults: suite.defaults)
     }
 
     /// Clicks the first switch in the sheet window (the grouped style draws a

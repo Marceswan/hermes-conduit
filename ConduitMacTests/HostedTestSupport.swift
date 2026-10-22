@@ -8,14 +8,16 @@ import XCTest
 /// neither see another test's state nor leave a live window behind.
 @MainActor
 enum HostedTestSupport {
-    /// A throwaway defaults suite; remove with `dropSuite`.
+    /// A throwaway defaults suite; remove with `dropSuite`. It has its own folder under the temporary
+    /// directory, not a plist in the user's Preferences folder (see `TestDefaultsSuites`). A test creates
+    /// its suites only here: `TestDefaultsIsolationTests` fails on a suite made in any other test file.
     static func makeSuite() -> (defaults: UserDefaults, name: String) {
-        let name = "conduit.mac.tests.\(UUID().uuidString)"
-        return (UserDefaults(suiteName: name)!, name)
+        TestDefaultsSuites.make()
     }
 
+    /// Clears the suite and deletes its plist.
     static func dropSuite(_ suite: (defaults: UserDefaults, name: String)) {
-        suite.defaults.removePersistentDomain(forName: suite.name)
+        TestDefaultsSuites.remove(suite.name, defaults: suite.defaults)
     }
 
     /// Runs the main run loop until `predicate` holds or `timeout` passes.
