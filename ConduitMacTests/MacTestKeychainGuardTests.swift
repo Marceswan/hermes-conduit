@@ -40,6 +40,16 @@ final class MacTestKeychainGuardTests: XCTestCase {
         XCTAssertEqual(offenders.sorted(), [], "use MacTestKeychainBackend; MacTestKeychainGuard installs it")
     }
 
+    /// The defaults check is a teardown block that the guard adds to every test in `testCaseWillStart`. If that
+    /// line goes, no test fails any more, so this test asks the guard for its counts: it has added the block to
+    /// this test, and every test that started before this one ran its block.
+    func testTheDefaultsCheckIsWiredIntoEveryTest() {
+        let wiring = MacTestKeychainGuard.wiring
+        XCTAssertEqual(wiring.currentTest, name, "the guard saw this test start")
+        XCTAssertEqual(wiring.checksRun, wiring.testsStarted - 1, "the check ran after every earlier test")
+        XCTAssertGreaterThan(wiring.testsStarted, 0)
+    }
+
     /// One in-memory backend serves every test (M3). A second copy can differ from the real Keychain,
     /// so a test can pass on one and fail on the other.
     func testNoTestDeclaresItsOwnKeychainBackend() throws {
@@ -74,5 +84,27 @@ final class MacTestKeychainGuardTests: XCTestCase {
         XCTAssertEqual(KeychainHelper.loadDashboardRegistryData(), data)
         MacTestKeychainGuard.isolate()
         XCTAssertNil(KeychainHelper.loadDashboardRegistryData())
+    }
+}
+
+/// The guard's defaults check is a teardown block. XCTest runs teardown blocks after the test method and before
+/// `tearDown()`, so a key that a test puts back in `tearDown()` is seen as changed. This pins that order.
+/// `testAARegisters` runs first; `testBPinsTheOrder` reads what it logged (it skips when run alone).
+final class MacTestKeychainGuardOrderTests: XCTestCase {
+    nonisolated(unsafe) private static var log: [String] = []
+
+    override func tearDown() {
+        Self.log.append("tearDown")
+        super.tearDown()
+    }
+
+    func testAARegisters() {
+        addTeardownBlock { Self.log.append("teardown block") }
+        Self.log.append("test body")
+    }
+
+    func testBPinsTheOrder() throws {
+        try XCTSkipIf(Self.log.isEmpty, "testAARegisters did not run before this test")
+        XCTAssertEqual(Array(Self.log.prefix(3)), ["test body", "teardown block", "tearDown"])
     }
 }

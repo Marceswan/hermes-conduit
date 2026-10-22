@@ -134,10 +134,12 @@ extension XCTestCase {
 /// failure recorded there and the run still reports success (measured with Xcode 27.1, with a test that wrote one key).
 /// The baseline moves after each test, so one stray write fails one test and not every test after it.
 ///
-/// A running installed Conduit writes the same domain (sidebar tab, accent, open chats, read ledger), and a diff
-/// cannot tell its writes from a test's. While another process with this bundle id runs, the outcome is a note
-/// and not a failure: the first run of this guard failed a test that only an outside click had touched. Quit
-/// Conduit before the run you rely on.
+/// A running installed Conduit writes the same domain (sidebar tab, accent, open chats, read ledger), and so does the
+/// test host of another worktree, and a diff cannot tell its writes from a test's. The watch asks a probe whether
+/// another process with this bundle id runs at bundle start, at the start of each test and at its end. Once any of
+/// these checks sees one, every later finding is a note and not a failure, for the rest of the bundle: a host can
+/// write a key and quit between two checks, and a single check at the end of a test failed two correct tests that way.
+/// Quit Conduit and stop other test runs before the run you rely on.
 final class RealDefaultsWatch {
     enum Change: Equatable, Comparable {
         case added(String), removed(String), changed(String)
@@ -198,19 +200,36 @@ final class RealDefaultsWatch {
     private let read: () -> [String: Any]
     private let otherConduitIsRunning: () -> Bool
     private var baseline: [String: Any]
+    private var sawOtherConduit = false
     private let lock = NSLock()
 
-    /// Takes the first reading now.
+    /// Takes the first reading and the first process check now (bundle start).
     init(read: @escaping () -> [String: Any] = RealDefaultsWatch.readRealDomain,
          otherConduitIsRunning: @escaping () -> Bool = RealDefaultsWatch.anotherConduitIsRunning) {
         self.read = read
         self.otherConduitIsRunning = otherConduitIsRunning
         baseline = read()
+        checkForOtherConduit()
+    }
+
+    /// Asks the probe, and keeps the answer: once it said yes, this returns true for the rest of the bundle.
+    @discardableResult
+    func checkForOtherConduit() -> Bool {
+        let seen = otherConduitIsRunning()
+        lock.lock()
+        defer { lock.unlock() }
+        if seen { sawOtherConduit = true }
+        return sawOtherConduit
+    }
+
+    /// Call when a test starts.
+    func testStarted() {
+        checkForOtherConduit()
     }
 
     /// What the guard found after a test.
     struct Finding: Equatable {
-        /// Whether it fails the test. It does not while another Conduit runs.
+        /// Whether it fails the test. It does not once any check has seen another Conduit.
         var isFailure: Bool
         var message: String
     }
@@ -219,6 +238,7 @@ final class RealDefaultsWatch {
     /// test before. Writes that came between two tests, from async work of an earlier test or from another
     /// process, land on the test that ends next.
     func testFinished(_ name: String) -> Finding? {
+        let concurrent = checkForOtherConduit()
         let now = read()
         lock.lock()
         let found = Self.changes(from: baseline, to: now)
@@ -226,13 +246,12 @@ final class RealDefaultsWatch {
         lock.unlock()
         guard !found.isEmpty else { return nil }
         let id = Bundle.main.bundleIdentifier ?? "?"
-        let concurrent = otherConduitIsRunning()
         var lines = concurrent
-            ? ["note (not a failure): another Conduit is running and writes the same defaults, so these changes may be its own. After \(name) the user's real defaults (\(id)) differ:"]
+            ? ["note (not a failure): another Conduit ran during this test run and writes the same defaults, so these changes may be its own. After \(name) the user's real defaults (\(id)) differ:"]
             : ["\(name) changed the user's real defaults (\(id)), during it or just before it:"]
         lines += found.map { "  \($0.text)" }
         lines.append(concurrent
-            ? "Quit Conduit and run the test again to check."
+            ? "Quit Conduit, stop other test runs and run the test again to check."
             : "A test must use HostedTestSupport.makeSuite() or preserveStandardDefaults(_:).")
         return Finding(isFailure: !concurrent, message: lines.joined(separator: "\n"))
     }

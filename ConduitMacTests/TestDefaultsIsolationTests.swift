@@ -203,8 +203,77 @@ final class TestDefaultsIsolationTests: XCTestCase {
         domain["conduit.mac.sidebarVisible"] = true
         let finding = watch.testFinished("-[SomeTests testWrites]")
         XCTAssertEqual(finding?.isFailure, false)
-        XCTAssertTrue(finding?.message.contains("another Conduit is running") == true, finding?.message ?? "")
+        XCTAssertTrue(finding?.message.contains("another Conduit") == true, finding?.message ?? "")
         XCTAssertTrue(finding?.message.contains("added conduit.mac.sidebarVisible") == true, finding?.message ?? "")
+    }
+
+    // MARK: Another Conduit: one sighting keeps the guard advisory for the rest of the bundle
+
+    /// The defaults domain and the process list that a watch under test reads.
+    private final class World {
+        var domain: [String: Any] = [:]
+        var otherConduitRuns = false
+
+        func watch() -> RealDefaultsWatch {
+            RealDefaultsWatch(read: { [unowned self] in domain }, otherConduitIsRunning: { [unowned self] in otherConduitRuns })
+        }
+
+        /// A test writes a key and ends.
+        func finding(_ watch: RealDefaultsWatch) -> RealDefaultsWatch.Finding? {
+            domain["conduit.sidebarTab"] = UUID().uuidString
+            return watch.testFinished("-[SomeTests testWrites]")
+        }
+    }
+
+    func testNoSightingMeansAFailure() {
+        let world = World()
+        let watch = world.watch()
+        watch.testStarted()
+        XCTAssertEqual(world.finding(watch)?.isFailure, true)
+    }
+
+    func testASightingAtBundleStartKeepsTheGuardAdvisoryEvenWhenTheOtherConduitIsGone() {
+        let world = World()
+        world.otherConduitRuns = true
+        let watch = world.watch()
+        world.otherConduitRuns = false
+        watch.testStarted()
+        XCTAssertEqual(world.finding(watch)?.isFailure, false, "seen at bundle start, gone since")
+    }
+
+    /// The host of another worktree can write a key and quit while a test runs: neither the start nor the end of
+    /// the test sees it, but an earlier or later check of the bundle does.
+    func testASightingAtTheStartOfAnEarlierTestKeepsTheGuardAdvisory() {
+        let world = World()
+        let watch = world.watch()
+        world.otherConduitRuns = true
+        watch.testStarted()
+        world.otherConduitRuns = false
+        XCTAssertNil(watch.testFinished("-[QuietTests testNothing]"))
+        watch.testStarted()
+        XCTAssertEqual(world.finding(watch)?.isFailure, false, "seen at the start of an earlier test, gone since")
+    }
+
+    func testASightingAtTheEndOfATestKeepsTheGuardAdvisoryForTheNextTest() {
+        let world = World()
+        let watch = world.watch()
+        watch.testStarted()
+        world.otherConduitRuns = true
+        XCTAssertNil(watch.testFinished("-[QuietTests testNothing]"))
+        world.otherConduitRuns = false
+        watch.testStarted()
+        XCTAssertEqual(world.finding(watch)?.isFailure, false)
+        XCTAssertTrue(watch.checkForOtherConduit(), "the answer stays yes")
+    }
+
+    func testTheProbeIsAskedAtBundleStartAndAtTheStartAndEndOfEachTest() {
+        var asked = 0
+        let watch = RealDefaultsWatch(read: { [:] }, otherConduitIsRunning: { asked += 1; return false })
+        XCTAssertEqual(asked, 1, "bundle start")
+        watch.testStarted()
+        XCTAssertEqual(asked, 2, "start of a test")
+        _ = watch.testFinished("-[SomeTests testNothing]")
+        XCTAssertEqual(asked, 3, "end of a test")
     }
 
     // MARK: Shared stores of the host app
