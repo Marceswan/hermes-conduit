@@ -186,6 +186,54 @@ final class LoginFrozenCopyOutcomeTests: XCTestCase {
         let ids = try identifiers(of: LoginView().environmentObject(appState), expecting: "login.server-url")
         XCTAssertTrue(ids.contains("login.server-url"), "the card is up: \(ids)")
         XCTAssertFalse(ids.contains("login.cancel"), "with no session there is nothing to go back to: \(ids)")
+        // R17: the way forward stays. Connect, the address field and the connection help are on the card.
+        XCTAssertTrue(ids.contains("login.connect"), "Connect: \(ids)")
+        XCTAssertTrue(ids.contains("login.connection-setup"), "Need help connecting?: \(ids)")
+    }
+
+    /// Escape, as AppKit sends it to the window's key equivalents.
+    private func pressEscape(in window: NSWindow) -> Bool {
+        let event = NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}",
+            isARepeat: false, keyCode: 53)
+        return event.map { window.performKeyEquivalent(with: $0) } ?? false
+    }
+
+    func testEscapeClosesTheCardWhenASessionIsConnected() throws {
+        try connectSession()
+        _ = try identifiers(of: LoginView().environmentObject(appState), expecting: "login.cancel")
+        let host = try XCTUnwrap(window)
+        host.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(appState.showLogin, "precondition")
+
+        _ = pressEscape(in: host)
+
+        XCTAssertTrue(HostedTestSupport.waitUntil { !self.appState.showLogin }, "Esc presses Cancel")
+        XCTAssertTrue(appState.isConnected, "the session stays")
+    }
+
+    func testEscapeDoesNothingWithNoSessionOrWhileASignInWorks() throws {
+        // No session: no Cancel, so Esc leaves the card as it is.
+        appState.showLogin = true
+        _ = try identifiers(of: LoginView().environmentObject(appState), expecting: "login.server-url")
+        var host = try XCTUnwrap(window)
+        host.makeKeyAndOrderFront(nil)
+        _ = pressEscape(in: host)
+        HostedTestSupport.settle(0.2)
+        XCTAssertTrue(appState.showLogin, "no session")
+
+        // A sign-in under way: Cancel is disabled, so Esc does not close the card under it.
+        HostedTestSupport.tearDown(host)
+        window = nil
+        try connectSession()
+        appState.isConnecting = true
+        _ = try identifiers(of: LoginView().environmentObject(appState), expecting: "login.cancel")
+        host = try XCTUnwrap(window)
+        host.makeKeyAndOrderFront(nil)
+        _ = pressEscape(in: host)
+        HostedTestSupport.settle(0.2)
+        XCTAssertTrue(appState.showLogin, "a sign-in under way")
     }
 
     func testCancelWaitsForASignInUnderWay() throws {
