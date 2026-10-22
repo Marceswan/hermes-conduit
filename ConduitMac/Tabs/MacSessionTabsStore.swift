@@ -172,7 +172,8 @@ final class MacSessionTabsStore: ObservableObject {
             appState?.dismissSidebarDrawer()
             _ = appState?.requestOpenSession(id) { self?.openFailed(id) }
         }
-        startNewChat = { [weak appState] in Task { await appState?.createNewSession() } }
+        // The sidebar button's own call: the chat after the last tab closes is queued while Conduit connects (R39).
+        startNewChat = { [weak appState] in appState?.startNewChat() }
         activeChatIsEmpty = { [weak appState] in appState?.messages.isEmpty ?? false }
         scrollActiveToTop = { [weak appState] in appState?.requestChatScrollToTop() }
         isChatSurfaceShowing = { [weak appState, routeDefaults] in

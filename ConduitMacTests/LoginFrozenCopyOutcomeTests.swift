@@ -116,6 +116,106 @@ final class LoginFrozenCopyOutcomeTests: XCTestCase {
         XCTAssertTrue(ok, "address after the switch: \(address() ?? "nil")")
     }
 
+    // MARK: F4 (LC-A): Add Dashboard over a connected session has a way back
+
+    /// The card is raised over a connected session (Cmd-Shift-D > Add Dashboard sets `showLogin`).
+    private func connectSession() throws {
+        let id = try XCTUnwrap(appState.resolveDashboardID(forURL: "https://one.example", registerIfMissing: true))
+        appState.selectDashboardTarget(id)
+        let connection = HermesConnection(baseUrl: "https://one.example", ticket: "ticket")
+        appState.connection = connection
+        appState.client = HermesClient(connection: connection, profile: "default")
+        appState.isConnected = true
+        appState.showLogin = true
+    }
+
+    private func cancelNode() -> AccessibilityProbe.Node? {
+        window.flatMap { AccessibilityProbe.nodes(in: $0).first { $0.identifier == "login.cancel" } }
+    }
+
+    func testConnectedSessionOffersCancelThatClosesTheCardAndKeepsTheSession() throws {
+        try connectSession()
+        let dashboardID = appState.activeDashboardID
+        _ = try identifiers(of: LoginView().environmentObject(appState), expecting: "login.cancel")
+        let cancel = try XCTUnwrap(cancelNode(), "a connected session must have a way back from the card")
+        XCTAssertEqual(cancel.label, "Cancel", "upstream's add-dashboard string")
+        XCTAssertEqual(cancel.isEnabled, true)
+        XCTAssertGreaterThan(cancel.frame.width, 20, "a visible control")
+        XCTAssertLessThanOrEqual(cancel.frame.maxX, 640, "inside the card, not clipped at the window edge")
+        XCTAssertTrue(appState.showLogin)
+
+        XCTAssertTrue(AccessibilityProbe.press("Cancel", in: try XCTUnwrap(window)))
+
+        XCTAssertFalse(appState.showLogin, "Cancel closes the card")
+        XCTAssertTrue(appState.isConnected, "Cancel does not touch the running session")
+        XCTAssertEqual(appState.activeDashboardID, dashboardID)
+        XCTAssertNotNil(appState.client)
+    }
+
+    func testNoSessionOffersNoCancel() throws {
+        appState.showLogin = true
+        XCTAssertFalse(appState.isConnected, "precondition")
+        let ids = try identifiers(of: LoginView().environmentObject(appState), expecting: "login.server-url")
+        XCTAssertTrue(ids.contains("login.server-url"), "the card is up: \(ids)")
+        XCTAssertFalse(ids.contains("login.cancel"), "with no session there is nothing to go back to: \(ids)")
+        // R17: the way forward stays. Connect, the address field and the connection help are on the card.
+        XCTAssertTrue(ids.contains("login.connect"), "Connect: \(ids)")
+        XCTAssertTrue(ids.contains("login.connection-setup"), "Need help connecting?: \(ids)")
+    }
+
+    /// Escape, as AppKit sends it to the window's key equivalents.
+    private func pressEscape(in window: NSWindow) -> Bool {
+        let event = NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}",
+            isARepeat: false, keyCode: 53)
+        return event.map { window.performKeyEquivalent(with: $0) } ?? false
+    }
+
+    func testEscapeClosesTheCardWhenASessionIsConnected() throws {
+        try connectSession()
+        _ = try identifiers(of: LoginView().environmentObject(appState), expecting: "login.cancel")
+        let host = try XCTUnwrap(window)
+        host.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(appState.showLogin, "precondition")
+
+        _ = pressEscape(in: host)
+
+        XCTAssertTrue(HostedTestSupport.waitUntil { !self.appState.showLogin }, "Esc presses Cancel")
+        XCTAssertTrue(appState.isConnected, "the session stays")
+    }
+
+    func testEscapeDoesNothingWithNoSessionOrWhileASignInWorks() throws {
+        // No session: no Cancel, so Esc leaves the card as it is.
+        appState.showLogin = true
+        _ = try identifiers(of: LoginView().environmentObject(appState), expecting: "login.server-url")
+        var host = try XCTUnwrap(window)
+        host.makeKeyAndOrderFront(nil)
+        _ = pressEscape(in: host)
+        HostedTestSupport.settle(0.2)
+        XCTAssertTrue(appState.showLogin, "no session")
+
+        // A sign-in under way: Cancel is disabled, so Esc does not close the card under it.
+        HostedTestSupport.tearDown(host)
+        window = nil
+        try connectSession()
+        appState.isConnecting = true
+        _ = try identifiers(of: LoginView().environmentObject(appState), expecting: "login.cancel")
+        host = try XCTUnwrap(window)
+        host.makeKeyAndOrderFront(nil)
+        _ = pressEscape(in: host)
+        HostedTestSupport.settle(0.2)
+        XCTAssertTrue(appState.showLogin, "a sign-in under way")
+    }
+
+    func testCancelWaitsForASignInUnderWay() throws {
+        try connectSession()
+        appState.isConnecting = true
+        _ = try identifiers(of: LoginView().environmentObject(appState), expecting: "login.cancel")
+        let cancel = try XCTUnwrap(cancelNode())
+        XCTAssertEqual(cancel.isEnabled, false, "upstream disables Cancel while a sign-in is working")
+    }
+
     // MARK: B1 (wiring; the sheet itself is covered by AuthWebSignInSheetTests)
 
     private func loginSource(_ name: String) throws -> String {

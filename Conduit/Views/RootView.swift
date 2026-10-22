@@ -241,6 +241,9 @@ struct MainView: View {
             .overlay(alignment: .bottom) { presentedConfirmOverlay(inCall: true) }
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
+            #if os(macOS) // MAC: the call screen sits in readableContentWidth (a GeometryReader), so a Mac sheet collapsed; give it the call size (LC-A fix round 1)
+            .macCallSheetSize()
+            #endif // MAC:
         }
         .sheet(isPresented: $appState.showGrokLiveSheet, onDismiss: { appState.liveVoiceSheetDismissed(.grokLive) }) {
             GeminiLiveVoiceSheet(
@@ -256,6 +259,9 @@ struct MainView: View {
             .overlay(alignment: .bottom) { presentedConfirmOverlay(inCall: true) }
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
+            #if os(macOS) // MAC: the call screen sits in readableContentWidth (a GeometryReader), so a Mac sheet collapsed; give it the call size (LC-A fix round 1)
+            .macCallSheetSize()
+            #endif // MAC:
         }
         .sheet(isPresented: $appState.showLocalLiveSheet, onDismiss: { appState.liveVoiceSheetDismissed(.localLive) }) {
             GeminiLiveVoiceSheet(
@@ -271,6 +277,9 @@ struct MainView: View {
             .overlay(alignment: .bottom) { presentedConfirmOverlay(inCall: true) }
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
+            #if os(macOS) // MAC: the call screen sits in readableContentWidth (a GeometryReader), so a Mac sheet collapsed; give it the call size (LC-A fix round 1)
+            .macCallSheetSize()
+            #endif // MAC:
         }
         .sheet(isPresented: $appState.showGPTLiveSheet, onDismiss: { appState.liveVoiceSheetDismissed(.gptLive) }) {
             GPTLiveVoiceSheet(
@@ -285,6 +294,9 @@ struct MainView: View {
             .overlay(alignment: .bottom) { presentedConfirmOverlay(inCall: true) }
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
+            #if os(macOS) // MAC: the call screen sits in readableContentWidth (a GeometryReader), so a Mac sheet collapsed; give it the call size (LC-A fix round 1)
+            .macCallSheetSize()
+            #endif // MAC:
         }
         // A CarPlay or Watch call stopped until the user allows its
         // provider to hear them: the phone asks (#827).
@@ -295,6 +307,9 @@ struct MainView: View {
             }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
+            #if os(macOS) // MAC: the consent sheet sits in readableContentWidth (a GeometryReader), so a Mac sheet collapsed; give it a size (LC-A fix round 1)
+            .macCallConsentSheetSize()
+            #endif // MAC:
         }
         .sheet(isPresented: $appState.showVoiceSheet, onDismiss: appState.closeVoiceConversation) {
             VoiceConversationSheet(
@@ -314,9 +329,15 @@ struct MainView: View {
                     LiveVoiceScreenCardSheet(title: card.title, markdown: card.markdown, cards: RichCard.cards(card.cards))
                         .environmentObject(appState)
                         .presentationDetents([.medium, .large])
+                    #if os(macOS) // MAC: a scrolling card needs a Mac size, as the Artifacts sheets have (LC-A fix round 1)
+                        .macCardSheetSize()
+                    #endif // MAC:
                 }
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
+            #if os(macOS) // MAC: the call screen sits in readableContentWidth (a GeometryReader), so a Mac sheet collapsed; give it the call size (LC-A fix round 1); the V2 layout of this screen sits in readableContentWidth too
+                .macCallSheetSize()
+            #endif // MAC:
         }
         .sheet(item: $settingsPresentation, onDismiss: {
             appState.isSettingsSheetPresented = false
@@ -344,6 +365,9 @@ struct MainView: View {
             )
                 .presentationDetents([.large])
                 .environmentObject(appState)
+            #if os(macOS) // MAC: the pages sit in readableContentWidth (a GeometryReader), so a Mac sheet took 470 x 80 pt; give it a size (LC-A F1)
+                .macSettingsSheetSize()
+            #endif // MAC:
         }
         // Settings can go with this screen (switching or adding a dashboard
         // swaps in sign-in), and SwiftUI doesn't promise the sheet's

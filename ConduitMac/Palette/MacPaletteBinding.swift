@@ -49,7 +49,8 @@ extension MacPaletteCalls {
         calls.switchProfile = { [weak appState] name in await appState?.switchProfile(to: name) }
         calls.openModelPicker = { [weak appState] in appState?.showModelPicker = true }
         calls.selectPane = { tab in MacKeyboardActions.selectTab(tab, window: nil, defaults: defaults) }
-        calls.newChat = { [weak appState] in Task { await appState?.createNewSession() } }
+        // The sidebar button's own call: a New Chat asked for while Conduit connects is queued (Ruling R39).
+        calls.newChat = { [weak appState] in appState?.startNewChat() }
         calls.openSettings = { NotificationCenter.default.post(name: .macOpenSettingsRequested, object: nil) }
         calls.toggleSidebar = { MacSidebarState.toggleVisible() }
         calls.stopResponse = { [weak appState] in Task { _ = await appState?.cancelCurrent() } }
