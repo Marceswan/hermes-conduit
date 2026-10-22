@@ -46,6 +46,74 @@ final class ComposerPasteTextViewTests: XCTestCase {
         XCTAssertEqual(images.first?.typeIdentifier, UTType.png.identifier)
     }
 
+    /// LC-B F2: Edit > Paste (Cmd-V) is validated before `paste(_:)` runs. A bitmap-only board has no
+    /// text type, so NSTextView left Paste disabled and the key did nothing.
+    private func pasteItem() -> NSMenuItem {
+        NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+    }
+
+    func testPasteIsEnabledForABitmapOnlyBoard() {
+        let pb = board()
+        pb.clearContents()
+        pb.setData(pngData(), forType: .png)
+        let view = ComposerTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
+        view.pastePasteboard = pb
+        XCTAssertTrue(view.validateUserInterfaceItem(pasteItem()))
+    }
+
+    func testPasteIsEnabledForATIFFOnlyBoard() throws {
+        let tiff = try XCTUnwrap(NSImage(data: pngData())?.tiffRepresentation)
+        let pb = board()
+        pb.clearContents()
+        pb.setData(tiff, forType: .tiff)
+        let view = ComposerTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
+        view.pastePasteboard = pb
+        XCTAssertTrue(view.validateUserInterfaceItem(pasteItem()))
+    }
+
+    func testReadableTypesIncludeBitmaps() {
+        let view = ComposerTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
+        XCTAssertTrue(view.readablePasteboardTypes.contains(.png), "\(view.readablePasteboardTypes)")
+        XCTAssertTrue(view.readablePasteboardTypes.contains(.tiff))
+    }
+
+    func testPasteStaysDisabledWhenNotEditable() {
+        let pb = board()
+        pb.clearContents()
+        let view = ComposerTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
+        view.pastePasteboard = pb
+        view.isEditable = false
+        XCTAssertFalse(view.validateUserInterfaceItem(pasteItem()))
+    }
+
+    func testPastedBitmapDataAttachesThroughPaste() {
+        let pb = board()
+        pb.clearContents()
+        pb.setData(pngData(), forType: .png)
+        let view = ComposerTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
+        var attached = 0
+        view.onPastedImages = { attached += $0.count }
+        view.pastePasteboard = pb
+        view.paste(nil)
+        XCTAssertEqual(attached, 1)
+    }
+
+    func testPastedBitmapOverTheLimitIsReportedNotAttached() {
+        let pb = board()
+        pb.clearContents()
+        pb.setData(Data(count: 3 * 1024 * 1024), forType: .png)
+        let view = ComposerTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
+        var attached = 0
+        var messages: [String] = []
+        view.onPastedImages = { attached += $0.count }
+        view.onPastedImageError = { messages.append($0) }
+        view.pastePasteboard = pb
+        view.attachmentLimitOverride = 1
+        view.paste(nil)
+        XCTAssertEqual(attached, 0)
+        XCTAssertEqual(messages.count, 1)
+    }
+
     func testPlainTextPasteIsNotAnImage() {
         let pb = board()
         pb.clearContents()

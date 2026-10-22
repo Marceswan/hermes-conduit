@@ -328849,6 +328849,94 @@
           }
         }
       }
+    },
+    "Mac.InstallSource.DirectDownload" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diese Conduit-Kopie wurde direkt heruntergeladen, nicht aus dem App Store."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This copy of Conduit was downloaded directly, not from the App Store."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esta copia de Conduit se descargó directamente, no de la App Store."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cette copie de Conduit a été téléchargée directement, et non depuis l'App Store."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Salinan Conduit ini diunduh langsung, bukan dari App Store."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questa copia di Conduit è stata scaricata direttamente, non dall'App Store."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "この Conduit は App Store ではなく、直接ダウンロードされたものです。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 Conduit은 App Store가 아닌 직접 다운로드로 설치되었습니다."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ta kopia Conduit została pobrana bezpośrednio, a nie z App Store."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esta cópia do Conduit foi baixada diretamente, não da App Store."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Эта копия Conduit загружена напрямую, а не из App Store."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bu Conduit kopyası App Store'dan değil, doğrudan indirildi."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此 Conduit 是直接下载的，并非来自 App Store。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此 Conduit 是直接下載的，並非來自 App Store。"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

@@ -441,15 +441,48 @@ final class ComposerTextView: NSTextView {
         return super.prepareForDragOperation(sender)
     }
 
+    /// The board Paste reads and validates against; tests inject a private one.
+    var pastePasteboard: NSPasteboard = .general
+
+    /// Splits pasted images by the attachment limit; the second value counts the refused ones.
+    static func splitByLimit(_ images: [PastedImage], megabytes: Int) -> ([PastedImage], Int) {
+        let allowed = images.filter { AttachmentSizeLimit.allows(byteCount: Int64($0.data.count), megabytes: megabytes) }
+        return (allowed, images.count - allowed.count)
+    }
+
+    /// Megabyte limit for pasted bitmap data; nil reads Settings > Chat. Tests set it.
+    var attachmentLimitOverride: Int?
+
+    /// The plain-text composer reads no bitmap type by default, so AppKit left Edit > Paste (Cmd-V) disabled for
+    /// a screenshot on the clipboard and `paste(_:)` never ran (LC-B F2).
+    override var readablePasteboardTypes: [NSPasteboard.PasteboardType] {
+        super.readablePasteboardTypes + [.png, .tiff]
+    }
+
+    /// Paste is also valid for a board that holds only a bitmap; AppKit's own check reads `.general`.
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(NSText.paste(_:)), isEditable,
+           pastePasteboard.availableType(from: [.png, .tiff]) != nil {
+            return true
+        }
+        return super.validateUserInterfaceItem(item)
+    }
+
     override func paste(_ sender: Any?) {
-        performPaste(from: .general, sender: sender)
+        performPaste(from: pastePasteboard, sender: sender)
     }
 
     /// `paste` for a given pasteboard (tests use a private one).
     func performPaste(from pasteboard: NSPasteboard, sender: Any?) {
         switch Self.pasteDecision(for: pasteboard) {
         case .images(let images):
-            onPastedImages?(images)
+            // Bitmap data is bounded like a file (#892): over the limit it is reported, not attached.
+            let megabytes = attachmentLimitOverride ?? Self.attachmentMegabytes
+            let (allowed, refused) = Self.splitByLimit(images, megabytes: megabytes)
+            if !allowed.isEmpty { onPastedImages?(allowed) }
+            if refused > 0 {
+                onPastedImageError?(AttachmentSizeLimit.tooLargeMessage(names: ["pasted-image.png"], megabytes: megabytes))
+            }
             // A file over the limit in the same paste is dropped: it says so too.
             _ = reportOversizeImageFiles(on: pasteboard)
         case .text:

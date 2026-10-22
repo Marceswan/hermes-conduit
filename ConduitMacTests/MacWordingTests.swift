@@ -398,6 +398,8 @@ final class MacWordingTests: XCTestCase {
         "Mac.VoiceSettings.KeepScreenAwakeToggle", "Mac.VoiceSettings.KeepListeningLockedNote", "Mac.VoiceSettings.TalkOverNote",
         "Mac.WakePhrase.OtherAudioNote", "Mac.ConnectionFailure.Offline", "Mac.ConnectionFailure.TLSUntrusted",
         "Mac.GeminiLive.TalkOverNote", "Mac.GrokLive.TalkOverNote",
+        // LC-B F3
+        "Mac.InstallSource.DirectDownload",
     ]
 
     /// New keys whose English text is the key (they carry a placeholder, so a symbolic name cannot hold it).

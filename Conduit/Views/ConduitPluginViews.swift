@@ -216,6 +216,7 @@ struct ConduitPluginSettingsDetail: View {
         case .appStore: AppLocalization.string("This copy of Conduit is from the App Store.")
         case .testFlight: AppLocalization.string("This copy of Conduit is from TestFlight.")
         case .xcode: AppLocalization.string("This copy of Conduit was built with Xcode.")
+        case .macDirect: AppLocalization.string("Mac.InstallSource.DirectDownload") // MAC:
         }
         return "\(source) \(what)"
     }

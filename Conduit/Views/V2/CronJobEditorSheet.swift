@@ -62,12 +62,18 @@ struct CronJobEditorSheet: View {
                 Section {
                     TextField(AppLocalization.string("Name, like Morning brief"), text: $draft.name)
                         .textInputAutocapitalization(.sentences)
+                        #if os(macOS) // MAC: the section header names the field; the grouped Form would also show the placeholder as a row label (LC-B F5)
+                        .labelsHidden()
+                        #endif // MAC:
                 } header: {
                     Text(AppLocalization.string("Name"))
                 }
                 Section {
                     TextField(AppLocalization.string("What Hermes should do each time"), text: $draft.prompt, axis: .vertical)
                         .lineLimit(3...10)
+                        #if os(macOS) // MAC: the section header names the field; the grouped Form would also show the placeholder as a row label (LC-B F5)
+                        .labelsHidden()
+                        #endif // MAC:
                 } header: {
                     Text(AppLocalization.string("Prompt"))
                 }
@@ -226,6 +232,9 @@ private struct CronScheduleEditor: View {
                     .font(.callout.monospaced())
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    #if os(macOS) // MAC: the section header names the field; the grouped Form would also show the placeholder as a row label (LC-B F5)
+                    .labelsHidden()
+                    #endif // MAC:
             }
         } header: {
             Text(AppLocalization.string("Schedule"))
