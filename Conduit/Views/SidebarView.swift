@@ -2422,6 +2422,15 @@ struct CronJobDetailSheet: View {
         return CronScheduleText.parseDate(raw).map { CronScheduleText.absoluteDateText($0) } ?? raw
     }
 
+    /// The end of a run-history row: the run's last activity.
+    static func runActivity(_ lastActive: Int?) -> String {
+        #if os(macOS) // MAC: a date and time, not the raw epoch seconds (LC-B F7a)
+        return lastActive.map { CronScheduleText.absoluteDateText(Date(timeIntervalSince1970: TimeInterval($0))) } ?? ""
+        #else // MAC:
+        return lastActive.map(String.init) ?? ""
+        #endif // MAC:
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -2494,7 +2503,7 @@ struct CronJobDetailSheet: View {
                             if appState.cronRuns.isEmpty { Text("This job has not run yet.").font(.footnote).foregroundStyle(.secondary) }
                             ForEach(appState.cronRuns) { run in
                                 Button { appState.dismissSidebarDrawer(); dismiss(); appState.requestOpenSession(run.id) } label: {
-                                    HStack { VStack(alignment: .leading) { Text(run.title ?? run.preview ?? run.id).lineLimit(1); Text(run.model ?? "Hermes").font(.caption).foregroundStyle(.secondary) }; Spacer(); Text(run.lastActive.map(String.init) ?? "").font(.caption2).foregroundStyle(.conduitTertiary) }
+                                    HStack { VStack(alignment: .leading) { Text(run.title ?? run.preview ?? run.id).lineLimit(1); Text(run.model ?? "Hermes").font(.caption).foregroundStyle(.secondary) }; Spacer(); Text(Self.runActivity(run.lastActive)).font(.caption2).foregroundStyle(.conduitTertiary) } // MAC: LC-B F7a
                                 }
                                 .buttonStyle(.plain)
                             }

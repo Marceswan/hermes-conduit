@@ -63,3 +63,17 @@ final class MacCronEditorFieldTests: XCTestCase {
         }
     }
 }
+
+/// LC-B F7a: a Cron run-history row ended with raw epoch seconds such as 1792583147.
+final class MacCronRunActivityTests: XCTestCase {
+    func testRunActivityIsADateAndTimeNotTheRawEpoch() {
+        let text = CronJobDetailSheet.runActivity(1_792_583_147)
+        XCTAssertNotEqual(text, "1792583147")
+        XCTAssertFalse(text.contains("1792583147"))
+        XCTAssertEqual(text, CronScheduleText.absoluteDateText(Date(timeIntervalSince1970: 1_792_583_147)))
+    }
+
+    func testNoActivityStaysEmpty() {
+        XCTAssertEqual(CronJobDetailSheet.runActivity(nil), "")
+    }
+}
