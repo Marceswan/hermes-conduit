@@ -98,6 +98,19 @@ Human pass at release time (agents never click or type into the running app, R18
 - [ ] Scroll the chat list so older pages load: older chats are added; chats that scroll out of the loaded page stay listed.
 - [ ] Turn the toggle off: searching a chat title finds nothing. Turn it on, tap "Remove from Spotlight": the index empties, the toggle stays on, and a chat you open or rename is added again.
 - [ ] A stale result (chat deleted on another device) opens Conduit and shows "That chat is no longer available."
+## Launch at login (D28)
+
+Human pass at release time (agents never click or type into the running app, R18). Use the installed copy in /Applications.
+
+- [ ] Settings > On this device shows "Open Conduit at login" below the Spotlight row, off by default. System Settings > General > Login Items does not list Conduit before the first click.
+- [ ] Turn the toggle on: Conduit is in the Open at Login list, or the footnote "Allow Conduit in System Settings > General > Login Items to finish." and the button "Open Login Items" show under the toggle. The toggle stays on.
+- [ ] With the footnote showing, click "Open Login Items": System Settings opens on Login Items. Allow Conduit there and return to Conduit: the footnote and the button are gone and the toggle stays on, with Settings still open.
+- [ ] Turn Conduit off in System Settings > General > Login Items and return to Conduit: the toggle is off.
+- [ ] Turn the toggle off in Conduit: Conduit is no longer in the Login Items list.
+- [ ] With the toggle on, log out and log in: Conduit opens with its normal window (D28: no hidden start).
+- [ ] A copy that runs from a build folder or a disk image: turn the toggle on. Either it works, or the error footnote shows and the toggle goes back to off. No crash.
+- [ ] Turn the toggle off at the end of the pass, so a test copy does not open at your next login.
+
 ## System integration: Services
 
 - [ ] Run `/System/Library/CoreServices/pbs -update`, relaunch Conduit once; System Settings > Keyboard > Keyboard Shortcuts > Services > Text lists "Send to Hermes"; its toggle works

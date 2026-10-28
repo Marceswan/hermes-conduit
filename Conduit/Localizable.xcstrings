@@ -328937,6 +328937,446 @@
           }
         }
       }
+    },
+    "Mac.LaunchAtLogin.Toggle" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit bei der Anmeldung öffnen"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open Conduit at login"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abrir Conduit al iniciar sesión"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ouvrir Conduit à l'ouverture de session"
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Buka Conduit saat login"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri Conduit al login"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ログイン時にConduitを開く"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "로그인 시 Conduit 열기"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwieraj Conduit po zalogowaniu"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abrir o Conduit ao fazer login"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открывать Conduit при входе"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Oturum açıldığında Conduit’i aç"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "登录时打开 Conduit"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "登入時打開 Conduit"
+          }
+        }
+      }
+    },
+    "Mac.LaunchAtLogin.Note" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quick Ask, der Notch-Status und Benachrichtigungen funktionieren nur, solange Conduit geöffnet ist. Wenn dies aktiviert ist, öffnet sich Conduit bei der Anmeldung an diesem Mac."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quick Ask, the notch status and notifications work only while Conduit is open. With this on, Conduit opens when you log in to this Mac."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quick Ask, el estado en el notch y las notificaciones solo funcionan mientras Conduit está abierto. Si activas esto, Conduit se abre al iniciar sesión en este Mac."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quick Ask, l'état dans l'encoche et les notifications ne fonctionnent que lorsque Conduit est ouvert. Si cette option est activée, Conduit s'ouvre quand vous ouvrez une session sur ce Mac."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quick Ask, status notch, dan notifikasi hanya berfungsi saat Conduit terbuka. Jika diaktifkan, Conduit terbuka saat Anda login ke Mac ini."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quick Ask, lo stato nel notch e le notifiche funzionano solo mentre Conduit è aperto. Se questa opzione è attiva, Conduit si apre quando accedi a questo Mac."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quick Ask、ノッチのステータス、通知は、Conduitを開いている間だけ動作します。オンにすると、このMacにログインしたときにConduitが開きます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quick Ask, 노치 상태, 알림은 Conduit이 열려 있는 동안에만 작동합니다. 이 옵션을 켜면 이 Mac에 로그인할 때 Conduit이 열립니다."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quick Ask, status w notchu i powiadomienia działają tylko wtedy, gdy Conduit jest otwarty. Gdy ta opcja jest włączona, Conduit otwiera się po zalogowaniu na tym Macu."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O Quick Ask, o status no notch e as notificações só funcionam enquanto o Conduit está aberto. Com isto ativado, o Conduit abre quando você faz login neste Mac."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quick Ask, статус в вырезе и уведомления работают, только пока Conduit открыт. Если включить, Conduit будет открываться при входе в систему на этом Mac."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quick Ask, çentik durumu ve bildirimler yalnızca Conduit açıkken çalışır. Bu açıkken Conduit, bu Mac’te oturum açtığında açılır."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quick Ask、刘海状态和通知仅在 Conduit 打开时可用。开启后，Conduit 会在你登录这台 Mac 时打开。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quick Ask、瀏海狀態和通知僅在 Conduit 開啟時可用。開啟後，Conduit 會在你登入這部 Mac 時打開。"
+          }
+        }
+      }
+    },
+    "Mac.LaunchAtLogin.RequiresApproval" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Erlaube Conduit unter Systemeinstellungen > Allgemein > Anmeldeobjekte, um den Vorgang abzuschließen."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow Conduit in System Settings > General > Login Items to finish."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Permite Conduit en Ajustes del Sistema > General > Ítems de inicio de sesión para terminar."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Autorisez Conduit dans Réglages Système > Général > Éléments de connexion pour terminer."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Izinkan Conduit di Pengaturan Sistem > Umum > Item Login untuk menyelesaikan."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Consenti a Conduit in Impostazioni di Sistema > Generale > Elementi login per completare."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "完了するには、システム設定 > 一般 > ログイン項目でConduitを許可してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "완료하려면 시스템 설정 > 일반 > 로그인 항목에서 Conduit을 허용하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aby zakończyć, zezwól aplikacji Conduit w Ustawieniach systemowych > Ogólne > Elementy logowania."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Para concluir, permita o Conduit em Ajustes do Sistema > Geral > Itens de login."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чтобы завершить, разрешите Conduit в Системных настройках > Основные > Объекты входа."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tamamlamak için Conduit’e Sistem Ayarları > Genel > Oturum Açma Öğeleri’nde izin ver."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要完成设置，请在 系统设置 > 通用 > 登录项 中允许 Conduit。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要完成設定，請在 系統設定 > 一般 > 登入項目 中允許 Conduit。"
+          }
+        }
+      }
+    },
+    "Mac.LaunchAtLogin.OpenSettings" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anmeldeobjekte öffnen"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open Login Items"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abrir Ítems de inicio de sesión"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ouvrir Éléments de connexion"
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Buka Item Login"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri Elementi login"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ログイン項目を開く"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "로그인 항목 열기"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz Elementy logowania"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abrir Itens de login"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открыть Объекты входа"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Oturum Açma Öğeleri’ni aç"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开登录项"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打開登入項目"
+          }
+        }
+      }
+    },
+    "Mac.LaunchAtLogin.Failed" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit konnte diese Einstellung nicht ändern. Prüfe die Anmeldeobjekte in den Systemeinstellungen."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit could not change this setting. Check Login Items in System Settings."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit no pudo cambiar este ajuste. Revisa los Ítems de inicio de sesión en Ajustes del Sistema."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit n'a pas pu modifier ce réglage. Vérifiez Éléments de connexion dans Réglages Système."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit tidak dapat mengubah pengaturan ini. Periksa Item Login di Pengaturan Sistem."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit non è riuscito a modificare questa impostazione. Controlla Elementi login in Impostazioni di Sistema."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "この設定をConduitで変更できませんでした。システム設定のログイン項目を確認してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit에서 이 설정을 변경할 수 없습니다. 시스템 설정의 로그인 항목을 확인하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit nie mógł zmienić tego ustawienia. Sprawdź Elementy logowania w Ustawieniach systemowych."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O Conduit não conseguiu alterar este ajuste. Verifique os Itens de login nos Ajustes do Sistema."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit не удалось изменить эту настройку. Проверьте Объекты входа в Системных настройках."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit bu ayarı değiştiremedi. Sistem Ayarları’nda Oturum Açma Öğeleri’ni kontrol et."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit 无法更改此设置。请在系统设置中检查登录项。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conduit 無法變更此設定。請在系統設定中檢查登入項目。"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

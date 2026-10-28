@@ -400,6 +400,9 @@ final class MacWordingTests: XCTestCase {
         "Mac.GeminiLive.TalkOverNote", "Mac.GrokLive.TalkOverNote",
         // LC-B F3
         "Mac.InstallSource.DirectDownload",
+        // D28, Launch at login
+        "Mac.LaunchAtLogin.Toggle", "Mac.LaunchAtLogin.Note", "Mac.LaunchAtLogin.RequiresApproval",
+        "Mac.LaunchAtLogin.OpenSettings", "Mac.LaunchAtLogin.Failed",
     ]
 
     /// New keys whose English text is the key (they carry a placeholder, so a symbolic name cannot hold it).

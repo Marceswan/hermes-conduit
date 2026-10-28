@@ -1173,6 +1173,9 @@ private struct SettingsHome: View {
                         #if os(macOS) // MAC: Spotlight opt-in (D19)
                         MacSpotlightSettingsRow()
                         #endif
+                        #if os(macOS) // MAC: launch at login (D28)
+                        MacLaunchAtLoginSettingsRow()
+                        #endif
                         #if os(macOS) // MAC: notch agent status mode (D16)
                         MacNotchStatusSettingsSection()
                         #endif
