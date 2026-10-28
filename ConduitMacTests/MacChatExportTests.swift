@@ -525,6 +525,32 @@ final class MacChatExportAvailabilityTests: XCTestCase {
         XCTAssertNil(registry.controller(for: nil))
     }
 
+    func testTheRegistryReportsAnEntryChangeAndATranscriptThatFillsOrEmpties() {
+        let registry = MacChatExportSessions()
+        var changes = 0
+        registry.didChange = { changes += 1 }
+        let side = sessionWindow()
+        let chat = controller(messages: [])
+        registry.sync(window: side, controller: chat)
+        XCTAssertEqual(changes, 1, "a new entry, and its first state")
+        chat.handle(.messageComplete(sessionId: "row-1", messageId: "m1", content: "one", reasoning: nil))
+        XCTAssertEqual(changes, 2, "the transcript has its first row: the menu must enable")
+        chat.handle(.messageComplete(sessionId: "row-1", messageId: "m2", content: "two", reasoning: nil))
+        XCTAssertEqual(changes, 2, "a second row changes nothing the rule reads")
+        registry.sync(window: side, controller: nil)
+        XCTAssertEqual(changes, 3, "a dropped entry")
+        chat.handle(.messageComplete(sessionId: "row-1", messageId: "m3", content: "three", reasoning: nil))
+        XCTAssertEqual(changes, 3, "a dropped entry is not watched")
+    }
+
+    func testTheSharedRegistryRefreshesTheSharedMenuState() {
+        XCTAssertNotNil(MacChatExportSessions.shared.didChange)
+        let state = MacChatExportMenuState(center: NotificationCenter())
+        let before = state.revision
+        state.refresh()
+        XCTAssertTrue(HostedTestSupport.waitUntil { state.revision == before + 1 })
+    }
+
     func testTheInputOfTheMainWindowIsItsLoadedMessages() throws {
         appState.messages = say("hello")
         let input = MacChatExportActions.input(for: .main, appState: appState)
@@ -586,6 +612,7 @@ final class MacChatExportActionTests: XCTestCase {
     private var appState: AppState!
     private var windows: [NSWindow] = []
     private var controllers: [MacSessionWindowController] = []
+    private var palette: MacPaletteStore!
     private let utc = TimeZone(identifier: "UTC")!
     private let now = Date(timeIntervalSince1970: 1_793_196_300) // 2026-10-28 14:05 UTC
     private let english = MacChatExportBuilderTests.english
@@ -596,6 +623,7 @@ final class MacChatExportActionTests: XCTestCase {
             .appendingPathComponent("MacChatExportActionTests.\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
         appState = ArtifactsTestSupport.isolatedAppState(defaults: suite.defaults, scratch: scratch)
+        palette = MacPaletteStore(defaults: suite.defaults)
     }
 
     override func tearDown() async throws {
@@ -604,6 +632,7 @@ final class MacChatExportActionTests: XCTestCase {
         windows.forEach { $0.close() }
         windows = []
         appState = nil
+        palette = nil
         HostedTestSupport.dropSuite(suite)
         try? FileManager.default.removeItem(at: scratch)
     }
@@ -644,8 +673,8 @@ final class MacChatExportActionTests: XCTestCase {
         write: ((String, URL) throws -> Void)? = nil
     ) async -> MacChatExportActions.Outcome {
         await MacChatExportActions.export(
-            window: window, appState: appState, tabRaw: tab, now: now, sessions: sessions, presenter: presenter,
-            strings: english, timeZone: utc, write: write)
+            window: window, appState: appState, tabRaw: tab, now: now, sessions: sessions, palette: palette,
+            presenter: presenter, strings: english, timeZone: utc, write: write)
     }
 
     // MARK: Export
@@ -666,6 +695,21 @@ final class MacChatExportActionTests: XCTestCase {
         XCTAssertTrue(text.contains("## \(appState.conversationAgentIdentity.name) (2026-10-28 14:01)\n\nHere you go.\n"), text)
         XCTAssertFalse(text.contains("SECRET"))
         XCTAssertTrue(presenter.windows.first.map { $0 === main } ?? false, "the panel is a sheet on the chat window")
+    }
+
+    func testARunningCommandClosesThePaletteAndAnUnavailableOneLeavesItAlone() async {
+        chat(exampleChat())
+        palette.toggle()
+        XCTAssertTrue(palette.isPresented)
+        let presenter = Presenter()
+        _ = await export(window: primary(), tab: "Cron", presenter: presenter)
+        XCTAssertTrue(palette.isPresented, "nothing is available on the Cron tab, so nothing happens")
+        _ = await export(window: primary(), presenter: presenter)
+        XCTAssertFalse(palette.isPresented, "its overlay must not stay up under the save panel")
+        palette.toggle()
+        XCTAssertTrue(MacChatExportActions.printChat(
+            window: primary(), appState: appState, tabRaw: "Sessions", palette: palette, runner: Runner(), strings: english))
+        XCTAssertFalse(palette.isPresented)
     }
 
     func testTheSuggestedNameIsTheTitleAndTheDate() async {
@@ -767,7 +811,8 @@ final class MacChatExportActionTests: XCTestCase {
         let runner = Runner()
         let main = primary()
         XCTAssertTrue(MacChatExportActions.printChat(
-            window: main, appState: appState, tabRaw: "Sessions", now: now, runner: runner, strings: english, timeZone: utc))
+            window: main, appState: appState, tabRaw: "Sessions", now: now, palette: palette, runner: runner, strings: english,
+            timeZone: utc))
         let job = try XCTUnwrap(runner.jobs.first)
         XCTAssertEqual(job.title, String(fileName(appState.activeSessionTitle).dropLast(3)), "Save as PDF proposes this name")
         let text = job.content.string
@@ -779,12 +824,12 @@ final class MacChatExportActionTests: XCTestCase {
     func testPrintDoesNothingWithoutAChat() {
         let runner = Runner()
         XCTAssertFalse(MacChatExportActions.printChat(
-            window: primary(), appState: appState, tabRaw: "Sessions", runner: runner, strings: english))
+            window: primary(), appState: appState, tabRaw: "Sessions", palette: palette, runner: runner, strings: english))
         chat(exampleChat())
         XCTAssertFalse(MacChatExportActions.printChat(
-            window: primary(), appState: appState, tabRaw: "Cron", runner: runner, strings: english))
+            window: primary(), appState: appState, tabRaw: "Cron", palette: palette, runner: runner, strings: english))
         XCTAssertFalse(MacChatExportActions.printChat(
-            window: nil, appState: appState, tabRaw: "Sessions", runner: runner, strings: english))
+            window: nil, appState: appState, tabRaw: "Sessions", palette: palette, runner: runner, strings: english))
         XCTAssertEqual(runner.jobs.count, 0)
     }
 }

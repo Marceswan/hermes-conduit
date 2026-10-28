@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -12,20 +13,32 @@ enum MacChatExportTarget {
 }
 
 /// Which session window shows which controller, so a menu action can find the transcript of the key window
-/// (the way `MacSessionWindowStopRouter` finds its stop action). Weak on both sides.
+/// (the way `MacSessionWindowStopRouter` finds its stop action). Weak on both sides. `didChange` runs when an
+/// entry is added or dropped and when a transcript turns empty or not, the two facts the menu rule reads.
 @MainActor
 final class MacChatExportSessions {
-    static let shared = MacChatExportSessions()
+    static let shared: MacChatExportSessions = {
+        let sessions = MacChatExportSessions()
+        sessions.didChange = { MacChatExportMenuState.shared.refresh() }
+        return sessions
+    }()
+
+    var didChange: (() -> Void)?
     private struct Entry {
         weak var window: NSWindow?
         weak var controller: MacSessionWindowController?
+        let subscription: AnyCancellable
     }
     private var entries: [Entry] = []
 
     /// Keeps the window's entry current. A nil controller drops it.
     func sync(window: NSWindow, controller: MacSessionWindowController?) {
         entries.removeAll { $0.window == nil || $0.controller == nil || $0.window === window }
-        if let controller { entries.append(Entry(window: window, controller: controller)) }
+        guard let controller else { didChange?(); return }
+        // The first value arrives at once, which also reports the new entry.
+        let subscription = controller.$transcript.map { !$0.messages.isEmpty }.removeDuplicates()
+            .sink { [weak self] _ in self?.didChange?() }
+        entries.append(Entry(window: window, controller: controller, subscription: subscription))
     }
 
     func controller(for window: NSWindow?) -> MacSessionWindowController? {
@@ -169,13 +182,15 @@ enum MacChatExportActions {
     @discardableResult
     static func export(
         window: NSWindow?, appState: AppState, tabRaw: String?, now: Date = Date(),
-        sessions: MacChatExportSessions? = nil, presenter: (any MacChatExportPresenting)? = nil,
-        strings: MacChatExportStrings? = nil, timeZone: TimeZone = .current,
-        write: ((String, URL) throws -> Void)? = nil
+        sessions: MacChatExportSessions? = nil, palette: MacPaletteStore? = nil,
+        presenter: (any MacChatExportPresenting)? = nil, strings: MacChatExportStrings? = nil,
+        timeZone: TimeZone = .current, write: ((String, URL) throws -> Void)? = nil
     ) async -> Outcome {
         guard let target = target(window: window, appState: appState, tabRaw: tabRaw, sessions: sessions) else {
             return .unavailable
         }
+        // The palette overlay would stay up under the panel (the same step as `MacAppActions.prepare`).
+        (palette ?? .shared).dismiss()
         // The copy is taken now, so the file holds what the chat showed when the command ran.
         let input = input(for: target, appState: appState)
         let strings = strings ?? .live
@@ -197,10 +212,11 @@ enum MacChatExportActions {
     @discardableResult
     static func printChat(
         window: NSWindow?, appState: AppState, tabRaw: String?, now: Date = Date(),
-        sessions: MacChatExportSessions? = nil, runner: (any MacChatPrintRunning)? = nil,
-        strings: MacChatExportStrings? = nil, timeZone: TimeZone = .current
+        sessions: MacChatExportSessions? = nil, palette: MacPaletteStore? = nil,
+        runner: (any MacChatPrintRunning)? = nil, strings: MacChatExportStrings? = nil, timeZone: TimeZone = .current
     ) -> Bool {
         guard let target = target(window: window, appState: appState, tabRaw: tabRaw, sessions: sessions) else { return false }
+        (palette ?? .shared).dismiss()
         let input = input(for: target, appState: appState)
         let strings = strings ?? .live
         let document = MacChatExport.document(input, exportedAt: now, strings: strings, timeZone: timeZone)
@@ -215,7 +231,8 @@ enum MacChatExportActions {
 
 /// Keeps the two menu items current. `NSApp.keyWindow` is not an input SwiftUI tracks, and the menu is
 /// not rebuilt when a sheet opens or closes, so this publishes after each change of the key window or of a
-/// sheet. `ConduitCommands` observes it, so the items are disabled and enabled in step with the window. The
+/// sheet, and when a session window's transcript fills or empties (`MacChatExportSessions.didChange`).
+/// `ConduitCommands` observes it, so the items are disabled and enabled in step with the window. The
 /// action checks again when it runs (`MacChatExportActions.target`), so a late rebuild cannot export the
 /// wrong chat.
 @MainActor
@@ -234,10 +251,14 @@ final class MacChatExportMenuState: ObservableObject {
         ]
         observers = names.map { name in
             center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                // One turn later, so the window state has settled when the menu reads it.
-                Task { @MainActor [weak self] in self?.revision &+= 1 }
+                Task { @MainActor [weak self] in self?.refresh() }
             }
         }
+    }
+
+    /// Rebuilds the menu one turn later, so the window state has settled when the menu reads it.
+    func refresh() {
+        Task { @MainActor [weak self] in self?.revision &+= 1 }
     }
 
     deinit { observers.forEach(center.removeObserver) }
