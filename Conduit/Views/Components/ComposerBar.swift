@@ -1950,7 +1950,11 @@ struct ComposerBar: View, Equatable {
     /// conversation. The UIKit text view observes this binding and resigns
     /// first responder, which dismisses the software keyboard.
     private func dismissComposer() {
+#if os(macOS) // MAC: no software keyboard to put away; the field keeps (or takes back) the keyboard for the next message.
+        isFocused = true
+#else // MAC:
         isFocused = false
+#endif // MAC:
         isShowingSlashSuggestions = false
     }
 

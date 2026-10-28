@@ -14,6 +14,7 @@ Run against a real Hermes dashboard before every release build.
 - [ ] Session window (needs D21 merged): Cmd-F / Cmd-G / Cmd-Shift-G drive the focused message's own find bar; nothing happens with no message focused
 - [ ] Cmd-F with the sidebar list focused still focuses Search sessions; under Bots / Cron / Kanban it does too; with a sheet open nothing happens; in a session window Cmd-F opens the focused message's own find bar
 - [ ] Paste a screenshot (Cmd-Shift-Ctrl-4 then Cmd-V): attaches as image
+- [ ] Send a message with Return, then with the Send button: the message field keeps the keyboard each time and the next message can be typed at once. Click a message, then click Send: the field takes the keyboard back. Same after Stop.
 - [ ] Copy a PNG in Finder, paste: attaches as image; drag an image file onto composer: attaches as image (non-image drops are not supported, same as upstream)
 - [ ] Composer reasoning picker ("Medium") and the tool-call card (name, time, chevron) read in light mode: the picker label is near-black, not pale gold, and the card's tool name, time and chevron are clearly legible in light and dark (automated in `ComposerToolCardContrastTests`; check by eye in a light-mode window).
 - [ ] Return sends; Shift-Return newline; Japanese IME Return confirms without sending

@@ -1106,6 +1106,29 @@ final class MacComposerKeyboardTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === view, "and stays there once the route update lands")
     }
 
+    /// Send, steer, queue and Stop all run `ComposerBar.dismissComposer`. On iOS
+    /// it drops `isFocused` to put the software keyboard away; on Mac the paste
+    /// view then resigned first responder, so every sent message left the field
+    /// unfocused. Source pin, as in `MacRichContentInteractionTests`.
+    func testSendingKeepsTheComposerFocusedOnMac() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let file = try String(contentsOf: root.appendingPathComponent("Conduit/Views/Components/ComposerBar.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(file.range(of: "private func dismissComposer() {"), "ComposerBar.dismissComposer must exist")
+        let end = try XCTUnwrap(file.range(of: "\n    }\n", range: start.upperBound..<file.endIndex))
+        let body = String(file[start.upperBound..<end.lowerBound])
+
+        let open = try XCTUnwrap(body.range(of: "#if os(macOS) // MAC:"), "dismissComposer must hold a `#if os(macOS) // MAC:` region")
+        let split = try XCTUnwrap(body.range(of: "#else // MAC:", range: open.upperBound..<body.endIndex))
+        let close = try XCTUnwrap(body.range(of: "#endif // MAC:", range: split.upperBound..<body.endIndex))
+        let mac = String(body[open.upperBound..<split.lowerBound])
+        let other = String(body[split.upperBound..<close.lowerBound])
+
+        XCTAssertTrue(mac.contains("isFocused = true"), "the Mac field keeps (or takes back) the keyboard after a send")
+        XCTAssertFalse(mac.contains("isFocused = false"))
+        XCTAssertTrue(other.contains("isFocused = false"), "upstream's keyboard dismissal stays for iOS")
+        XCTAssertTrue(body[close.upperBound...].contains("isShowingSlashSuggestions = false"))
+    }
+
     // MARK: Tab
 
     private func tabEvent(shift: Bool, option: Bool = false, in window: NSWindow) -> NSEvent {
