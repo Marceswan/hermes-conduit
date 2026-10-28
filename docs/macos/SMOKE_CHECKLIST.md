@@ -33,10 +33,22 @@ Run against a real Hermes dashboard before every release build.
 - [ ] After login, no "would like to access data from other apps" prompt
 - [ ] Live hover pass and Esc pass on a long chat, with Activity Monitor CPU under about 10% while hovering
 - [ ] Close the window mid-stream, wait 30 s, click the Dock icon: reply completed
+- [ ] Close the window mid-stream, also hide Conduit (Cmd-H) and leave it hidden for 2 minutes, click the Dock icon: reply completed (D29; use a reply that runs longer than 2 minutes). While it runs, `pmset -g assertions` lists a Conduit assertion and Activity Monitor shows App Nap "No" for Conduit
 - [ ] The `.windowToolbar`-hidden sheets (e.g. SidebarView drawer root) don't break the main window toolbar
 - [ ] Notarized DMG installed on a second Mac with no Gatekeeper prompt
 - [ ] Widgets: the notarized app from the DMG, installed in /Applications and launched once, lists `ConduitMacWidgets` in `pluginkit -mAvvv -p com.apple.widgetkit-extension`, and adding a Conduit widget shows no consent prompt
 - [ ] Launch the exported/notarized build once; `pluginkit -mAvvv -p com.apple.widgetkit-extension` lists ConduitMacWidgets (the export step itself was verified by signature only, never launched)
+
+## Background activity (D29)
+A stream holds an App Nap token (the Mac may still sleep when idle). A live call holds a stronger token (the Mac does not sleep when idle). Check with Activity Monitor (View > Columns > App Nap) and `pmset -g assertions | grep -i conduit`. The call token shows as a `PreventUserIdleSystemSleep` assertion named "Conduit: a reply is streaming or a voice call is live". The stream token shows no `pmset` line; Activity Monitor shows App Nap "No" for Conduit while it holds.
+- [ ] Idle: with Conduit hidden and no reply, no call: no Conduit line in `pmset -g assertions`; the App Nap column reads "Yes" after a short while.
+- [ ] Stream, window closed: start a reply that runs longer than 2 minutes, close the window, hide Conduit (Cmd-H). App Nap reads "No" for Conduit the whole time. After 2 minutes, click the Dock icon: the reply is complete, not stopped part way.
+- [ ] The reply ends with Conduit still hidden: App Nap reads "Yes" again within about 10 seconds (the 5 s grace, then App Nap's own delay). Two replies sent a few seconds apart do not drop and retake the token in between.
+- [ ] A chat the user left: start a long reply in a tab, switch to another tab, close the window. The reply still completes (the main window's turn state follows the open chat only; the activity feed covers the other one).
+- [ ] A session window (D21) and Quick Ask (D15): start a long reply in each, close or hide the main window. The same result as the stream check.
+- [ ] Call: start a Gemini Live, GPT-Live, Grok Live or Local Live call, then minimise it or close the window. `pmset -g assertions` lists the Conduit `PreventUserIdleSystemSleep` assertion. After hang-up it is gone within about 10 seconds (2 s poll plus the 5 s grace).
+- [ ] A call that fails with its screen open (turn the network off at connect): the assertion goes away while the failed screen stays up. It does not stay for as long as the screen is open.
+- [ ] Quit Conduit while a reply streams or a call runs: `pmset -g assertions | grep -i conduit` prints nothing at once.
 
 ## Agent pre-checks (2026-10-13)
 
