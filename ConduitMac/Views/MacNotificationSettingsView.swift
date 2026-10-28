@@ -29,15 +29,30 @@ struct MacNotificationSettingsView: View {
     @State var authorization: MacNotificationAuthorizationState
     /// The count on the Dock icon (D31). It is not a notification: it follows none of the toggles above.
     @AppStorage private var showsDockCount: Bool
+    /// What System Settings says about badges, as last read. Nil until the first read, so no note shows early.
+    @State private var badgePermission: MacBadgePermission?
+    /// Nil is the live notification center (the XCTest host has none); tests pass a fake.
+    private let client: MacNotificationCenterClient?
+    private let requester: MacBadgeOptionRequester
+    private let bundleID: String?
+    private let openURL: @MainActor (URL) -> Void
 
     init(
         preferences: MacNotificationPreferences = .shared,
         authorization: MacNotificationAuthorizationState = .notDetermined,
-        dockDefaults: UserDefaults = .standard
+        dockDefaults: UserDefaults = .standard,
+        client: MacNotificationCenterClient? = nil,
+        requester: MacBadgeOptionRequester = .shared,
+        bundleID: String? = Bundle.main.bundleIdentifier,
+        openURL: @escaping @MainActor (URL) -> Void = { _ = NSWorkspace.shared.open($0) }
     ) {
         self.preferences = preferences
         _authorization = State(initialValue: authorization)
         _showsDockCount = AppStorage(wrappedValue: MacDockBadge.defaultValue, MacDockBadge.defaultsKey, store: dockDefaults)
+        self.client = client
+        self.requester = requester
+        self.bundleID = bundleID
+        self.openURL = openURL
     }
 
     static func kindControlsEnabled(_ preferences: MacNotificationPreferences) -> Bool { preferences.isEnabled }
@@ -60,6 +75,16 @@ struct MacNotificationSettingsView: View {
             }
             .disabled(!Self.kindControlsEnabled(preferences))
             Toggle(AppLocalization.string("Show count on Dock icon"), isOn: $showsDockCount)
+            if badgePermission?.needsNote(showsCount: showsDockCount) == true {
+                // macOS shows no Dock count while badges are off for Conduit (D31 fix).
+                Text(AppLocalization.string("Mac.DockBadge.PermissionNote"))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(AppLocalization.string("Open System Settings")) {
+                    openURL(MacNotificationSettingsLink.url(bundleID: bundleID))
+                }
+            }
             SettingsMetricRow(
                 label: AppLocalization.string("Status"),
                 value: authorization.statusText,
@@ -77,9 +102,10 @@ struct MacNotificationSettingsView: View {
 
     private func refresh() async {
         // The XCTest host has no usable notification center.
-        guard !MacDefaults.isRunningUnderXCTest else { return }
-        let status = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
-        authorization = MacNotificationAuthorizationState(status)
+        guard let center = client ?? (MacDefaults.isRunningUnderXCTest ? nil : UNMacNotificationCenterClient()) else { return }
+        let permission = await requester.refresh(on: center, wantsBadge: showsDockCount)
+        badgePermission = permission
+        authorization = MacNotificationAuthorizationState(permission.status)
     }
 
     private static func thresholdLabel(_ seconds: TimeInterval) -> String {

@@ -406,6 +406,8 @@ final class MacWordingTests: XCTestCase {
         // D32: Export Chat and Print Chat
         "Mac.ChatExport.OlderNotIncluded", "Mac.ChatExport.ToolRunning", "Mac.ChatExport.ToolComplete",
         "Mac.ChatExport.SaveButton", "Mac.ChatExport.WriteFailed",
+        // D31 fix: the note under "Show count on Dock icon"
+        "Mac.DockBadge.PermissionNote",
     ]
 
     /// New keys whose English text is the key (they carry a placeholder, so a symbolic name cannot hold it).
@@ -608,6 +610,17 @@ final class MacWordingTests: XCTestCase {
     func testMacSharedWordingResolves() {
         XCTAssertNotEqual(MacSharedWording.geminiLiveResumptionLost, "Mac.GeminiLive.ResumptionLost")
         XCTAssertFalse(MacSharedWording.geminiLiveResumptionLost.isEmpty)
+    }
+
+    /// D31 fix: the note sends the user to the page that holds the badge switch.
+    func testTheDockBadgeNoteNamesTheSettingsPath() throws {
+        let v = try values(try strings()["Mac.DockBadge.PermissionNote"])
+        XCTAssertEqual(v["en"]?.value, "Allow badges for Conduit in System Settings > Notifications to show the count on the Dock icon.")
+        // The path keeps its ">" separators in every language, as the other System Settings paths do.
+        for language in languages {
+            XCTAssertTrue(v[language]?.value?.contains(">") == true, "\(language): the path is in the note")
+            XCTAssertTrue(v[language]?.value?.contains("Conduit") == true, "\(language): the app is named")
+        }
     }
 
     func testMacKeysResolveInTheBundle() {
