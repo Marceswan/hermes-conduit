@@ -24,6 +24,7 @@ final class MacDockBadge {
     private let changes: AnyPublisher<Void, Never>
     private let center: NotificationCenter
     private var subscriptions: Set<AnyCancellable> = []
+    private var lastSetting = MacDockBadge.defaultValue
 
     /// `changes` says the feed changed (the badge reads `snapshot` again); the setting is read from `defaults`.
     init(
@@ -54,12 +55,13 @@ final class MacDockBadge {
             changes
                 .sink { [weak self] in self?.refresh() }
                 .store(in: &subscriptions)
-            // Any change in the domain lands here; `refresh` writes the tile only when the label differs.
+            // Every change in the domain lands here (window frames too): only the setting is acted on.
             center.publisher(for: UserDefaults.didChangeNotification, object: defaults)
                 .receive(on: DispatchQueue.main)
-                .sink { [weak self] _ in self?.refresh() }
+                .sink { [weak self] _ in self?.settingMayHaveChanged() }
                 .store(in: &subscriptions)
         }
+        lastSetting = Self.isEnabled(in: defaults)
         refresh()
     }
 
@@ -70,6 +72,13 @@ final class MacDockBadge {
 
     func refresh() {
         show(Self.isEnabled(in: defaults) ? Self.label(count: MacDockContent.waitingCount(snapshot())) : nil)
+    }
+
+    private func settingMayHaveChanged() {
+        let setting = Self.isEnabled(in: defaults)
+        guard setting != lastSetting else { return }
+        lastSetting = setting
+        refresh()
     }
 
     /// The tile is written only on a real change.

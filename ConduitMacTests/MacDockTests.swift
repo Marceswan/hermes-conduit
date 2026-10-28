@@ -114,13 +114,19 @@ final class MacDockTests: XCTestCase {
 
     private final class Source {
         var value = MacDockSnapshot(feed: .live, live: [], sessions: [])
+        private(set) var reads = 0
+
+        func read() -> MacDockSnapshot {
+            reads += 1
+            return value
+        }
     }
 
     private func makeBadge(
         tile: FakeTile, source: Source, changes: AnyPublisher<Void, Never> = Empty().eraseToAnyPublisher(),
         center: NotificationCenter = NotificationCenter()
     ) -> MacDockBadge {
-        MacDockBadge(tile: tile, defaults: suite.defaults, snapshot: { source.value }, changes: changes, center: center)
+        MacDockBadge(tile: tile, defaults: suite.defaults, snapshot: { source.read() }, changes: changes, center: center)
     }
 
     func testTheBadgeShowsTheWaitingCount() {
@@ -222,6 +228,21 @@ final class MacDockTests: XCTestCase {
         suite.defaults.set(true, forKey: MacDockBadge.defaultsKey)
         center.post(name: UserDefaults.didChangeNotification, object: suite.defaults)
         XCTAssertTrue(HostedTestSupport.waitUntil { tile.badgeLabel == "2" }, "the setting on shows the count now")
+        badge.stop()
+    }
+
+    func testADefaultsChangeThatIsNotTheSettingDoesNotReadTheFeedAgain() {
+        let tile = FakeTile()
+        let source = Source()
+        let center = NotificationCenter()
+        let badge = makeBadge(tile: tile, source: source, center: center)
+        badge.start()
+        let reads = source.reads
+        // The domain also changes for window frames and the sidebar: none of that is the badge's business.
+        suite.defaults.set("x", forKey: "conduit.mac.dock.unrelatedKey")
+        center.post(name: UserDefaults.didChangeNotification, object: suite.defaults)
+        HostedTestSupport.settle(0.1)
+        XCTAssertEqual(source.reads, reads)
         badge.stop()
     }
 
