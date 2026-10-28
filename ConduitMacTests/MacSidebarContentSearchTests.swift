@@ -466,6 +466,7 @@ final class MacSidebarContentSearchHostedTests: XCTestCase {
         let role: String?
         let label: String?
         let value: String?
+        let object: NSObject
     }
 
     /// The accessibility labels and values of the list's rows, top to bottom. The rows of a SwiftUI List on
@@ -491,7 +492,9 @@ final class MacSidebarContentSearchHostedTests: XCTestCase {
                 let label: String? = object.axValue("accessibilityLabel")
                 let raw: Any? = object.axValue("accessibilityValue")
                 let value = raw as? String
-                if label != nil || value != nil { result.append(Entry(row: row, role: role, label: label, value: value)) }
+                if label != nil || value != nil {
+                    result.append(Entry(row: row, role: role, label: label, value: value, object: object))
+                }
                 let kids: [Any]? = object.axValue("accessibilityChildren")
                 for kid in kids ?? [] { if let child = kid as? NSObject { visit(child, depth: depth + 1) } }
                 if let view = object as? NSView { for sub in view.subviews { visit(sub, depth: depth + 1) } }
@@ -614,6 +617,37 @@ final class MacSidebarContentSearchHostedTests: XCTestCase {
         box.text = ""
         XCTAssertTrue(HostedTestSupport.waitUntil { model.hits.isEmpty })
         XCTAssertFalse(try texts().contains(AppLocalization.string("In messages")))
+    }
+
+    /// A click on a row opens its chat the way a sidebar row does, and both routes bring the main pane back
+    /// to chat. The listed chat keeps its own title; the older one opens through the link route.
+    func testAClickOpensTheChatAndReturnsThePaneToChat() throws {
+        appState.sessions = [SessionSummary(
+            id: "k1", storedSessionId: nil, alternateIds: [], title: "Kitchen planning", model: "Hermes", updatedLabel: "",
+            profile: appState.activeProfile, source: .chat, isActive: false, isArchived: false, lineageRootId: nil
+        )]
+        let stub = FakeSearchRequester()
+        stub.responses[path("recycling")] = .success(["results": [
+            result("k1", snippet: "sort the >>>recycling<<<", title: "Kitchen"),
+            result("far-1", snippet: "old >>>recycling<<< note", title: "From last year"),
+        ]])
+        var posted = 0
+        let token = NotificationCenter.default.addObserver(forName: .macSessionOpenRequested, object: nil, queue: nil) { _ in
+            posted += 1
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+        let model = host(QueryBox("recycling"), stub: stub)
+        XCTAssertTrue(HostedTestSupport.waitUntil { model.hits.count == 2 })
+        HostedTestSupport.settle(0.2)
+
+        let found = try entries()
+        let listed = try XCTUnwrap(found.first { $0.label == "Kitchen planning" }, "listed row: \(found.compactMap(\.label))")
+        XCTAssertTrue((listed.object as AnyObject).accessibilityPerformPress?() ?? false, "press the listed row")
+        XCTAssertTrue(HostedTestSupport.waitUntil { posted == 1 }, "the listed chat")
+
+        let older = try XCTUnwrap(found.first { $0.label == "From last year" })
+        XCTAssertTrue((older.object as AnyObject).accessibilityPerformPress?() ?? false, "press the older row")
+        XCTAssertTrue(HostedTestSupport.waitUntil { posted == 2 }, "the chat older than the list")
     }
 
     /// A list that holds more title matches than the window shows: the section sits below the fold. A

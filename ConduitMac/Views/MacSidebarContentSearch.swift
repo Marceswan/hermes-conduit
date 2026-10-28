@@ -161,9 +161,9 @@ struct MacSidebarContentSearch: View {
 
     var body: some View {
         // The search follows the field from here, in the list's own build, not from a modifier on the
-        // section: a list builds the rows it shows and a modifier attaches to those rows, so with no
-        // rows (idle) or below the fold nothing would start the search.
-        let _ = scheduleFollow(follow, context: contextOverride?() ?? appState.sessionContentSearchContext)
+        // section: a list builds the rows it shows and a modifier attaches to those rows, so a modifier
+        // on the header did not start the search with the section below the fold (D30).
+        let _ = scheduleFollow(follow) { contextOverride?() ?? appState.sessionContentSearchContext }
         let known = search.hits.isEmpty ? [] : appState.activeProfileSessions + appState.activeProfileCronSessions
         let rows = MacSidebarContentSearchRules.rows(
             model: search, searchText: searchText, showingProjects: showingProjects,
@@ -189,12 +189,17 @@ struct MacSidebarContentSearch: View {
 
     /// Tells the model about a changed `follow`, once. The model publishes, and a view update must not
     /// publish, so the model is told after the update, on the main actor. Nothing observed is written here.
-    private func scheduleFollow(_ follow: MacSidebarContentSearchRules.Follow, context: SessionContentSearchModel.Context?) {
+    /// `body` runs on every change of the app state, so the context is built only for a changed `follow`.
+    private func scheduleFollow(
+        _ follow: MacSidebarContentSearchRules.Follow,
+        context makeContext: () -> SessionContentSearchModel.Context?
+    ) {
         guard feed.last != follow else { return }
         feed.last = follow
         let model = search
         let text = searchText
         let projects = showingProjects
+        let context = makeContext()
         Task { @MainActor in
             MacSidebarContentSearchRules.follow(model, searchText: text, showingProjects: projects, context: context)
         }
