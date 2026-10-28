@@ -126,6 +126,8 @@ struct MacSessionWindowScene: View {
             } else {
                 MacSessionWindowStopRouter.shared.unregister(window: window)
             }
+            // File > Export Chat and Print Chat read this window's transcript through the controller (D32).
+            MacChatExportSessions.shared.sync(window: window, controller: controller)
         }
     }
 

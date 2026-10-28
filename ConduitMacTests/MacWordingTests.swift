@@ -403,6 +403,9 @@ final class MacWordingTests: XCTestCase {
         // D28, Launch at login
         "Mac.LaunchAtLogin.Toggle", "Mac.LaunchAtLogin.Note", "Mac.LaunchAtLogin.RequiresApproval",
         "Mac.LaunchAtLogin.OpenSettings", "Mac.LaunchAtLogin.Failed",
+        // D32: Export Chat and Print Chat
+        "Mac.ChatExport.OlderNotIncluded", "Mac.ChatExport.ToolRunning", "Mac.ChatExport.ToolComplete",
+        "Mac.ChatExport.SaveButton", "Mac.ChatExport.WriteFailed",
     ]
 
     /// New keys whose English text is the key (they carry a placeholder, so a symbolic name cannot hold it).
@@ -414,6 +417,8 @@ final class MacWordingTests: XCTestCase {
         "%@ isn't ready on Hermes. This Mac can speak the replies instead, with nothing to set up.",
         "%@ sends your voice to %@. Allow it in Conduit on your Mac to start the call.",
         "Return to Voice settings, enable this mode if it is off, and click %@ to check availability.",
+        // D32: the lines of an exported or printed chat
+        "Exported %@", "Tool: %@ (%@)", "Attachment: %@",
     ]
 
     /// On the Mac the toggle holds the display awake only (`UIApplication.isIdleTimerDisabled` takes an IOKit
