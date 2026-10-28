@@ -242,6 +242,50 @@ final class MacSidebarContentSearchTests: XCTestCase {
         XCTAssertTrue(MacSidebarContentSearchRules.showsSection(rows: [row], isSearching: false))
     }
 
+    /// "No Sessions" sat above the "In messages" results (live check, 2026-10-28). The list leaves it out
+    /// while the section answers the search, and brings it back when the search found nothing to show.
+    func testTheEmptyListPlaceholderStandsDownWhileTheSectionAnswers() async {
+        let stub = FakeSearchRequester()
+        stub.responses[path("recycling")] = .success(["results": [result("s1"), result("s2")]])
+        let model = model()
+        func covers(_ text: String = "recycling", projects: Bool = false, allowed: [SessionSummary]? = nil) -> Bool {
+            MacSidebarContentSearchRules.coversEmptyList(
+                model: model, searchText: text, showingProjects: projects, known: [], allowed: allowed)
+        }
+        XCTAssertFalse(covers(), "no search yet")
+
+        stub.holding = true
+        MacSidebarContentSearchRules.follow(model, searchText: "recycling", showingProjects: false, context: context(stub))
+        XCTAssertTrue(covers(), "the section shows its spinner while Hermes searches")
+        stub.releaseAll()
+        await model.waitForPendingSearch()
+        XCTAssertTrue(covers(), "the section has rows")
+        XCTAssertFalse(covers(allowed: []), "a filter left no match: the placeholder is the answer")
+        XCTAssertFalse(covers(allowed: [session("other")]))
+        XCTAssertTrue(covers(allowed: [session("s2")]))
+        XCTAssertFalse(covers("r"), "too short to search")
+        XCTAssertFalse(covers("plastic"), "the hits are for other words")
+        XCTAssertFalse(covers(projects: true), "the projects view has no section")
+    }
+
+    func testTheSearchWithNoHitsBringsThePlaceholderBack() async {
+        let stub = FakeSearchRequester()
+        let model = model()
+        MacSidebarContentSearchRules.follow(model, searchText: "recycling", showingProjects: false, context: context(stub))
+        await model.waitForPendingSearch()
+        XCTAssertFalse(MacSidebarContentSearchRules.coversEmptyList(
+            model: model, searchText: "recycling", showingProjects: false, known: [], allowed: nil))
+    }
+
+    func testWithoutTheEmptyStateTheOtherPartsStay() {
+        let empty = SidebarOfflineLayout.Visibility(liveSections: true, emptyState: true, loadingState: false)
+        XCTAssertEqual(empty.macWithoutEmptyState(when: true),
+                       SidebarOfflineLayout.Visibility(liveSections: true, emptyState: false, loadingState: false))
+        XCTAssertEqual(empty.macWithoutEmptyState(when: false), empty)
+        let loading = SidebarOfflineLayout.Visibility(liveSections: true, emptyState: false, loadingState: true)
+        XCTAssertEqual(loading.macWithoutEmptyState(when: true), loading, "the loading state is not the placeholder")
+    }
+
     // MARK: Opening
 
     func testAListedChatOpensAsASidebarRowDoes() throws {
@@ -290,6 +334,26 @@ final class MacSidebarContentSearchTests: XCTestCase {
         let hit = hits([result("far", title: "\u{200B}")])[0]
         XCTAssertEqual(MacSidebarContentSearchText.title(SessionContentSearchRow(hit: hit, session: nil)),
                        AppLocalization.string("Untitled conversation"))
+    }
+
+    /// A match in a stored tool result showed its JSON escapes, "line one\\nthe pump" (live check,
+    /// 2026-10-28). A JSON-looking snippet reads its escapes; any other keeps its backslashes.
+    func testAJSONSnippetReadsItsEscapes() {
+        let json = SessionSearchSnippet.parse(#"{"output": "line one\nthe >>>hydraulic<<< pump\t\"ok\" \u00e9 \\ \/"}"#, query: "")
+        let snippet = MacSidebarContentSearchText.snippet(json)
+        XCTAssertEqual(snippet.plainText, #"{"output": "line one the hydraulic pump "ok" \#u{e9} \ /"}"#)
+        XCTAssertEqual(snippet.runs.filter(\.isMatch).map(\.text), ["hydraulic"])
+
+        let prose = SessionSearchSnippet.parse(#"use \n for a new >>>line<<<"#, query: "")
+        XCTAssertEqual(MacSidebarContentSearchText.snippet(prose).plainText, #"use \n for a new line"#)
+    }
+
+    func testABrokenEscapeStaysAsWritten() {
+        XCTAssertEqual(MacSidebarContentSearchText.unescapingJSON(#"{"a": "\u12 \q \"#), #"{"a": "\u12 \q \"#)
+        XCTAssertEqual(MacSidebarContentSearchText.unescapingJSON(#"{"a": "\ud83d"}"#), #"{"a": "\ud83d"}"#,
+                       "half a surrogate pair is no character")
+        XCTAssertEqual(MacSidebarContentSearchText.unescapingJSON(#"{"a": "\u0007x"}"#), "{\"a\": \"\u{7}x\"}",
+                       "a control character is decoded here and dropped by the cleaning")
     }
 
     func testTheSpaceBetweenTwoMatchesStays() {
@@ -342,10 +406,23 @@ final class MacSidebarContentSearchTests: XCTestCase {
         }
     }
 
-    /// The one upstream edit: one `#if os(macOS) // MAC: search message text (D30)` region in the sessions
-    /// list, closed with `#endif // MAC:` and no `#else`.
-    func testSidebarViewHoldsOneGatedRegion() throws {
+    /// The upstream edits: one `#if os(macOS) // MAC: search message text (D30)` region in the sessions
+    /// list, closed with `#endif // MAC:` and no `#else`, and two small regions that let the list's model
+    /// keep "No Sessions" off while the section answers.
+    func testSidebarViewHoldsTheGatedRegions() throws {
         let lines = try source("Conduit/Views/SidebarView.swift").components(separatedBy: "\n")
+        let tag = #"#if os(macOS) // MAC: no "No Sessions" over message matches (D30)"#
+        let placeholderOpens = lines.indices.filter { lines[$0].trimmingCharacters(in: .whitespaces) == tag }
+        XCTAssertEqual(placeholderOpens.count, 2)
+        for open in placeholderOpens {
+            let close = try XCTUnwrap(lines[open...].firstIndex { $0.trimmingCharacters(in: .whitespaces).hasPrefix("#endif") })
+            XCTAssertEqual(lines[close].trimmingCharacters(in: .whitespaces), "#endif // MAC:")
+            XCTAssertLessThanOrEqual(close - open, 5)
+            XCTAssertFalse(lines[open...close].contains { $0.trimmingCharacters(in: .whitespaces).hasPrefix("#else") })
+        }
+        let placeholderCode = placeholderOpens.flatMap { open in lines[open...].prefix { !$0.contains("#endif") } }
+        XCTAssertTrue(placeholderCode.contains { $0.contains("@StateObject private var macContentSearch = SessionContentSearchModel()") })
+        XCTAssertTrue(placeholderCode.contains { $0.contains(".macWithoutEmptyState(when: MacSidebarContentSearchRules.coversEmptyList(") })
         let opens = lines.indices.filter { lines[$0].contains("search message text (D30)") }
         XCTAssertEqual(opens.count, 1)
         guard let open = opens.first else { return }

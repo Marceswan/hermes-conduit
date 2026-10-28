@@ -5,7 +5,9 @@ import SwiftUI
 // under the title matches. Hermes does the search (`GET /api/sessions/search`); upstream's
 // `SessionContentSearchModel` asks it (debounced, one request at a time, remembers per connection a
 // Hermes without the route). V2 Chats uses the model and stays off on Mac, so this file copies that
-// behavior for the sidebar list. `SessionList` hosts `MacSidebarContentSearch` in one gated region.
+// behavior for the sidebar list. `SessionList` hosts `MacSidebarContentSearch` in one gated region, and
+// owns the model in a second, so its "No Sessions" placeholder can stand down while the section answers
+// the search (a third region).
 
 /// The rules of the section. Pure, so they are tested without a view.
 enum MacSidebarContentSearchRules {
@@ -58,6 +60,44 @@ enum MacSidebarContentSearchRules {
         !rows.isEmpty || isSearching
     }
 
+    /// The chats a hit can take its title from: every chat of the profile. Empty while there are no hits,
+    /// so a redraw with no search builds no array.
+    @MainActor
+    static func known(model: SessionContentSearchModel, appState: AppState) -> [SessionSummary] {
+        model.hits.isEmpty ? [] : appState.activeProfileSessions + appState.activeProfileCronSessions
+    }
+
+    /// True when the section shows for a list with no title match: the search runs, or it found chats.
+    /// The sessions list then leaves out its "No Sessions" placeholder, which would sit above the section.
+    @MainActor
+    static func coversEmptyList(
+        model: SessionContentSearchModel,
+        searchText: String,
+        showingProjects: Bool,
+        known: [SessionSummary],
+        allowed: [SessionSummary]?
+    ) -> Bool {
+        guard SessionContentSearch.searchableQuery(query(searchText: searchText, showingProjects: showingProjects)) != nil else {
+            return false
+        }
+        let rows = rows(model: model, searchText: searchText, showingProjects: showingProjects,
+                        listed: [], known: known, allowed: allowed)
+        return showsSection(rows: rows, isSearching: model.isSearching)
+    }
+
+    /// The call `SessionList` makes.
+    @MainActor
+    static func coversEmptyList(
+        model: SessionContentSearchModel,
+        searchText: String,
+        showingProjects: Bool,
+        appState: AppState,
+        allowed: [SessionSummary]?
+    ) -> Bool {
+        coversEmptyList(model: model, searchText: searchText, showingProjects: showingProjects,
+                        known: known(model: model, appState: appState), allowed: allowed)
+    }
+
     /// How a tap on a row opens its chat.
     enum Open: Equatable {
         /// A chat in the list: the call a sidebar row makes.
@@ -82,6 +122,14 @@ enum MacSidebarContentSearchRules {
     }
 }
 
+extension SidebarOfflineLayout.Visibility {
+    /// The same parts without the empty state, when `covered`: the "In messages" section answers the
+    /// search for a list with no title match (D30).
+    func macWithoutEmptyState(when covered: Bool) -> Self {
+        covered ? Self(liveSections: liveSections, emptyState: false, loadingState: loadingState) : self
+    }
+}
+
 /// The text of a row. The title and the snippet come from the agent and the user: they are cleaned with
 /// `MacUntrustedText` (control and format characters, such as a right-to-left override, are dropped) and
 /// drawn as plain text. No Markdown, no link detection.
@@ -100,7 +148,44 @@ enum MacSidebarContentSearchText {
         let marked = snippet.runs
             .map { $0.isMatch ? SessionSearchSnippet.matchStart + $0.text + SessionSearchSnippet.matchEnd : $0.text }
             .joined()
-        return SessionSearchSnippet.parse(MacUntrustedText.sanitize(marked, maxGraphemes: snippetLimit), query: "")
+        return SessionSearchSnippet.parse(MacUntrustedText.sanitize(unescapingJSON(marked), maxGraphemes: snippetLimit), query: "")
+    }
+
+    /// A match in a stored tool call or tool result is JSON text, with its escapes as written (`\n`, `\"`).
+    /// When the snippet looks like JSON (it holds `":`, `{"` or `\"`), each escape becomes the character it
+    /// stands for (a line break or a tab as a space), so the line reads as words. Other snippets keep every
+    /// backslash: a message may talk about `\n`.
+    static func unescapingJSON(_ text: String) -> String {
+        guard text.contains("\":") || text.contains("{\"") || text.contains("\\\"") else { return text }
+        var out = ""
+        var scalars = text.unicodeScalars.makeIterator()
+        var pending = scalars.next()
+        while let scalar = pending {
+            pending = scalars.next()
+            guard scalar == "\\", let next = pending else {
+                out.unicodeScalars.append(scalar)
+                continue
+            }
+            switch next {
+            case "n", "r", "t": out.append(" ")
+            case "\"", "\\", "/": out.unicodeScalars.append(next)
+            case "u":
+                var hex = ""
+                var look = scalars
+                while hex.count < 4, let digit = look.next(), digit.properties.isASCIIHexDigit { hex.unicodeScalars.append(digit) }
+                guard hex.count == 4, let value = UInt32(hex, radix: 16), let decoded = Unicode.Scalar(value) else {
+                    out.unicodeScalars.append(scalar)
+                    continue
+                }
+                scalars = look
+                out.unicodeScalars.append(decoded)
+            default:
+                out.unicodeScalars.append(scalar)
+                continue
+            }
+            pending = scalars.next()
+        }
+        return out
     }
 
     /// Matched words semibold in the accent color, at the size of the line around them.
@@ -127,7 +212,8 @@ enum MacSidebarContentSearchText {
 /// search is running or has rows.
 struct MacSidebarContentSearch: View {
     @EnvironmentObject private var appState: AppState
-    @StateObject private var search: SessionContentSearchModel
+    /// Owned by `SessionList`, which also reads it for its placeholder.
+    @ObservedObject private var search: SessionContentSearchModel
     @State private var feed = Feed()
     private let searchText: String
     private let showingProjects: Bool
@@ -140,15 +226,15 @@ struct MacSidebarContentSearch: View {
         var last: MacSidebarContentSearchRules.Follow?
     }
 
-    /// `model` and `context` are the seam of the tests: a model with no debounce and a fake requester. The
-    /// app passes neither: the model debounces 300 ms and the context is the dashboard bridge's.
+    /// `context` is a seam of the tests (a fake requester), as is a model with no debounce. The app passes
+    /// `SessionList`'s model, which debounces 300 ms, and no context: the dashboard bridge's is used.
     @MainActor
     init(
         searchText: String,
         showingProjects: Bool,
         listed: [SessionSummary],
         allowed: [SessionSummary]?,
-        model: SessionContentSearchModel? = nil,
+        model: SessionContentSearchModel,
         context: (@MainActor () -> SessionContentSearchModel.Context?)? = nil
     ) {
         self.searchText = searchText
@@ -156,7 +242,7 @@ struct MacSidebarContentSearch: View {
         self.listed = listed
         self.allowed = allowed
         self.contextOverride = context
-        _search = StateObject(wrappedValue: model ?? SessionContentSearchModel())
+        search = model
     }
 
     var body: some View {
@@ -164,7 +250,7 @@ struct MacSidebarContentSearch: View {
         // section: a list builds the rows it shows and a modifier attaches to those rows, so a modifier
         // on the header did not start the search with the section below the fold (D30).
         let _ = scheduleFollow(follow) { contextOverride?() ?? appState.sessionContentSearchContext }
-        let known = search.hits.isEmpty ? [] : appState.activeProfileSessions + appState.activeProfileCronSessions
+        let known = MacSidebarContentSearchRules.known(model: search, appState: appState)
         let rows = MacSidebarContentSearchRules.rows(
             model: search, searchText: searchText, showingProjects: showingProjects,
             listed: listed, known: known, allowed: allowed

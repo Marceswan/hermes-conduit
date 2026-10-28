@@ -223,6 +223,9 @@ struct SessionList: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.scenePhase) private var scenePhase
     @State private var searchText = ""
+    #if os(macOS) // MAC: no "No Sessions" over message matches (D30)
+    @StateObject private var macContentSearch = SessionContentSearchModel()
+    #endif // MAC:
     @State private var showFilterOrder = false
     @State private var showArchivedSessions = false
     @State private var showProjectCreator = false
@@ -458,6 +461,11 @@ struct SessionList: View {
                 displayedSessionsEmpty: displayedSessions.isEmpty,
                 isLoadingList: appState.isLoadingChatList
             )
+            #if os(macOS) // MAC: no "No Sessions" over message matches (D30)
+            .macWithoutEmptyState(when: MacSidebarContentSearchRules.coversEmptyList(
+                model: macContentSearch, searchText: searchText, showingProjects: showingProjects, appState: appState,
+                allowed: selectedSource == nil && statusFilter == nil ? nil : allSessions))
+            #endif // MAC:
             List {
                 if showingProjects {
                     // Pinned chats from every project stay one tap away
@@ -520,7 +528,8 @@ struct SessionList: View {
                     searchText: searchText,
                     showingProjects: showingProjects,
                     listed: displayedSessions,
-                    allowed: selectedSource == nil && statusFilter == nil ? nil : allSessions
+                    allowed: selectedSource == nil && statusFilter == nil ? nil : allSessions,
+                    model: macContentSearch
                 )
                 #endif // MAC:
             }
