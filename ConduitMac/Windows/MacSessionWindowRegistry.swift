@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 /// Which session windows exist (D21). A window counts from its request until
@@ -10,6 +11,8 @@ final class MacSessionWindowRegistry: ObservableObject {
     static let limit = 4
 
     @Published private(set) var open: Set<MacSessionWindowToken> = []
+    /// Windows whose turn runs now. `MacBackgroundActivity` keeps Conduit awake while this is not empty (D29).
+    @Published private(set) var runningTurns: Set<MacSessionWindowToken> = []
     private var requested: Set<MacSessionWindowToken> = []
 
     var isFull: Bool { requested.union(open).count >= Self.limit }
@@ -39,5 +42,20 @@ final class MacSessionWindowRegistry: ObservableObject {
     func disappeared(_ token: MacSessionWindowToken) {
         open.remove(token)
         requested.remove(token)
+        runningTurns.remove(token)
+    }
+
+    /// Follows one window's turn (D29): running while `transcript.turn` is `.running`. A turn that waits for
+    /// the user (`.needsInput`) is not running. The window keeps the returned cancellable until it closes;
+    /// cancel it before `disappeared`.
+    func trackTurn(of controller: MacSessionWindowController) -> AnyCancellable {
+        let token = controller.token
+        // @Published emits in willSet: the closure uses the emitted transcript, never `controller.transcript`.
+        return controller.$transcript
+            .map { $0.turn == .running }
+            .removeDuplicates()
+            .sink { [weak self] running in
+                if running { self?.runningTurns.insert(token) } else { self?.runningTurns.remove(token) }
+            }
     }
 }

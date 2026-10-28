@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// Opening session windows (D21) and the scene's content.
@@ -114,6 +115,8 @@ struct MacSessionWindowScene: View {
     final class Holder: ObservableObject {
         @Published var controller: MacSessionWindowController?
         weak var window: NSWindow?
+        /// Reports this window's turn to the registry while the window is open (D29).
+        var turnWatch: AnyCancellable?
 
         /// Keeps Cmd-. pointed at this window's controller while both exist.
         func syncStopRoute() {
@@ -161,10 +164,13 @@ struct MacSessionWindowScene: View {
         controller.bind(to: appState, tabs: .shared)
         controller.start()
         holder.controller = controller
+        holder.turnWatch = MacSessionWindowRegistry.shared.trackTurn(of: controller)
         holder.syncStopRoute()
     }
 
     private func disappear() {
+        // Before `disappeared`: a late event must not put the closed window's turn back.
+        holder.turnWatch = nil
         holder.controller?.stop()
         holder.controller = nil
         holder.syncStopRoute()
