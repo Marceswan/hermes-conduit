@@ -146,7 +146,7 @@ enum NotchRowBuilder {
         // Everything the agent or gateway supplies is sanitized here, once, so no view renders raw text.
         let clean = MacUntrustedText.sanitize(i.title, maxGraphemes: titleLimit)
         let title = clean.isEmpty ? AppLocalization.string("Untitled chat") : clean
-        let id = i.sessionId ?? i.sessionKey
+        let id = MacActivitySessionTarget.openID(of: i)
         var detail = i.detail.map(truncatedCommand).flatMap { $0.isEmpty ? nil : $0 }
         // An approval row shows the payload (summary and command), never a second, agent-worded line.
         if case .approval = inline { detail = nil }

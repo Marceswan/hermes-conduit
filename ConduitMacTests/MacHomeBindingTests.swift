@@ -50,10 +50,11 @@ final class MacHomeBindingTests: XCTestCase {
         let mapped = MacHomeBinding.liveItems(items)
         XCTAssertEqual(mapped.map(\.id), ["turn:r1", "approval:7", "clarify:3"])
         XCTAssertEqual(mapped[0].sessionKey, "k1")
-        XCTAssertEqual(mapped[0].openID, "r1", "the notch opens sessionId first")
+        XCTAssertEqual(mapped[0].openID, "k1", "a row opens the durable key; the runtime id is not a resumable id (MacNeedsYouOpenTests)")
         XCTAssertEqual(mapped[0].detail, "web_search")
         XCTAssertEqual(mapped[1].sessionKey, "r2", "no key falls back to the runtime id")
         XCTAssertTrue(mapped[1].needsUser)
+        XCTAssertEqual(mapped[1].openID, "r2", "no key falls back to the runtime id")
         XCTAssertEqual(mapped[2].openID, "k3", "no runtime id falls back to the key")
         XCTAssertEqual(mapped[2].kind, .clarify)
     }

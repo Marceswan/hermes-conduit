@@ -20,22 +20,26 @@ struct NotchActions {
         defaults.set(tab.rawValue, forKey: MacSidebarState.tabDefaultsKey)
     }
 
-    @MainActor static func live(appState: AppState) -> NotchActions {
+    /// `bringToFront` is a seam: a test must not activate the app.
+    @MainActor static func live(
+        appState: AppState,
+        bringToFront: @escaping @MainActor () -> Void = { NotchMainWindow.bringToFront() }
+    ) -> NotchActions {
         NotchActions(
             openSession: { id in
-                NotchMainWindow.bringToFront()
-                _ = appState.requestOpenSession(id)   // resumes the session; adds Conduit as a viewer
+                bringToFront()
+                MacActivitySessionTarget.open(id, in: appState)   // resumes the session; adds Conduit as a viewer
             },
             openPane: { tab in
-                NotchMainWindow.bringToFront()
+                bringToFront()
                 selectPane(tab)
             },
             newChat: {
                 guard appState.macCanStartChatAtOnce else { return }
-                NotchMainWindow.bringToFront()
+                bringToFront()
                 Task { await appState.createNewSession() }
             },
             newChatEnabled: { appState.macCanStartChatAtOnce },
-            openConduit: { NotchMainWindow.bringToFront() })
+            openConduit: { bringToFront() })
     }
 }
