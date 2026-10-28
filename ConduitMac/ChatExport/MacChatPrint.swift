@@ -94,6 +94,10 @@ enum MacChatPrintContent {
             case .message(let message):
                 let heading = message.speaker + (message.time.map { "  (\($0))" } ?? "")
                 writer.paragraph(heading, font: .systemFont(ofSize: 12, weight: .bold), before: 14, after: 3)
+                for step in message.toolSteps {
+                    let status = step.running ? strings.toolRunning : strings.toolComplete
+                    writer.paragraph(strings.toolLine(step.name, status), font: .systemFont(ofSize: 10), after: 2)
+                }
                 writer.markdown(message.text)
                 for name in message.attachments {
                     writer.paragraph(strings.attachment(name), font: .systemFont(ofSize: 10), after: 2)

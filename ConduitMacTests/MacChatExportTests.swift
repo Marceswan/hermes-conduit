@@ -285,8 +285,57 @@ final class MacChatExportBuilderTests: XCTestCase {
         XCTAssertTrue(document.olderOmitted)
         XCTAssertEqual(document.items, [
             .message(MacChatExportDocument.Message(role: .user, speaker: "You", time: "2026-10-28 14:00", text: "hi", attachments: [])),
-            .tool(MacChatExportDocument.ToolStep(name: "grep", running: true)),
+            .message(MacChatExportDocument.Message(
+                role: .agent, speaker: "Hermes", time: "2026-10-28 14:02", text: "", attachments: [],
+                toolSteps: [MacChatExportDocument.ToolStep(name: "grep", running: true)])),
         ])
+    }
+
+    // MARK: Tool steps of a turn
+
+    func testToolStepsAfterAUserRowSitUnderTheAgentHeadingBeforeTheReply() {
+        let text = markdown([
+            user("Find flights"),
+            tool("web_search", .complete),
+            ChatMessage(id: "r", role: .reasoning, content: "SECRET", timestamp: "2026-10-28T14:02:30Z"),
+            tool("read_file", .complete),
+            assistant("Two options.", at: "2026-10-28T14:03:00Z"),
+        ])
+        XCTAssertEqual(text, """
+        # Lisbon trip
+
+        Exported 2026-10-28 14:05
+
+        ## You (2026-10-28 14:00)
+
+        Find flights
+
+        ## Hermes (2026-10-28 14:03)
+
+        Tool: `web_search` (complete)\\
+        Tool: `read_file` (complete)
+
+        Two options.
+
+        """)
+    }
+
+    func testToolStepsWithNoReplyGetAnAgentHeadingWithTheTimeOfTheFirstStep() {
+        let text = markdown([user("Go"), tool("grep", .running), user("Stop")])
+        XCTAssertTrue(text.contains(
+            "## You (2026-10-28 14:00)\n\nGo\n\n## Hermes (2026-10-28 14:02)\n\nTool: `grep` (running)\n\n## You (2026-10-28 14:00)\n\nStop\n"),
+            text)
+    }
+
+    func testToolStepsThatOpenTheChatSitUnderAnAgentHeading() {
+        XCTAssertEqual(markdown([tool("grep", .complete)]),
+                       "# Lisbon trip\n\nExported 2026-10-28 14:05\n\n## Hermes (2026-10-28 14:02)\n\nTool: `grep` (complete)\n")
+    }
+
+    func testAnAgentRowWithNoTextKeepsTheStepsForTheNextAgentRow() {
+        let text = markdown([user("Go"), tool("grep", .complete), assistant(""), assistant("Done.", at: "2026-10-28T14:04:00Z")])
+        XCTAssertTrue(text.hasSuffix("## Hermes (2026-10-28 14:04)\n\nTool: `grep` (complete)\n\nDone.\n"), text)
+        XCTAssertEqual(text.components(separatedBy: "## Hermes").count - 1, 1, text)
     }
 }
 
@@ -885,6 +934,19 @@ final class MacChatPrintTests: XCTestCase {
             XCTAssertTrue(text.contains(expected), "missing \(expected) in:\n\(text)")
         }
         for left in ["SECRET", "base64", "**", "```"] { XCTAssertFalse(text.contains(left), left) }
+    }
+
+    func testAToolStepBeforeTheReplyPrintsUnderTheAgentHeading() {
+        let text = printed([
+            ChatMessage(id: "u", role: .user, content: "Find flights", timestamp: "2026-10-28T14:00:00Z"),
+            ChatMessage(id: "t", role: .tool, content: "", timestamp: "2026-10-28T14:02:00Z",
+                        tool: ToolActivity(id: nil, name: "web_search", input: nil, output: nil, status: .complete)),
+            ChatMessage(id: "a", role: .assistant, content: "Two options.", timestamp: "2026-10-28T14:03:00Z"),
+        ]).string
+        let order = ["You  (2026-10-28 14:00)", "Find flights", "Hermes  (2026-10-28 14:03)", "Tool: web_search (complete)",
+                     "Two options."].map { text.range(of: $0)?.lowerBound }
+        XCTAssertFalse(order.contains(nil), text)
+        XCTAssertEqual(order.compactMap { $0 }, order.compactMap { $0 }.sorted(), text)
     }
 
     func testEveryRunPrintsBlackAndNoRunIsALinkOrDarkFilled() throws {

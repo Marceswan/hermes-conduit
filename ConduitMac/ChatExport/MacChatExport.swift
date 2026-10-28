@@ -52,6 +52,9 @@ struct MacChatExportDocument: Equatable {
         var text: String
         /// File names, one line each.
         var attachments: [String]
+        /// The tool steps of an agent turn that ran before its text. They print under the heading, before the
+        /// text, so a turn's tools never sit under the user's heading.
+        var toolSteps: [ToolStep] = []
     }
 
     struct ToolStep: Equatable {
@@ -77,6 +80,10 @@ struct MacChatExportDocument: Equatable {
 /// when known and its text; each tool step as one line (name and status); each attachment as one line (file
 /// name only, never its data). What stays out: thinking text (the `.reasoning` rows and the `reasoning`
 /// field), tool input and output, system rows, and the approval, question and password cards.
+///
+/// Tool steps that come after a user row (or open the chat) belong to the agent turn that follows: they go
+/// into that agent row's `toolSteps`. When no agent row with text follows, they get an agent heading of
+/// their own, with the time of the first step.
 enum MacChatExport {
     static let maxTitleGraphemes = 120
     static let maxNameGraphemes = 80
@@ -95,7 +102,22 @@ enum MacChatExport {
         let formatter = timeFormatter(timeZone)
         let title = oneLine(input.title ?? "", max: maxTitleGraphemes)
         let agent = oneLine(input.agentName, max: maxNameGraphemes)
+        let speaker = agent.isEmpty ? fallbackAgentName : agent
+        let time: (ChatMessage) -> String? = { MessageTimestampFormatter.date(from: $0.timestamp).map(formatter.string(from:)) }
         var items: [MacChatExportDocument.Item] = []
+        // Tool steps that wait for the agent row of their turn, and the time of the first one.
+        var pending: [MacChatExportDocument.ToolStep] = []
+        var pendingTime: String?
+        // True while the last heading written is the user's (or no heading is written yet).
+        var underUser = true
+        func flushPending() {
+            guard !pending.isEmpty else { return }
+            items.append(.message(MacChatExportDocument.Message(
+                role: .agent, speaker: speaker, time: pendingTime, text: "", attachments: [], toolSteps: pending)))
+            pending = []
+            pendingTime = nil
+            underUser = false
+        }
         for message in input.messages {
             switch message.role {
             case .user, .assistant, .partial:
@@ -103,21 +125,35 @@ enum MacChatExport {
                 let text = body(of: message)
                 let files = (message.attachments ?? []).map { oneLine($0.name, max: 200) }.filter { !$0.isEmpty }
                 guard !text.isEmpty || !files.isEmpty else { continue }
+                if role == .user { flushPending() }
                 items.append(.message(MacChatExportDocument.Message(
                     role: role,
-                    speaker: role == .user ? strings.you : (agent.isEmpty ? fallbackAgentName : agent),
-                    time: MessageTimestampFormatter.date(from: message.timestamp).map(formatter.string(from:)),
+                    speaker: role == .user ? strings.you : speaker,
+                    time: time(message),
                     text: text,
-                    attachments: files)))
+                    attachments: files,
+                    toolSteps: role == .user ? [] : pending)))
+                if role == .agent {
+                    pending = []
+                    pendingTime = nil
+                }
+                underUser = role == .user
             case .tool:
                 guard let tool = message.tool else { continue }
                 let name = oneLine(tool.name, max: maxNameGraphemes)
                 guard !name.isEmpty else { continue }
-                items.append(.tool(MacChatExportDocument.ToolStep(name: name, running: tool.status == .running)))
+                let step = MacChatExportDocument.ToolStep(name: name, running: tool.status == .running)
+                if underUser {
+                    if pending.isEmpty { pendingTime = time(message) }
+                    pending.append(step)
+                } else {
+                    items.append(.tool(step))
+                }
             case .reasoning, .system, .clarify, .approval, .inputPrompt:
                 continue
             }
         }
+        flushPending()
         return MacChatExportDocument(
             title: title.isEmpty ? oneLine(strings.fallbackTitle, max: maxTitleGraphemes) : title,
             exported: formatter.string(from: exportedAt),
@@ -263,6 +299,10 @@ enum MacChatExportMarkdown {
                 flushSteps()
                 let heading = escaped(message.speaker) + (message.time.map { " (\($0))" } ?? "")
                 blocks.append("## " + heading)
+                for step in message.toolSteps {
+                    steps.append(strings.toolLine(codeSpan(step.name), step.running ? strings.toolRunning : strings.toolComplete))
+                }
+                flushSteps()
                 if !message.text.isEmpty { blocks.append(message.text) }
                 if !message.attachments.isEmpty {
                     blocks.append(message.attachments.map { strings.attachment(codeSpan($0)) }.joined(separator: "\\\n"))
