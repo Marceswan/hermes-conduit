@@ -18,6 +18,8 @@ enum MacDefaults {
         UserDefaults.standard.register(defaults: [
             "conduit.ipadPersistentSidebar": true,
             ComposerReturnKey.preferenceKey: true,
+            // The count of items that wait on the user, on the Dock icon (D31).
+            MacDockBadge.defaultsKey: MacDockBadge.defaultValue,
         ])
     }
 }
@@ -38,6 +40,8 @@ final class ConduitMacAppDelegate: NSObject, NSApplicationDelegate {
         _ = MacUpdater.shared
         if !MacDefaults.isRunningUnderXCTest { HoverAccessibilityEngine.install() }
         if !MacDefaults.isRunningUnderXCTest { MacActivityBootstrap.start() }
+        // The Dock badge reads the feed that the line above creates (D31).
+        if !MacDefaults.isRunningUnderXCTest { MacDockBootstrap.start() }
         if !MacDefaults.isRunningUnderXCTest { MacQuickAskBootstrap.start() }
         // App Nap stays off while a reply streams or a call is live (D29). After the activity feed: it is an input.
         if !MacDefaults.isRunningUnderXCTest { MacBackgroundActivityBootstrap.start() }
@@ -64,6 +68,12 @@ final class ConduitMacAppDelegate: NSObject, NSApplicationDelegate {
     /// A failed hotkey registration is retried when the app comes forward (no retry loop).
     func applicationDidBecomeActive(_ notification: Notification) {
         if !MacDefaults.isRunningUnderXCTest { MacQuickAskHotKeyManager.shared.refresh() }
+    }
+
+    /// The Dock icon's menu (D31): New Chat, Quick Ask, the chats that need the user, the recent chats.
+    /// AppKit asks on each right-click, so the menu is built then.
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        MacDockMenu.make(appState: AppStateRuntimeRegistry.shared.appState)
     }
 
     func applicationWillTerminate(_ notification: Notification) {

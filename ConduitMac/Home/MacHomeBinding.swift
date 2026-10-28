@@ -193,7 +193,8 @@ enum MacHomeBinding {
         )
     }
 
-    private static func availability(_ feed: AgentActivityFeed?) -> MacHomeFeedAvailability {
+    /// Not private: the Dock badge (D31) reads the feed's availability with Home's rule.
+    static func availability(_ feed: AgentActivityFeed?) -> MacHomeFeedAvailability {
         guard let feed else { return .offline }
         switch feed.availability {
         case .offline: return .offline

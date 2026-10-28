@@ -27,10 +27,17 @@ enum MacNotificationAuthorizationState: Equatable {
 struct MacNotificationSettingsView: View {
     @ObservedObject var preferences: MacNotificationPreferences
     @State var authorization: MacNotificationAuthorizationState
+    /// The count on the Dock icon (D31). It is not a notification: it follows none of the toggles above.
+    @AppStorage private var showsDockCount: Bool
 
-    init(preferences: MacNotificationPreferences = .shared, authorization: MacNotificationAuthorizationState = .notDetermined) {
+    init(
+        preferences: MacNotificationPreferences = .shared,
+        authorization: MacNotificationAuthorizationState = .notDetermined,
+        dockDefaults: UserDefaults = .standard
+    ) {
         self.preferences = preferences
         _authorization = State(initialValue: authorization)
+        _showsDockCount = AppStorage(wrappedValue: MacDockBadge.defaultValue, MacDockBadge.defaultsKey, store: dockDefaults)
     }
 
     static func kindControlsEnabled(_ preferences: MacNotificationPreferences) -> Bool { preferences.isEnabled }
@@ -52,6 +59,7 @@ struct MacNotificationSettingsView: View {
                 Toggle(AppLocalization.string("Play a sound"), isOn: $preferences.soundEnabled)
             }
             .disabled(!Self.kindControlsEnabled(preferences))
+            Toggle(AppLocalization.string("Show count on Dock icon"), isOn: $showsDockCount)
             SettingsMetricRow(
                 label: AppLocalization.string("Status"),
                 value: authorization.statusText,
