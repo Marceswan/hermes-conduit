@@ -17,8 +17,8 @@ struct MacHomeActions {
             openSession: { [weak appState] id in
                 guard let appState else { return }
                 appState.dismissSidebarDrawer()
-                // A live row can carry only a runtime alias; open the catalog row the sidebar would.
-                _ = appState.requestOpenSession(MacQuickAskController.openableID(id, in: appState.sessions))
+                // A live row carries the durable id of its chat; open the catalog row the sidebar would.
+                MacActivitySessionTarget.open(id, in: appState)
             },
             newChat: { [weak appState] in
                 guard let appState, !appState.macNewChatDisabled else { return }
@@ -223,8 +223,8 @@ enum MacHomeBinding {
             return MacHomeLiveItem(
                 id: item.id,
                 sessionKey: item.sessionKey ?? item.sessionId,
-                // The same id the notch opens (NotchStatusController.openSession(of:)).
-                openID: item.sessionId ?? item.sessionKey,
+                // The durable id, not the runtime id; the same id the notch opens (MacActivitySessionTarget).
+                openID: MacActivitySessionTarget.openID(of: item),
                 kind: kind, needsUser: needsUser,
                 title: item.title, detail: item.detail, since: item.since
             )

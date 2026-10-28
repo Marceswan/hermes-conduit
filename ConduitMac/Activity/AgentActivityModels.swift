@@ -29,7 +29,8 @@ struct AgentActivityItem: Identifiable, Equatable {
     let id: String
     var kind: Kind
     var state: State
-    /// Runtime id as the gateway reported it; open via `requestOpenSession`.
+    /// Runtime id as the gateway reported it. `session.resume` does not know it: a row opens `sessionKey`
+    /// (`MacActivitySessionTarget.openID(of:)`), not this id.
     var sessionId: String?
     /// Durable id (catalog id, else stored id, else lineage root, else runtime id).
     var sessionKey: String?

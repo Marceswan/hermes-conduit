@@ -327,6 +327,22 @@ final class NotchStatusControllerTests: XCTestCase {
         XCTAssertEqual(r.panes.value, [.kanban, .cron])
     }
 
+    func testRowClickAndReviewOpenTheDurableKeyNotTheRuntimeId() {
+        // The runtime id is not a resumable id; the row opens the item's session key (D16, D24 fix 2026-10-28).
+        func item(_ id: String, _ kind: AgentActivityItem.Kind, approval: ApprovalActivity? = nil) -> AgentActivityItem {
+            AgentActivityItem(
+                id: id, kind: kind, state: .needsUser, sessionId: "rt-1", sessionKey: "db-1",
+                profile: "default", dashboardID: "d", title: "Colors", startedAt: F.t0, since: F.t0, approval: approval)
+        }
+        let r = armedApprovalRig([item("clarify:q1", .clarify),
+                                  item("approval:q2", .approval, approval: F.approval(command: "ls\nrm -rf ~"))]); defer { finish(r) }
+        let rows = r.controller.viewModel.list.rows
+        XCTAssertEqual(rows.map(\.target), [.session("db-1"), .session("db-1")])
+        r.controller.viewModel.onOpenRow(rows[0])                                 // "Answer in Conduit"
+        r.controller.viewModel.onAction(rows[1], .reviewInConduit)
+        XCTAssertEqual(r.opened.value, ["db-1", "db-1"])
+    }
+
     func testNewChatHonoursAvailability() {
         let r = makeRig(); defer { finish(r) }
         r.source.itemsSubject.send([F.item("turn:a")])

@@ -237,9 +237,9 @@ final class MacQuickAskController: ObservableObject {
     /// has arrived); when the catalog already lists the session under that alias,
     /// open its canonical row id. With no catalog row the id goes through as is:
     /// `requestOpenSession` resumes a live runtime id and captures its identity
-    /// from the response.
+    /// from the response. The rule is the feed rows' (`MacActivitySessionTarget`, D24).
     nonisolated static func openableID(_ id: String, in catalog: [SessionSummary]) -> String {
-        catalog.first(where: { $0.id == id || $0.alternateIds.contains(id) })?.id ?? id
+        MacActivitySessionTarget.openableID(id, in: catalog)
     }
 
     private static func connection(of appState: AppState?) -> MacQuickAskConnection {

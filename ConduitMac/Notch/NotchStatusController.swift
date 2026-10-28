@@ -407,6 +407,6 @@ final class NotchStatusController: ObservableObject {
     }
 
     private func openSession(of item: AgentActivityItem) {
-        if let id = item.sessionId ?? item.sessionKey { actions.openSession(id) } else { actions.openConduit() }
+        if let id = MacActivitySessionTarget.openID(of: item) { actions.openSession(id) } else { actions.openConduit() }
     }
 }
