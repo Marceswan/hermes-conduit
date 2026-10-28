@@ -39,6 +39,8 @@ final class ConduitMacAppDelegate: NSObject, NSApplicationDelegate {
         if !MacDefaults.isRunningUnderXCTest { HoverAccessibilityEngine.install() }
         if !MacDefaults.isRunningUnderXCTest { MacActivityBootstrap.start() }
         if !MacDefaults.isRunningUnderXCTest { MacQuickAskBootstrap.start() }
+        // App Nap stays off while a reply streams or a call is live (D29). After the activity feed: it is an input.
+        if !MacDefaults.isRunningUnderXCTest { MacBackgroundActivityBootstrap.start() }
         // Local notifications (D20). After the activity feed (its events feed
         // the coordinator) and before this method returns, so a cold-launch
         // click on a notification finds its delegate.
@@ -70,6 +72,7 @@ final class ConduitMacAppDelegate: NSObject, NSApplicationDelegate {
         RichContactVCard.removeAllFiles()
         MacActivityBootstrap.stop()
         if !MacDefaults.isRunningUnderXCTest { MacQuickAskBootstrap.stop() }
+        MacBackgroundActivityBootstrap.stop()
     }
 
     /// A Spotlight result opened Conduit (D19). SwiftUI's `.onContinueUserActivity`
