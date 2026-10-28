@@ -71,13 +71,14 @@ struct ConduitMacApp: App {
         if !MacDefaults.isRunningUnderXCTest {
             SheetEscape.install()
             SheetCloseButton.install()
+            MacUIZoom.installKeyMonitor()
         }
     }
 
     var body: some Scene {
         WindowGroup("Conduit", id: "conduit-primary") {
             rootContent
-                .frame(minWidth: MacSidebarState.windowMinWidth, minHeight: 560)
+                .frame(minWidth: MacSidebarState.windowMinWidth, minHeight: MacSidebarState.windowMinHeight)
                 .modifier(MacRegisterPrimaryWindowOpener())
         }
         .defaultSize(width: 1180, height: 780)

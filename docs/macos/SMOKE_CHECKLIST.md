@@ -277,6 +277,14 @@ Human pass at release time (agents never click or type into the running app, R18
 - [ ] Disconnect mid-turn so the settle read fails: the window shows the error with Retry, Stop is gone, and Retry re-reads. Leave a chat idle for a long while (the gateway reaps its runtime), then send from the window: it sends after one transparent resume.
 - [ ] Open a `conduit://session/...` or other in-app link from a chat inside the window: it follows the same link policy as main (an app link opens in main, other schemes go to the system or are dropped).
 
+## Zoom (D27)
+- [ ] View menu shows Actual Size (Cmd-0), Zoom In (Cmd-+) and Zoom Out (Cmd--). Cmd-= (no Shift), Cmd-Shift-= and the keypad + all zoom in.
+- [ ] Zoom in to 150% with a chat open: the sidebar and the chat grow, text stays sharp, the toolbar and tabs keep their size, and the first message starts just under the toolbar (no gap, nothing under it). Zoom out to 75%: the same, smaller.
+- [ ] While zoomed: scroll a long chat, select text in a reply, type in the composer, drag the sidebar edge, hover controls with Highlight Controls on Hover on: each works and lands where the pointer is.
+- [ ] A zoom change keeps the typed draft and the focused field. A chat at its latest message stays at it (no jump-to-latest button); a chat scrolled up to older messages stays among them. The same in a session window.
+- [ ] Home, Bots, Cron, Kanban and Artifacts panes zoom too. A session window follows the same level.
+- [ ] At 200%, Zoom In beeps; at 75%, Zoom Out beeps. On a laptop screen Zoom In stops (beep) at the level where the window no longer fits. Cmd-0 returns to 100%. Quit and relaunch: the level is kept.
+
 ## Widgets (D25)
 
 Install the exported app in /Applications (quit the running Conduit first), launch it, connect to a dashboard.

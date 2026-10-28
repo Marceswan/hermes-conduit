@@ -107,6 +107,8 @@ struct MacSessionWindowScene: View {
     @ObservedObject private var appLanguage = AppLanguageStore.shared
     @StateObject private var holder = Holder()
     @Environment(\.dismissWindow) private var dismissWindow
+    /// View > Zoom (D27): the same level as the main window.
+    @AppStorage(MacUIZoom.defaultsKey) private var zoomLevel = MacUIZoom.actualSize
 
     @MainActor
     final class Holder: ObservableObject {
@@ -128,6 +130,7 @@ struct MacSessionWindowScene: View {
         Group {
             if let controller = holder.controller {
                 MacSessionWindowView(controller: controller)
+                    .macUIZoom(MacUIZoom.scale(zoomLevel))
             } else {
                 Color.clear
             }

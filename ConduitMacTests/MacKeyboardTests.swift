@@ -487,8 +487,20 @@ final class MacKeyboardMenuTests: XCTestCase {
             ("/Edit/Find Previous", "g", [.shift, .command]),
             ("/Go/Command Palette", "k", .command),
             ("/Go/Switch Dashboard\u{2026}", "d", [.shift, .command]),
+            // D27: AppKit reports Cmd-+ as "+" with .command alone (observed).
+            ("/View/Actual Size", "0", .command),
+            ("/View/Zoom In", "+", .command),
+            ("/View/Zoom Out", "-", .command),
         ]
         return table
+    }
+
+    /// Plain Cmd-= is Zoom In through `MacUIZoom.installKeyMonitor` (D27), which
+    /// runs before the menu: an item on Cmd-= would never get its key.
+    func testNoMenuItemTakesCmdEqualsFromTheZoomMonitor() throws {
+        let main = try XCTUnwrap(NSApp.mainMenu)
+        let found = entries(main).filter { matches($0, key: "=", mask: .command) }.map(\.path)
+        XCTAssertEqual(found, [])
     }
 
     /// Chat > Artifacts... (Task 13): in the Chat menu right after Ask About Window, with no key equivalent.

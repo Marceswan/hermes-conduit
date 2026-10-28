@@ -173,6 +173,16 @@ struct ConduitCommands: Commands {
             Button(sidebarVisible ? "Hide Sidebar" : "Show Sidebar") { MacKeyboardActions.toggleSidebar(window: NSApp.keyWindow) }
                 .keyboardShortcut("s", modifiers: [.command, .control])
             Toggle("Highlight Controls on Hover", isOn: $hoverHighlight)
+            // Zoom (D27), in Safari's order and keys. Never `.disabled` (see the note
+            // above): at the end of the range the action beeps. Plain Cmd-= is
+            // Zoom In through `MacUIZoom.installKeyMonitor`.
+            Divider()
+            Button("Actual Size") { MacUIZoom.perform(.actualSize) }
+                .keyboardShortcut("0", modifiers: .command)
+            Button("Zoom In") { MacUIZoom.perform(.zoomIn) }
+                .keyboardShortcut("+", modifiers: .command)
+            Button("Zoom Out") { MacUIZoom.perform(.zoomOut) }
+                .keyboardShortcut("-", modifiers: .command)
         }
         TextEditingCommands()
     }

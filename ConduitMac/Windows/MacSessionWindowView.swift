@@ -44,6 +44,12 @@ struct MacSessionWindowView: View {
                 if follow.shouldFollow(userJustSent: false) { scrollToEnd(proxy) }
             }
             .onAppear { scrollToEnd(proxy) }
+            // View > Zoom (D27): a reader at the end stays at the end. The new level keeps
+            // the offset, so the end can leave the view; scroll once the change has settled.
+            .onReceive(NotificationCenter.default.publisher(for: MacUIZoom.willChangeNotification)) { _ in
+                guard follow.shouldFollow(userJustSent: false) else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + NSScrollViewChatSurface.zoomSettleDelay) { scrollToEnd(proxy) }
+            }
         }
     }
 
