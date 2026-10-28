@@ -330327,6 +330327,94 @@
           }
         }
       }
+    },
+    "Mac.DockBadge.PermissionNote" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Erlaube Kennzeichen für Conduit unter Systemeinstellungen > Mitteilungen, damit die Anzahl auf dem Dock-Symbol erscheint."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow badges for Conduit in System Settings > Notifications to show the count on the Dock icon."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Permite los globos de Conduit en Ajustes del Sistema > Notificaciones para mostrar el recuento en el icono del Dock."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Autorisez les pastilles de Conduit dans Réglages Système > Notifications pour afficher le nombre sur l'icône du Dock."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Izinkan lencana untuk Conduit di Pengaturan Sistem > Pemberitahuan agar jumlah tampil di ikon Dock."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Consenti i badge per Conduit in Impostazioni di Sistema > Notifiche per mostrare il conteggio sull'icona del Dock."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dockのアイコンに件数を表示するには、システム設定 > 通知でConduitのバッジを許可してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dock 아이콘에 개수를 표시하려면 시스템 설정 > 알림에서 Conduit의 배지를 허용하세요."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aby pokazać liczbę na ikonie w Docku, zezwól na plakietki dla Conduit w Ustawieniach systemowych > Powiadomienia."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Permita os emblemas do Conduit em Ajustes do Sistema > Notificações para mostrar a contagem no ícone do Dock."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чтобы число показывалось на значке Dock, разрешите значки для Conduit в Системных настройках > Уведомления."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sayının Dock simgesinde görünmesi için Sistem Ayarları > Bildirimler’de Conduit için rozetlere izin ver."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要在程序坞图标上显示数量，请在 系统设置 > 通知 中允许 Conduit 使用标记。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要在 Dock 圖像上顯示數量，請在 系統設定 > 通知 中允許 Conduit 使用標記。"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"
