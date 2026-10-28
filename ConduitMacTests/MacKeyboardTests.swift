@@ -474,6 +474,9 @@ final class MacKeyboardMenuTests: XCTestCase {
             ("/File/Close Tab", "w", .command),
             ("/File/Reopen Closed Tab", "t", [.shift, .command]),
             ("/File/Open Session in New Window", "n", [.option, .command]),
+            // D32: Print Chat takes the slot of the system Print item, so Cmd-P has one owner.
+            ("/File/Export Chat\u{2026}", "e", [.shift, .command]),
+            ("/File/Print Chat\u{2026}", "p", .command),
             ("/Chat/Ask About Window\u{2026}", "w", [.shift, .command]),
         ]
         table += [
