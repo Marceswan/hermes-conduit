@@ -65,9 +65,21 @@ final class MacNotificationRuntime {
 
         self.coordinator = coordinator; self.router = router; self.handler = handler
 
+        // An app that is already authorized asks again once, for the badge option (D31 fix). Never a first prompt.
+        func askForBadgeOption() {
+            guard !MacBadgeOptionRequester.shared.hasAsked else { return }
+            Task { @MainActor in
+                await MacBadgeOptionRequester.shared.refresh(on: center, wantsBadge: MacDockBadge.isEnabled(in: .standard))
+            }
+        }
+        askForBadgeOption()
+
         let nc = NotificationCenter.default
         observers.append(nc.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.delegate.install(on: notificationCenter) }
+            MainActor.assumeIsolated {
+                self?.delegate.install(on: notificationCenter)
+                askForBadgeOption()
+            }
         })
         let recheck: (Notification) -> Void = { [weak coordinator] _ in Task { @MainActor in coordinator?.recheckAttention() } }
         for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification,

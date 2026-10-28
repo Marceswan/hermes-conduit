@@ -4,11 +4,19 @@ import UserNotifications
 
 let macNotificationsLogger = Logger(subsystem: "com.milim.conduit.mac", category: "notifications")
 
+/// The options Conduit asks for, named here and nowhere else (D20, D31). `.badge` is for the count on the Dock icon:
+/// an app registered for notifications without it gets no badge switch in System Settings (D31 fix).
+enum MacNotificationAuthorization {
+    static let options: UNAuthorizationOptions = [.alert, .badge, .sound]
+}
+
 /// The slice of `UNUserNotificationCenter` the coordinator needs. Tests inject
 /// a fake; the real adapter is built only by `MacNotificationRuntime`.
 @MainActor
 protocol MacNotificationCenterClient: AnyObject {
     func authorizationStatus() async -> UNAuthorizationStatus
+    /// Whether Conduit may badge its icon (`UNNotificationSettings.badgeSetting`); D31.
+    func badgeSetting() async -> UNNotificationSetting
     func requestAuthorization() async -> Bool
     func add(_ request: UNNotificationRequest) async throws
     func removeDelivered(_ identifiers: [String])
@@ -25,8 +33,11 @@ final class UNMacNotificationCenterClient: MacNotificationCenterClient {
     func authorizationStatus() async -> UNAuthorizationStatus {
         await center.notificationSettings().authorizationStatus
     }
+    func badgeSetting() async -> UNNotificationSetting {
+        await center.notificationSettings().badgeSetting
+    }
     func requestAuthorization() async -> Bool {
-        (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
+        (try? await center.requestAuthorization(options: MacNotificationAuthorization.options)) ?? false
     }
     func add(_ request: UNNotificationRequest) async throws { try await center.add(request) }
     func removeDelivered(_ identifiers: [String]) { center.removeDeliveredNotifications(withIdentifiers: identifiers) }

@@ -5,6 +5,12 @@ import UserNotifications
 @MainActor
 final class FakeNotificationCenter: MacNotificationCenterClient {
     var status: UNAuthorizationStatus = .authorized
+    /// The badge permission (D31). On by default, so the tests of the posting rules never meet the Dock note.
+    var badge: UNNotificationSetting = .enabled
+    /// What the badge reads after the next `requestAuthorization()`; nil means the request changes nothing.
+    var badgeAfterRequest: UNNotificationSetting?
+    /// How often the badge setting was read: a test that expects nothing waits for a read first.
+    var settingsReads = 0
     var grantOnRequest = true
     var authorizationRequests = 0
     var added: [UNNotificationRequest] = []
@@ -14,8 +20,13 @@ final class FakeNotificationCenter: MacNotificationCenterClient {
     var stored: Set<UNNotificationCategory> = []
 
     func authorizationStatus() async -> UNAuthorizationStatus { status }
+    func badgeSetting() async -> UNNotificationSetting {
+        settingsReads += 1
+        return badge
+    }
     func requestAuthorization() async -> Bool {
         authorizationRequests += 1
+        if let badgeAfterRequest { badge = badgeAfterRequest }
         status = grantOnRequest ? .authorized : .denied
         return grantOnRequest
     }
