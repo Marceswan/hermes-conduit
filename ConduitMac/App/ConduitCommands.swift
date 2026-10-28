@@ -21,6 +21,9 @@ struct ConduitCommands: Commands {
     /// The sidebar pane, for Chat > Artifacts... (enabled only while the chat tab shows).
     @AppStorage(MacSidebarState.tabDefaultsKey) private var sidebarTab = SidebarTab.sessions.rawValue
     @AppStorage(HoverAccessibilityEngine.highlightDefaultsKey) private var hoverHighlight = true
+    /// Publishes after each change of the key window or of a sheet, so File > Export Chat... and Print Chat...
+    /// follow the window (D32).
+    @ObservedObject private var chatExportMenu = MacChatExportMenuState.shared
     /// The sidebar list's rows in display order; nil while no list is mounted.
     @FocusedValue(\.macSessionOrder) private var sessionOrder
 
@@ -64,6 +67,25 @@ struct ConduitCommands: Commands {
                 .keyboardShortcut("w", modifiers: .command)
             Button("Reopen Closed Tab") { MacSessionTabsActions.reopen(store: tabs, window: NSApp.keyWindow) }
                 .keyboardShortcut("t", modifiers: [.shift, .command])
+        }
+        // Export Chat and Print Chat (D32) take the slot of the system Print item, so Cmd-P is theirs. Unlike
+        // the items above they ARE `.disabled`: with no chat in the key window (Bots, Cron, Kanban, Home, a
+        // group room, a sheet, Quick Ask) Cmd-P and Cmd-Shift-E then do nothing, which is right, and
+        // `chatExportMenu` rebuilds the menu on every change of the key window or of a sheet, so the state
+        // is not stale. The actions check again when they run.
+        CommandGroup(replacing: .printItem) {
+            Button("Export Chat\u{2026}") {
+                Task {
+                    await MacChatExportActions.export(window: NSApp.keyWindow, appState: appState, tabRaw: sidebarTab)
+                }
+            }
+            .keyboardShortcut("e", modifiers: [.shift, .command])
+            .disabled(!MacChatExportActions.isAvailable(window: NSApp.keyWindow, appState: appState, tabRaw: sidebarTab))
+            Button("Print Chat\u{2026}") {
+                MacChatExportActions.printChat(window: NSApp.keyWindow, appState: appState, tabRaw: sidebarTab)
+            }
+            .keyboardShortcut("p", modifiers: .command)
+            .disabled(!MacChatExportActions.isAvailable(window: NSApp.keyWindow, appState: appState, tabRaw: sidebarTab))
         }
         // No item here is disabled for a sheet: the menu is not rebuilt when a
         // sheet opens or closes, so a stale disabled item would swallow its key
