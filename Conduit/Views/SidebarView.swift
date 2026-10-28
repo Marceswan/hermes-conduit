@@ -515,6 +515,14 @@ struct SessionList: View {
                         }
                     }
                 }
+                #if os(macOS) // MAC: search message text (D30)
+                MacSidebarContentSearch(
+                    searchText: searchText,
+                    showingProjects: showingProjects,
+                    listed: displayedSessions,
+                    allowed: selectedSource == nil && statusFilter == nil ? nil : allSessions
+                )
+                #endif // MAC:
             }
             .searchable(text: $searchText, prompt: showingProjects ? AppLocalization.string("Search projects and pinned chats") : AppLocalization.string("Search sessions"))
             .scrollContentBackground(.hidden)
