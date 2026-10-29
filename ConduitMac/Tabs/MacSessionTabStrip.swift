@@ -169,7 +169,10 @@ private struct MacSessionTabButton: View {
     }
 }
 
-/// Working and needs-input dot; it pulses unless Reduce Motion is on.
+/// Working and needs-input dot; it pulses unless Reduce Motion is on. The
+/// repeat is scoped to the opacity: started with `withAnimation`, it also took
+/// the toolbar's layout change in the same update, and the whole tab row swung
+/// up and left and back with every pulse.
 private struct MacSessionTabBusyDot: View {
     let filter: SessionStatusFilter
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -179,11 +182,8 @@ private struct MacSessionTabBusyDot: View {
         Circle()
             .fill(filter.color)
             .frame(width: 6, height: 6)
-            .opacity(dim ? 0.35 : 1)
-            .onAppear {
-                guard !reduceMotion else { return }
-                withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { dim = true }
-            }
+            .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { $0.opacity(dim ? 0.35 : 1) }
+            .onAppear { dim = !reduceMotion }
             .accessibilityLabel(filter.title)
     }
 }
