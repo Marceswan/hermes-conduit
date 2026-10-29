@@ -51,8 +51,13 @@ struct LiveVoiceSetupSheet: View {
                 }
                 .accessibilityHint(AppLocalization.string("Opens the notifier project on GitHub"))
 
+                #if os(macOS) // MAC: click, not tap (Task 9b)
+                let checkHint = AppLocalization.string("Return to Voice settings, enable this mode if it is off, and click \(mode.checkTitle) to check availability.")
+                #else // MAC:
+                let checkHint = AppLocalization.string("Return to Voice settings, enable this mode if it is off, and tap \(mode.checkTitle) to check availability.")
+                #endif // MAC:
                 Label(
-                    AppLocalization.string("Return to Voice settings, enable this mode if it is off, and tap \(mode.checkTitle) to check availability."),
+                    checkHint, // MAC: reads the Mac or iPhone text chosen above
                     systemImage: "arrow.uturn.backward"
                 )
                 .font(.footnote)
@@ -85,7 +90,7 @@ struct LiveVoiceSetupSheet: View {
                     Text(AppLocalization.string("Add a Gemini API key"))
                         .font(.subheadline.weight(.semibold))
                 }
-                Text(AppLocalization.string("Set GEMINI_API_KEY in the active Hermes profile’s .env file. Keep the key on your Hermes server."))
+                Text(AppLocalization.string("Add it in Voice settings under API key, or set GEMINI_API_KEY in the active Hermes profile’s .env file. The key stays on your Hermes server."))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -109,7 +114,7 @@ struct LiveVoiceSetupSheet: View {
                     title: AppLocalization.string("Sign in to SuperGrok"),
                     command: "hermes auth add xai-oauth"
                 )
-                Text(AppLocalization.string("Sign in with your SuperGrok or X Premium+ account, or set XAI_API_KEY in the active Hermes profile’s .env file instead. The sign-in stays on your Hermes server."))
+                Text(AppLocalization.string("Sign in with your SuperGrok or X Premium+ account, or add an xAI key in Voice settings under API key instead. The sign-in and the key stay on your Hermes server."))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

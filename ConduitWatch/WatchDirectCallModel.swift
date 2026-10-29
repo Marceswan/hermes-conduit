@@ -33,6 +33,12 @@
 //  (WatchGrokBridgeSocket) instead of a token. xAI has no resumption: a
 //  dropped connection is a new session, told the conversation so far.
 //
+//  A Local Live call runs the iPhone's LocalLiveSession through the same
+//  bridge: the host relays it to the user's own speech server and answers
+//  the server's turns in a Hermes chat, as the iPhone's Local Live call
+//  does. Hermes keeps that chat, so a fresh connection carries on in it and
+//  is told nothing; the call has no tools of its own.
+//
 //  Logs what a support question needs: each step of the start, each
 //  reply's time from the end of the user's speech to audible speech,
 //  reconnects and GoAway handoffs, unanswered turns, tool calls, data both
@@ -147,10 +153,16 @@ final class WatchDirectCallModel: ObservableObject {
     static let jobNewsRetry: TimeInterval = 2
 
     /// Who the Watch talks to: Gemini Live straight from the Watch, or
-    /// Grok on the Hermes host through the call grant's audio bridge.
+    /// Grok or Local Live on the Hermes host through the call grant's
+    /// audio bridge.
     enum Engine: Equatable {
         case gemini
         case grok
+        case localLive
+
+        /// Through the call grant's audio bridge, which the relay carries:
+        /// no token, and nothing the iPhone has to serve once it started.
+        var usesBridge: Bool { self != .gemini }
     }
 
     @Published private(set) var phase: Phase = .idle
@@ -178,6 +190,12 @@ final class WatchDirectCallModel: ObservableObject {
     private var linkGaveUp = false
     /// Grok's bridge streams opened on the call's grant, which takes 32.
     private var grokStreams = 0
+    /// Local Live: the Hermes chat the host runs the call's turns in, which
+    /// a fresh connection carries on in.
+    private var localLiveChatID: String?
+    /// Local Live's greeting was said: a rejoin's fresh session doesn't
+    /// say it again.
+    private var localLiveGreeted = false
     private var tokens: WatchDirectTokens?
     private var openingPrompt: String?
     /// The profile's spoken end phrases: the user saying one ends the
@@ -382,8 +400,16 @@ final class WatchDirectCallModel: ObservableObject {
     private var jobsCarried = 0
     /// Running jobs per grant, as its last news said.
     private var relayRunning: [String: Int] = [:]
-    /// Approval requests on screen, oldest first.
+    /// Approval requests on screen, oldest first (a Local Live call's own
+    /// request before any job's).
     private var approvals: [WatchJobAnswer.Approval] = []
+    /// The stream the Local Live call's approval request came on, which
+    /// takes its answer.
+    private weak var callApprovalSocket: WatchGrokBridgeSocket?
+    /// The call's own requests on the card, and those the host settled.
+    private var callApprovals = WatchCallApprovals()
+    /// The stream the card's request came on (WatchCallApprovals.stream).
+    private var callApprovalStream = 0
     private var newsInFlight = false
     private var nextNewsAt: TimeInterval = 0
     /// Jobs this call started through the relay, for the user's cap.
@@ -608,9 +634,22 @@ final class WatchDirectCallModel: ObservableObject {
     // MARK: Session from the iPhone
 
     static func startRequest(engine: Engine, callID: UInt32, ring: String?) -> WatchVoiceWire.Message {
-        engine == .grok
-            ? .grokStart(callID: callID, version: WatchVoiceWire.version, ring: ring)
-            : .directStart(callID: callID, version: WatchVoiceWire.version, ring: ring)
+        switch engine {
+        case .gemini: return .directStart(callID: callID, version: WatchVoiceWire.version, ring: ring)
+        case .grok: return .grokStart(callID: callID, version: WatchVoiceWire.version, ring: ring)
+        // Calls from Hermes don't ring a Watch on Local Live.
+        case .localLive: return .localLiveStart(callID: callID, version: WatchVoiceWire.version)
+        }
+    }
+
+    /// The engine a saved call names (VoiceCallEngine.watchBridge); nil
+    /// for Gemini, as before the bridge.
+    static func transcriptEngine(_ engine: Engine) -> String? {
+        switch engine {
+        case .gemini: return nil
+        case .grok: return WatchAudioBridgeWire.grok
+        case .localLive: return WatchAudioBridgeWire.localLive
+        }
     }
 
     private func requestSession() {
@@ -652,6 +691,8 @@ final class WatchDirectCallModel: ObservableObject {
             begin(session)
         case .grokSession(_, let session)? where engine == .grok:
             begin(session)
+        case .localLiveSession(_, let call)? where engine == .localLive:
+            begin(call)
         case .callRefused(_, let reason)?:
             WatchCallLog.shared.note("directRefused", ["reason": reason])
             finish(reason)
@@ -802,6 +843,90 @@ final class WatchDirectCallModel: ObservableObject {
             "opening": grok.openingPrompt != nil,
             "engines": audioBridge.engines,
             "relayTools": relay.tools.sorted(),
+            "grantExpiresInS": relay.expiresAt.map { Int($0.timeIntervalSinceNow) } as Any,
+        ])
+        phase = .connecting
+        connectStartedAt = now
+        session.start()
+    }
+
+    /// A Local Live call: the iPhone's LocalLiveSession, through the grant's
+    /// audio bridge to the host, which relays it to the user's speech
+    /// server and runs the server's turns in a Hermes chat. Only the
+    /// readiness check's ask reaches the Watch, answered with the greeting.
+    private func begin(_ call: WatchVoiceWire.LocalLiveCall) {
+        sessionAt = now
+        guard let audioBridge = call.grant.audio,
+              let url = URL(string: audioBridge.url), url.scheme == "wss",
+              let root = WatchToolSeal.data(base64URL: call.grant.key), root.count == 32,
+              let relay = WatchToolRelayClient(call.grant) else {
+            finish(String(localized: "The iPhone's session couldn't be read. Update Conduit on both devices."))
+            return
+        }
+        guard audioBridge.version == Int(WatchAudioBridgeWire.version) else {
+            finish(String(localized: "Update the Hermes notifier plugin and Conduit to matching versions."))
+            return
+        }
+        endPhrases = call.endPhrases ?? []
+        let bridge = WatchGrokBridge(
+            url: url, grantID: call.grant.grantID, root: root, watchKey: call.grant.watchKey, voice: nil,
+            engine: WatchAudioBridgeWire.localLive,
+            resumeSessionID: { [weak self] in self?.localLiveChatID },
+            takesApprovals: true
+        )
+        let session = LocalLiveSession(
+            client: WatchGrokConnection(url: url),
+            openSocket: { [weak self] _ in
+                // A stream id is taken once per grant, and a grant takes 32.
+                let stream: WatchAudioBridgeStream?
+                var number = 0
+                if let self, self.grokStreams < 30 {
+                    self.grokStreams += 1
+                    number = self.grokStreams
+                    stream = WatchAudioBridgeStream(grantID: bridge.grantID, root: bridge.root)
+                } else {
+                    stream = nil
+                }
+                let socket = WatchGrokBridgeSocket(bridge: bridge, stream: stream)
+                socket.onNote = { [weak self] kind, fields in self?.socketEvent(.grokBridge, number: number, kind: kind, fields) }
+                socket.onStarted = { [weak self] info in
+                    if let chat = info.sessionID { self?.localLiveChatID = chat }
+                }
+                // A request shown on the last stream may have been settled
+                // since (answered in the chat, timed out): the host shows
+                // the new stream whatever is still pending, and the last
+                // stream's frames no longer count.
+                let approvalStream = self?.beginCallApprovals() ?? 0
+                socket.onApproval = { [weak self, weak socket] frame in
+                    guard let self, let socket else { return }
+                    self.callApproval(frame, from: socket, stream: approvalStream)
+                }
+                return socket
+            }
+        )
+        // Said once a call, as the iPhone's: the readiness check's answer.
+        let greeting = call.greeting
+        session.greeting = { [weak self] in
+            guard let self, !self.localLiveGreeted else { return nil }
+            self.localLiveGreeted = true
+            return greeting
+        }
+        // The host answers every other turn itself; one that reaches the
+        // Watch anyway gets an empty answer, so the server isn't left waiting.
+        session.onTurn = { [weak session] turnID, _ in session?.sendTurnDone(turnID) }
+        session.onEvent = { [weak self] in self?.handle($0) }
+        session.onStateChange = { [weak self] in self?.sessionStateChanged($0) }
+        session.onConnectionReplaced = { [weak self] in self?.connectionReplaced() }
+        self.session = session
+        // The bridge belongs to the grant, so the call keeps it: no renewal.
+        hadToolGrant = true
+        toolRelay = relay
+        WatchCallLog.shared.note("directSession", [
+            "engine": "localLive",
+            "afterTapMs": Int((now - callStartedAt) * 1000),
+            "requests": sessionRequests,
+            "greeting": greeting != nil,
+            "engines": audioBridge.engines,
             "grantExpiresInS": relay.expiresAt.map { Int($0.timeIntervalSinceNow) } as Any,
         ])
         phase = .connecting
@@ -991,8 +1116,8 @@ final class WatchDirectCallModel: ObservableObject {
         case .failed(let message):
             WatchCallLog.shared.note("directFailed", ["message": message, "screen": "\(scenePhase)", "rejoins": rejoins])
             // Once the call has been live, a fresh session carries it on;
-            // not for Grok once its grant is over, which its bridge was.
-            let grantOver = engine == .grok && (toolRelay.map { $0.isGone || $0.expires(within: Self.grantEndMargin) } ?? true)
+            // not on the bridge once its grant is over, which its bridge was.
+            let grantOver = engine.usesBridge && (toolRelay.map { $0.isGone || $0.expires(within: Self.grantEndMargin) } ?? true)
             if firstReadyAt != nil, endRequestedAt == nil, rejoins < Self.maxRejoins, !grantOver {
                 waitToRejoin(message)
             } else {
@@ -1044,8 +1169,8 @@ final class WatchDirectCallModel: ObservableObject {
             "relayToken": relayToken,
             "screen": "\(scenePhase)",
         ])
-        // Grok's bridge goes through the relay: it never needs the iPhone.
-        if link.isReachable || relayToken || engine == .grok {
+        // The bridge goes through the relay: it never needs the iPhone.
+        if link.isReachable || relayToken || engine.usesBridge {
             rejoin()
         } else {
             // The chime tells the user the call went, so the new session
@@ -1073,9 +1198,12 @@ final class WatchDirectCallModel: ObservableObject {
             "screen": "\(scenePhase)",
         ])
         session.stop()
-        let reason = engine == .grok
-            ? String(localized: "Grok didn't come back after the connection broke.")
-            : String(localized: "Gemini didn't come back after the connection broke.")
+        let reason: String
+        switch engine {
+        case .gemini: reason = String(localized: "Gemini didn't come back after the connection broke.")
+        case .grok: reason = String(localized: "Grok didn't come back after the connection broke.")
+        case .localLive: reason = String(localized: "Local Live didn't come back after the connection broke.")
+        }
         if endRequestedAt == nil, rejoins < Self.maxRejoins {
             waitToRejoin(reason)
         } else {
@@ -1092,7 +1220,7 @@ final class WatchDirectCallModel: ObservableObject {
             finish(WatchCallEnd.goodbye)
             return
         }
-        if link.isReachable || engine == .grok {
+        if link.isReachable || engine.usesBridge {
             rejoin()
         } else if now - since >= Self.rejoinWait {
             finish(rejoinReason)
@@ -1126,7 +1254,12 @@ final class WatchDirectCallModel: ObservableObject {
     /// conversation so far, and says it's back (or, after a freeze, just
     /// answers).
     private func sendRejoinContext() {
-        guard let session else { return }
+        // Local Live's turns run in a Hermes chat, which the fresh
+        // connection carries on in: a recap would be a turn of its own.
+        guard let session, engine != .localLive else {
+            pendingSamples = []
+            return
+        }
         // Whatever the microphone kept while the call was down would
         // talk over that.
         pendingSamples = []
@@ -1505,7 +1638,12 @@ final class WatchDirectCallModel: ObservableObject {
         // Sampled as the call arrives: the link can drop later for other
         // reasons, with the wrist still up.
         let wristDown = scenePhase != .active
-        let wire = WatchVoiceWire.DirectToolCall(id: call.id, name: call.name, arguments: call.arguments)
+        var wire = WatchVoiceWire.DirectToolCall(id: call.id, name: call.name, arguments: call.arguments)
+        // The words a change on the iPhone checks for the user's own yes.
+        if let line = exchangeUserLine, transcript.indices.contains(line), transcript[line].role == .user {
+            wire.userWords = transcript[line].text
+            wire.userTurn = line
+        }
         if call.name == WatchJobAnswer.jobNews {
             // The Watch app's own call, never the model's.
             answer(.toolResponse(id: call.id, name: call.name, result: ["error": "unknown function"], scheduling: GeminiLiveProtocol.Scheduling.whenIdle.rawValue, fallback: nil), generation: generation)
@@ -2047,6 +2185,10 @@ final class WatchDirectCallModel: ObservableObject {
     func answerApproval(_ approval: WatchJobAnswer.Approval, approve: Bool) {
         // Only the card the user read; a late tap never answers the next one.
         guard pendingApproval == approval else { return }
+        if approval.isCallRequest {
+            answerCallApproval(approval, approve: approve)
+            return
+        }
         let choice = approve ? WatchJobAnswer.approve : WatchJobAnswer.deny
         resolveApproval(approval, choice: choice, byVoice: false) { [weak self] result in
             guard let self, result["error"] == nil, result["status"] != "failed" else { return }
@@ -2054,6 +2196,78 @@ final class WatchDirectCallModel: ObservableObject {
             let what = approve ? "approved" : "denied"
             self.quietQueue.append(.contextWhenIdle("[On their Watch, the user \(what) the command background job \"\(approval.title)\" asked to run.]"))
             self.flushQuietQueue()
+        }
+    }
+
+    // MARK: Local Live approvals
+
+    /// Hermes' approval request in a Local Live call, which the host runs
+    /// in its chat: shown before any job's (the call waits on it), and
+    /// answered on the call's stream. The host shows one at a time, its
+    /// oldest, and takes it away once it's answered, withdrawn or timed out.
+    private func callApproval(_ frame: WatchAudioBridgeWire.ApprovalFrame, from socket: WatchGrokBridgeSocket, stream: Int) {
+        guard stream == callApprovals.stream else {
+            WatchCallLog.shared.note("directCallApproval", ["kind": "staleStream"])
+            return
+        }
+        if case .show = frame {
+            callApprovalSocket = socket
+            callApprovalStream = stream
+        }
+        if callApprovals.apply(frame, from: stream, to: &approvals) {
+            approvalsShown += 1
+            WKInterfaceDevice.current().play(.notification)
+        }
+        pendingApproval = approvals.first
+        let kind: String
+        switch frame {
+        case .show: kind = "show"
+        case .gone: kind = "gone"
+        case .done(_, let resolved): kind = resolved ? "resolved" : "unresolved"
+        }
+        WatchCallLog.shared.note("directCallApproval", [
+            "kind": kind,
+            "approvalsOnScreen": approvals.count,
+            "screen": "\(scenePhase)",
+        ])
+    }
+
+    private func beginCallApprovals() -> Int {
+        callApprovalSocket = nil
+        let stream = callApprovals.begin(&approvals)
+        pendingApproval = approvals.first
+        return stream
+    }
+
+    /// The card leaves the screen at once; the host shows it again if
+    /// Hermes didn't take the answer.
+    private func answerCallApproval(_ approval: WatchJobAnswer.Approval, approve: Bool) {
+        approvals.removeAll { $0 == approval }
+        pendingApproval = approvals.first
+        guard let socket = callApprovalSocket else {
+            WatchCallLog.shared.note("directCallApproval", ["kind": "unsent"])
+            return
+        }
+        let id = approval.requestID
+        let tappedIn = callID
+        let stream = callApprovalStream
+        Task { @MainActor [weak self, weak socket] in
+            guard let socket else { return }
+            do {
+                try await socket.sendApprovalAnswer(id: id, approve: approve && approval.canApproveOnce)
+                // This call's summary, not a next call's.
+                if let self, self.callID == tappedIn { self.approvalsTapped += 1 }
+            } catch {
+                WatchCallLog.shared.note("directCallApproval", ["kind": "unsent"])
+                // The answer never left: the card comes back for another
+                // try, unless the stream changed (the host shows the new one
+                // what is still pending), the host settled the request
+                // meanwhile, or another request took its place.
+                guard let self, self.callApprovalSocket === socket,
+                      self.callApprovals.restore(approval, from: stream, to: &self.approvals) else { return }
+                self.pendingApproval = self.approvals.first
+                WKInterfaceDevice.current().play(.notification)
+            }
         }
     }
 
@@ -2251,7 +2465,7 @@ final class WatchDirectCallModel: ObservableObject {
     /// soon or ended early (a host restart, a spent budget). The old one is
     /// closed once nothing waits on it.
     private func renewGrantIfDue() {
-        guard hadToolGrant, engine != .grok, endRequestedAt == nil, !grantRequestInFlight, link.isReachable,
+        guard hadToolGrant, !engine.usesBridge, endRequestedAt == nil, !grantRequestInFlight, link.isReachable,
               grantRequests < Self.maxGrantRequests,
               now - lastGrantRequestAt >= Self.grantRequestInterval else { return }
         if let relay = toolRelay, !relay.isGone, relay.callsLeft > Self.grantRenewCallHeadroom,
@@ -2364,7 +2578,9 @@ final class WatchDirectCallModel: ObservableObject {
     /// owed (round 7: the user's words transcribed, then 40 s of silence on
     /// an open socket). Prompted once for that turn, with their words.
     private func promptIfStalled() {
-        guard stallPromptedAt == nil, endRequestedAt == nil, phase == .listening,
+        // Local Live: the prompt would be a Hermes turn, and Hermes may
+        // take a while over one (tools, a long reply).
+        guard engine != .localLive, stallPromptedAt == nil, endRequestedAt == nil, phase == .listening,
               let session, session.isReady,
               !modelTurnActive, !audio.isPlaying, toolsInFlight.isEmpty,
               WatchStall.isDue(owedSince: replyOwedSince, lastHeardAt: lastUserSpeechAt, now: now) else { return }
@@ -2427,6 +2643,7 @@ final class WatchDirectCallModel: ObservableObject {
         let reason = engine == .grok
             ? String(localized: "Grok stopped answering.")
             : String(localized: "Gemini stopped answering.")
+        // Never Local Live's: it isn't prompted (promptIfStalled).
         if rejoins < Self.maxRejoins {
             waitToRejoin(reason, cause: .froze)
         } else {
@@ -2844,16 +3061,18 @@ final class WatchDirectCallModel: ObservableObject {
     /// no turn is coming (the transcript arrived after the reply, or the
     /// model didn't answer), once the words went quiet with the model not
     /// mid-turn. A quiet utterance must end like a sentence: a pause
-    /// mid-sentence ("By" of "By the way…") never ends the call.
+    /// mid-sentence ("By" of "By the way…") never ends the call. Grok's
+    /// transcripts are whole utterances already, punctuated or not.
+    /// Asking to hang up ("end call") ends it too.
     private func endIfUserSaidGoodbye(finished: Bool) {
         guard isActive, endRequestedAt == nil, !endPhrases.isEmpty, let line = exchangeUserLine,
               transcript.indices.contains(line) else { return }
         let text = transcript[line].text
         if !finished {
             guard !modelTurnActive, let heard = lastUserSpeechAt, now - heard >= Self.quietGoodbyeDelay,
-                  Self.endsAnUtterance(text) else { return }
+                  session?.transcribesWholeUtterances == true || Self.endsAnUtterance(text) else { return }
         }
-        guard VoiceSpokenCommands.matchesSpokenCommand(text, phrases: endPhrases) else { return }
+        guard VoiceSpokenCommands.asksToEndCall(text, endPhrases: endPhrases) else { return }
         exchangeUserLine = nil
         WatchCallLog.shared.note("directGoodbyeHeard", ["afterTurn": finished])
         requestEnd()
@@ -2882,6 +3101,8 @@ final class WatchDirectCallModel: ObservableObject {
 
     private func reset() {
         grokStreams = 0
+        localLiveChatID = nil
+        localLiveGreeted = false
         ring = nil
         answer = nil
         handoff?.cancel()
@@ -3033,6 +3254,9 @@ final class WatchDirectCallModel: ObservableObject {
         relayRunning = [:]
         relayJobsRunning = 0
         approvals = []
+        callApprovalSocket = nil
+        // A stream number of its own: a closed call's late frames never match.
+        _ = callApprovals.begin(&approvals)
         pendingApproval = nil
         newsInFlight = false
         nextNewsAt = 0
@@ -3091,6 +3315,9 @@ final class WatchDirectCallModel: ObservableObject {
         jobsGrant = nil
         jobsMovedTo = [:]
         approvals = []
+        callApprovalSocket = nil
+        // A stream number of its own: a closed call's late frames never match.
+        _ = callApprovals.begin(&approvals)
         pendingApproval = nil
         stopPathMonitor()
         // A restart still waiting on its activation is over too.
@@ -3129,7 +3356,7 @@ final class WatchDirectCallModel: ObservableObject {
             startedAt: callStartedDate,
             endedAt: Date(),
             turns: saved,
-            engine: engine == .grok ? WatchAudioBridgeWire.grok : nil,
+            engine: Self.transcriptEngine(engine),
             jobs: jobLog.jobs.isEmpty ? nil : jobLog.jobs
         )))
         if !queued {

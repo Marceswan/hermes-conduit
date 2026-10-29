@@ -11,6 +11,8 @@ enum MacSessionTabMetrics {
 struct MacSessionTabStrip: View {
     @EnvironmentObject private var appState: AppState
     @ObservedObject var store: MacSessionTabsStore
+    @ObservedObject private var windows = MacSessionWindowRegistry.shared
+    @Environment(\.openWindow) private var openWindow
     /// The toolbar room around the strip; the principal slot sizes the item to its ideal width.
     @State private var slotWidth: CGFloat = MacSessionTabMetrics.minWidth
     let onRename: (SessionSummary) -> Void
@@ -38,7 +40,9 @@ struct MacSessionTabStrip: View {
                             onSelect: { store.select(tab.id) },
                             onClose: { store.close(tab.id) },
                             onRename: onRename,
-                            onDelete: onDelete
+                            onDelete: onDelete,
+                            onPopOut: { popOut(tab.id) },
+                            canPopOut: Self.popOutEnabled(tab: tab, catalog: appState.sessions, windowsFull: windows.isFull)
                         )
                         .id(tab.id)
                     }
@@ -56,6 +60,18 @@ struct MacSessionTabStrip: View {
                idealWidth: max(MacSessionTabMetrics.minWidth, slotWidth), maxWidth: .infinity)
         .frame(height: MacSessionTabMetrics.height)
         .background(MacToolbarSlotReader { slotWidth = $0 })
+    }
+
+    /// The context menu's "Open in New Window". A Bot Chat (or any session the workspace catalog does
+    /// not list) cannot resume in a window, an unavailable tab has nothing to open, and the cap is 4.
+    static func popOutEnabled(tab: MacSessionTab, catalog: [SessionSummary], windowsFull: Bool) -> Bool {
+        !windowsFull && !tab.unavailable && MacSessionWindows.canPopOut(tab.id, catalog: catalog)
+    }
+
+    private func popOut(_ id: String) {
+        store.popOut(id) { sessionID in
+            MacSessionWindows.open(sessionID, appState: appState) { openWindow(value: $0) }
+        }
     }
 
     private func scroll(_ proxy: ScrollViewProxy, animated: Bool) {
@@ -77,6 +93,8 @@ private struct MacSessionTabButton: View {
     let onClose: () -> Void
     let onRename: (SessionSummary) -> Void
     let onDelete: (SessionSummary) -> Void
+    let onPopOut: () -> Void
+    let canPopOut: Bool
     @State private var hovering = false
     @Environment(\.colorScheme) private var colorScheme
 
@@ -127,6 +145,8 @@ private struct MacSessionTabButton: View {
             if let session {
                 SessionActionMenuItems(session: session, onRename: { onRename(session) }, onDelete: { onDelete(session) })
             }
+            Button(AppLocalization.string("Open in New Window"), action: onPopOut)
+                .disabled(!canPopOut)
             Button(AppLocalization.string("Close Tab"), action: onClose)
         }
         .accessibilityElement(children: .combine)
@@ -149,7 +169,10 @@ private struct MacSessionTabButton: View {
     }
 }
 
-/// Working and needs-input dot; it pulses unless Reduce Motion is on.
+/// Working and needs-input dot; it pulses unless Reduce Motion is on. The
+/// repeat is scoped to the opacity: started with `withAnimation`, it also took
+/// the toolbar's layout change in the same update, and the whole tab row swung
+/// up and left and back with every pulse.
 private struct MacSessionTabBusyDot: View {
     let filter: SessionStatusFilter
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -159,11 +182,8 @@ private struct MacSessionTabBusyDot: View {
         Circle()
             .fill(filter.color)
             .frame(width: 6, height: 6)
-            .opacity(dim ? 0.35 : 1)
-            .onAppear {
-                guard !reduceMotion else { return }
-                withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { dim = true }
-            }
+            .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { $0.opacity(dim ? 0.35 : 1) }
+            .onAppear { dim = !reduceMotion }
             .accessibilityLabel(filter.title)
     }
 }

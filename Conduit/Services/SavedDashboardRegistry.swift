@@ -27,6 +27,30 @@ struct SavedDashboard: Codable, Equatable, Identifiable {
     let id: UUID
     var label: String
     var normalizedURL: String
+    /// The username that last signed in here, kept through Sign Out so the
+    /// next sign-in starts filled in. Registries saved before it decode
+    /// without one.
+    var username: String?
+    /// An address edited in Settings, saved for this dashboard's next
+    /// reconnect: the same dashboard (its chats, profiles, appearance) moves
+    /// there when it next signs in, never under the session in use.
+    /// Registries saved before it decode without one.
+    var pendingURL: String?
+}
+
+/// What a saved dashboard can sign in with, without typing anything.
+enum SavedSignInKind: Equatable {
+    /// A saved password behind Face ID or Touch ID.
+    case biometric
+    /// A saved password.
+    case password
+    /// A saved session from a browser or single sign-on login.
+    case session
+    /// Nothing saved: the dashboard needs a sign-in. (Not `none`, which
+    /// reads as an Optional's.)
+    case signInNeeded
+
+    var canSignInWithoutTyping: Bool { self != .signInNeeded }
 }
 
 /// The persisted multi-dashboard registry. `schemaVersion` guards future
@@ -61,6 +85,12 @@ struct SavedDashboardRegistry: Codable, Equatable {
     /// so two saved entries can never resolve to one server.
     func dashboard(atNormalizedURL url: String) -> SavedDashboard? {
         dashboards.first { $0.normalizedURL == url }
+    }
+
+    /// The saved dashboard reached at this address, or moving there at its
+    /// next reconnect.
+    func dashboard(claiming url: String) -> SavedDashboard? {
+        dashboard(atNormalizedURL: url) ?? dashboards.first { $0.pendingURL == url }
     }
 
     /// The ID a connection to this address belongs to: the saved dashboard's

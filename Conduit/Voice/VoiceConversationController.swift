@@ -48,6 +48,10 @@ final class VoiceConversationController: ObservableObject {
     /// paused"), this one is Conduit protecting the barge-in detector from
     /// the assistant's own TTS and must never read as a user-selected pause.
     @Published private(set) var isPlaybackCaptureSuspended = false
+    /// The conversation failed because another app took the audio (a phone
+    /// call, Siri): CarPlay listens again once it gives the audio back.
+    /// Cleared by the next listening window.
+    private(set) var failedForAudioInterruption = false
     @Published private(set) var conversationTranscript: [VoiceConversationTranscriptEntry] = []
     /// Set by `suspendRuntimeForLifecycle()` until the runtime is explicitly
     /// re-armed by a fresh listen or torn down by `stop()`. Suspended runtime
@@ -172,6 +176,8 @@ final class VoiceConversationController: ObservableObject {
     /// This profile has no live speech-to-text (stt.streaming off, an old
     /// Hermes): stop asking until the conversation ends or the gateway changes.
     private var liveTranscriptionUnavailable = false
+    /// Why the user's speech server failed this utterance, for the error.
+    private var speechServerFailure: String?
     private var bargeInTask: Task<Void, Never>?
     private var speechDrainTask: Task<Void, Never>?
     private var speechDrainRevision: UInt64 = 0
@@ -374,6 +380,7 @@ final class VoiceConversationController: ObservableObject {
     }
 
     func startListening(includePreRoll: Bool = false) async {
+        failedForAudioInterruption = false
         let widgetAuthorization = initialWidgetCaptureAuthorization
         initialWidgetCaptureAuthorization = nil
         guard isForegroundActive else { return }
@@ -419,9 +426,15 @@ final class VoiceConversationController: ObservableObject {
             // iOS can still refuse the microphone in the background (a route
             // change or another app took it while locked); its raw avfaudio
             // error means nothing on the lock screen or after unlocking.
+            #if os(macOS) // MAC: the Mac names itself and clicks (Task 9b)
+            state = .failed(isBackgroundListeningRequested
+                ? AppLocalization.string("Mac.VoiceConversation.ListeningStoppedLocked")
+                : UserFacingError.message(for: error))
+            #else // MAC:
             state = .failed(isBackgroundListeningRequested
                 ? AppLocalization.string("Listening stopped while your phone was locked. Tap Listen to continue.")
                 : UserFacingError.message(for: error))
+            #endif // MAC:
         }
     }
 
@@ -496,6 +509,12 @@ final class VoiceConversationController: ObservableObject {
     /// may contain the assistant's own TTS.
     func interruptAssistantPlayback() async {
         guard isPlaybackCaptureSuspended else { return }
+        await stopAssistantReplyAndListen()
+    }
+
+    private func stopAssistantReplyAndListen() async {
+        bargeInTask?.cancel()
+        bargeInTask = nil
         cachedRoutePolicy = nil
         // Deliberately leaves lastBargeInState alone: that property records
         // acoustic barge-in provenance, and this path always lands in
@@ -506,6 +525,7 @@ final class VoiceConversationController: ObservableObject {
         cancelSpeechDrainAndStream()
         clearSpeechQueue()
         assistantFinished = false
+        let turnStillRunning = isAwaitingVoiceAssistant
         // The in-flight assistant response is intentionally interrupted; its
         // terminal event belongs to the retired turn, not the next one.
         isAwaitingVoiceAssistant = false
@@ -517,7 +537,7 @@ final class VoiceConversationController: ObservableObject {
         // Manual Interrupt proceeds on the attempt regardless of the
         // cancellation result: the local turn retirement below already
         // re-opened the listening window.
-        _ = await interrupt()
+        if turnStillRunning { _ = await interrupt() }
         // The interruption is a real re-entrant async boundary (Hermes
         // cancellation/recovery), and the sheet can close while it is in
         // flight — stop() then advances the generation and tears the session
@@ -527,7 +547,21 @@ final class VoiceConversationController: ObservableObject {
         await startListening()
     }
 
+    /// Stop (the CarPlay voice screen): Hermes' spoken reply stops and the
+    /// conversation listens, on any route. Where the microphone is closed
+    /// while Hermes speaks this is the sheet's Interrupt; where it is open
+    /// (talking over is allowed) it is what talking over does. A Stop in the
+    /// silent gap between spoken sentences (still `.speaking`) retires the
+    /// in-flight turn the same way. A Settings speech-provider test also
+    /// reads as `.speaking`, but it is no conversation to stop or reopen.
+    func stopAssistantReply() async {
+        guard !isProviderTestRunning,
+              isPlaybackCaptureSuspended || state == .speaking else { return }
+        await stopAssistantReplyAndListen()
+    }
+
     func stop() {
+        failedForAudioInterruption = false
         releaseRuntimeResources()
         liveTranscriptionUnavailable = false
         isMicrophonePaused = false
@@ -1212,6 +1246,33 @@ final class VoiceConversationController: ObservableObject {
         case .appleOnDevice:
             live?.cancel()
             return try await deviceTranscriber.transcribe(audio)
+        case .speechServer:
+            // No upload fallback: the user chose their own server so their
+            // voice stays off other services. A session that wasn't open
+            // yet (a short utterance) gets the whole recording now.
+            var session = live
+            if session == nil, let serverGateway = gateway as? SpeechServerTranscriptionGateway {
+                speechServerFailure = nil
+                session = await serverGateway.openSpeechServerTranscription(
+                    sampleRate: audio.sampleRate,
+                    onPartial: { _ in },
+                    onFailure: { [weak self] reason in self?.speechServerFailure = reason }
+                )
+                session?.push(audio.pcm16Data)
+            }
+            guard let server = session else {
+                throw VoiceSpeechServerError.message(speechServerFailure
+                    ?? AppLocalization.string("Could not reach your speech server through Hermes."))
+            }
+            finishingLiveTranscription = server
+            let text = await server.finish()
+            if finishingLiveTranscription === server { finishingLiveTranscription = nil }
+            try Task.checkCancellation()
+            if let text { return text }
+            // A failure is shown; an utterance with no words (a noise the
+            // server's detector skipped) just keeps listening.
+            if let speechServerFailure { throw VoiceSpeechServerError.message(speechServerFailure) }
+            return ""
         }
     }
 
@@ -1238,20 +1299,40 @@ final class VoiceConversationController: ObservableObject {
     /// a silent window never opens a socket. Hermes transcription only.
     private func openLiveTranscriptionIfNeeded() {
         guard liveTranscriptionAttemptedWindow != liveTranscriptionWindow,
-              !liveTranscriptionUnavailable, !isProviderTestRunning,
-              preferences.resolvedTranscriptionMode == .hermes,
-              let liveGateway = gateway as? VoiceLiveTranscriptionGateway else { return }
+              !isProviderTestRunning else { return }
+        let mode = preferences.resolvedTranscriptionMode
+        let opener: (@MainActor (@escaping @MainActor (String) -> Void) async -> VoiceLiveTranscription?)
+        switch mode {
+        case .hermes:
+            guard !liveTranscriptionUnavailable,
+                  let liveGateway = gateway as? VoiceLiveTranscriptionGateway else { return }
+            opener = { [weak self] onPartial in
+                await liveGateway.openLiveTranscription(
+                    sampleRate: VoiceAudioSessionConfiguration.capture.outputSampleRate,
+                    onPartial: onPartial,
+                    onUnavailable: { [weak self] in self?.liveTranscriptionUnavailable = true }
+                )
+            }
+        case .speechServer:
+            guard let serverGateway = gateway as? SpeechServerTranscriptionGateway else { return }
+            speechServerFailure = nil
+            opener = { [weak self] onPartial in
+                await serverGateway.openSpeechServerTranscription(
+                    sampleRate: VoiceAudioSessionConfiguration.capture.outputSampleRate,
+                    onPartial: onPartial,
+                    onFailure: { [weak self] reason in self?.speechServerFailure = reason }
+                )
+            }
+        case .appleOnDevice:
+            return
+        }
         let window = liveTranscriptionWindow
         liveTranscriptionAttemptedWindow = window
         liveTranscriptionOpening = Task { [weak self] in
-            let session = await liveGateway.openLiveTranscription(
-                sampleRate: VoiceAudioSessionConfiguration.capture.outputSampleRate,
-                onPartial: { [weak self] text in
-                    guard let self, self.liveTranscriptionWindow == window else { return }
-                    self.liveTranscript = text
-                },
-                onUnavailable: { [weak self] in self?.liveTranscriptionUnavailable = true }
-            )
+            let session = await opener { [weak self] text in
+                guard let self, self.liveTranscriptionWindow == window else { return }
+                self.liveTranscript = text
+            }
             guard let self, !Task.isCancelled, self.liveTranscriptionWindow == window else {
                 session?.cancel()
                 return
@@ -1412,6 +1493,7 @@ final class VoiceConversationController: ObservableObject {
         // Terminal path: release session-ownership bookkeeping so audio-
         // adjacent side features (response haptics) do not stand down
         // forever after an interruption.
+        failedForAudioInterruption = true
         state = .failed(AppLocalization.string("Audio was interrupted."))
     }
 

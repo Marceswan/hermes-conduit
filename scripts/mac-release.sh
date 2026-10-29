@@ -35,10 +35,14 @@ APP="$EXPORT/Conduit.app"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist")"
 DMG="$OUT/Conduit-$VERSION.dmg"
 
+# D25: the exported app must embed and sign the widget extension before notarization is spent on it.
+scripts/mac-verify-bundle.sh --app "$APP" --require-timestamp
+
 echo "::progress::4/7 Notarizing app" >&2
 ditto -c -k --keepParent "$APP" "$OUT/Conduit.zip"
 xcrun notarytool submit "$OUT/Conduit.zip" --keychain-profile "$CONDUIT_NOTARY_PROFILE" --wait 2>&1 | tee "$OUT/notarize-app.log"
 xcrun stapler staple "$APP"
+spctl --assess --type execute -vv "$APP"
 
 echo "::progress::5/7 Rendering DMG background" >&2
 DMG_ASSETS="$OUT/dmg-assets"

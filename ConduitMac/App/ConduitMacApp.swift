@@ -34,6 +34,25 @@ enum MacOpenURLPolicy {
     }
 }
 
+extension View {
+    /// The one link policy of every Conduit scene (R11): in-app links route to the
+    /// app, everything else passes the scheme allowlist. A scene without it would
+    /// hand gateway-controlled markdown links to SwiftUI's default action.
+    @MainActor
+    func macLinkPolicy(routeWidgetLaunch: @escaping (URL) -> Bool,
+                       openAppLink: @escaping @MainActor (ConduitAppLink) -> Void) -> some View {
+        environment(\.openURL, OpenURLAction { url in
+            MacOpenURLPolicy.decision(for: url, routeWidgetLaunch: routeWidgetLaunch, openAppLink: openAppLink).result
+        })
+    }
+
+    @MainActor
+    func macLinkPolicy(appState: AppState) -> some View {
+        macLinkPolicy(routeWidgetLaunch: { appState.routeWidgetLaunchURL($0) },
+                      openAppLink: { appState.openAppLink($0) })
+    }
+}
+
 @main
 struct ConduitMacApp: App {
     @NSApplicationDelegateAdaptor(ConduitMacAppDelegate.self) private var appDelegate
@@ -45,39 +64,65 @@ struct ConduitMacApp: App {
     @State private var pendingExternalLink: ConduitAppLink?
 
     init() {
+        #if DEBUG
+        MacXCTestKeychain.isolateIfRunningUnderXCTest()
+        #endif
         MacDefaults.register()
-        if !MacDefaults.isRunningUnderXCTest { SheetEscape.install() }
+        if !MacDefaults.isRunningUnderXCTest {
+            SheetEscape.install()
+            SheetCloseButton.install()
+            MacUIZoom.installKeyMonitor()
+        }
     }
 
     var body: some Scene {
         WindowGroup("Conduit", id: "conduit-primary") {
             rootContent
-                .frame(minWidth: MacSidebarState.windowMinWidth, minHeight: 560)
+                .frame(minWidth: MacSidebarState.windowMinWidth, minHeight: MacSidebarState.windowMinHeight)
+                .modifier(MacRegisterPrimaryWindowOpener())
         }
         .defaultSize(width: 1180, height: 780)
-        .commands { ConduitCommands(appState: appState, tabs: .shared, updater: .shared) }
+        .commands { ConduitCommands(appState: appState, tabs: .shared, notch: .shared, palette: .shared, updater: .shared, quickAsk: .shared) }
+        // A popped-out session (D21). Not `.commands`: the menu bar is the main scene's.
+        WindowGroup("Conduit Chat", id: MacSessionWindows.sceneID, for: MacSessionWindowToken.self) { $token in
+            MacSessionWindowScene(token: token)
+        }
+        .defaultSize(width: 640, height: 760)
+        // A conduit:// open (D25) must never create a token-less session window: the main window
+        // claims external events (`rootContent`), this scene claims none.
+        .handlesExternalEvents(matching: [])
     }
 
     // Ported from ConduitApp.swift; keep in sync. Skipped: see docs/macos/PORTING_LEDGER.md.
     private var rootContent: some View {
         RootView()
+            // Cmd-K palette (D18): over the whole root view, so a sheet covers it.
+            .overlay { MacPaletteView() }
             .environmentObject(appState)
+            // Whole-chat find (D23): this window's controller, in the environment.
+            .macChatFind(appState: appState)
             .task { MacSessionTabsStore.shared.bind(to: appState) }
+            // The open chat's artifacts for the toolbar button and the side panel (D33).
+            .task { MacChatArtifactsPanelStore.shared.bind(to: appState) }
+            .task(id: appState.isConnected) { NotchStatusController.shared.bind(to: appState) }   // no-op once bound; the feed is created by the shared base's bootstrap
+            .macSpotlightBinding(appState: appState, openLink: { pendingExternalLink = $0 })
+            .task { MacPaletteStore.shared.bind(to: appState) }
             .environment(\.locale, appLanguage.resolvedLocale)
             .onChange(of: appLanguage.selection) { _, _ in
                 appState.appLanguageDidChange()
+                appState.publishWidgetLanguage()   // D25: ported from ConduitApp.swift
+                MacNotificationRuntime.shared.languageDidChange()
             }
             .preferredColorScheme(appState.themePreference.colorScheme)
-            .tint(.conduitAccent)
+            // The tint and the accent environment (#697, #702, #750): a new pick redraws at once.
+            .macAccentEnvironment()
+            // Cmd-Shift-D saved-dashboards sheet (D22): after the environment and tint it inherits.
+            .macDashboardSwitcher(appState: appState)
+            // Chat > Artifacts... sheet (Task 13).
+            .macChatArtifactsSheet(appState: appState)
             // Links Conduit writes into chats (a voice call's job link)
             // open inside the app; every other link goes to the system.
-            .environment(\.openURL, OpenURLAction { url in
-                MacOpenURLPolicy.decision(
-                    for: url,
-                    routeWidgetLaunch: { appState.routeWidgetLaunchURL($0) },
-                    openAppLink: { appState.openAppLink($0) }
-                ).result
-            })
+            .macLinkPolicy(appState: appState)
             .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
             // Another app opening a chat: only session links, opened through
             // the same route as an in-app link once Hermes is connected.
@@ -91,8 +136,12 @@ struct ConduitMacApp: App {
                 pendingExternalLink = nil
                 appState.openAppLink(link)
             }
+            .macServiceRouting(appState: appState)
+            .macIntentRouting(appState: appState)
             .task { SiriProfileShortcuts.refresh() }
             .task(id: voiceIntentRouteKey) {
+                // Siri's call shows its screen while it waits for Hermes (#711).
+                appState.presentWaitingCallIfNeeded()
                 while await resolvePendingVoiceIntent() {
                     do { try await Task.sleep(for: Self.settleRecheckInterval) } catch { return }
                 }
@@ -153,6 +202,8 @@ struct ConduitMacApp: App {
         }
         switch outcome {
         case .failed(let message):
+            // Its call screen, if one came up for it, goes (#711).
+            appState.endWaitingCall(owner: .siri)
             // A screenshot is kept when Hermes can't be reached: it is
             // attached once Hermes connects and Conduit settles.
             let request = routed?.screenQuestion
@@ -166,6 +217,7 @@ struct ConduitMacApp: App {
             }
         case .superseded:
             // A newer request took over while this one found Hermes gone.
+            // A call screen up for this one waits for that one instead.
             if screenQuestionOpened == false, let request = routed?.screenQuestion {
                 appState.settleSupersededScreenQuestion(
                     request,
@@ -176,7 +228,9 @@ struct ConduitMacApp: App {
         case .deferred:
             return routed?.screenQuestion != nil && connection.isSettling
         case .idle, .routed:
-            break
+            // A call screen that came up for a launch that didn't open its
+            // call (nothing pending now, or voice refused it) goes (#711).
+            appState.endWaitingCall(owner: .siri)
         }
         return false
     }
@@ -201,6 +255,7 @@ struct ConduitMacApp: App {
         guard let expired = pendingVoiceIntents.expireClaimIfCurrent(claim) else {
             return
         }
+        appState.endWaitingCall(owner: .siri)
         if expired.source == .siri {
             appState.errorMessage = PendingVoiceLaunchPolicy.expiredFailureMessage
         } else if let request = expired.screenQuestion {

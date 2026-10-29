@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import ConduitMac
 
@@ -181,6 +182,56 @@ final class MacSessionTabsStoreTests: XCTestCase {
         XCTAssertEqual(store.model.tabs.map(\.id), ["real", "old"], "old is outside the loaded page, not deleted")
         XCTAssertEqual(store.model.tabs[0].title, "Laravel")
     }
+
+    func testActiveSessionUnderAnotherIdReusesItsTab() {
+        store.activeSessionChanged("runtime", title: "Estimate Data Cloud SKU")
+        store.activeSessionChanged("b", title: "B")
+        store.activeSessionChanged("stored", title: "Estimate Data Cloud SKU")
+        store.activeSessionChanged("real", title: "Estimate Data Cloud SKU", aliases: ["runtime", "stored"])
+        XCTAssertEqual(store.model.tabs.map(\.id), ["real", "b"])
+        XCTAssertEqual(store.model.activeID, "real")
+    }
+
+    func testCatalogMergesTabsKeyedByTheStoredId() {
+        store.activeSessionChanged("stored", title: "Old")
+        store.activeSessionChanged("real", title: "Old")
+        let real = SessionSummary.macTestSummary(id: "real", storedSessionId: "stored", alternateIds: [], title: "Estimate")
+        store.catalogChanged([real])
+        XCTAssertEqual(store.model.tabs.map(\.id), ["real"])
+        XCTAssertEqual(store.model.tabs[0].title, "Estimate")
+    }
+
+    func testPopOutDetachesAndOpensNeighbour() {
+        ["a", "b"].forEach { store.activeSessionChanged($0, title: $0) }
+        var windows: [String] = []
+        store.popOut("b") { windows.append($0); return true }
+        XCTAssertEqual(windows, ["b"])
+        XCTAssertEqual(store.model.tabs.map(\.id), ["a"])
+        XCTAssertEqual(opened, ["a"], "main activates the neighbour")
+    }
+
+    func testPopOutLastTabStartsNewChat() {
+        store.activeSessionChanged("a", title: "A")
+        store.popOut("a") { _ in true }
+        XCTAssertTrue(store.model.tabs.isEmpty)
+        XCTAssertEqual(newChats, 1)
+    }
+
+    func testPopOutRefusedKeepsTheTab() {
+        store.activeSessionChanged("a", title: "A")
+        store.popOut("a") { _ in false }
+        XCTAssertEqual(store.model.tabs.map(\.id), ["a"])
+        XCTAssertEqual(newChats, 0)
+    }
+
+    func testSessionDeletedIsPublished() {
+        store.activeSessionChanged("a", title: "A")
+        var deleted: [String] = []
+        let sink = store.sessionDeletions.sink { deleted.append($0) }
+        store.sessionDeleted("a")
+        XCTAssertEqual(deleted, ["a"])
+        sink.cancel()
+    }
 }
 
 final class MacSessionDeletionDetectorTests: XCTestCase {
@@ -220,12 +271,16 @@ final class MacSessionDeletionDetectorTests: XCTestCase {
 }
 
 extension SessionSummary {
-    /// A minimal summary for tab tests.
-    static func macTestSummary(id: String, alternateIds: [String], title: String) -> SessionSummary {
+    /// A minimal summary for tab and Spotlight tests.
+    static func macTestSummary(
+        id: String, storedSessionId: String? = nil, alternateIds: [String], title: String,
+        source: SessionSource = .chat, isArchived: Bool = false,
+        messageCount: Int? = nil, lastActivityAt: TimeInterval? = nil
+    ) -> SessionSummary {
         SessionSummary(
-            id: id, storedSessionId: nil, alternateIds: alternateIds, title: title, model: "",
-            updatedLabel: "", profile: "default", source: .chat, isActive: false,
-            isArchived: false, lineageRootId: nil
+            id: id, storedSessionId: storedSessionId, alternateIds: alternateIds, title: title, model: "",
+            updatedLabel: "", lastActivityAt: lastActivityAt, profile: "default", source: source,
+            isActive: false, isArchived: isArchived, messageCount: messageCount, lineageRootId: nil
         )
     }
 }

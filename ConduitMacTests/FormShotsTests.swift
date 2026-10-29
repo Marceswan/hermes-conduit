@@ -67,7 +67,9 @@ final class FormShotsTests: XCTestCase {
     }
 
     private func store() -> KanbanStore {
-        KanbanStore(defaults: UserDefaults(suiteName: "conduit.mac.tests.\(UUID().uuidString)")!)
+        let suite = HostedTestSupport.makeSuite()
+        addTeardownBlock { @MainActor in HostedTestSupport.dropSuite(suite) }
+        return KanbanStore(defaults: suite.defaults)
     }
 
     /// Clicks the first switch in the sheet window (the grouped style draws a
@@ -87,14 +89,14 @@ final class FormShotsTests: XCTestCase {
     func testNewTaskComposer() throws {
         let store = store()
         try shoot("composer") {
-            KanbanTaskComposerView(initialStatus: "todo").environmentObject(store)
+            KanbanTaskComposerView(initialStatus: "todo", expectedContext: nil).environmentObject(store)
         }
     }
 
     func testNewTaskComposerWithGoalMode() throws {
         let store = store()
         try shoot("composer-goal", prepare: { clickFirstSwitch(in: $0) }) {
-            KanbanTaskComposerView(initialStatus: "todo").environmentObject(store)
+            KanbanTaskComposerView(initialStatus: "todo", expectedContext: nil).environmentObject(store)
         }
     }
 

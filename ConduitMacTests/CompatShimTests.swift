@@ -84,6 +84,19 @@ final class CompatShimTests: XCTestCase {
         XCTAssertNoThrow(try session.overrideOutputAudioPort(.speaker))
     }
 
+    func testLabelColorsMapToTheSystemLabelColors() {
+        XCTAssertEqual(UIColor.label, NSColor.labelColor)
+        XCTAssertEqual(UIColor.secondaryLabel, NSColor.secondaryLabelColor)
+        // ToolResultViews.coloredDiff dims file and hunk headers with it (upstream step 5, 86f838a4).
+        XCTAssertEqual(UIColor.tertiaryLabel, NSColor.tertiaryLabelColor)
+    }
+
+    func testBluetoothLEPortKeepsTheIOSRawValueAndCountsAsABluetoothInput() {
+        XCTAssertEqual(AVAudioSession.Port.bluetoothLE.rawValue, "BluetoothLE")
+        XCTAssertTrue(VoiceBuiltInMicrophoneFallback.bluetoothInputs.contains(.bluetoothLE))
+        XCTAssertTrue(VoiceBuiltInMicrophoneFallback.bluetoothInputs.contains(.bluetoothHFP))
+    }
+
     func testDynamicColorResolvesPerAppearance() throws {
         let color = UIColor { traits in
             traits.userInterfaceStyle == .dark
@@ -123,6 +136,42 @@ final class CompatShimTests: XCTestCase {
         let bottom = try XCTUnwrap(rep.colorAt(x: 4, y: 6)?.usingColorSpace(.sRGB))
         XCTAssertGreaterThan(top.redComponent, 0.9)
         XCTAssertGreaterThan(bottom.blueComponent, 0.9)
+    }
+
+    func testImageRendererPngDataIsAPngOfTheDrawing() throws {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let data = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8), format: format).pngData { context in
+            NSColor.systemTeal.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+        }
+        XCTAssertEqual(Array(data.prefix(8)), [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A], "PNG signature")
+        let rep = try XCTUnwrap(NSBitmapImageRep(data: data))
+        XCTAssertEqual(rep.pixelsWide, 8)
+        XCTAssertEqual(rep.pixelsHigh, 8)
+        let pixel = try XCTUnwrap(rep.colorAt(x: 4, y: 4)?.usingColorSpace(.sRGB))
+        XCTAssertGreaterThan(pixel.greenComponent, pixel.redComponent, "teal, not black or transparent")
+        XCTAssertEqual(pixel.alphaComponent, 1, accuracy: 0.01)
+    }
+
+    /// `UIImage.scale` is pixels per point. An image built from a `CGImage` of 100 x 50 pixels is 100 x 50 points
+    /// (scale 1) whatever the screen; a 2x bitmap of 200 x 100 pixels in 100 x 50 points is scale 2.
+    func testImageScaleFollowsThePixelsOfTheImage() throws {
+        let rep = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 100, pixelsHigh: 50, bitsPerSample: 8, samplesPerPixel: 4,
+            hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let cgImage = try XCTUnwrap(rep.cgImage)
+        let fromCG = UIImage(cgImage: cgImage)
+        XCTAssertEqual(fromCG.size.width, 100, accuracy: 0.5)
+        XCTAssertEqual(fromCG.scale, 1, accuracy: 0.001, "a 1x CGImage is scale 1, not the screen's scale")
+
+        let twoX = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 200, pixelsHigh: 100, bitsPerSample: 8, samplesPerPixel: 4,
+            hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        twoX.size = NSSize(width: 100, height: 50)
+        let image = NSImage(size: twoX.size)
+        image.addRepresentation(twoX)
+        XCTAssertEqual(image.scale, 2, accuracy: 0.001, "a 2x bitmap is scale 2")
     }
 
     func testFontLineHeightPositive() {

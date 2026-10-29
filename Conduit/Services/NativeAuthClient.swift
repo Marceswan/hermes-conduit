@@ -108,16 +108,24 @@ extension NativeAuthConnection {
 /// deployments unclassifiable.
 enum AuthProviderDiscoveryResult {
     /// The dashboard answered `/api/auth/providers` with recognizable Hermes
-    /// provider JSON. The array may be empty (a valid Hermes answer meaning
-    /// "no providers configured") or name non-password providers only.
-    case providers([[String: Any]])
+    /// provider JSON. The array may name non-password providers only, or be
+    /// empty (Hermes itself answers 503 when no provider is registered, so
+    /// an empty list names no sign-in method). `authFlows` is the answer's
+    /// top-level `auth_flows` (the sign-in flows the dashboard advertises,
+    /// `native_pkce` being native sign-in), or nil when the answer carries
+    /// none as a list of strings; stock Hermes advertises them only on
+    /// `/api/status`.
+    case providers([[String: Any]], authFlows: [String]? = nil)
     /// Discovery was answered by a redirect to a sign-in page — the expected
     /// unauthenticated behavior of a dashboard/edge that routes to
-    /// interactive (browser) authentication.
+    /// interactive (browser) authentication. Either the redirect left the
+    /// dashboard's origin (never followed), or a followed same-origin
+    /// redirect landed on a page without Hermes provider structure: a
+    /// sign-in portal mounted on the dashboard's own origin.
     case interactiveSignInRequired
-    /// A 2xx response arrived, but it carries no recognizable Hermes
-    /// auth/provider structure: malformed JSON, a JSON object without a
-    /// `providers` array, or arbitrary web content.
+    /// A 2xx response arrived directly, without a redirect, but it carries
+    /// no recognizable Hermes auth/provider structure: malformed JSON, a
+    /// JSON object without a `providers` array, or arbitrary web content.
     case unrecognized
 }
 
@@ -131,20 +139,31 @@ extension AuthProviderDiscoveryResult: Equatable {
         case (.interactiveSignInRequired, .interactiveSignInRequired),
              (.unrecognized, .unrecognized):
             return true
-        case (.providers(let lhsProviders), .providers(let rhsProviders)):
-            return (lhsProviders as NSArray).isEqual(to: rhsProviders)
+        case (.providers(let lhsProviders, let lhsFlows), .providers(let rhsProviders, let rhsFlows)):
+            return lhsFlows == rhsFlows && (lhsProviders as NSArray).isEqual(to: rhsProviders)
         default:
             return false
         }
     }
 }
 
-/// The single definition of "this dashboard offers password login", shared by
-/// the normal login flow and the Connection Setup probe so the compatibility
-/// check can never drift between them.
+/// The single definition of "this dashboard offers password login", read by
+/// `DashboardSignInResolver` for the login card, the Connection Setup probe
+/// and Repair so the compatibility check can never drift between them.
 enum HermesProviderCheck {
     static func supportsPassword(_ providers: [[String: Any]]) -> Bool {
         providers.contains { $0["supports_password"] as? Bool == true }
+    }
+
+    /// Hermes listed its session providers without `supports_password`
+    /// before password sign-in existed; those are OAuth providers that sign
+    /// in through the dashboard's own browser flow.
+    static func hasLegacySessionProvider(_ providers: [[String: Any]]) -> Bool {
+        providers.contains {
+            $0["supports_password"] == nil
+                && $0["supports_session"] as? Bool != false
+                && $0["name"] is String
+        }
     }
 
     static func hasNativeOAuthProvider(_ providers: [[String: Any]]) -> Bool {
@@ -166,6 +185,11 @@ enum HermesProviderCheck {
             return provider["name"] as? String
         }
         return names.count == 1 ? names[0] : nil
+    }
+
+    /// Whether advertised `auth_flows` include Hermes' native (app) sign-in.
+    static func advertisesNativeSignIn(_ flows: [String]) -> Bool {
+        flows.contains("native_pkce")
     }
 }
 
@@ -253,19 +277,28 @@ final class NativeAuthClient {
 
         // A 2xx answer only means "Hermes providers" when the body carries
         // the provider array. An empty array is a valid Hermes answer; a
-        // body without the array (arbitrary web content, malformed JSON) is
-        // an unrecognized server response and must never read as the
-        // interactive-auth signal.
-        guard let json = try? JSONSerialization.jsonObject(with: result.data) as? [String: Any] else {
-            return .unrecognized
+        // body without the array (arbitrary web content, malformed JSON)
+        // answered directly is an unrecognized server response and must
+        // never read as the interactive-auth signal. Reached through a
+        // redirect, the same page is that signal: the delegate follows only
+        // same-origin redirects, so the request was bounced to a sign-in
+        // portal on the dashboard's own origin (a forward-auth gate in front
+        // of a path-mounted Hermes), exactly as a cross-origin redirect
+        // bounces it to a sign-in service.
+        let wasRedirected = http.url != nil && http.url != request.url
+        guard let json = try? JSONSerialization.jsonObject(with: result.data) as? [String: Any],
+              let providers = json["providers"] as? [[String: Any]] else {
+            return wasRedirected ? .interactiveSignInRequired : .unrecognized
         }
-        guard let providers = json["providers"] as? [[String: Any]] else {
-            return .unrecognized
-        }
-        return .providers(providers)
+        // A dashboard behind an auth edge may expose only this route before
+        // sign-in, so it can advertise its sign-in flows here too. Anything
+        // but a list of strings counts as not advertised: the `/api/status`
+        // check then decides, and fails on a malformed answer as before.
+        return .providers(providers, authFlows: json["auth_flows"] as? [String])
     }
 
     /// Hermes advertises native-client capability on the public status body.
+    /// Asked only when the provider answer did not advertise `auth_flows`.
     /// A successful, recognizable older-server response may omit `auth_flows`
     /// and safely returns false. Transport, HTTP, and malformed-payload errors
     /// remain errors: silently treating them as "unsupported" would route a
@@ -298,7 +331,7 @@ final class NativeAuthClient {
                 detail: AppLocalization.string("Unexpected response")
             )
         }
-        return flows.contains("native_pkce")
+        return HermesProviderCheck.advertisesNativeSignIn(flows)
     }
 
     func login(username: String, password: String) async throws -> [HTTPCookie] {
@@ -581,7 +614,7 @@ enum NativeAuthCookiePolicy {
         return cookies.filter { cookie in
             if let expires = cookie.expiresDate, expires <= now { return false }
             if cookie.isSecure && !isSecureRequest { return false }
-            guard canonicalDomain(cookie.domain) == host else { return false }
+            guard domainMatches(cookie.domain, host: host) else { return false }
 
             let cookiePath = cookie.path.isEmpty ? "/" : cookie.path
             guard requestPath.hasPrefix(cookiePath) else { return false }
@@ -593,6 +626,21 @@ enum NativeAuthCookiePolicy {
         }.sorted { lhs, rhs in
             lhs.path.count > rhs.path.count
         }
+    }
+
+    /// RFC 6265 5.1.3, as the dashboard's page would send it: a host-only
+    /// cookie for exactly its host, a Domain cookie (leading dot) for that
+    /// domain and its subdomains. An auth proxy in front of the dashboard
+    /// (oauth2-proxy with `cookie_domain`) sets its session for the parent
+    /// domain; requests made without the page (CarPlay with the phone
+    /// locked) must carry it too, or the proxy sends them to sign-in.
+    /// The cookies come from this dashboard's own stores only. The one
+    /// rule for both send paths (DashboardRequestAuthorizer.cookieHeader).
+    static func domainMatches(_ cookieDomain: String, host: String) -> Bool {
+        let domain = cookieDomain.lowercased()
+        guard domain.hasPrefix(".") else { return domain == host }
+        let bare = String(domain.dropFirst())
+        return !bare.isEmpty && (host == bare || host.hasSuffix(domain))
     }
 
     private static func canonicalDomain(_ domain: String) -> String {

@@ -23,6 +23,9 @@ struct VoiceCapabilitySnapshot: Equatable {
     var supportsTranscription: Bool
     var supportsSpeech: Bool
     var unavailableReason: String?
+    /// Hermes' text-to-speech provider for the profile ("edge", "openai"…),
+    /// empty when unknown.
+    var selectedTTSProvider: String = ""
 
     /// Computed so the reason re-resolves under the in-app App Language.
     static var unavailable: VoiceCapabilitySnapshot {
@@ -117,6 +120,10 @@ struct VoiceProfilePreferences: Codable, Equatable {
     }
     /// Nil decodes older preferences as the Hermes-hosted route.
     var transcriptionMode: VoiceTranscriptionMode? = nil
+    /// Who speaks Classic voice replies. Nil is automatic
+    /// (`VoiceSpeechOutput.resolved`): this iPhone unless the profile has
+    /// its own ready Hermes voice.
+    var speechOutput: VoiceSpeechOutput? = nil
     /// Opt-in Gemini Live voice mode (off by default; older blobs decode off).
     var geminiLiveEnabled: Bool = false
     /// Where Gemini Live's quick lookups search. Nil is automatic.
@@ -159,6 +166,15 @@ struct VoiceProfilePreferences: Codable, Equatable {
     var grokLiveMemory: Bool? = nil
     /// Whether Grok Live speaks as the profile's SOUL.md persona. Nil is off.
     var grokLivePersonality: Bool? = nil
+    /// Opt-in Local Live voice mode: a live call through the user's own
+    /// speech server, with Hermes answering each turn in the call's chat
+    /// (off by default; older blobs decode off). Never on with another live mode.
+    var localLiveEnabled: Bool = false
+    /// Local Live in agent mode (Voice mode Live > Local): the host's fast
+    /// model answers and hands the work to Hermes as jobs. Off is Classic's
+    /// hands-free option on the speech server: one Hermes turn per
+    /// utterance (older blobs decode off, so a call works as it did).
+    var localLiveAgent: Bool = false
     /// Model for the Hermes sessions voice background jobs create. Nil keeps
     /// the profile's current model (the pre-existing behavior).
     var voiceJobModel: String? = nil
@@ -232,6 +248,8 @@ struct VoiceProfilePreferences: Codable, Equatable {
                 ]) ? nil : stored
             }
         transcriptionMode = try container.decodeIfPresent(VoiceTranscriptionMode.self, forKey: .transcriptionMode)
+        // An unknown choice (a newer build's) is automatic.
+        speechOutput = (try? container.decodeIfPresent(VoiceSpeechOutput.self, forKey: .speechOutput)) ?? nil
         geminiLiveEnabled = try container.decodeIfPresent(Bool.self, forKey: .geminiLiveEnabled) ?? false
         // An unknown mode (a newer build's) falls back to automatic rather
         // than failing the whole blob.
@@ -252,6 +270,8 @@ struct VoiceProfilePreferences: Codable, Equatable {
         grokLiveEnabled = (try? container.decodeIfPresent(Bool.self, forKey: .grokLiveEnabled)) ?? false
         grokLiveMemory = (try? container.decodeIfPresent(Bool.self, forKey: .grokLiveMemory)) ?? nil
         grokLivePersonality = (try? container.decodeIfPresent(Bool.self, forKey: .grokLivePersonality)) ?? nil
+        localLiveEnabled = (try? container.decodeIfPresent(Bool.self, forKey: .localLiveEnabled)) ?? false
+        localLiveAgent = (try? container.decodeIfPresent(Bool.self, forKey: .localLiveAgent)) ?? false
         voiceJobModel = try container.decodeIfPresent(String.self, forKey: .voiceJobModel)
         voiceJobProvider = try container.decodeIfPresent(String.self, forKey: .voiceJobProvider)
         voiceJobReasoningEffort = try container.decodeIfPresent(String.self, forKey: .voiceJobReasoningEffort)
@@ -365,6 +385,12 @@ enum ReadAloudSpeed: Double, CaseIterable, Identifiable {
         String(format: "%gx", locale: Locale(identifier: "en_US_POSIX"), rawValue)
     }
 
+    /// The choice nearest a rate, for showing a rate that came from
+    /// elsewhere.
+    static func closest(to rate: Float) -> ReadAloudSpeed {
+        allCases.min { abs($0.rate - rate) < abs($1.rate - rate) } ?? .normal
+    }
+
     /// The stored choice; anything missing or unrecognised reads as 1x.
     static func current(defaults: UserDefaults = .standard) -> ReadAloudSpeed {
         ReadAloudSpeed(rawValue: defaults.double(forKey: preferenceKey)) ?? .normal
@@ -476,12 +502,17 @@ struct GPTLiveVoice: Equatable, Identifiable {
 enum GeminiLiveSearchSource: Equatable {
     case hermes
     case google
+    /// Grok Live's own web_search and x_search, run by xAI (#598).
+    case grok
     case none
 }
 
 enum VoiceTranscriptionMode: String, Codable, Equatable {
     case hermes
     case appleOnDevice
+    /// The user's own speech server (voice.speech_server), reached through
+    /// the notifier's relay on the Hermes host.
+    case speechServer
 }
 
 enum AppleSpeechRecognitionAvailability: Equatable {
@@ -594,11 +625,14 @@ struct VoiceConversationTranscriptEntry: Identifiable, Equatable {
     let id: UUID
     let speaker: Speaker
     var text: String
+    /// Cards a live model showed at this point of a saved call.
+    var cards: [RichCard] = []
 
-    init(id: UUID = UUID(), speaker: Speaker, text: String) {
+    init(id: UUID = UUID(), speaker: Speaker, text: String, cards: [RichCard] = []) {
         self.id = id
         self.speaker = speaker
         self.text = text
+        self.cards = cards
     }
 }
 
@@ -634,7 +668,12 @@ enum VoiceAudioError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .microphonePermissionDenied: return AppLocalization.string("Conduit needs the microphone for voice. Allow it in iPhone Settings > Conduit.")
+        case .microphonePermissionDenied:
+            #if os(macOS) // MAC: the permission lives in System Settings > Privacy & Security > Microphone (Task 9b)
+            return AppLocalization.string("Mac.VoiceAudioError.MicrophoneDenied")
+            #else // MAC:
+            return AppLocalization.string("Conduit needs the microphone for voice. Allow it in iPhone Settings > Conduit.")
+            #endif // MAC:
         case .noAudioCaptured: return AppLocalization.string("No speech was captured.")
         case .unavailable(let detail): return detail
         }
@@ -736,6 +775,12 @@ protocol SpeechPlaybackService: AnyObject {
     /// Whether audio is currently held by `pause()`. A stream restart (route
     /// change) clears it even though nobody resumed.
     var isPaused: Bool { get }
+    /// Builds every stream so `changeRate` can retime it while it plays
+    /// (Read Aloud's player, #759). Off for conversations, which keep the
+    /// plain graph.
+    var keepsRateAdjustable: Bool { get set }
+    /// Retimes the audio already playing as well as the next stream.
+    func changeRate(_ rate: Float)
 }
 
 extension SpeechPlaybackService {
@@ -749,6 +794,14 @@ extension SpeechPlaybackService {
     func pause() -> Bool { false }
     func resume() {}
     var isPaused: Bool { false }
+
+    /// Services that cannot retime live apply the rate from the next stream.
+    var keepsRateAdjustable: Bool {
+        get { false }
+        set {}
+    }
+
+    func changeRate(_ rate: Float) { playbackRate = rate }
 }
 
 @MainActor

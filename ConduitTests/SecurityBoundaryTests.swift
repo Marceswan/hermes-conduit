@@ -3,18 +3,26 @@ import XCTest
 @testable import Conduit
 
 final class SecurityBoundaryTests: XCTestCase {
-    func testAppTransportSecurityAllowsTailscaleCGNATRange() throws {
+    func testAppTransportSecurityAllowsLocalNetworkingAndTailscale() throws {
         let appInfo = try XCTUnwrap(Bundle(identifier: "com.milim.relay")?.infoDictionary)
         let appTransportSecurity = try XCTUnwrap(
             appInfo["NSAppTransportSecurity"] as? [String: Any]
         )
+        XCTAssertEqual(appTransportSecurity["NSAllowsLocalNetworking"] as? Bool, true)
+        XCTAssertNotEqual(appTransportSecurity["NSAllowsArbitraryLoads"] as? Bool, true)
         let exceptionDomains = try XCTUnwrap(
             appTransportSecurity["NSExceptionDomains"] as? [String: Any]
         )
-        let cgnatException = try XCTUnwrap(
-            exceptionDomains["100.64.0.0/10"] as? [String: Any]
-        )
-        XCTAssertEqual(cgnatException["NSExceptionAllowsInsecureHTTPLoads"] as? Bool, true)
+        XCTAssertEqual(Set(exceptionDomains.keys), ["100.64.0.0/10", "ts.net"])
+        // Local networking doesn't cover Tailscale's 100.64.0.0/10 addresses,
+        // and ATS does honour this range key: build 213 shipped without it and
+        // plain http to http://100.x.x.x never left the phone, while build 212
+        // with it connected at once. Keep it.
+        let cgnat = try XCTUnwrap(exceptionDomains["100.64.0.0/10"] as? [String: Any])
+        XCTAssertEqual(cgnat["NSExceptionAllowsInsecureHTTPLoads"] as? Bool, true)
+        let tailnet = try XCTUnwrap(exceptionDomains["ts.net"] as? [String: Any])
+        XCTAssertEqual(tailnet["NSExceptionAllowsInsecureHTTPLoads"] as? Bool, true)
+        XCTAssertEqual(tailnet["NSIncludesSubdomains"] as? Bool, true)
     }
 
     func testRemoteDashboardMustUseHTTPSButLoopbackAndTailscaleMayUseHTTP() throws {
@@ -49,6 +57,13 @@ final class SecurityBoundaryTests: XCTestCase {
         XCTAssertFalse(ConnectionURLPolicy.isAllowedTransport(URL(string: "http://100.64.not-an-ip")))
         // 3-octet partial addresses should not match (not a valid IPv4)
         XCTAssertFalse(ConnectionURLPolicy.isAllowedTransport(URL(string: "http://100.64.1")))
+        // A leading zero is octal to the resolver: these dial public hosts
+        // (8.0.0.1, 64.64.0.1), not the private ones Int() would read.
+        XCTAssertFalse(ConnectionURLPolicy.isAllowedTransport(URL(string: "http://010.0.0.1")))
+        XCTAssertFalse(ConnectionURLPolicy.isAllowedTransport(URL(string: "http://0100.64.0.1")))
+        XCTAssertFalse(ConnectionURLPolicy.isAllowedTransport(URL(string: "http://192.168.01.1")))
+        // A lone zero octet is still an ordinary address.
+        XCTAssertTrue(ConnectionURLPolicy.isAllowedTransport(URL(string: "http://10.0.0.1")))
     }
 
     func testPrivateLANHTTPIsAllowed() {

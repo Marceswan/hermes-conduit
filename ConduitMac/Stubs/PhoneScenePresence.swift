@@ -1,3 +1,4 @@
+// Mac twin of Conduit/CarPlay/PhoneScenePresence.swift (R2); keep in sync (PORTING_LEDGER).
 import AppKit
 
 /// Upstream asks "is a phone window in the foreground?" before running

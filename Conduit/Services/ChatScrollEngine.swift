@@ -57,21 +57,37 @@ enum ChatScrollEngineEvent: Equatable {
     /// No surface is attached yet; the view falls back to ScrollViewProxy.
     case revealLatest
     case revealTop
+    /// The lazy stack laid out no row where the reader is: the view builds
+    /// the transcript's scroll view again, as reopening the chat would.
+    case rebuildTranscript
 }
 
 /// The viewport values ChatView renders from. Published only when one of
 /// them changes, so scrolling itself never re-evaluates the chat.
 struct ChatScrollRenderInputs: Equatable {
     var renderedSessionKey: ChatScrollSessionKey?
-    var isFollowingLatest = true
     var renderedScrollScope: ChatRenderedScrollScope?
-    var showsJumpToLatest = false
-    var visibilityTrackedMessageID: String? = nil
-    var isVisibilityTrackedMessageOffscreen = false
     /// The target cache's rendering revision. The scope above carries it
     /// too, but only while a session is rendered; rows without a session
     /// key must still re-run the body when they change.
     var targetsRevision: UInt64 = 0
+}
+
+/// The viewport values the chat's jump buttons render from. They change as
+/// the reader scrolls (a drag leaves the latest message, the jump button
+/// appears a screen up), so they publish on their own object: ChatView
+/// re-running for them re-ran every row in the transcript, a hitch at the
+/// start of each scroll.
+struct ChatScrollChromeInputs: Equatable {
+    var isFollowingLatest = true
+    var showsJumpToLatest = false
+    var visibilityTrackedMessageID: String? = nil
+    var isVisibilityTrackedMessageOffscreen = false
+}
+
+@MainActor
+final class ChatScrollChrome: ObservableObject {
+    @Published fileprivate(set) var inputs = ChatScrollChromeInputs()
 }
 
 /// Owns the chat viewport. Three rules replace the old follow-correction
@@ -153,10 +169,14 @@ final class ChatScrollEngine: ObservableObject {
     /// before checking whether they are still at the bottom: the row
     /// animates open with ConduitMotion.response (a 0.34 s spring).
     static let disclosureSettleDelay: TimeInterval = 0.5
+    /// How long after the settled transcript changes the engine checks
+    /// that rows were laid out where the reader is (#887).
+    static let blankViewportCheckDelay: TimeInterval = 0.35
     static let coordinateSpaceName = "chat-transcript-stack"
 
     var onEvent: (@MainActor (ChatScrollEngineEvent) -> Void)?
     @Published private(set) var renderInputs = ChatScrollRenderInputs()
+    let chrome = ChatScrollChrome()
     private var renderInputsPublishScheduled = false
 
     private(set) var mode: Mode = .following
@@ -188,6 +208,12 @@ final class ChatScrollEngine: ObservableObject {
     /// latest settle check acts. Anything else that changes the mode leaves
     /// browsing, which the check requires.
     private var disclosureGeneration: UInt64 = 0
+    /// Bumped by every settled transcript change, so only the latest blank
+    /// viewport check acts.
+    private var blankViewportCheckGeneration: UInt64 = 0
+    /// Whether rows that report no frame (the running turn's live rows, a
+    /// send waiting on screen) sit below the latest row.
+    var liveTailShowing: @MainActor () -> Bool = { false }
     private let now: () -> TimeInterval
     private let prefersReducedMotion: @MainActor () -> Bool
     private let schedule: (TimeInterval, @escaping @MainActor () -> Void) -> Void
@@ -385,7 +411,15 @@ final class ChatScrollEngine: ObservableObject {
             setMode(.following)
         }
         emit(.persistSnapshot(renderedSessionKey))
-        emit(.flushPersistence)
+        // A fling saves once it comes to rest (`isUserScrolling`).
+        if surface?.isDecelerating != true {
+            emit(.flushPersistence)
+        }
+    }
+
+    /// A finger on the chat, or a fling still moving it.
+    var isUserScrolling: Bool {
+        isDragging || surface?.isTracking == true || surface?.isDecelerating == true
     }
 
     // MARK: - Opening and closing rows
@@ -465,6 +499,7 @@ final class ChatScrollEngine: ObservableObject {
         prependAnchor = nil
         latestAnimationUntil = nil
         cancelDisclosureSettle()
+        blankViewportCheckGeneration &+= 1
         topVisibleMessageID = nil
         rowFrames = [:]
         refreshTrackedMessageVisibility()
@@ -540,6 +575,9 @@ final class ChatScrollEngine: ObservableObject {
             // Usually a no-op: the new rows have not been laid out yet, and
             // the content-size change that follows pins again.
             pin(surface)
+        }
+        if !isInitialSync, surface != nil {
+            scheduleBlankViewportCheck(rebuildsLeft: 1)
         }
     }
 
@@ -794,10 +832,10 @@ final class ChatScrollEngine: ObservableObject {
         onEvent?(event)
     }
 
-    /// Publishes `renderInputs` if any of them changed. A change made while
-    /// handling a UIKit callback can land in the middle of a SwiftUI update,
-    /// where publishing is not allowed, so it goes out on the next main-queue
-    /// turn instead (coalesced).
+    /// Publishes `renderInputs` and `chrome` if any of their values changed.
+    /// A change made while handling a UIKit callback can land in the middle
+    /// of a SwiftUI update, where publishing is not allowed, so it goes out
+    /// on the next main-queue turn instead (coalesced).
     private func renderInputsMayHaveChanged() {
         guard isHandlingSurfaceCallback else {
             publishRenderInputs()
@@ -815,15 +853,20 @@ final class ChatScrollEngine: ObservableObject {
     private func publishRenderInputs() {
         let inputs = ChatScrollRenderInputs(
             renderedSessionKey: renderedSessionKey,
-            isFollowingLatest: isFollowingLatest,
             renderedScrollScope: renderedScrollScope,
-            showsJumpToLatest: showsJumpToLatest,
-            visibilityTrackedMessageID: visibilityTrackedMessageID,
-            isVisibilityTrackedMessageOffscreen: isVisibilityTrackedMessageOffscreen,
             targetsRevision: targetCache.renderingRevision
         )
         if inputs != renderInputs {
             renderInputs = inputs
+        }
+        let chromeInputs = ChatScrollChromeInputs(
+            isFollowingLatest: isFollowingLatest,
+            showsJumpToLatest: showsJumpToLatest,
+            visibilityTrackedMessageID: visibilityTrackedMessageID,
+            isVisibilityTrackedMessageOffscreen: isVisibilityTrackedMessageOffscreen
+        )
+        if chromeInputs != chrome.inputs {
+            chrome.inputs = chromeInputs
         }
     }
 
@@ -851,6 +894,49 @@ final class ChatScrollEngine: ObservableObject {
             self.pin(surface)
             self.refreshJumpButton()
         }
+    }
+
+    private func scheduleBlankViewportCheck(rebuildsLeft: Int) {
+        blankViewportCheckGeneration &+= 1
+        let generation = blankViewportCheckGeneration
+        schedule(Self.blankViewportCheckDelay) { [weak self] in
+            guard let self, generation == self.blankViewportCheckGeneration else { return }
+            self.checkForBlankViewport(rebuildsLeft: rebuildsLeft)
+        }
+    }
+
+    /// #887: after a turn settled, the lazy stack could lay out no row at
+    /// all under a reader at the bottom. The offset and content size were
+    /// right, but the screen stayed blank with the reply far above it, until
+    /// the chat was reopened; scrolling to a row through SwiftUI, or building
+    /// the stack again inside the same scroll view, did not bring it back.
+    /// So the scroll view is built again, as reopening the chat would. No
+    /// row covering the screen is the sign, when the latest row has no frame
+    /// or ends above the screen; a run of steps collapsed into its first row
+    /// leaves a framed row in view. Live rows report no frame, so nothing is
+    /// rebuilt while they show: a long reply streaming at the bottom leaves
+    /// the rows above it unlaid without the screen being blank. The next
+    /// settled change, such as the reply landing, checks again.
+    private func checkForBlankViewport(rebuildsLeft: Int) {
+        guard mode == .following, !isPaused, !isDragging, !latestAnimationInFlight,
+              let surface, !surface.isTracking, !surface.isDecelerating,
+              let last = targetCache.targets.last, !liveTailShowing() else { return }
+        let visible = visibleStackRange(of: surface)
+        guard !rowFrames.values.contains(where: { $0.maxY > visible.lowerBound && $0.minY < visible.upperBound }) else {
+            return
+        }
+        if let lastFrame = rowFrames[last.id], lastFrame.maxY > visible.lowerBound { return }
+        ChatViewportTrace.shared.log(String(
+            format: "blank viewport: offset %.1f content %.1f, %ld rows laid out; %@",
+            surface.contentOffsetY, surface.contentHeight, rowFrames.count,
+            rebuildsLeft > 0 ? "rebuilding the scroll view" : "still blank after a rebuild"
+        ))
+        guard rebuildsLeft > 0 else { return }
+        // The old layout's frames would answer the follow-up check.
+        rowFrames = [:]
+        refreshTrackedMessageVisibility()
+        emit(.rebuildTranscript)
+        scheduleBlankViewportCheck(rebuildsLeft: rebuildsLeft - 1)
     }
 
     /// A reader whose content shrank under them (a row closing, a turn's

@@ -1,3 +1,4 @@
+// Mac twin of Conduit/Views/Components/ComposerPasteTextView.swift (R2); keep in sync (PORTING_LEDGER).
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -28,8 +29,18 @@ struct ComposerPasteTextView: NSViewRepresentable {
     var canSubmitFromReturn: Bool = false
     var onSubmitFromReturn: (() -> Bool)? = nil
     var onUserEdit: (() -> Void)? = nil
+    /// False for a composer outside the main window (a session window, D21): the main
+    /// window's sidebar route then neither blocks nor releases its focus.
+    var followsMainRoute = true
     /// Where Cmd-L arrives (`macFocusComposerRequested`); injectable for tests.
     var focusRequestCenter: NotificationCenter = .default
+    /// The chat pane's drop sink, when one wraps this composer.
+    @Environment(\.macAttachmentDropSink) private var dropSink
+
+    /// Whether the composer may hold focus: a composer outside the main window ignores the main route.
+    static func mayTakeFocus(followsMainRoute: Bool, routeTabRaw: String?) -> Bool {
+        !followsMainRoute || MacChatRoute.isChatActive(tabRaw: routeTabRaw)
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -73,7 +84,8 @@ struct ComposerPasteTextView: NSViewRepresentable {
         // A chat hidden under Bots / Cron / Kanban must not take or keep focus.
         // Focus lost to the route is held (isFocused stays true) and restored
         // on return, unless something else owns the keyboard by then.
-        if isFocused && MacChatRoute.isChatActive(tabRaw: routeTabRaw) {
+        let chatActive = Self.mayTakeFocus(followsMainRoute: followsMainRoute, routeTabRaw: routeTabRaw)
+        if isFocused && chatActive {
             if let window = textView.window {
                 textView.wantsFocus = false
                 if textView.heldFocusForRoute {
@@ -88,7 +100,7 @@ struct ComposerPasteTextView: NSViewRepresentable {
         } else {
             textView.wantsFocus = false
             if textView.window?.firstResponder === textView {
-                if MacChatRoute.isChatActive(tabRaw: routeTabRaw) {
+                if chatActive {
                     textView.window?.makeFirstResponder(nil)
                 } else {
                     textView.resignForRoute()
@@ -104,6 +116,8 @@ struct ComposerPasteTextView: NSViewRepresentable {
         textView.canSubmitFromReturn = canSubmitFromReturn
         textView.onSubmitFromReturn = onSubmitFromReturn
         textView.onPastedImages = { images in images.forEach(onPastedImage) }
+        textView.onPastedImageError = onPastedImageError
+        textView.dropSink = dropSink
         let focus = $isFocused
         textView.onFocusChange = { focused in
             DispatchQueue.main.async { focus.wrappedValue = focused }
@@ -114,22 +128,42 @@ struct ComposerPasteTextView: NSViewRepresentable {
         var parent: ComposerPasteTextView
         var lastRevision: UInt64 = 0
         private var focusObserver: NSObjectProtocol?
+        private var keyObserver: NSObjectProtocol?
         private var focusObserverCenter: NotificationCenter?
 
         init(_ parent: ComposerPasteTextView) { self.parent = parent }
 
         deinit {
-            if let focusObserver { focusObserverCenter?.removeObserver(focusObserver) }
+            for observer in [focusObserver, keyObserver].compactMap({ $0 }) {
+                focusObserverCenter?.removeObserver(observer)
+            }
         }
 
         /// Cmd-L: the composer in the command's window takes first responder.
+        /// The same when its window becomes key again (Conduit re-activated,
+        /// a sheet or another window closed) while the chat is shown.
         func observeFocusRequests(for textView: ComposerTextView, center: NotificationCenter) {
-            if let focusObserver { focusObserverCenter?.removeObserver(focusObserver) }
+            for observer in [focusObserver, keyObserver].compactMap({ $0 }) {
+                focusObserverCenter?.removeObserver(observer)
+            }
             focusObserverCenter = center
             focusObserver = center.addObserver(forName: .macFocusComposerRequested, object: nil, queue: .main) { [weak textView] note in
                 guard let textView, let window = textView.window else { return }
                 if let target = note.object as? NSWindow, target !== window { return }
                 textView.focusFromCommand()
+            }
+            keyObserver = center.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self, weak textView] note in
+                // The route is read from defaults, not `parent`: the stored
+                // copy can trail a tab switch until the next update.
+                guard let self, let textView, let window = textView.window, note.object as? NSWindow === window else { return }
+                guard ComposerPasteTextView.mayTakeFocus(
+                          followsMainRoute: self.parent.followsMainRoute,
+                          routeTabRaw: UserDefaults.standard.string(forKey: MacSidebarState.tabDefaultsKey)
+                      ) else { return }
+                // Tell the owner now, not on the next pass like
+                // `onFocusChange`: an update in between could see the old
+                // value and resign the composer again (updateNSView).
+                if textView.focusOnWindowReturn() { self.parent.isFocused = true }
             }
         }
 
@@ -162,6 +196,12 @@ final class ComposerTextView: NSTextView {
     var canSubmitFromReturn = false
     var onSubmitFromReturn: (() -> Bool)?
     var onPastedImages: (([PastedImage]) -> Void)?
+    /// A pasted or dropped image file the composer refuses (over the attachment limit).
+    var onPastedImageError: ((String) -> Void)?
+    /// When set, file and image drags belong to the chat pane's drop path
+    /// (same attach routes as the picker); otherwise the legacy image-only
+    /// drop below applies.
+    weak var dropSink: MacAttachmentDropSink?
     var onFocusChange: ((Bool) -> Void)?
     /// Focus requested before the view had a window; honoured in viewDidMoveToWindow.
     var wantsFocus = false
@@ -235,16 +275,46 @@ final class ComposerTextView: NSTextView {
         window.makeFirstResponder(self)
     }
 
-    /// Image file URLs (Finder copies). Checked before the string so filenames do not win.
-    static func imageFileImages(from pasteboard: NSPasteboard) -> [PastedImage] {
+    /// The attachment size limit (Settings > Chat) in megabytes; 0 means the default.
+    static var attachmentMegabytes: Int { UserDefaults.standard.integer(forKey: AttachmentSizeLimit.preferenceKey) }
+
+    private static func imageFiles(on pasteboard: NSPasteboard) -> [(url: URL, type: UTType)] {
         guard let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] else {
             return []
         }
-        return urls.compactMap { url -> PastedImage? in
-            guard let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .image),
-                  let data = try? Data(contentsOf: url) else { return nil }
-            return PastedImage(data: data, typeIdentifier: type.identifier)
+        return urls.compactMap { url in
+            guard let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .image) else { return nil }
+            return (url, type)
         }
+    }
+
+    /// Image file URLs (Finder copies). Checked before the string so filenames do not win. A file over the
+    /// attachment limit is not read: its size is checked first, as upstream's link path streams against the limit
+    /// (#892); the file is reported by `oversizeImageFileNames` instead.
+    static func imageFileImages(from pasteboard: NSPasteboard, megabytes: Int = attachmentMegabytes) -> [PastedImage] {
+        imageFiles(on: pasteboard).compactMap { file -> PastedImage? in
+            guard let size = AttachmentSizeLimit.fileSize(at: file.url),
+                  AttachmentSizeLimit.allows(byteCount: size, megabytes: megabytes),
+                  let data = try? Data(contentsOf: file.url) else { return nil }
+            return PastedImage(data: data, typeIdentifier: file.type.identifier)
+        }
+    }
+
+    /// Names of the pasted image files that are over the attachment limit.
+    static func oversizeImageFileNames(from pasteboard: NSPasteboard, megabytes: Int = attachmentMegabytes) -> [String] {
+        imageFiles(on: pasteboard).compactMap { file in
+            guard let size = AttachmentSizeLimit.fileSize(at: file.url),
+                  !AttachmentSizeLimit.allows(byteCount: size, megabytes: megabytes) else { return nil }
+            return file.url.lastPathComponent
+        }
+    }
+
+    /// Tells the user about image files that are over the limit; true when there were any.
+    func reportOversizeImageFiles(on pasteboard: NSPasteboard, megabytes: Int = ComposerTextView.attachmentMegabytes) -> Bool {
+        let names = Self.oversizeImageFileNames(from: pasteboard, megabytes: megabytes)
+        guard !names.isEmpty else { return false }
+        onPastedImageError?(AttachmentSizeLimit.tooLargeMessage(names: names, megabytes: megabytes))
+        return true
     }
 
     static func pastedImages(from pasteboard: NSPasteboard) -> [PastedImage] {
@@ -280,6 +350,17 @@ final class ComposerTextView: NSTextView {
         return window.firstResponder === self || window.makeFirstResponder(self)
     }
 
+    /// The window became key again: the composer takes the keyboard unless
+    /// another text input has it (AppKit has just restored it, e.g. the
+    /// sidebar search), a sheet is up, or the composer is read-only.
+    @discardableResult
+    func focusOnWindowReturn() -> Bool {
+        guard let window else { return false }
+        if window.firstResponder === self { return true }
+        guard !(window.firstResponder is NSText) else { return false }
+        return focusFromCommand()
+    }
+
     /// Tab and Shift-Tab leave the composer along the window's key view loop
     /// (sidebar list, search field, composer), as in a single-line field.
     override func insertTab(_ sender: Any?) {
@@ -306,36 +387,128 @@ final class ComposerTextView: NSTextView {
         return images.isEmpty ? .text : .images(images)
     }
 
-    /// `.copy` when the pasteboard carries an image; empty to defer to NSTextView.
+    /// True when the chat pane's sink owns this drag: it carries something
+    /// attachable and a sink is wired. Such a drag never falls through to
+    /// NSTextView, which would otherwise take a file drag on a locked
+    /// composer and show a copy cursor. Reads pasteboard types only.
+    private func sinkOwnsDrag(_ pasteboard: NSPasteboard) -> Bool {
+        dropSink != nil && MacAttachmentDropPolicy.hasAttachableContent(pasteboard)
+    }
+
+    /// `.copy` when the drag can attach; empty to defer to NSTextView (text
+    /// drags) or, with a pane sink, to refuse (locked composer).
     func dragOperation(for pasteboard: NSPasteboard) -> NSDragOperation {
-        Self.pastedImages(from: pasteboard).isEmpty ? [] : .copy
+        if let dropSink, sinkOwnsDrag(pasteboard) {
+            return dropSink.operation(for: pasteboard)
+        }
+        return Self.pastedImages(from: pasteboard).isEmpty ? [] : .copy
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        let operation = dragOperation(for: sender.draggingPasteboard)
+        let pasteboard = sender.draggingPasteboard
+        if sinkOwnsDrag(pasteboard) {
+            let operation = dragOperation(for: pasteboard)
+            dropSink?.setTargeted(!operation.isEmpty)
+            return operation
+        }
+        let operation = dragOperation(for: pasteboard)
         return operation.isEmpty ? super.draggingEntered(sender) : operation
     }
 
+    /// Runs on every mouse move of a drag: types only, no pasteboard reads.
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let pasteboard = sender.draggingPasteboard
+        guard sinkOwnsDrag(pasteboard) else { return super.draggingUpdated(sender) }
+        let operation = dragOperation(for: pasteboard)
+        // The pane's own target may report its exit after this view's entry.
+        dropSink?.setTargeted(!operation.isEmpty)
+        return operation
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        dropSink?.setTargeted(false)
+        super.draggingExited(sender)
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        dropSink?.setTargeted(false)
+        super.draggingEnded(sender)
+    }
+
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if sinkOwnsDrag(sender.draggingPasteboard) { return !dragOperation(for: sender.draggingPasteboard).isEmpty }
         if !dragOperation(for: sender.draggingPasteboard).isEmpty { return true }
         return super.prepareForDragOperation(sender)
     }
 
+    /// The board Paste reads and validates against; tests inject a private one.
+    var pastePasteboard: NSPasteboard = .general
+
+    /// Splits pasted images by the attachment limit; the second value counts the refused ones.
+    static func splitByLimit(_ images: [PastedImage], megabytes: Int) -> ([PastedImage], Int) {
+        let allowed = images.filter { AttachmentSizeLimit.allows(byteCount: Int64($0.data.count), megabytes: megabytes) }
+        return (allowed, images.count - allowed.count)
+    }
+
+    /// Megabyte limit for pasted bitmap data; nil reads Settings > Chat. Tests set it.
+    var attachmentLimitOverride: Int?
+
+    /// The plain-text composer reads no bitmap type by default, so AppKit left Edit > Paste (Cmd-V) disabled for
+    /// a screenshot on the clipboard and `paste(_:)` never ran (LC-B F2).
+    override var readablePasteboardTypes: [NSPasteboard.PasteboardType] {
+        super.readablePasteboardTypes + [.png, .tiff]
+    }
+
+    /// Paste is also valid for a board that holds only a bitmap; AppKit's own check reads `.general`.
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(NSText.paste(_:)), isEditable,
+           pastePasteboard.availableType(from: [.png, .tiff]) != nil {
+            return true
+        }
+        return super.validateUserInterfaceItem(item)
+    }
+
     override func paste(_ sender: Any?) {
-        switch Self.pasteDecision(for: .general) {
+        performPaste(from: pastePasteboard, sender: sender)
+    }
+
+    /// `paste` for a given pasteboard (tests use a private one).
+    func performPaste(from pasteboard: NSPasteboard, sender: Any?) {
+        switch Self.pasteDecision(for: pasteboard) {
         case .images(let images):
-            onPastedImages?(images)
+            // Bitmap data is bounded like a file (#892): over the limit it is reported, not attached.
+            let megabytes = attachmentLimitOverride ?? Self.attachmentMegabytes
+            let (allowed, refused) = Self.splitByLimit(images, megabytes: megabytes)
+            if !allowed.isEmpty { onPastedImages?(allowed) }
+            if refused > 0 {
+                onPastedImageError?(AttachmentSizeLimit.tooLargeMessage(names: ["pasted-image.png"], megabytes: megabytes))
+            }
+            // A file over the limit in the same paste is dropped: it says so too.
+            _ = reportOversizeImageFiles(on: pasteboard)
         case .text:
+            // A file over the limit says so instead of pasting its name.
+            if reportOversizeImageFiles(on: pasteboard) { return }
             pasteAsPlainText(sender)
         }
     }
 
-    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        let images = Self.pastedImages(from: sender.draggingPasteboard)
+    /// Attaches the dropped images and tells the user about image files over the limit, in the same drop as well as
+    /// alone. True when the drop was ours.
+    func performImageDrop(from pasteboard: NSPasteboard) -> Bool {
+        let images = Self.pastedImages(from: pasteboard)
         if !images.isEmpty {
             onPastedImages?(images)
+            _ = reportOversizeImageFiles(on: pasteboard)
             return true
         }
+        return reportOversizeImageFiles(on: pasteboard)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if let dropSink, sinkOwnsDrag(sender.draggingPasteboard) {
+            return dropSink.perform(sender.draggingPasteboard)
+        }
+        if performImageDrop(from: sender.draggingPasteboard) { return true }
         return super.performDragOperation(sender)
     }
 }

@@ -7,7 +7,7 @@ final class MacChatRouteTests: XCTestCase {
         XCTAssertTrue(MacChatRoute.isChatActive(tabRaw: SidebarTab.sessions.rawValue))
         XCTAssertTrue(MacChatRoute.isChatActive(tabRaw: nil))
         XCTAssertTrue(MacChatRoute.isChatActive(tabRaw: "Capabilities"), "removed raw values migrate to Sessions")
-        for tab in [SidebarTab.bots, .cron, .kanban] {
+        for tab in [SidebarTab.bots, .cron, .kanban, .home, .artifacts] {
             XCTAssertFalse(MacChatRoute.isChatActive(tabRaw: tab.rawValue))
         }
     }
@@ -17,6 +17,16 @@ final class MacChatRouteTests: XCTestCase {
         XCTAssertEqual(MacChatRoute.navigationTitle(tabRaw: SidebarTab.sessions.rawValue), "")
         XCTAssertEqual(MacChatRoute.navigationTitle(tabRaw: SidebarTab.kanban.rawValue), SidebarTab.kanban.displayName)
         XCTAssertEqual(MacChatRoute.navigationTitle(tabRaw: SidebarTab.bots.rawValue), SidebarTab.bots.displayName)
+    }
+
+    func testHomeIsAPaneNotChat() {
+        XCTAssertFalse(MacChatRoute.isChatActive(tabRaw: "Home"))
+        XCTAssertEqual(MacChatRoute.navigationTitle(tabRaw: "Home"), SidebarTab.home.displayName)
+        XCTAssertEqual(SidebarTab.home.rawValue, "Home")
+        XCTAssertEqual(SidebarTab.allCases.last, .artifacts, "upstream's order (shortcuts, palette) keeps the Mac tabs last, Home before Artifacts (D26); only the Mac strip puts Home first")
+        XCTAssertEqual(MacSidebarTabOrder.strip.first, .home)
+        XCTAssertEqual(MacSidebarTabOrder.strip.last, .artifacts)
+        XCTAssertEqual(SidebarTab.migrated(rawValue: "Home"), .home)
     }
 
     func testColumnMetricsFitWindowMinimum() {
@@ -107,6 +117,53 @@ final class MacHiddenChatFocusTests: XCTestCase {
         XCTAssertFalse(composer.heldFocusForRoute)
     }
 
+    // MARK: window becomes key again
+
+    func testWindowReturnFocusesTheComposer() {
+        let composer = ComposerTextView()
+        let window = makeWindow(with: [composer])
+        defer { window.close() }
+        window.makeFirstResponder(nil)
+        XCTAssertTrue(composer.focusOnWindowReturn())
+        XCTAssertTrue(window.firstResponder === composer)
+    }
+
+    func testWindowReturnLeavesAnotherTextFieldFocused() {
+        let composer = ComposerTextView()
+        let field = NSTextField(frame: .zero)
+        let window = makeWindow(with: [composer, field])
+        defer { window.close() }
+        XCTAssertTrue(window.makeFirstResponder(field), "sidebar search was being typed in")
+        XCTAssertFalse(composer.focusOnWindowReturn())
+        XCTAssertTrue(window.firstResponder is NSText)
+        XCTAssertFalse(window.firstResponder === composer)
+    }
+
+    func testWindowReturnUnderASheetDoesNothing() {
+        let composer = ComposerTextView()
+        let window = makeWindow(with: [composer])
+        defer { window.close() }
+        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
+        sheet.isReleasedWhenClosed = false
+        window.orderFront(nil)
+        window.beginSheet(sheet)
+        defer { window.endSheet(sheet) }
+        XCTAssertTrue(HostedTestSupport.waitUntil { window.attachedSheet != nil })
+        // Ordering the window front made the composer its initial first responder.
+        window.makeFirstResponder(nil)
+        XCTAssertFalse(composer.focusOnWindowReturn())
+        XCTAssertFalse(window.firstResponder === composer)
+    }
+
+    func testWindowReturnSkipsAReadOnlyComposer() {
+        let composer = ComposerTextView()
+        composer.isEditable = false
+        let window = makeWindow(with: [composer])
+        defer { window.close() }
+        window.makeFirstResponder(nil)
+        XCTAssertFalse(composer.focusOnWindowReturn())
+    }
+
     /// End to end through updateNSView: focused composer, leave chat, return.
     private struct FocusedComposer: View {
         @State var text = ""
@@ -136,13 +193,9 @@ final class MacHiddenChatFocusTests: XCTestCase {
     }
 
     func testComposerRefocusesWhenRouteReturnsToChat() {
-        // ComposerPasteTextView reads the standard defaults; put the key back after.
+        // The composer reads the standard defaults, not a suite: put the sidebar tab back after.
+        preserveStandardDefaults(MacSidebarState.tabDefaultsKey)
         let defaults = UserDefaults.standard
-        let original = defaults.object(forKey: MacSidebarState.tabDefaultsKey)
-        defer {
-            if let original { defaults.set(original, forKey: MacSidebarState.tabDefaultsKey) }
-            else { defaults.removeObject(forKey: MacSidebarState.tabDefaultsKey) }
-        }
         defaults.set(SidebarTab.sessions.rawValue, forKey: MacSidebarState.tabDefaultsKey)
         let window = HostedTestSupport.host(FocusedComposer(), size: NSSize(width: 300, height: 100))
         defer { HostedTestSupport.tearDown(window) }
@@ -160,6 +213,31 @@ final class MacHiddenChatFocusTests: XCTestCase {
         defaults.set(SidebarTab.sessions.rawValue, forKey: MacSidebarState.tabDefaultsKey)
         XCTAssertTrue(HostedTestSupport.waitUntil { window.firstResponder === composer },
                       "focus returns with the chat")
+    }
+
+    /// End to end: the hosted composer takes focus when its window becomes
+    /// key, only while chat is shown.
+    func testComposerFocusesWhenItsWindowBecomesKey() {
+        // The composer reads the standard defaults, not a suite: put the sidebar tab back after.
+        preserveStandardDefaults(MacSidebarState.tabDefaultsKey)
+        let defaults = UserDefaults.standard
+        defaults.set(SidebarTab.kanban.rawValue, forKey: MacSidebarState.tabDefaultsKey)
+        let window = HostedTestSupport.host(FocusedComposer(isFocused: false), size: NSSize(width: 300, height: 100))
+        defer { HostedTestSupport.tearDown(window) }
+        var composer: ComposerTextView?
+        XCTAssertTrue(HostedTestSupport.waitUntil { composer = composerTextView(in: window); return composer != nil })
+        guard let composer else { return }
+        window.makeFirstResponder(nil)
+
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        XCTAssertFalse(window.firstResponder === composer, "a chat hidden under Kanban does not take focus")
+
+        defaults.set(SidebarTab.sessions.rawValue, forKey: MacSidebarState.tabDefaultsKey)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: NSWindow())
+        XCTAssertFalse(window.firstResponder === composer, "another window becoming key is ignored")
+
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        XCTAssertTrue(window.firstResponder === composer, "the chat's composer takes focus")
     }
 }
 
@@ -205,29 +283,33 @@ final class MacSessionOpenSignalTests: XCTestCase {
     }
 
     /// Drives the router's real handler. Each router gets its own defaults
-    /// suite and its own NotificationCenter, so neither the live app's router
-    /// nor another test's post can reach it: every non-chat pane returns to
-    /// chat on the signal, and nothing else moves it.
+    /// suite, its own NotificationCenter and its own AppState, so neither the
+    /// live app's router, another test's post, nor another test's change to
+    /// the process-wide AppState's active session (the router also returns to
+    /// chat on that) can reach it: every non-chat pane returns to chat on the
+    /// signal, and nothing else moves it.
     func testSignalReturnsEveryPaneToChatAndNothingElseDoes() {
         for tab in [SidebarTab.bots, .cron, .kanban] {
             let suite = HostedTestSupport.makeSuite()
             defer { HostedTestSupport.dropSuite(suite) }
+            let fixture = MacSharedBaseAppStateFixture()
+            defer { fixture.tearDown() }
             let center = NotificationCenter()
             suite.defaults.set(tab.rawValue, forKey: MacSidebarState.tabDefaultsKey)
             let mounted = Mounted()
             let window = HostedTestSupport.host(
                 MacDetailRouter(defaults: suite.defaults, notificationCenter: center, chat: { MountProbe(mounted: mounted) })
-                    .environmentObject(AppStateRuntimeRegistry.shared.appState)
+                    .environmentObject(fixture.appState)
                     .frame(width: 600, height: 400),
                 size: NSSize(width: 600, height: 400))
             defer { HostedTestSupport.tearDown(window) }
-            XCTAssertTrue(HostedTestSupport.waitUntil { mounted.value }, "\(tab): router mounted")
+            XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 15) { mounted.value }, "\(tab): router mounted")
             HostedTestSupport.settle()
             XCTAssertEqual(suite.defaults.string(forKey: MacSidebarState.tabDefaultsKey), tab.rawValue,
                            "\(tab): staying put without a signal")
             center.post(name: .macSessionOpenRequested, object: nil)
             XCTAssertTrue(
-                HostedTestSupport.waitUntil {
+                HostedTestSupport.waitUntil(timeout: 15) {
                     suite.defaults.string(forKey: MacSidebarState.tabDefaultsKey) == SidebarTab.sessions.rawValue
                 },
                 "\(tab): returns to chat on the signal")

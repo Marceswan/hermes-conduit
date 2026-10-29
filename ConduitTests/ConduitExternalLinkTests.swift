@@ -5,8 +5,8 @@
 //  `conduit://session/<id>` opened by another app (a notification, a
 //  Shortcut): only plain chat links are accepted from outside; bot and
 //  Settings links open only from inside the app. Written as
-//  an extension of the existing link suite: the CI test planner is at
-//  capacity for new XCTestCase classes.
+//  an extension of the existing link suite: the CI test planner was
+//  at capacity for new XCTestCase classes when this file landed.
 //
 
 import XCTest
@@ -58,6 +58,84 @@ extension HermesVoiceGatewayTimeoutTests {
         XCTAssertEqual(ConduitAppLink(externalURL: link.url), link)
         let blank = try XCTUnwrap(URL(string: "conduit://session/abc?profile="))
         XCTAssertEqual(ConduitAppLink(externalURL: blank), .session(id: "abc"), "a blank profile is the profile in use")
+    }
+
+    func testSessionLinkCarriesItsDashboard() throws {
+        let dashboard = "0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0"
+        let link = ConduitAppLink.session(id: "abc", profile: "work", dashboard: dashboard)
+        XCTAssertEqual(link.url.absoluteString, "conduit://session/abc?profile=work&dashboard=\(dashboard)")
+        XCTAssertEqual(ConduitAppLink(url: link.url), link)
+        XCTAssertEqual(ConduitAppLink(externalURL: link.url), link)
+        let odd = try XCTUnwrap(URL(string: "conduit://session/abc?dashboard=a%20b"))
+        XCTAssertNil(ConduitAppLink(externalURL: odd))
+    }
+
+    /// A Live Activity's link outlives a dashboard switch: it opens on the
+    /// dashboard it names, the way that dashboard's notification would.
+    func testLinkToAChatOnAnotherDashboardOpensLikeItsNotification() throws {
+        let appState = try makeLinkAppState()
+        defer { clearRoutedLink() }
+        let other = UUID()
+        appState.openAppLink(.session(id: "work-chat", profile: "work", dashboard: other.uuidString))
+        XCTAssertNil(appState.errorMessage)
+        XCTAssertEqual(
+            PushNotificationService.shared.pendingTarget,
+            ConduitNotificationTarget(
+                profile: "work", sessionId: "work-chat", dashboardID: other, type: nil, isChatLink: true
+            )
+        )
+    }
+
+    func testLinkToAnotherDashboardNeverEndsACall() throws {
+        let appState = try makeLinkAppState()
+        defer { clearRoutedLink() }
+        appState.isNativeHermesCallActive = true
+        let routedBefore = PushNotificationService.shared.pendingTarget
+        let dashboardBefore = appState.activeDashboardID
+        appState.openAppLink(.session(id: "work-chat", dashboard: UUID().uuidString))
+        XCTAssertEqual(appState.errorMessage, AppLocalization.string("End the call to open a chat in another workspace."))
+        XCTAssertEqual(PushNotificationService.shared.pendingTarget, routedBefore, "nothing is routed")
+        XCTAssertEqual(appState.activeDashboardID, dashboardBefore)
+    }
+
+    /// A chat link routed before a call started can be opened after it
+    /// did: the dashboard switch it needs would end the call, so it stops.
+    func testRoutedLinkToAnotherDashboardNeverEndsACallThatStartedSince() async throws {
+        let suite = "ConduitExternalLink.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let current = SavedDashboard(id: UUID(), label: "Mac", normalizedURL: "https://links.example")
+        let other = SavedDashboard(id: UUID(), label: "Studio", normalizedURL: "https://studio.example")
+        let appState = AppState(
+            defaults: defaults,
+            loadSavedConnection: false,
+            dashboardRegistry: SavedDashboardRegistry(activeDashboardID: current.id, dashboards: [current, other])
+        )
+        appState.isNativeHermesCallActive = true
+        let opened = await appState.openNotificationTarget(ConduitNotificationTarget(
+            profile: nil, sessionId: "work-chat", dashboardID: other.id, type: nil, isChatLink: true
+        ))
+        XCTAssertFalse(opened)
+        XCTAssertEqual(appState.activeDashboardID, current.id)
+        XCTAssertEqual(appState.errorMessage, AppLocalization.string("End the call to open a chat in another workspace."))
+    }
+
+    func testLinkNamingTheDashboardInUseStaysOnIt() throws {
+        let suite = "ConduitExternalLink.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let current = SavedDashboard(id: UUID(), label: "Mac", normalizedURL: "https://links.example")
+        let appState = AppState(
+            defaults: defaults,
+            loadSavedConnection: false,
+            dashboardRegistry: SavedDashboardRegistry(activeDashboardID: current.id, dashboards: [current])
+        )
+        defer { clearRoutedLink() }
+        let routedBefore = PushNotificationService.shared.pendingTarget
+        appState.openAppLink(.session(id: "work-chat", profile: "default", dashboard: current.id.uuidString))
+        XCTAssertNil(appState.errorMessage, "the dashboard it names is the one in use")
+        XCTAssertEqual(PushNotificationService.shared.pendingTarget, routedBefore, "it opens here, not through a notification")
+        XCTAssertEqual(appState.activeDashboardID, current.id)
     }
 
     func testExternalLinkWithAnOddProfileIsIgnored() throws {

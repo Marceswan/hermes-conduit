@@ -1,11 +1,13 @@
-"""Integration coverage for the hosted smoke jobs' bash run steps.
+"""Integration coverage for the hosted test jobs' bash run steps.
 
-The smoke jobs' load-bearing behaviour - the empty-selection guard, the bounded
-sequential batching, failing fast when a batch fails - exists only inside
-`.github/workflows/ci.yml`. This module extracts those `run:` bodies from the
-workflow and executes them against a stub `xcodebuild`, so a broken loop or a
-guard that stopped guarding fails the CI-tooling suite instead of the first PR
-that touches the workflow.
+The test steps' load-bearing behaviour - the empty-selection guard, the
+failure annotations, the UI smoke job's one targeted retry, and the nightly
+unit shards' bounded sequential batching that runs every batch past a failed
+one - exists only inside `.github/workflows/ci.yml` (the smoke job) and
+`.github/workflows/nightly.yml` (the unit shards). This module extracts those
+`run:` bodies from the workflows and executes them against a stub
+`xcodebuild`, so a broken loop or a guard that stopped guarding fails the
+CI-tooling suite instead of the first run that touches the workflow.
 
 It is deliberately stdlib-only and YAML-library-free (the workflow is parsed by
 indentation, like `test_ci_workflow_contract`), and it runs the script with
@@ -25,9 +27,15 @@ from _util import SCRIPTS_DIR
 
 REPO_ROOT = os.path.dirname(SCRIPTS_DIR)
 WORKFLOW = os.path.join(REPO_ROOT, ".github", "workflows", "ci.yml")
+NIGHTLY = os.path.join(REPO_ROOT, ".github", "workflows", "nightly.yml")
 
+# The nightly unit shards' batch runner (CI v4's PR unit shards).
 UNIT_STEP = "Run this shard's unit classes"
+# The smoke job's two test steps (ci.yml).
+UNIT_SMOKE_STEP = "Run the curated unit smoke classes"
 UI_STEP = "Run the curated UI smoke suite"
+
+STEP_WORKFLOWS = {UNIT_STEP: NIGHTLY, UNIT_SMOKE_STEP: WORKFLOW, UI_STEP: WORKFLOW}
 
 # Records every invocation, and can be told to fail from the Nth one on.
 STUB = """#!/usr/bin/env bash
@@ -41,10 +49,16 @@ if [ -n "${STUB_FAIL_FIRST_N:-}" ] && [ "$count" -le "$STUB_FAIL_FIRST_N" ]; the
   fail=1
 fi
 if [ "$fail" = "1" ]; then
+  if [ -n "${STUB_FAILURE_OUTPUT:-}" ]; then
+    printf '%s\\n' "$STUB_FAILURE_OUTPUT"
+  fi
   if [ "${STUB_SILENT_FAIL:-0}" != "1" ]; then
     printf "Test Suite '%s' failed\\n" "${STUB_FLAKE_CLASS:-StubFailingTests}"
   fi
   exit 1
+fi
+if [ -n "${STUB_SUCCESS_OUTPUT:-}" ]; then
+  printf '%s\\n' "$STUB_SUCCESS_OUTPUT"
 fi
 exit 0
 """
@@ -66,7 +80,8 @@ exit 0
 
 def _step_script(step_name):
     """Return the dedented `run:` block of the named workflow step."""
-    with open(WORKFLOW, encoding="utf-8") as fh:
+    workflow = STEP_WORKFLOWS[step_name]
+    with open(workflow, encoding="utf-8") as fh:
         lines = fh.read().splitlines()
     start = None
     for i, line in enumerate(lines):
@@ -74,7 +89,8 @@ def _step_script(step_name):
             start = i
             break
     if start is None:
-        raise AssertionError("step {0!r} not found in ci.yml".format(step_name))
+        raise AssertionError("step {0!r} not found in {1}".format(
+            step_name, os.path.basename(workflow)))
     run_at = None
     for j in range(start + 1, len(lines)):
         if lines[j].strip().startswith("run:"):
@@ -101,8 +117,8 @@ def _step_script(step_name):
 
 class SmokeJobRunnerTests(unittest.TestCase):
     def setUp(self):
-        if not os.path.exists(WORKFLOW):
-            self.skipTest("ci.yml not present")
+        if not os.path.exists(WORKFLOW) or not os.path.exists(NIGHTLY):
+            self.skipTest("ci.yml or nightly.yml not present")
         self.bash = shutil.which("bash")
         if not self.bash:
             self.skipTest("bash not available")
@@ -128,8 +144,14 @@ class SmokeJobRunnerTests(unittest.TestCase):
         # "unset" case must actually be unset.
         for name in ("UNIT_BATCH_SIZE", "STUB_FAIL_AT", "STUB_FAIL_FIRST_N",
                      "STUB_FLAKE_CLASS", "STUB_SILENT_FAIL", "UNIT_CLASSES",
-                     "UI_CLASSES", "STUB_RESULT_DOC"):
+                     "UI_CLASSES", "STUB_RESULT_DOC", "STUB_FAILURE_OUTPUT",
+                     "STUB_SUCCESS_OUTPUT", "UNIT_SMOKE_LOG",
+                     "UNIT_TEST_ALLOWANCE_S"):
             env.pop(name, None)
+        # The unit step keeps each batch's log under RUNNER_TEMP.
+        env["RUNNER_TEMP"] = self.tmp
+        # The unit smoke step's log (ci-lane/ in the workflow).
+        env["UNIT_SMOKE_LOG"] = os.path.join(self.tmp, "lane", "unit-smoke.log")
         env["PATH"] = self.bin + os.pathsep + env.get("PATH", "")
         env["STUB_LOG"] = self.log
         env["XCRUN_FILE"] = os.path.join(self.tmp, "fake.xctestrun")
@@ -166,7 +188,86 @@ class SmokeJobRunnerTests(unittest.TestCase):
     def _classes(prefix, count):
         return ",".join("{0}{1}Tests".format(prefix, i) for i in range(count))
 
-    # --- unit smoke: bounded sequential batches -----------------------------
+    # --- smoke job: the curated unit classes, one invocation -----------------
+
+    SMOKE_UNIT_CLASSES = ("AppStateForegroundLifecycleTests,ProfileDiscoveryTests,"
+                          "BotModeTests,HermesClientTests,ComposerDraftStoreTests,"
+                          "MarkdownLargeDocumentTests,NotificationDashboardOwnershipTests")
+
+    def test_unit_smoke_runs_the_curated_classes_in_one_invocation(self):
+        proc = self._run_step(UNIT_SMOKE_STEP, UNIT_CLASSES=self.SMOKE_UNIT_CLASSES)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        invocations = self._invocations()
+        self.assertEqual(len(invocations), 1, invocations)
+        self.assertEqual(invocations[0].count("-only-testing:ConduitTests/"), 7)
+        for flag in ("test-without-building", "-parallel-testing-enabled NO",
+                     "-collect-test-diagnostics never", "-test-timeouts-enabled YES",
+                     "-default-test-execution-time-allowance 180",
+                     "-destination platform=iOS Simulator,id=STUB-UDID,arch=arm64"):
+            self.assertIn(flag, invocations[0])
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "lane", "unit-smoke.log")),
+                        "the invocation's output is kept for the diagnostics upload")
+
+    def test_unit_smoke_failure_fails_once_without_retry_and_annotates(self):
+        output = "\n".join([
+            "Test Case '-[ConduitTests.BotModeTests testA]' started.",
+            "/w/ConduitTests/BotModeTests.swift:12: error: -[ConduitTests.BotModeTests testA] :"
+            " XCTAssertEqual failed: (\"100%\") is not equal to (\"0%\")",
+            "Test Case '-[ConduitTests.BotModeTests testA]' failed (0.010 seconds).",
+            "Failing tests:",
+            "\tBotModeTests.testA()",
+            "",
+            "** TEST EXECUTE FAILED **",
+        ])
+        proc = self._run_step(UNIT_SMOKE_STEP, UNIT_CLASSES=self.SMOKE_UNIT_CLASSES,
+                              STUB_FAIL_FIRST_N=1, STUB_FAILURE_OUTPUT=output)
+        self.assertNotEqual(proc.returncode, 0, "a unit smoke failure must fail the step")
+        self.assertEqual(len(self._invocations()), 1,
+                         "a unit failure is a test bug: no retry of any kind")
+        notes = [line for line in proc.stdout.splitlines()
+                 if line.startswith("::error title=unit smoke failures::")]
+        self.assertEqual(len(notes), 1, proc.stdout)
+        self.assertEqual(notes[0].split("::", 2)[2].split("%0A"), [
+            "Failing tests:",
+            "\tBotModeTests.testA()",
+            "/w/ConduitTests/BotModeTests.swift:12: error: -[ConduitTests.BotModeTests testA] :"
+            " XCTAssertEqual failed: (\"100%25\") is not equal to (\"0%25\")",
+            "Test Case '-[ConduitTests.BotModeTests testA]' failed (0.010 seconds).",
+        ])
+        self.assertRegex(proc.stdout, r"(?m)^::notice title=unit smoke took [0-9]+s::"
+                         r"its output has no test totals$")
+
+    def test_unit_smoke_failure_without_test_output_still_fails(self):
+        proc = self._run_step(UNIT_SMOKE_STEP, UNIT_CLASSES=self.SMOKE_UNIT_CLASSES,
+                              STUB_FAIL_FIRST_N=1, STUB_SILENT_FAIL=1)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("::error::unit smoke failed:", proc.stdout)
+
+    def test_unit_smoke_posts_its_timing(self):
+        output = "\n".join([
+            "Test Suite 'Selected tests' passed at 2026-10-15 23:31:00.000.",
+            "\t Executed 391 tests, with 0 failures (0 unexpected) in 96.728 (97.012) seconds",
+            "** TEST EXECUTE SUCCEEDED **",
+        ])
+        proc = self._run_step(UNIT_SMOKE_STEP, UNIT_CLASSES=self.SMOKE_UNIT_CLASSES,
+                              STUB_SUCCESS_OUTPUT=output)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertRegex(proc.stdout, r"(?m)^::notice title=unit smoke took [0-9]+s::"
+                         r"391 tests ran for 97s of it$")
+
+    def test_unit_smoke_refuses_an_empty_selection_or_destination(self):
+        proc = self._run_step(UNIT_SMOKE_STEP, UNIT_CLASSES="")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(self._invocations(), [],
+                         "nothing may be invoked without a class filter")
+        self.assertIn("refusing to run unfiltered", proc.stdout + proc.stderr)
+        proc = self._run_step(UNIT_SMOKE_STEP, UNIT_CLASSES=self.SMOKE_UNIT_CLASSES,
+                              DESTINATION="")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(self._invocations(), [])
+        self.assertIn("DESTINATION is empty", proc.stdout)
+
+    # --- nightly unit shards: bounded sequential batches --------------------
 
     def test_unit_smoke_splits_into_batches_of_the_configured_size(self):
         proc = self._run_step(UNIT_STEP, UNIT_CLASSES=self._classes("Unit", 32),
@@ -184,17 +285,19 @@ class SmokeJobRunnerTests(unittest.TestCase):
         # The workflow always sets UNIT_BATCH_SIZE; the default exists so a
         # future edit that forgets it degrades to the shipped batch size,
         # not to `set -u` and not to an unbounded invocation.
-        proc = self._run_step(UNIT_STEP, UNIT_CLASSES=self._classes("Unit", 72))
+        proc = self._run_step(UNIT_STEP, UNIT_CLASSES=self._classes("Unit", 92))
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertEqual(len(self._invocations()), 3, "72 classes / 35 per batch")
-        self.assertIn("batches of at most 35", proc.stdout)
+        self.assertEqual(len(self._invocations()), 3, "92 classes / at most 45 per batch")
+        self.assertIn("in 3 batch(es) of at most 31 (cap 45)", proc.stdout)
 
-    def test_unit_smoke_keeps_the_remainder_batch(self):
+    def test_unit_smoke_splits_the_remainder_evenly(self):
+        # Every invocation pays the same fixed cost, so the fewest batches the
+        # cap allows, of even size, instead of full batches and a small rest.
         proc = self._run_step(UNIT_STEP, UNIT_CLASSES=self._classes("Unit", 20),
                               UNIT_BATCH_SIZE=8)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         sized = [i.count("-only-testing:ConduitTests/") for i in self._invocations()]
-        self.assertEqual(sized, [8, 8, 4], sized)
+        self.assertEqual(sized, [7, 7, 6], sized)
 
     def test_unit_smoke_runs_a_single_class_in_one_batch(self):
         proc = self._run_step(UNIT_STEP, UNIT_CLASSES="OnlyOneTests",
@@ -214,6 +317,88 @@ class SmokeJobRunnerTests(unittest.TestCase):
         self.assertIn("2 of 3 batch invocation(s) failed (batches 1 2)", proc.stdout)
         self.assertEqual(proc.stdout.count("::group::"), proc.stdout.count("::endgroup::"),
                          "every opened log group must be closed, including on failure")
+
+    def test_a_failed_unit_batch_annotates_its_failing_cases(self):
+        # The job log API returns only a job's last 5,000 lines, which an early
+        # batch's failures do not reach; its annotations always can be read.
+        output = "\n".join([
+            "Test Case '-[ConduitTests.Unit0Tests testA]' started.",
+            "/w/ConduitTests/Unit0Tests.swift:12: error: -[ConduitTests.Unit0Tests testA] :"
+            " XCTAssertEqual failed: (\"100%\") is not equal to (\"0%\")",
+            "Test Case '-[ConduitTests.Unit0Tests testA]' failed (0.010 seconds).",
+            "Test Case '-[ConduitTests.Unit0Tests testB]' passed (0.001 seconds).",
+            "Failing tests:",
+            "\tUnit0Tests.testA()",
+            "",
+            "** TEST EXECUTE FAILED **",
+        ])
+        proc = self._run_step(UNIT_STEP, UNIT_CLASSES=self._classes("Unit", 4),
+                              UNIT_BATCH_SIZE=2, STUB_FAIL_FIRST_N=1,
+                              STUB_FAILURE_OUTPUT=output)
+        self.assertNotEqual(proc.returncode, 0)
+        notes = [line for line in proc.stdout.splitlines()
+                 if line.startswith("::error title=unit batch 1 failures::")]
+        self.assertEqual(len(notes), 1, proc.stdout)
+        # xcodebuild's complete list first, then the messages.
+        self.assertEqual(notes[0].split("::", 2)[2].split("%0A"), [
+            "Failing tests:",
+            "\tUnit0Tests.testA()",
+            "/w/ConduitTests/Unit0Tests.swift:12: error: -[ConduitTests.Unit0Tests testA] :"
+            " XCTAssertEqual failed: (\"100%25\") is not equal to (\"0%25\")",
+            "Test Case '-[ConduitTests.Unit0Tests testA]' failed (0.010 seconds).",
+        ])
+        self.assertNotIn("unit batch 2 failures", proc.stdout)
+        self.assertIn("Test Case '-[ConduitTests.Unit0Tests testB]' passed", proc.stdout,
+                      "the batch's output still reaches the job log")
+
+    def test_each_unit_batch_posts_its_timing(self):
+        # The job log API cuts off an early batch's lines; its notice stays.
+        output = "\n".join([
+            "Test Suite 'Unit0Tests' passed at 2026-10-15 23:30:00.000.",
+            "\t Executed 2 tests, with 0 failures (0 unexpected) in 0.010 (0.020) seconds",
+            "Test Suite 'Selected tests' passed at 2026-10-15 23:31:00.000.",
+            "\t Executed 1140 tests, with 0 failures (0 unexpected) in 196.728 (197.012) seconds",
+            "** TEST EXECUTE SUCCEEDED **",
+        ])
+        proc = self._run_step(UNIT_STEP, UNIT_CLASSES=self._classes("Unit", 4),
+                              UNIT_BATCH_SIZE=2, STUB_SUCCESS_OUTPUT=output)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        notes = [line for line in proc.stdout.splitlines()
+                 if line.startswith("::notice title=unit batch ")]
+        self.assertEqual(len(notes), 2, proc.stdout)
+        for number, note in enumerate(notes, start=1):
+            self.assertRegex(note, r"^::notice title=unit batch {0} took [0-9]+s::"
+                             r"1140 tests ran for 197s of it$".format(number))
+
+    def test_a_failed_unit_batch_posts_its_timing_too(self):
+        proc = self._run_step(UNIT_STEP, UNIT_CLASSES=self._classes("Unit", 2),
+                              UNIT_BATCH_SIZE=2, STUB_FAIL_FIRST_N=1)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertRegex(proc.stdout, r"(?m)^::notice title=unit batch 1 took [0-9]+s::"
+                         r"its output has no test totals$")
+
+    def _failing_list_annotation(self, count):
+        output = "\n".join(["Failing tests:"]
+                           + ["\tUnit0Tests.test{0}()".format(n) for n in range(count)]
+                           + ["", "** TEST EXECUTE FAILED **"])
+        proc = self._run_step(UNIT_STEP, UNIT_CLASSES=self._classes("Unit", 2),
+                              UNIT_BATCH_SIZE=2, STUB_FAIL_FIRST_N=1,
+                              STUB_FAILURE_OUTPUT=output)
+        notes = [line for line in proc.stdout.splitlines()
+                 if line.startswith("::error title=unit batch 1 failures::")]
+        self.assertEqual(len(notes), 1, proc.stdout)
+        return notes[0].split("::", 2)[2].split("%0A")
+
+    def test_a_long_failing_list_is_cut_with_a_marker(self):
+        lines = self._failing_list_annotation(45)
+        self.assertEqual(lines[:2], ["Failing tests:", "\tUnit0Tests.test0()"])
+        self.assertEqual(len(lines), 41)
+        self.assertEqual(lines[-1], "\t(more failing tests in the job log)")
+
+    def test_a_failing_list_within_the_cap_is_whole(self):
+        lines = self._failing_list_annotation(39)
+        self.assertEqual(lines[-1], "\tUnit0Tests.test38()")
+        self.assertEqual(len(lines), 40)
 
     def test_unit_smoke_refuses_an_empty_selection(self):
         proc = self._run_step(UNIT_STEP, UNIT_CLASSES="", UNIT_BATCH_SIZE=8)
@@ -236,7 +421,7 @@ class SmokeJobRunnerTests(unittest.TestCase):
                               UNIT_BATCH_SIZE="08")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertEqual(len(self._invocations()), 1)
-        self.assertIn("batches of at most 8", proc.stdout)
+        self.assertIn("batch(es) of at most 8 (cap 8)", proc.stdout)
 
     # --- UI smoke: one invocation, same guards ------------------------------
 
@@ -303,6 +488,57 @@ class SmokeJobRunnerTests(unittest.TestCase):
         self.assertIn("-only-testing:ConduitUITests/ProfilePickerUITests", self._invocations()[1])
         self.assertNotIn("-only-testing:ConduitUITests/ConnectionSetupUITests", self._invocations()[1])
         self.assertNotIn("retaining entire selection", proc.stderr)
+
+    def _retry_with_case_children(self, children, failed_class_children=True):
+        """Fail ProfilePickerUITests and hang `children` under its case (or
+        under ConnectionSetupUITests' passing case); return the step."""
+        doc = json.loads(self._result_doc(["ProfilePickerUITests"]))
+        suites = doc["testNodes"][0]["children"][0]["children"]
+        target = suites[1] if failed_class_children else suites[0]
+        target["children"][0]["children"] = children
+        return self._run_step(UI_STEP,
+                              UI_CLASSES="ConnectionSetupUITests,ProfilePickerUITests",
+                              STUB_FAIL_FIRST_N=1, STUB_RESULT_DOC=json.dumps(doc))
+
+    def test_ui_failure_diagnostics_still_retry_only_the_failed_class(self):
+        # What a real failed UI case carries: the failure message (with its
+        # own result and source reference) and the screenshot attachment.
+        proc = self._retry_with_case_children([
+            {"nodeType": "Failure Message", "name": "ProfilePickerUITests.swift:119: XCTAssertTrue failed",
+             "result": "Failed",
+             "children": [{"nodeType": "Source Code Reference", "name": "ProfilePickerUITests.swift:119"}]},
+            {"nodeType": "Attachment", "name": "Screenshot at failure"},
+            {"nodeType": "Runtime Warning", "name": "Publishing changes from background threads"},
+        ])
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        retry = self._invocations()[1]
+        self.assertIn("-only-testing:ConduitUITests/ProfilePickerUITests", retry)
+        self.assertNotIn("-only-testing:ConduitUITests/ConnectionSetupUITests", retry)
+        self.assertNotIn("retaining entire selection", proc.stderr)
+
+    def test_a_passing_case_may_carry_a_runtime_warning(self):
+        proc = self._retry_with_case_children(
+            [{"nodeType": "Runtime Warning", "name": "Main thread checker"}],
+            failed_class_children=False)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("-only-testing:ConduitUITests/ConnectionSetupUITests", self._invocations()[1])
+        self.assertNotIn("retaining entire selection", proc.stderr)
+
+    def test_unknown_or_inconsistent_case_children_retain_the_entire_selection(self):
+        for children, on_failed_class in (
+            ([{"nodeType": "Repetition", "name": "Repetition 1", "result": "Failed"}], True),
+            ([{"nodeType": "Test Case", "name": "hidden()", "result": "Failed"}], True),
+            ([{"nodeType": "Attachment", "name": "x",
+               "children": [{"nodeType": "Test Case Run", "name": "run", "result": "Failed"}]}], True),
+            ([{"nodeType": "Failure Message", "name": "XCTFail", "result": "Failed"}], False),
+            ([{"nodeType": "Failure Message", "name": ""}], True),
+            ([{"nodeType": "Attachment", "name": "x", "result": "Expected Failure"}], True),
+        ):
+            proc = self._retry_with_case_children(children, on_failed_class)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertEqual(self._invocations()[1].count("-only-testing:ConduitUITests/"), 2,
+                             "children {!r} must keep the whole selection".format(children))
+            self.assertIn("retaining entire selection", proc.stderr)
 
     def test_lossy_extraction_retains_the_entire_retry_selection(self):
         for extra in (
@@ -386,14 +622,16 @@ class SmokeJobRunnerTests(unittest.TestCase):
                           "the step must export the destination the run steps use")
 
     def test_extracted_unit_step_reads_its_classes_from_the_plan_output(self):
-        script = _step_script(UNIT_STEP)
-        self.assertIn('"$UNIT_CLASSES"', script)
-        self.assertIn("UNIT_BATCH_SIZE", script)
-        self.assertIn('-destination "$DESTINATION"', script,
-                      "the destination must be the one the prepare step pinned")
-        self.assertNotIn("-test-iterations", script)
-        self.assertNotIn("-retry-tests-on-failure", script,
-                         "a genuine assertion must fail the job, not be retried")
+        for step in (UNIT_STEP, UNIT_SMOKE_STEP):
+            script = _step_script(step)
+            self.assertIn('"$UNIT_CLASSES"', script, step)
+            self.assertIn('-destination "$DESTINATION"', script,
+                          "the destination must be the one the prepare step pinned")
+            self.assertNotIn("-test-iterations", script, step)
+            self.assertNotIn("-retry-tests-on-failure", script,
+                             "a genuine assertion must fail the job, not be retried")
+        self.assertIn("UNIT_BATCH_SIZE", _step_script(UNIT_STEP))
+        self.assertNotIn("smoke-retry-classes.py", _step_script(UNIT_SMOKE_STEP))
 
     def test_shipped_smoke_selection_matches_the_documented_split(self):
         """The curated file and the plan output must agree, so the workflow's

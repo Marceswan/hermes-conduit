@@ -10,7 +10,11 @@ extension AppState {
               components.host?.lowercased() == "widget" else { return false }
         guard let link = WidgetLaunchLink(url: url) else { return true }
         cancelChatResumeRestoration()
+        newChatLaunchStartedInApp = false
         widgetLaunchCoordinator.receive(link)
+        // A New Chat's chat shows straight away, empty, while it waits for
+        // what its launch needs.
+        if showsPendingNewChat { revealChatForWidgetLaunch() }
         return true
     }
 
@@ -68,7 +72,15 @@ extension AppState {
         lease.bindTargetOwnership { [weak self] in
             self?.activeDashboardID == workspace.dashboardID && self?.activeProfile == workspace.profile
         }
-        if link.action != .open, widgetSettledCatalogOwner != workspace { return .deferred }
+        if link.action != .open, widgetSettledCatalogOwner != workspace {
+            // The link itself cancels the launch or return-to-app sync that
+            // would have read this catalog (routeWidgetLaunchURL), and a
+            // cancelled sync drops the rows it fetched. Read it here rather
+            // than wait for a load nothing else starts.
+            await loadSessionsForWidgetLaunch()
+            guard lease.isCurrent else { return .deferred }
+            if widgetSettledCatalogOwner != workspace { return .deferred }
+        }
         if link.action == .resume, let reference = link.reference, reference.kind == .dashboard {
             guard widgetSettledCatalogOwner == workspace else { return .deferred }
             guard activeProfileSessions.contains(where: { $0.id == reference.sessionID
@@ -88,6 +100,7 @@ extension AppState {
               activeProfile == workspace.profile else {
             return .failed(AppLocalization.string("WidgetLaunch.WorkspaceUnavailable"))
         }
+        revealChatForWidgetLaunch()
         switch link.action {
         case .open:
             return .handled
@@ -106,5 +119,25 @@ extension AppState {
         case .talk:
             return await openWidgetVoice(workspace: workspace, lease: lease)
         }
+    }
+
+    /// The chat a widget opens has to be what's on screen. The Sessions
+    /// drawer (left open, or put up as the return surface before the link
+    /// arrived) and the chat's own sheets would otherwise cover the new or
+    /// resumed chat, and Talk's call screen would open over a list. Voice
+    /// and Live sheets stay: one up is a call in progress, which prepare
+    /// already refuses for anything but a plain open. This runs before the
+    /// outcome is known on purpose: Talk's call screen can't present over
+    /// them, and a launch that fails reports it over the chat. A call
+    /// screen up early for its launch (Talk, Siri) needs the same room.
+    func revealChatForWidgetLaunch() {
+        dismissSidebarDrawer()
+        requestSettingsDismissal()
+        showModelPicker = false
+        showContextSheet = false
+        showWorkspaceSheet = false
+        showGatewaySheet = false
+        showAgentsSheet = false
+        dismissChatCallTranscript()
     }
 }

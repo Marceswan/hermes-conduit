@@ -20,7 +20,17 @@ final class CarPlayVoiceSceneDelegate: NSObject, CPTemplateApplicationSceneDeleg
         // UISceneDelegate callbacks run on the main thread.
         MainActor.assumeIsolated {
             interfaceController.delegate = self
+            CarPlayMapsHandoff.scene = templateApplicationScene
             CarPlayVoiceCoordinator.shared.handleConnect(interfaceController)
+        }
+    }
+
+    /// Conduit's screen in the car comes back to the front (from Maps, a
+    /// podcast app, the car's home screen). The connection may have died
+    /// while another app was up (#1060).
+    func sceneWillEnterForeground(_ scene: UIScene) {
+        MainActor.assumeIsolated {
+            CarPlayVoiceCoordinator.shared.handleSceneWillEnterForeground()
         }
     }
 
@@ -39,11 +49,16 @@ final class CarPlayVoiceSceneDelegate: NSObject, CPTemplateApplicationSceneDeleg
         }
     }
 
+    /// The phone left the car. The protocol's name is
+    /// `didDisconnectInterfaceController:`: a method named like
+    /// `didConnect`'s (`didDisconnect:`) is never called, and the call
+    /// would keep its audio session after the car is gone.
     func templateApplicationScene(
         _ templateApplicationScene: CPTemplateApplicationScene,
-        didDisconnect interfaceController: CPInterfaceController
+        didDisconnectInterfaceController interfaceController: CPInterfaceController
     ) {
         MainActor.assumeIsolated {
+            CarPlayMapsHandoff.scene = nil
             CarPlayVoiceCoordinator.shared.handleDisconnect()
         }
     }

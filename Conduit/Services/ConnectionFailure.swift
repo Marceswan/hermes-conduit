@@ -77,6 +77,13 @@ enum ConnectionFailureClassifier {
         if let bridgeError = error as? DashboardTicketBridgeError {
             return classify(bridgeError)
         }
+        if error is DashboardSignInError {
+            // Discovery answered, but with no sign-in Conduit can use.
+            return .unexpectedServerResponse
+        }
+        if let handshakeError = error as? DashboardSocketHandshakeError {
+            return classify(handshakeError)
+        }
         // URLSession surfaces transport failures as NSError values in the
         // NSURLErrorDomain (e.g. injected through URLProtocol test seams).
         // Recover the typed error so classification stays code-based even
@@ -123,6 +130,15 @@ enum ConnectionFailureClassifier {
             return classifyHTTPStatus(status, stage: .ticketMint)
         case .notReady, .requestFailed, .oversizedResponse:
             return .unexpectedServerResponse
+        }
+    }
+
+    /// A refused dashboard WebSocket upgrade: the server wants a browser
+    /// sign-in first (3xx). The remedy is a sign-in, never a password.
+    static func classify(_ handshakeError: DashboardSocketHandshakeError) -> ConnectionFailure {
+        switch handshakeError {
+        case .browserSessionRequired:
+            return .loginRequired
         }
     }
 
@@ -238,6 +254,26 @@ struct ConnectionFailurePresentation: Equatable {
         )
     }
 
+    /// The dashboard's sign-in ended under a connection that had worked:
+    /// Hermes or the sign-in service in front of it (an auth proxy whose
+    /// session the identity provider no longer renews) now sends Conduit to
+    /// sign in. Says so plainly; the login card's primary action for it is
+    /// Sign In Again, which opens the dashboard's own sign-in.
+    static var signInExpired: ConnectionFailurePresentation {
+        ConnectionFailurePresentation(
+            title: AppLocalization.string("Your dashboard sign-in expired"),
+            message: AppLocalization.string("Conduit was signed out of this dashboard, so it can’t reach Hermes. Sign in again to reconnect."),
+            helpDestination: ConnectionFailure.loginRequired.helpDestination,
+            offersRecoveryActions: true,
+            classifiedFailure: .loginRequired
+        )
+    }
+
+    /// Whether this presentation asks the user to sign in to the dashboard
+    /// again (its session is gone), as opposed to fixing an address,
+    /// network or password.
+    var asksToSignInAgain: Bool { classifiedFailure == .loginRequired }
+
     /// A validation notice (form-state feedback, not a connection failure).
     /// No recovery actions: the fix is editing the form, not retrying.
     static func notice(title: String, message: String = "") -> ConnectionFailurePresentation {
@@ -289,9 +325,17 @@ extension ConnectionFailure {
         case .timedOut:
             return AppLocalization.string("The dashboard did not respond in time. Check the address, the network connection, and whether the Hermes dashboard is running.")
         case .offline:
+            #if os(macOS) // MAC: Wi-Fi or Ethernet; a Mac has no cellular (Task 9b, fix round 1)
+            return AppLocalization.string("Mac.ConnectionFailure.Offline")
+            #else // MAC:
             return AppLocalization.string("This device doesn’t appear to have a network connection. Reconnect to Wi-Fi or cellular and try again.")
+            #endif // MAC:
         case .tlsUntrusted:
+            #if os(macOS) // MAC: macOS, not iOS, does not trust the certificate (Task 9b, fix round 1)
+            return AppLocalization.string("Mac.ConnectionFailure.TLSUntrusted")
+            #else // MAC:
             return AppLocalization.string("Conduit reached the server, but iOS does not trust its TLS certificate. If you use your own certificate authority, make sure its root certificate is installed and trusted on this device.")
+            #endif // MAC:
         case .tlsBadDate:
             return AppLocalization.string("The dashboard certificate is expired or not yet valid. Check the certificate dates and this device’s date and time.")
         case .tlsFailure:

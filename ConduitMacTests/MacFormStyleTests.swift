@@ -131,7 +131,7 @@ final class MacComposerSheetTests: XCTestCase {
         var body: some View {
             Color.clear.frame(width: 900, height: 1000)
                 .sheet(isPresented: $shown) {
-                    KanbanTaskComposerView(initialStatus: "todo").environmentObject(store)
+                    KanbanTaskComposerView(initialStatus: "todo", expectedContext: nil).environmentObject(store)
                 }
                 .environmentObject(AppStateRuntimeRegistry.shared.appState)
         }

@@ -1,3 +1,4 @@
+// Mac twin of Conduit/CarPlay/CarPlayVoiceCoordinator.swift and CarPlayVoiceTemplateFactory.swift (R2); keep in sync (PORTING_LEDGER).
 import Foundation
 
 /// CarPlay has no Mac counterpart. Shared code reports voice state changes
@@ -24,6 +25,10 @@ struct CarPlayVoiceControls: Equatable {
     /// Listen starts a new one. Fixed like the other titles, so a different
     /// chat also needs a new template.
     var chatTitle: String? = nil
+    /// Hermes' spoken reply can be stopped with one tap (Stop): classic
+    /// Voice, Gemini Live and Grok Live. GPT-Live stops when the driver
+    /// speaks.
+    var canStopReply = true
 
     /// The classic mode's Listen continues the current chat, so a new chat
     /// is its own button. A live call always starts fresh.

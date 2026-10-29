@@ -9,6 +9,7 @@
 //  starts, watches, and cancels sessions it created.
 //
 
+import Combine
 import Foundation
 import OSLog
 
@@ -122,6 +123,9 @@ struct VoiceBackgroundJob: Identifiable, Equatable {
     var outcomeDelivered = false
     /// Whether the current needs-input episode was announced.
     var inputRequestDelivered = false
+    /// The command approval the job's turn waits on, which the call can
+    /// answer out loud; nil while it waits on a question, or not at all.
+    var waitingApproval: ApprovalActivity?
     /// Consecutive liveness polls that found no registry row for the job.
     /// One miss can be transient; two settle it.
     var consecutiveMissedPolls = 0
@@ -234,13 +238,26 @@ struct VoiceJobCallAnchor: Equatable {
 }
 
 /// Something a live voice model put on the call screen (its
-/// `show_on_screen` tool): a chart, a table, steps, images, as Markdown.
+/// `show_on_screen` tool): a chart, a table, steps, images, as Markdown,
+/// and maps and places as rich cards.
 struct VoiceScreenCard: Identifiable, Equatable {
     let id: UUID
     let title: String
     let markdown: String
     let callAnchor: VoiceJobCallAnchor
     let shownAt: Date
+    var cards: [RichCard] = []
+    /// The cards as normalized JSON, which the saved call keeps.
+    var cardsJSON: Data? = nil
+
+    /// The live names of its cards: a later card with one of them is the
+    /// same thing brought up to date.
+    var liveNames: Set<String> { Set(cards.compactMap(\.live)) }
+
+    /// Whether `other` brings one of this card's live cards up to date.
+    func isUpdated(by other: VoiceScreenCard) -> Bool {
+        !liveNames.isDisjoint(with: other.liveNames)
+    }
 }
 
 /// What the voice conversation should do with a pending job update.
@@ -304,6 +321,11 @@ struct VoiceBackgroundJobBackend {
         // Said to the model, not shown: not localized.
         throw VoiceAudioError.unavailable("Reading chats isn't available on this call.")
     }
+    /// Answers the approval a job's turn waits on (`once` or `deny`), as its
+    /// card in the chat would. False when Hermes no longer waits on it.
+    var respondToApproval: @MainActor (_ approval: ApprovalActivity, _ choice: String, _ profile: String?) async throws -> Bool = { _, _, _ in
+        throw HermesError.notConnected
+    }
 }
 
 /// The attached chat started another turn (a typed message) between the
@@ -331,6 +353,14 @@ struct VoiceThreadTarget: Equatable, Codable {
         guard !sessionID.isEmpty else { return false }
         return sessionID == runtimeSessionID || sessionID == storedSessionID
     }
+
+    /// The link that opens this chat. A Bot Chat opens through its bot,
+    /// never by its id on this profile.
+    var appLink: ConduitAppLink? {
+        if let bot = profile, !bot.isEmpty { return .bot(profile: bot) }
+        guard let id = [storedSessionID, runtimeSessionID].compactMap({ $0 }).first(where: { !$0.isEmpty }) else { return nil }
+        return .session(id: id)
+    }
 }
 
 /// Seam the Voice controller uses for spoken job commands and hand-backs.
@@ -352,6 +382,9 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
     /// times what it can say, since flattening only shrinks it.
     static let readBackSourceLimit = maximumResultCharacters * 4
     static let maximumTitleCharacters = 60
+    /// A shown screen's title: conduit_show takes up to 80 (the plugin's
+    /// MAX_CARD_TITLE_CHARS), and the call screen has two lines for it.
+    static let maximumScreenTitleCharacters = 80
     /// Settled, already-announced jobs kept for the Voice sheet and status.
     static let maximumSettledJobs = 10
     static let missedPollsBeforeSettling = 2
@@ -394,6 +427,11 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
     /// through its jobs' completion events, so the poll settles nearly all
     /// of them.
     var readsRepliesWhenSettling = false
+    /// The same for a phone Grok Live call (#599): its start_job is
+    /// answered at once, so a job the poll settles would otherwise be
+    /// heard as a pointer to its chat. Kept apart from the Watch's flag so
+    /// neither call's end turns the other's off.
+    var liveCallReadsReplies = false
 
     /// Called whenever a notice becomes pending, so the host can let an
     /// idle voice conversation deliver it.
@@ -415,9 +453,22 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
     /// A call only CarPlay shows, a minimised one, or a backgrounded app
     /// has nowhere to show it. Nil counts as up.
     var liveCallScreenIsVisible: (@MainActor () -> Bool)?
+    /// A card the live model just put on screen, for the saved call.
+    var onScreenCardShown: (@MainActor (VoiceScreenCard) -> Void)?
     /// Opens a chat a call's search found, the call going on minimised.
     /// False when Conduit can't open chats right now. Nil: no chat opens.
     var openChat: (@MainActor (_ match: VoiceChatMatch) -> Bool)?
+    /// Tools the running live call may call directly (the user's shared
+    /// health data, calendar and phone status from the host, and the phone's
+    /// own calendar tools), set by AppState as each call starts.
+    var hostTools: [VoiceHostTool] = []
+    /// The mode `hostTools` were prepared for.
+    var hostToolsMode: LiveVoiceModeName?
+    /// Runs one of `hostTools` (AppState: a sealed /voice-tools/call).
+    var runHostTool: (@MainActor (_ tool: VoiceHostTool, _ arguments: [String: Any]) async -> [String: String])?
+    /// What keeps an eye on the phone for the running call (Hermes' calendar
+    /// changes while it runs); dropping it stops the watch.
+    var hostToolsWatch: AnyCancellable?
     /// The running call's last chat search, numbered from 1 as the model
     /// heard it.
     private(set) var chatMatches: [VoiceChatMatch] = []
@@ -427,6 +478,8 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
     /// The running (or last) live call; jobs it starts carry it, so the
     /// call screen shows only its own jobs.
     @Published private(set) var liveCallID: UUID?
+    /// When the running call began, for the call screen's clock.
+    @Published private(set) var liveCallStartedAt: Date?
     /// What live calls put on screen, newest last.
     @Published private(set) var screenCards: [VoiceScreenCard] = []
     /// Whether the running call holds each new request for the user's OK
@@ -481,6 +534,7 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
         if callbackCallID != nil { finishCallbacks() }
         let callID = UUID()
         liveCallID = callID
+        liveCallStartedAt = Date()
         self.asksBeforeSending = asksBeforeSending
         callbackCallID = callID
         callbackLater = .none
@@ -538,10 +592,39 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
         callDecisions?.waitsOn()
     }
 
-    /// The live model answered the approval the call is about with the
-    /// user's words.
+    /// The live model answered, with the user's words, the approval the
+    /// call from Hermes is about, or else the one a job of the call waits on.
     func answerApproval(choice: String) async -> VoiceCallDecisionOutcome {
-        await callDecisions?.approve(choice) ?? .nothingPending
+        if callWaitsOn == .approval { return await callDecisions?.approve(choice) ?? .nothingPending }
+        let waiting = jobsWaitingOnApproval
+        // Which one a bare yes meant would be a guess.
+        guard waiting.count <= 1 else { return .severalWaiting }
+        guard let jobID = waiting.first else { return await callDecisions?.approve(choice) ?? .nothingPending }
+        return await answerJobApproval(jobID, choice: choice)
+    }
+
+    /// The call's jobs waiting on the user's OK for a command.
+    var jobsWaitingOnApproval: [UUID] {
+        jobs.filter { $0.status == .needsInput && $0.waitingApproval != nil }.map(\.id)
+    }
+
+    /// Answers the approval `jobID` waits on, `once` or `deny`, as its card
+    /// would; the job goes on (or stops) from there.
+    func answerJobApproval(_ jobID: UUID, choice: String) async -> VoiceCallDecisionOutcome {
+        guard choice == "once" || choice == "deny",
+              let job = job(jobID), let approval = job.waitingApproval else { return .nothingPending }
+        let resolved: Bool
+        do {
+            resolved = try await backend.respondToApproval(approval, choice, job.profile)
+        } catch {
+            return .failed
+        }
+        if let index = jobs.firstIndex(where: { $0.id == jobID }), jobs[index].waitingApproval == approval {
+            jobs[index].waitingApproval = nil
+            if resolved, jobs[index].status == .needsInput { jobs[index].status = .running }
+        }
+        guard resolved else { return .expired }
+        return choice == "deny" ? .denied : .approved
     }
 
     /// The live model answered the question the call is about.
@@ -736,7 +819,7 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
                 if let job { queueChatNote(ChatNote(text: refusal.modelNote(title: job.title))) }
             } catch {
                 // Tried again on the next renewal; the hold covers the gap.
-                hermesCallbackLogger.notice("Call watch step failed: \(error.localizedDescription, privacy: .public)")
+                hermesCallbackLogger.notice("Call watch step failed: \(LogRedaction.message(error), privacy: .public)")
             }
         }
     }
@@ -859,7 +942,7 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
                     break
                 }
             } catch {
-                hermesCallbackLogger.notice("Call watch not settled at hang-up: \(error.localizedDescription, privacy: .public)")
+                hermesCallbackLogger.notice("Call watch not settled at hang-up: \(LogRedaction.message(error), privacy: .public)")
                 // A call running now keeps watching and holding it on its
                 // renewals. With none, a watch on the host waits for the
                 // next call like a settled one: a release that failed may
@@ -944,23 +1027,60 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
 
     /// Puts `markdown` on the running live call's screen. Nil when no live
     /// call is running or there is nothing to show.
+    /// `cards` are rich cards RichCardSchema has normalized; with them,
+    /// the Markdown may be empty.
     @discardableResult
-    func showOnScreen(title: String, markdown: String) -> VoiceScreenCard? {
+    func showOnScreen(title: String, markdown: String, cards: [[String: Any]] = []) -> VoiceScreenCard? {
+        showOnScreen(title: title, markdown: markdown, cards: cards, evenIfHidden: false)
+    }
+
+    /// `evenIfHidden`: the call screen is minimised or the phone locked, and
+    /// Hermes has already told the user it's there, so the card waits in the
+    /// call's strip (and opens if the screen comes back soon) instead of
+    /// being dropped.
+    @discardableResult
+    func showOnScreen(title: String, markdown: String, cards: [[String: Any]] = [],
+                      evenIfHidden: Bool) -> VoiceScreenCard? {
         let body = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !body.isEmpty, liveCallScreenIsVisible?() ?? true, let anchor = currentCallAnchor else { return nil }
+        let rich = RichCard.cards(cards)
+        guard !body.isEmpty || !rich.isEmpty, evenIfHidden || liveCallScreenIsVisible?() ?? true,
+              let anchor = currentCallAnchor else { return nil }
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let card = VoiceScreenCard(
             id: UUID(),
-            title: String(trimmedTitle.prefix(Self.maximumTitleCharacters)),
-            markdown: Self.clippedScreenMarkdown(body),
+            title: String(trimmedTitle.prefix(Self.maximumScreenTitleCharacters)),
+            markdown: body.isEmpty ? "" : Self.clippedScreenMarkdown(body),
             callAnchor: anchor,
-            shownAt: Date()
+            shownAt: Date(),
+            cards: rich,
+            cardsJSON: rich.isEmpty ? nil : try? JSONSerialization.data(withJSONObject: cards)
         )
+        onScreenCardShown?(card)
+        // A live card replaces the call's earlier one of the same name; a
+        // screen that showed something else too keeps the rest.
+        let live = card.liveNames
+        if !live.isEmpty {
+            screenCards = screenCards.compactMap { shown in
+                guard shown.callAnchor.callID == anchor.callID, shown.isUpdated(by: card) else { return shown }
+                var kept = shown
+                kept.cards.removeAll { $0.live.map(live.contains) ?? false }
+                return kept.cards.isEmpty && kept.markdown.isEmpty ? nil : kept
+            }
+        }
         screenCards.append(card)
         if screenCards.count > Self.maximumScreenCards {
             screenCards.removeFirst(screenCards.count - Self.maximumScreenCards)
         }
         return card
+    }
+
+    func callHostTool(_ tool: VoiceHostTool, arguments: [String: Any]) async -> [String: String] {
+        // Only a tool this call was given: its runner checks that tool's
+        // consent, so another one must not reach it.
+        guard hostTools.contains(where: { $0.name == tool.name && $0.key == tool.key }), let runHostTool else {
+            return ["error": "That isn't available on this call."]
+        }
+        return await runHostTool(tool, arguments)
     }
 
     /// Looks up the user's earlier chats for the running call. A query that
@@ -1036,7 +1156,14 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
     static func clippedScreenMarkdown(_ markdown: String) -> String {
         guard markdown.count > maximumScreenCardCharacters else { return markdown }
         // Room for a closing fence, so the card stays within the limit.
-        var lines = String(markdown.prefix(maximumScreenCardCharacters - 16)).components(separatedBy: "\n")
+        return closingCutFence(String(markdown.prefix(maximumScreenCardCharacters - 16)))
+    }
+
+    /// `cut`, the start of longer markdown, with its last line dropped (it
+    /// may be half a fence) and a code fence it leaves open closed. Never
+    /// longer than `cut` plus a newline and a three-character fence.
+    static func closingCutFence(_ cut: String) -> String {
+        var lines = cut.components(separatedBy: "\n")
         // A last line cut mid-way may be half a fence; drop it.
         if lines.count > 1 { lines.removeLast() }
         // Read fences as MarkdownText does: a line starting ``` or ~~~
@@ -1384,6 +1511,17 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
         liveThread = thread
     }
 
+    /// A call that says nothing but its own replies (Local Live) drops what
+    /// would be said to it: notes on the attached chat's turns, its own turns
+    /// among them, and any job update.
+    func dropPendingNotices() {
+        chatNotes.removeAll()
+        // Each take consumes a notice; the cap only guards the loop, far
+        // above what the job limits (3 running, 10 settled) can queue.
+        var dropped = 0
+        while dropped < 256, takePendingNotice() != nil { dropped += 1 }
+    }
+
     func detachLiveThread() {
         liveThread = nil
         chatNotes.removeAll()
@@ -1454,7 +1592,7 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
             heard = Self.cancelledNotice(job.title)
         case .needsInput:
             guard job.inputRequestDelivered else { return }
-            heard = Self.waitingNotice(job.title)
+            heard = Self.waitingNotice(for: job)
         case .starting, .running:
             return
         }
@@ -1764,6 +1902,11 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
     /// boundaries, where the ledger no longer belongs to the active gateway.
     func reset() {
         generation &+= 1
+        // A call's host tools carry its mode's consent: never the next call's.
+        hostTools = []
+        hostToolsMode = nil
+        runHostTool = nil
+        hostToolsWatch = nil
         pollTask?.cancel()
         pollTask = nil
         threadTask?.cancel()
@@ -1779,6 +1922,7 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
         noticesInFlight.removeAll()
         liveThread = nil
         liveCallID = nil
+        liveCallStartedAt = nil
         callOpening = nil
         // Watches the host holds lapse there and call as usual.
         callbackCallID = nil
@@ -1830,7 +1974,7 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
                 // too: the liveness poll then settles the job, as finished
                 // rather than cancelled.
                 return
-            case .messageComplete(_, _, let content, _):
+            case .messageComplete(_, _, let content, _, _):
                 if Self.isInterruptionNotice(content) { return }
                 guard followUp == .accepted else {
                     jobs[index].heldCompletion = content
@@ -1847,7 +1991,7 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
             default:
                 break
             }
-        } else if case .messageComplete(_, _, let content, _) = event, Self.isInterruptionNotice(content) {
+        } else if case .messageComplete(_, _, let content, _, _) = event, Self.isInterruptionNotice(content) {
             // A notice for a reply cut off by a correction is never a result.
             return
         }
@@ -1856,11 +2000,17 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
             if before.status == .needsInput || before.status == .starting {
                 jobs[index].status = .running
                 jobs[index].inputRequestDelivered = false
+                jobs[index].waitingApproval = nil
             }
-        case .approval, .clarify, .inputPrompt:
+        case .approval(_, let activity):
             jobs[index].status = .needsInput
             jobs[index].inputRequestDelivered = false
-        case .messageComplete(_, let messageID, let content, _):
+            jobs[index].waitingApproval = activity
+        case .clarify, .inputPrompt:
+            jobs[index].status = .needsInput
+            jobs[index].inputRequestDelivered = false
+            jobs[index].waitingApproval = nil
+        case .messageComplete(_, let messageID, let content, _, _):
             // A replay of a voice turn's own completion, once it no longer
             // owns the chat, is not a typed turn.
             if before.isThreadTurn { rememberChatTurn(messageID, reply: content) }
@@ -1883,6 +2033,7 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
         if !jobs[index].status.isActive {
             jobs[index].followUp = nil
             jobs[index].heldCompletion = nil
+            jobs[index].waitingApproval = nil
         }
         if jobs[index] != before {
             // Read before notifying: the host delivers the notice right away,
@@ -1900,7 +2051,7 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
     /// user typed it (here or on another device). The call is told what was
     /// asked and answered, as context it can use, not something to say.
     private func noteUnownedChatTurn(_ event: StreamEvent, sessionID: String) {
-        guard case .messageComplete(_, let messageID, let content, _) = event,
+        guard case .messageComplete(_, let messageID, let content, _, _) = event,
               let thread = liveThread, backend.threadOwnsSession(thread, sessionID) else { return }
         let reply = (content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !reply.isEmpty else { return }
@@ -2001,6 +2152,12 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
         }
     }
 
+    /// Hermes asked for a calendar change while the call runs: the model
+    /// hears it at the next turn and asks the user.
+    func notePhoneChange(_ text: String) {
+        queueChatNote(ChatNote(text: text))
+    }
+
     static let screenshotRemovedPrompt = "[Background only. The user removed the screenshot they shared: the chat's next turn won't carry one. Don't respond to this note now.]"
 
     /// Removes and returns the oldest exchange waiting for the call.
@@ -2036,7 +2193,7 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
     private static func sessionID(for event: StreamEvent) -> String? {
         switch event {
         case .messageStart(let id), .messageDelta(let id, _), .reasoningDelta(let id, _),
-             .messageComplete(let id, _, _, _), .messageError(let id, _), .messageInterrupted(let id),
+             .messageComplete(let id, _, _, _, _), .messageError(let id, _), .messageInterrupted(let id),
              .toolStart(let id, _, _, _), .toolComplete(let id, _, _, _),
              .approval(let id, _), .clarify(let id, _), .inputPrompt(let id, _):
             return id
@@ -2115,7 +2272,7 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
             if job.isThreadTurn, job.outcomeDelivered || job.isDetachedThreadTurn || liveThread == nil { continue }
             if job.status == .needsInput, !job.inputRequestDelivered {
                 jobs[index].inputRequestDelivered = true
-                return (.speak(Self.waitingNotice(job.title)), job.id)
+                return (.speak(Self.waitingNotice(for: job)), job.id)
             }
             guard !job.status.isActive, !job.outcomeDelivered else { continue }
             jobs[index].outcomeDelivered = true
@@ -2148,6 +2305,16 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
 
     static func waitingNotice(_ title: String) -> String {
         AppLocalization.string("\(title) is waiting for your approval or an answer. Open it in Conduit to respond.")
+    }
+
+    /// What a job waiting on the user says: the command it asks to run,
+    /// which a yes or no answers in the call, or else to open it.
+    static func waitingNotice(for job: VoiceBackgroundJob) -> String {
+        guard let approval = job.waitingApproval else { return waitingNotice(job.title) }
+        let asked = approval.description.trimmingCharacters(in: .whitespacesAndNewlines)
+        let what = asked.isEmpty ? approval.command : asked
+        let clipped = what.count > 200 ? String(what.prefix(200)) + "…" : what
+        return AppLocalization.string("\(job.title) needs your OK to go on: \(clipped). Say yes to allow it once, or no.")
     }
 
     /// With Hermes' reason, when there is one, as the call is told it: its
@@ -2270,7 +2437,7 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
                 settledThreadTurns.append(job.id)
                 continue
             }
-            if readsRepliesWhenSettling, !job.isThreadTurn, job.result == nil {
+            if readsRepliesWhenSettling || liveCallReadsReplies, !job.isThreadTurn, job.result == nil {
                 settledJobs.append(job.id)
                 continue
             }
@@ -2280,6 +2447,7 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
             if jobs[index].result == nil { jobs[index].result = job.heldCompletion }
             jobs[index].followUp = nil
             jobs[index].heldCompletion = nil
+            jobs[index].waitingApproval = nil
             changed = true
         }
         for id in settledJobs {
@@ -2302,6 +2470,7 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
                 if $0.result == nil { $0.result = $0.heldCompletion }
                 $0.followUp = nil
                 $0.heldCompletion = nil
+                $0.waitingApproval = nil
             }
             changed = true
         }
@@ -2325,6 +2494,7 @@ final class VoiceBackgroundJobSupervisor: ObservableObject, VoiceBackgroundJobHa
                 if $0.result == nil { $0.result = $0.heldCompletion }
                 $0.followUp = nil
                 $0.heldCompletion = nil
+                $0.waitingApproval = nil
             }
             changed = true
         }
@@ -2803,6 +2973,83 @@ enum VoiceThreadRouting {
         words.contains { answerNegations.contains($0) || $0.hasSuffix("n't") }
     }
 
+    /// A bare no said anywhere ("hell no", "that's a no"), not just as the
+    /// lead.
+    private static let answerBareNos: Set<String> = ["no", "nope", "nah", "nop", "nein", "nee", "nö"]
+
+    /// Whether the words say no or negate anywhere in them ("absolutely
+    /// not", "I don't want it", "hell no"), not only at the start. Read as
+    /// `heldRequestAnswer` reads them, apostrophes kept. A yes that starts
+    /// with a no ("no problem") is the caller's to accept first.
+    static func containsNegation(_ answer: String) -> Bool {
+        let words = fold(answer)
+            .split(whereSeparator: { !($0.isLetter || $0.isNumber || $0 == "'") })
+            .map(String.init)
+            .filter { !fillers.contains($0) }
+        return negates(words) || words.contains { answerBareNos.contains($0) }
+    }
+
+    /// Whether a no or a not yet is said anywhere in the words, not only
+    /// at the start: "send it, no wait", "raczej nie", "şimdi gönderme",
+    /// "지금 보내지 마", "我不想发", "送らないで". Stricter than
+    /// `heldRequestAnswer`, so a phrase the agent supplied as a yes can't
+    /// carry one. A yes that starts with a no ("no problem") is the
+    /// caller's to accept first.
+    static func containsRefusal(_ answer: String) -> Bool {
+        if containsNegation(answer) { return true }
+        // A no or a wait as the lead ("不", "Momento", "Sebentar"), as
+        // `heldRequestAnswer` reads it.
+        switch heldRequestAnswer(answer) {
+        case .no, .notYet: return true
+        default: break
+        }
+        let folded = fold(answer)
+        let words = folded
+            .split(whereSeparator: { !($0.isLetter || $0.isNumber || $0 == "'") })
+            .map(String.init)
+            .filter { !fillers.contains($0) }
+        if answerRefusalPhraseWords.contains(where: { phrase in
+            words.indices.contains { words[$0...].starts(with: phrase) }
+        }) { return true }
+        if words.contains(where: koreanNegates) { return true }
+        // "别" / "別" says don't when it opens a clause or comes with the
+        // verb; inside "别人" or "特別" it doesn't.
+        let clauses = folded.split(whereSeparator: { !($0.isLetter || $0.isNumber) })
+        if clauses.contains(where: { $0.hasPrefix("别") || $0.hasPrefix("別") }) { return true }
+        return cjkRefusals.contains { folded.contains($0) }
+    }
+
+    private static let answerRefusalPhraseWords = (answerNoLeads + answerNotYetLeads)
+        .filter { !answerTimeWords.contains($0) }
+        .map { $0.split(separator: " ").map(String.init) }
+
+    /// Not-yet leads that are only a length of time: on their own they ask
+    /// to wait, but in the middle of words ("the second one", "in a
+    /// moment") they aren't a no.
+    private static let answerTimeWords: Set<String> = [
+        "moment", "augenblick", "sekunde", "momento", "segundo", "minuto", "minutinho", "pera",
+        "секунду", "секундочку", "минуту", "минутку",
+        "chwileczkę", "chwilkę", "chwilę", "chwila", "sekundę", "minutę", "momencik",
+        "sebentar", "semenit", "sedetik",
+    ]
+
+    /// Korean says no in the verb: "보내지 마(세요)", "보내지마", "하지 말아요",
+    /// "보내지 않을래요".
+    private static func koreanNegates(_ word: String) -> Bool {
+        word.contains("않") || ["마", "마요", "마세요", "말아", "말아요", "말고", "말라"].contains(word)
+            || ["지마", "지마요", "지마세요", "지말아", "지말아요"].contains { word.hasSuffix($0) }
+    }
+
+    /// Chinese and Japanese have no word breaks: a no or negation anywhere
+    /// in them ("我不想发", "先别发", "送らないで", "やめて"). The negating
+    /// verb forms, not the bare characters, so "不错", "不好意思",
+    /// "問題ありません" and "すみません" stay a yes.
+    private static let cjkRefusals = cjkAnswerNoLeads + cjkAnswerNotYetLeads.filter { $0 != "ちょっと" } + [
+        "不想", "不要", "不用", "不必", "不发", "不發", "不送", "别发", "別發", "别送", "別送", "没有", "沒有", "不需", "先不",
+        "ないで", "なくて", "しない", "らない", "しません", "送りません", "いりません", "要りません",
+        "できません", "やめ", "だめ", "ダメ", "嫌",
+    ]
+
     static func heldRequestAnswer(_ answer: String) -> HeldRequestAnswer {
         let spoken = answer.trimmingCharacters(in: .whitespacesAndNewlines)
         if let cjk = cjkHeldRequestAnswer(spoken) { return cjk }
@@ -2898,7 +3145,7 @@ enum VoiceThreadRouting {
     ]
     static let cjkAnswerYesLeads = [
         "はい", "うん", "ええ", "お願いします", "オッケー", "オーケー", "どうぞ", "送って", "送信して", "そうして",
-        "好的", "好啊", "好呀", "好吧", "行吧", "行啊", "是的", "对的", "当然", "没问题", "发吧", "发送吧",
+        "好的", "好啊", "好呀", "好吧", "行吧", "行啊", "是的", "对的", "当然", "没有问题", "沒有問題", "没问题", "沒問題", "发吧", "发送吧",
     ]
     /// Answers that count only as a clause of their own, since requests
     /// start with them too: "好，改成四个人" and "可以，发吧" are a yes,
@@ -2908,7 +3155,7 @@ enum VoiceThreadRouting {
     /// Words that add nothing to an answer ("好的，谢谢", "はい、お願いします").
     static let cjkAnswerFillers = [
         "ありがとうございます", "ありがとう", "お願いします", "お願い", "ください", "どうも", "です", "ます", "ね", "よ",
-        "送って", "没问题", "谢谢", "谢了", "发吧", "发送", "请", "吧", "了", "啊", "呀", "呢", "的",
+        "送って", "没有问题", "沒有問題", "没问题", "沒問題", "谢谢", "谢了", "发吧", "发送", "请", "吧", "了", "啊", "呀", "呢", "的",
     ].sorted { $0.count > $1.count }
     /// After a yes, these turn it around or question it ("好，但是…",
     /// "嗯，让我想想", "はい、でも…"): asked again.

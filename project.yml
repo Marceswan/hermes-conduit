@@ -18,6 +18,11 @@ settings:
     CODE_SIGN_STYLE: Manual
     MARKETING_VERSION: "0.1.15"
     CURRENT_PROJECT_VERSION: "162"
+    # The push relay used when Settings is blank (Info.plist
+    # ConduitDefaultRelayURL). Empty means https://push.milim.dev; a build
+    # signed for its own relay sets an https URL, e.g.
+    # xcodebuild CONDUIT_DEFAULT_RELAY_URL=https://push.example.com
+    CONDUIT_DEFAULT_RELAY_URL: ""
 packages:
   # GPT-Live voice runs over WebRTC; Apple ships no WebRTC stack. Prebuilt
   # Google WebRTC as a binary xcframework, pinned to an exact release.
@@ -28,6 +33,9 @@ packages:
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
     exactVersion: 2.10.0
+# Each shipped target that calls a required-reason API keeps its
+# PrivacyInfo.xcprivacy at its folder's root; xcodegen bundles it with that
+# folder's sources (ConduitTests/PrivacyManifestTests.swift checks them).
 targets:
   Conduit:
     type: application
@@ -55,7 +63,9 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_IDENTITY: "Apple Distribution"
         CODE_SIGN_ENTITLEMENTS: Conduit/Conduit.entitlements
-        PROVISIONING_PROFILE_SPECIFIER: "Conduit App Store"
+        # Regenerated with HealthKit and the Location Push Service Extension
+        # capability (com.apple.developer.location.push).
+        PROVISIONING_PROFILE_SPECIFIER: "Hermes Conduit App Store"
         # The draft-stripping phase below deletes lprojs it can't declare
         # up front, which the user-script sandbox would refuse.
         ENABLE_USER_SCRIPT_SANDBOXING: NO
@@ -66,6 +76,12 @@ targets:
       - target: ConduitNotificationService
       # The configured launcher widgets are embedded with the app.
       - target: ConduitWidgets
+      # Answers the agent's on-demand locate while Conduit isn't running
+      # (designs/location-awareness.md section 12).
+      - target: ConduitLocationPush
+      # Share text, links, pictures and files from other apps into a
+      # Conduit draft (#812).
+      - target: ConduitShareExtension
     postBuildScripts:
       # A draft language (Info.plist ConduitDraftLanguages) is compiled from
       # the String Catalogs like any other; drop its lproj so it never ships.
@@ -87,6 +103,9 @@ targets:
     deploymentTarget: "10.0"
     sources:
       - path: ConduitWatch
+        # The widget extension's own code (ConduitWatchWidgets).
+        excludes:
+          - "Widgets/**"
       - path: Shared/WatchVoice
       # The iPhone's own Gemini Live code: the Watch runs the same session
       # (designs/apple-watch-voice-direct.md).
@@ -94,6 +113,9 @@ targets:
       # The iPhone's Grok Live session, which a Watch call to Grok runs
       # through the host's audio bridge.
       - path: Shared/GrokLive
+      # The iPhone's Local Live session, which a Watch call to the user's
+      # own speech server runs through the host's audio bridge.
+      - path: Shared/LocalLive
       # GPT-Live's events, which the Watch reads and answers through the
       # host's audio bridge (designs/apple-watch-gpt-live.md).
       - path: Conduit/Voice/GPTLive/GPTLiveProtocol.swift
@@ -114,6 +136,37 @@ targets:
         # capability to the App ID. Production, as the iPhone's: the relay
         # sends only to production APNs.
         CODE_SIGN_ENTITLEMENTS: ConduitWatch/ConduitWatch.entitlements
+    dependencies:
+      # Embedded as ConduitWatch.app/PlugIns/ConduitWatchWidgets.appex.
+      - target: ConduitWatchWidgets
+  # The Watch's complication and its control for the Action button,
+  # Control Center and the Smart Stack: both start a call
+  # (ConduitWatch/TalkToHermesIntent.swift). watchOS 26, where Watch apps
+  # first get controls. Signed automatically, as the Watch app.
+  ConduitWatchWidgets:
+    type: app-extension
+    platform: watchOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: ConduitWatch/Widgets
+        excludes:
+          - "Info.plist"
+      # The control's intent runs in the app, so both build it.
+      - path: ConduitWatch/TalkToHermesIntent.swift
+      - path: ConduitWatch/Localizable.xcstrings
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.milim.relay.watchkitapp.widgets
+        PRODUCT_NAME: ConduitWatchWidgets
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: ConduitWatch/Widgets/Info.plist
+        TARGETED_DEVICE_FAMILY: "4"
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "Apple Development"
+        PROVISIONING_PROFILE_SPECIFIER: ""
   ConduitNotificationService:
     # Decrypts end-to-end encrypted notifications before iOS shows them
     # (#431). APNs still targets com.milim.relay; this App ID has no Push
@@ -124,13 +177,16 @@ targets:
     sources:
       - path: ConduitNotificationService
       - path: Shared
-        # The Watch app's code, Gemini Live and Grok Live, which the
-        # extension never uses.
+        # The Watch app's code, Gemini Live, Grok Live, Local Live and
+        # location sharing, which the extension never uses.
         excludes:
           - "WatchVoice/**"
           - "GeminiLive/**"
           - "GrokLive/**"
+          - "LocalLive/**"
           - "Widgets/**"
+          - "Location/**"
+          - "ShareDraft/**"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.milim.relay.NotificationService
@@ -140,6 +196,39 @@ targets:
         CODE_SIGN_IDENTITY: "Apple Distribution"
         CODE_SIGN_ENTITLEMENTS: ConduitNotificationService/ConduitNotificationService.entitlements
         PROVISIONING_PROFILE_SPECIFIER: "Conduit Notification Service App Store"
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+  ConduitLocationPush:
+    # The Location Push Service Extension: iOS launches it for a `location`
+    # push (the agent's on-demand locate) and it posts one sealed fix
+    # straight to the Hermes host. Reads the sharing binding, the device key
+    # and the host pass the app keeps in the App Group (Shared/Location).
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: ConduitLocationPush
+      - path: Shared
+        excludes:
+          - "WatchVoice/**"
+          - "GeminiLive/**"
+          - "GrokLive/**"
+          - "LocalLive/**"
+          - "Widgets/**"
+          - "ShareDraft/**"
+    # Maps lookups the host asks this iPhone for run on MapKit
+    # (Shared/Location/MapsEngine.swift, designs/maps-v1-contract.md).
+    dependencies:
+      - sdk: MapKit.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.milim.relay.LocationPush
+        PRODUCT_NAME: ConduitLocationPush
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: ConduitLocationPush/Info.plist
+        CODE_SIGN_IDENTITY: "Apple Distribution"
+        CODE_SIGN_ENTITLEMENTS: ConduitLocationPush/ConduitLocationPush.entitlements
+        PROVISIONING_PROFILE_SPECIFIER: "Conduit Location Push App Store"
         APPLICATION_EXTENSION_API_ONLY: YES
         SKIP_INSTALL: YES
   ConduitWidgets:
@@ -178,6 +267,48 @@ targets:
             --info-plist "$SRCROOT/$INFOPLIST_FILE" \
             --bundle "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH" \
             --development-language "$DEVELOPMENT_LANGUAGE"
+  ConduitShareExtension:
+    # Conduit in the share sheet (#812): reads what another app shared and
+    # leaves it as a draft in the launcher App Group's ShareInbox folder,
+    # with the chat it goes to, picked from the chat index the app keeps
+    # there for its widgets. It never contacts Hermes and holds no
+    # credentials; the app shows the draft in that chat's composer.
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: ConduitShareExtension
+        excludes:
+          - "Info.plist"
+          - "ConduitShareExtension.entitlements"
+      - path: Shared/ShareDraft
+      # The widgets' chat index, read only.
+      - path: Shared/Widgets/WidgetSnapshot.swift
+      - path: Shared/Widgets/WidgetSnapshotStore.swift
+      - path: Conduit/Localizable.xcstrings
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.milim.relay.ShareExtension
+        PRODUCT_NAME: ConduitShareExtension
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: ConduitShareExtension/Info.plist
+        CODE_SIGN_IDENTITY: "Apple Distribution"
+        CODE_SIGN_ENTITLEMENTS: ConduitShareExtension/ConduitShareExtension.entitlements
+        PROVISIONING_PROFILE_SPECIFIER: "Conduit Share Extension App Store"
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    postBuildScripts:
+      # The app's draft languages (Conduit/Info.plist) never ship here either.
+      - name: Strip draft localizations
+        basedOnDependencyAnalysis: false
+        script: |
+          python3 "$SRCROOT/scripts/strip-draft-localizations.py" \
+            --info-plist "$SRCROOT/Conduit/Info.plist" \
+            --bundle "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH" \
+            --development-language "$DEVELOPMENT_LANGUAGE"
   ConduitTests:
     type: bundle.unit-test
     platform: iOS
@@ -193,6 +324,18 @@ targets:
     platform: iOS
     sources:
       - path: ConduitUITests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: Conduit
+  # App Store screenshots against the demo dashboard; run only by
+  # .github/workflows/app-store-screenshots.yml (skips without CONDUIT_DEMO_URL).
+  ConduitScreenshots:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: ConduitScreenshots
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -264,6 +407,7 @@ targets:
           - "CarPlay/CarPlayVoiceArtwork.swift"
           # UIKit-backed views (R2): Mac twins in ConduitMac/Chat and ConduitMac/Views.
           - "Views/Components/SelectableTextView.swift"
+          - "Views/Components/SelectableTextCanvas.swift"
           - "Views/Components/ComposerPasteTextView.swift"
           - "Views/Components/MarkdownSelectionHandles.swift"
           - "Views/Components/ImagePicker.swift"
@@ -271,6 +415,23 @@ targets:
           - "Views/ChatScrollSurfaceLocator.swift"
           # DEBUG-only iOS selection fixture (UIView animations); only ConduitApp uses it.
           - "Views/SelectionFixtureView.swift"
+          # Current Mac sign-in and Connection Setup kept (R2, user decision 2026-10-21 item 2B):
+          # frozen copies in ConduitMac/Login. Views/Login/* stays compiled (RootView, SavedDashboardsView use it).
+          - "Views/LoginView.swift"
+          - "Views/ConnectionSetupView.swift"
+          - "Views/ConnectionSetupForm.swift"
+          - "Views/ConnectionSetupComponents.swift"
+          # The passkey notice is iOS wording (R2): the iOS sign-in WebView refuses passkeys. Mac twin of
+          # AuthWebSignInSheet (without the notice) in ConduitMac/Login/AuthWebSignInSheet.swift.
+          - "Views/Login/AuthWebPasskeyNotice.swift"
+          # Usage descriptions in the iOS catalog say "iPhone" and name iOS-only keys (R2): the Mac twin
+          # ConduitMac/Resources/InfoPlist.xcstrings holds the keys of the Mac Info.plist only.
+          - "InfoPlist.xcstrings"
+          # ActivityKit is unavailable on macOS (R2): stub in ConduitMac/Stubs/LiveTurnActivitiesStub.swift.
+          - "Services/LiveTurnActivities.swift"
+          - "Services/LiveActivityUpdateThrottle.swift"
+          # A Focus filter that only drives phone sharing, which is off on Mac (R2): nothing else uses the type.
+          - "Intents/HermesFocusFilter.swift"
     settings:
       base:
         PRODUCT_NAME: Conduit
@@ -298,6 +459,47 @@ targets:
       - target: AppIntentsUIKitOverlay
       - package: WebRTC
       - package: Sparkle
+      # Widgets (D25): embedded as Conduit.app/Contents/PlugIns/ConduitMacWidgets.appex.
+      - target: ConduitMacWidgets
+        embed: true
+        codeSign: true
+  # Mac desktop widgets (D25, docs/superpowers/specs/2026-10-16-mac-widgets-design.md).
+  # The iOS widget sources, shared by path (nothing is copied). Sandboxed, as a
+  # macOS widget extension must be; the team-prefixed group needs no profile.
+  ConduitMacWidgets:
+    type: app-extension
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: ConduitWidgets
+        excludes:
+          - "Info.plist"
+          - "ConduitWidgets.entitlements"
+          - "Resources/**"
+          # ActivityKit is unavailable on macOS (R2): the Live Activity widget is not in the Mac bundle.
+          - "HermesTurnLiveActivity.swift"
+      - path: ConduitWidgets/Resources/Assets.xcassets
+        buildPhase: resources
+      - path: Shared/Widgets
+      - path: Conduit/Localizable.xcstrings
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.meswan.hermes.mac.widgets
+        PRODUCT_NAME: ConduitMacWidgets
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: ConduitMacWidgets/Info.plist
+        CODE_SIGN_ENTITLEMENTS: ConduitMacWidgets/ConduitMacWidgets.entitlements
+        # Keep equal to ConduitMac; scripts/mac-release.sh overrides both for every target.
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        DEVELOPMENT_TEAM: 58XKRG9VMA
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "Developer ID Application"
+        PROVISIONING_PROFILE_SPECIFIER: ""
+        ENABLE_HARDENED_RUNTIME: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
   ConduitMacTests:
     type: bundle.unit-test
     platform: macOS
@@ -307,6 +509,8 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+        # MacTestKeychainGuard: every test gets an in-memory Keychain, never the user's.
+        INFOPLIST_KEY_NSPrincipalClass: MacTestKeychainGuard
         DEVELOPMENT_TEAM: 58XKRG9VMA
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "Developer ID Application"

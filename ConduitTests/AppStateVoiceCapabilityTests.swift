@@ -225,8 +225,16 @@ final class AppStateVoiceCapabilityTests: XCTestCase {
 
     // MARK: - Composer voice button visibility (#194)
 
-    func testComposerHidesVoiceButtonWhenVoiceWasNeverEnabled() {
+    /// Voice is on out of the box: a switch never touched shows the button.
+    func testComposerShowsVoiceButtonWhenVoiceWasNeverTouched() {
         let appState = makeAppState(snapshot: readySnapshot, isVoiceEnabled: false)
+
+        XCTAssertTrue(appState.showsComposerVoiceButton)
+    }
+
+    func testComposerHidesVoiceButtonWhenTheUserTurnedVoiceOff() async {
+        let appState = makeAppState(snapshot: readySnapshot, isVoiceEnabled: false)
+        _ = await appState.setVoiceEnabled(false)
 
         XCTAssertFalse(appState.showsComposerVoiceButton)
     }
@@ -271,8 +279,12 @@ final class AppStateVoiceCapabilityTests: XCTestCase {
 
     /// Switching away from a voice-enabled profile must not leak its state
     /// while `isVoiceEnabled` still holds the previous profile's value.
-    func testSwitchingToNeverEnabledProfileHidesVoiceButton() async {
+    func testSwitchingToProfileWithVoiceOffHidesVoiceButton() async {
         let appState = makeAppState(snapshot: readySnapshot, isVoiceEnabled: false)
+        let original = appState.activeProfile
+        appState.setActiveProfileForTesting("other-profile")
+        _ = await appState.setVoiceEnabled(false)
+        appState.setActiveProfileForTesting(original)
         _ = await appState.setVoiceEnabled(true)
 
         appState.setActiveProfileForTesting("other-profile")
@@ -376,16 +388,16 @@ final class AppStateVoiceCapabilityTests: XCTestCase {
         XCTAssertEqual(lastWord.text, "Meet me at the stadium")
     }
 
-    func testACallFromANewEmptyChatIsNotAttachedToIt() {
-        XCTAssertFalse(AppState.attachesLiveVoiceCall(chatHasMessages: false, turnState: .idle),
-                       "an empty chat has nothing to continue")
-        XCTAssertTrue(AppState.attachesLiveVoiceCall(chatHasMessages: true, turnState: .idle))
-        XCTAssertTrue(AppState.attachesLiveVoiceCall(chatHasMessages: false, turnState: .synchronizing),
-                      "a chat still loading may have history")
-        XCTAssertTrue(AppState.attachesLiveVoiceCall(chatHasMessages: false, turnState: .running),
-                      "its first message is on its way")
-        XCTAssertFalse(AppState.attachesLiveVoiceCall(chatHasMessages: false, turnState: .reconnecting),
-                       "reconnecting doesn't give an empty chat anything to continue")
+    func testVoiceInASavedCallsRowResumesThatCall() {
+        XCTAssertEqual(AppState.savedCallToResume(source: .composer, openCallID: "call-1", canResume: true), "call-1",
+                       "the chat's voice button picks the call up rather than starting another row")
+        XCTAssertNil(AppState.savedCallToResume(source: .composer, openCallID: nil, canResume: true),
+                     "a chat that isn't a saved call gets a call attached to it")
+        XCTAssertNil(AppState.savedCallToResume(source: .composer, openCallID: "call-1", canResume: false),
+                     "with saving off (or no live mode) there is no row to add to")
+        XCTAssertNil(AppState.savedCallToResume(source: .siri, openCallID: "call-1", canResume: true),
+                     "only the chat's own buttons resume it")
+        XCTAssertNil(AppState.savedCallToResume(source: .newCall, openCallID: "call-1", canResume: true))
     }
 
     func testTheQuickHintCountsEachAttachedCallOnce() {
@@ -437,12 +449,24 @@ final class AppStateVoiceCapabilityTests: XCTestCase {
         }
     }
 
+    func testBackdropGlowMatchesABlurredDisc() {
+        let radius = 181.0, blur = 72.0
+        let values = ConduitGlowProfile.computeIntensities(radius: radius, blur: blur)
+        XCTAssertEqual(values.count, ConduitGlowProfile.stopCount)
+        // A disc blurred by a Gaussian is 1 - e^(-R²/2σ²) bright at its centre.
+        XCTAssertEqual(values[0], 1 - exp(-radius * radius / (2 * blur * blur)), accuracy: 0.005)
+        XCTAssertEqual(values.last ?? 1, 0, accuracy: 0.005, "Three blurs out, the glow has faded")
+        XCTAssertEqual(zip(values, values.dropFirst()).filter { $0.0 < $0.1 }.count, 0, "Brightness only falls outwards")
+        XCTAssertEqual(ConduitGlowProfile.intensities(radius: radius, blur: blur), values)
+    }
+
     func testBackdropMotionPolicyGatesPowerAndLifecycle() {
         XCTAssertTrue(ConduitBackdropMotionPolicy.shouldAnimate(
             drifts: true,
             sceneIsActive: true,
             reduceMotion: false,
             lowPowerMode: false,
+            idle: false,
             thermalState: .nominal
         ))
         XCTAssertTrue(ConduitBackdropMotionPolicy.shouldAnimate(
@@ -450,6 +474,7 @@ final class AppStateVoiceCapabilityTests: XCTestCase {
             sceneIsActive: true,
             reduceMotion: false,
             lowPowerMode: false,
+            idle: false,
             thermalState: .fair
         ))
 
@@ -459,22 +484,25 @@ final class AppStateVoiceCapabilityTests: XCTestCase {
             sceneIsActive: true,
             reduceMotion: false,
             lowPowerMode: false,
+            idle: false,
             thermalState: .nominal
         ))
 
-        let pausedConditions: [(Bool, Bool, Bool, ProcessInfo.ThermalState)] = [
-            (false, false, false, .nominal), // app inactive/background
-            (true, true, false, .nominal),  // Reduce Motion
-            (true, false, true, .nominal),  // Low Power Mode
-            (true, false, false, .serious),  // serious thermal pressure
-            (true, false, false, .critical)
+        let pausedConditions: [(Bool, Bool, Bool, Bool, ProcessInfo.ThermalState)] = [
+            (false, false, false, false, .nominal), // app inactive/background
+            (true, true, false, false, .nominal),  // Reduce Motion
+            (true, false, true, false, .nominal),  // Low Power Mode
+            (true, false, false, true, .nominal),  // nobody has used the app for a while
+            (true, false, false, false, .serious),  // serious thermal pressure
+            (true, false, false, false, .critical)
         ]
-        for (sceneIsActive, reduceMotion, lowPowerMode, thermalState) in pausedConditions {
+        for (sceneIsActive, reduceMotion, lowPowerMode, idle, thermalState) in pausedConditions {
             XCTAssertFalse(ConduitBackdropMotionPolicy.shouldAnimate(
                 drifts: true,
                 sceneIsActive: sceneIsActive,
                 reduceMotion: reduceMotion,
                 lowPowerMode: lowPowerMode,
+                idle: idle,
                 thermalState: thermalState
             ))
         }
@@ -640,6 +668,50 @@ final class AppStateVoiceCapabilityTests: XCTestCase {
         }
         XCTAssertEqual(LiveVoiceCallSheet.captionLines(from: lines).map(\.text), ["two", "three"])
         XCTAssertEqual(LiveVoiceCallSheet.captionLines(from: Array(lines.prefix(1))).map(\.text), ["one"])
+    }
+
+    /// Both call sheets (Classic voice and the live calls) caption through
+    /// `LiveVoiceCallSheet.captionLines`.
+    func testCallCaptionsShowRepliesWithoutMarkdownMarks() {
+        let question = VoiceConversationTranscriptEntry(speaker: .user, text: "Quelle est la capitale du Québec ?")
+        let reply = VoiceConversationTranscriptEntry(speaker: .assistant, text: "La capitale du Québec est **Québec** (la ville de Québec).")
+        let shown = LiveVoiceCallSheet.captionLines(from: [question, reply])
+        XCTAssertEqual(shown.map(\.text), ["Quelle est la capitale du Québec ?", "La capitale du Québec est Québec (la ville de Québec)."])
+        XCTAssertEqual(shown.map(\.id), [question.id, reply.id], "the lines keep their identity, so the captions don't re-animate")
+
+        // A reply still streaming in, cut inside a bold span.
+        let streaming = VoiceConversationTranscriptEntry(speaker: .assistant, text: "La capitale du Québec est **Qué")
+        XCTAssertEqual(LiveVoiceCallSheet.captionLines(from: [streaming]).map(\.text), ["La capitale du Québec est Qué"])
+
+        let marked = VoiceConversationTranscriptEntry(speaker: .assistant, text: "## Plan\n- *Pack* the `tent`\n- See [the map](https://x.y)")
+        XCTAssertEqual(LiveVoiceCallSheet.captionLines(from: [marked]).map(\.text), ["Plan Pack the tent See the map"])
+
+        // What the user said is never rewritten.
+        let said = VoiceConversationTranscriptEntry(speaker: .user, text: "what is 5 ** 3 and **this**")
+        XCTAssertEqual(LiveVoiceCallSheet.captionLines(from: [said]).map(\.text), ["what is 5 ** 3 and **this**"])
+    }
+
+    func testCallCaptionsNameChatLinksButNotOnesWrittenAsCode() {
+        defer { HermesSessionReference.updateTitles([:]) }
+        HermesSessionReference.updateTitles(["abc": "GPU setup"])
+        let reply = VoiceConversationTranscriptEntry(
+            speaker: .assistant,
+            text: "It's in **@session:default/abc**. Type `@session:default/abc` to open it."
+        )
+        XCTAssertEqual(
+            LiveVoiceCallSheet.captionLines(from: [reply]).map(\.text),
+            ["It's in GPU setup. Type @session:default/abc to open it."],
+            "the link is named, the one in inline code stays as written without its backticks"
+        )
+        let said = VoiceConversationTranscriptEntry(speaker: .user, text: "open @session:default/abc")
+        XCTAssertEqual(LiveVoiceCallSheet.captionLines(from: [said]).map(\.text), ["open @session:default/abc"])
+    }
+
+    func testTheV2CallClockShowsMinutesThenHours() {
+        XCTAssertEqual(V2CallHeaderTitle.clock(0), "0:00")
+        XCTAssertEqual(V2CallHeaderTitle.clock(12.9), "0:12")
+        XCTAssertEqual(V2CallHeaderTitle.clock(245), "4:05")
+        XCTAssertEqual(V2CallHeaderTitle.clock(3729), "1:02:09")
     }
 
     func testTheDictateButtonStartsStopsAndCallsOffAStart() {

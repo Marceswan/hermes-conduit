@@ -5,7 +5,8 @@
 //  Voice background jobs (issue #163, phase 1): spoken job commands, the
 //  job supervisor's ledger, and the Voice controller's hand-back of finished
 //  jobs. Written as extensions of existing Voice suites: the CI test planner
-//  is at capacity for new XCTestCase classes.
+//  was at capacity for new XCTestCase classes when this file landed
+//  (its sharded plan carries new classes again).
 //
 
 import SwiftUI
@@ -106,6 +107,10 @@ final class FakeVoiceJobBackend {
     var parksRedirect = false
     let redirectParked = AwaitableCounter()
     private var parkedRedirect: CheckedContinuation<Void, Never>?
+    /// When true, the next cancel parks until `releaseCancel()`.
+    var parksCancel = false
+    let cancelParked = AwaitableCounter()
+    private var parkedCancel: CheckedContinuation<Void, Never>?
 
     /// Strong captures: tests routinely discard the fake (`let (supervisor, _)
     /// = makeSupervisor()`), and the supervisor's backend must keep it alive
@@ -133,6 +138,13 @@ final class FakeVoiceJobBackend {
                 if let error = self.submitError { throw error }
             },
             cancel: { [self] id in
+                if self.parksCancel {
+                    self.parksCancel = false
+                    await withCheckedContinuation { continuation in
+                        self.parkedCancel = continuation
+                        self.cancelParked.increment()
+                    }
+                }
                 if let cancelError = self.cancelError { throw cancelError }
                 self.cancelled.append(id)
             },
@@ -181,6 +193,12 @@ final class FakeVoiceJobBackend {
     func releaseRedirect() {
         let continuation = parkedRedirect
         parkedRedirect = nil
+        continuation?.resume()
+    }
+
+    func releaseCancel() {
+        let continuation = parkedCancel
+        parkedCancel = nil
         continuation?.resume()
     }
 }
@@ -273,6 +291,37 @@ extension VoiceConversationControllerTests {
         XCTAssertEqual(labels, ["line 0", "job", "line 1", "line 2"])
     }
 
+    func testALiveScreenCardReplacesTheCallsEarlierOneOfItsName() {
+        let (supervisor, _) = makeSupervisor()
+        supervisor.liveCallTranscript = { [] }
+        supervisor.beginLiveCall()
+        let order: [String: Any] = ["type": "status", "live": "order", "status": ["state": "Preparing"]]
+        let steps: [String: Any] = ["type": "steps", "steps": [["text": "Wait."]]]
+        let first = supervisor.showOnScreen(title: "Order", markdown: "", cards: [order, steps])
+        XCTAssertEqual(first?.liveNames, ["order"])
+        supervisor.showOnScreen(title: "Other", markdown: "pie")
+        var update = order
+        update["status"] = ["state": "On its way", "phase": "active"]
+        let second = supervisor.showOnScreen(title: "Order", markdown: "", cards: [update])
+        XCTAssertEqual(supervisor.screenCards.count, 3)
+        XCTAssertEqual(supervisor.screenCards[0].cards.map(\.kind), [.steps], "the earlier screen keeps its other card")
+        XCTAssertEqual(supervisor.screenCards.last?.cards.first?.status?.state, "On its way")
+        XCTAssertTrue(first.map { $0.isUpdated(by: second!) } ?? false)
+
+        supervisor.showOnScreen(title: "Order", markdown: "", cards: [order])
+        XCTAssertEqual(supervisor.screenCards.filter { !$0.liveNames.isEmpty }.count, 1, "only the newest stays")
+    }
+
+    func testAScreenKeepsTheLongestTitleThePluginAccepts() {
+        let (supervisor, _) = makeSupervisor()
+        supervisor.liveCallTranscript = { [] }
+        supervisor.beginLiveCall()
+        // conduit_show takes titles of up to 80 characters (MAX_CARD_TITLE_CHARS).
+        let eighty = String(repeating: "t", count: 80)
+        XCTAssertEqual(supervisor.showOnScreen(title: eighty, markdown: "pie")?.title, eighty)
+        XCTAssertEqual(supervisor.showOnScreen(title: eighty + "u", markdown: "pie")?.title, eighty)
+    }
+
     func testScreenCardsBelongToTheLiveCallAndSitWhereTheyWereShown() async {
         let (supervisor, _) = makeSupervisor()
         XCTAssertNil(supervisor.showOnScreen(title: "Chart", markdown: "pie"), "No call, no screen")
@@ -326,6 +375,12 @@ extension VoiceConversationControllerTests {
         XCTAssertEqual(supervisor.screenCards.count, VoiceBackgroundJobSupervisor.maximumScreenCards)
         XCTAssertEqual(supervisor.screenCards.last?.title, "Card \(VoiceBackgroundJobSupervisor.maximumScreenCards)")
         XCTAssertFalse(supervisor.screenCards.contains { $0.title == "Chart" }, "The oldest cards go first")
+
+        screenIsVisible = false
+        XCTAssertNil(supervisor.showOnScreen(title: "Hidden", markdown: "pie"))
+        XCTAssertEqual(supervisor.showOnScreen(title: "Kept", markdown: "pie", evenIfHidden: true)?.title, "Kept",
+                       "What Hermes already said is on screen waits for the call screen")
+        XCTAssertEqual(supervisor.screenCards.last?.title, "Kept")
 
         supervisor.beginLiveCall()
         XCTAssertTrue(supervisor.callScreenCards(supervisor.liveCallID).isEmpty, "A later call shows only its own cards")
@@ -484,6 +539,25 @@ extension VoiceConversationControllerTests {
         }
     }
 
+    /// #599: a phone Grok Live call's start_job answers at once, so the
+    /// call hears the job's reply as a Watch call does.
+    func testAGrokLiveCallHearsTheReplyOfAJobThePollSettled() async {
+        let (supervisor, fake) = makeSupervisor()
+        supervisor.liveCallReadsReplies = true
+        fake.threadReply = "It's 9:41 PM on the Hermes host."
+        _ = await supervisor.startJob(instructions: "what time is it on the host")
+        fake.liveRows = [LiveSessionStatus(runtimeSessionId: "rt-1", storedSessionId: "st-1", status: "idle")]
+
+        await supervisor.pollOnce()
+
+        XCTAssertEqual(supervisor.jobs.first?.status, .finished)
+        XCTAssertEqual(supervisor.jobs.first?.result, "It's 9:41 PM on the Hermes host.")
+        guard case .submit(let prompt, _)? = supervisor.takePendingNotice() else {
+            return XCTFail("the call hears the result, not \"Open it in Conduit\"")
+        }
+        XCTAssertTrue(prompt.contains("9:41 PM"))
+    }
+
     func testAPhoneCallsPollLeavesASettledJobsReplyInItsChat() async {
         let (supervisor, fake) = makeSupervisor()
         fake.threadReply = "The server is fine."
@@ -574,6 +648,57 @@ extension VoiceConversationControllerTests {
         XCTAssertEqual(supervisor.jobs.first?.status, .running, "activity after the answer resumes the job")
         supervisor.observe(.approval(sessionId: "rt-1", activity: approval))
         XCTAssertNotNil(supervisor.takePendingNotice(), "a new approval is a new episode")
+    }
+
+    func testALiveCallAnswersAJobsApprovalOutLoud() async {
+        let fake = FakeVoiceJobBackend()
+        var backend = fake.backend
+        var answered: [(ApprovalActivity, String)] = []
+        var stillWaiting = true
+        backend.respondToApproval = { approval, choice, _ in
+            answered.append((approval, choice))
+            return stillWaiting
+        }
+        let supervisor = VoiceBackgroundJobSupervisor(backend: backend, pollInterval: .seconds(3_600))
+        _ = await supervisor.startJob(instructions: "clean the logs")
+        let approval = ApprovalActivity(sessionId: "rt-1", requestId: "req-1", command: "rm -rf /var/log/old",
+                                        description: "Delete old logs", choices: nil, allowPermanent: false,
+                                        smartDenied: false, status: .pending, choice: nil, error: nil)
+        let outcome1 = await supervisor.answerApproval(choice: "once")
+        XCTAssertEqual(outcome1, .nothingPending, "Nothing waits yet")
+
+        supervisor.observe(.approval(sessionId: "rt-1", activity: approval))
+        XCTAssertEqual(supervisor.jobsWaitingOnApproval.count, 1)
+        // The update says what it asks and that a yes answers it.
+        guard case .speak(let text)? = supervisor.takePendingNotice() else { return XCTFail("needs-input is spoken") }
+        XCTAssertTrue(text.contains("Delete old logs"), text)
+        XCTAssertTrue(text.contains("Say yes"), text)
+
+        let outcome2 = await supervisor.answerApproval(choice: "once")
+        XCTAssertEqual(outcome2, .approved)
+        XCTAssertEqual(answered.map(\.1), ["once"])
+        XCTAssertEqual(answered.first?.0.requestId, "req-1")
+        XCTAssertEqual(supervisor.jobs.first?.status, .running)
+        XCTAssertTrue(supervisor.jobsWaitingOnApproval.isEmpty)
+
+        // Hermes stopped waiting meanwhile: too late.
+        supervisor.observe(.approval(sessionId: "rt-1", activity: approval))
+        stillWaiting = false
+        let outcome3 = await supervisor.answerApproval(choice: "deny")
+        XCTAssertEqual(outcome3, .expired)
+
+        // Two jobs waiting: a bare yes can't say which.
+        _ = await supervisor.startJob(instructions: "restart the server")
+        supervisor.observe(.approval(sessionId: "rt-1", activity: approval))
+        var second = approval
+        second.sessionId = "rt-2"
+        second.requestId = "req-2"
+        supervisor.observe(.approval(sessionId: "rt-2", activity: second))
+        let outcome4 = await supervisor.answerApproval(choice: "once")
+        XCTAssertEqual(outcome4, .severalWaiting)
+        // Hermes going on ends that job's wait.
+        supervisor.observe(.toolStart(sessionId: "rt-2", toolName: "terminal", toolInput: nil))
+        XCTAssertEqual(supervisor.jobsWaitingOnApproval.count, 1, "Activity after the answer ends the wait")
     }
 
     func testActiveJobLimitRefusesWithoutCreatingASession() async {

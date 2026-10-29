@@ -5,6 +5,7 @@
 
 import AVFAudio
 import Foundation
+import os
 
 @MainActor
 final class AVSpeechPlaybackService: NSObject, SpeechPlaybackService {
@@ -44,6 +45,13 @@ final class AVSpeechPlaybackService: NSObject, SpeechPlaybackService {
     /// AVAudioPlayerNode fires them for unplayed buffers when stopped — can
     /// never drain the next stream's counters.
     private(set) var playbackGeneration: UInt64 = 0
+    /// Mirror of `playbackGeneration` readable off the main actor: session
+    /// notifications arrive on any thread and must capture the lifetime they
+    /// observed before hopping.
+    private let observedPlaybackGeneration = OSAllocatedUnfairLock<UInt64>(initialState: 0)
+    nonisolated private var generationForSessionObservers: UInt64 {
+        observedPlaybackGeneration.withLock { $0 }
+    }
     private var drainWaiters: [CheckedContinuation<Void, Never>] = []
     private var encodedPlayer: AVAudioPlayer?
     /// Set once `finish()` is requested: when the last scheduled buffer (or
@@ -73,6 +81,14 @@ final class AVSpeechPlaybackService: NSObject, SpeechPlaybackService {
     /// player→mixer path voice conversations use; any other rate inserts a
     /// pitch-preserving time stretch.
     var playbackRate: Float = 1.0
+    /// Read Aloud's player (#759): every stream gets the time stretch, even
+    /// at 1x, so the speed can change while it plays. Only Read Aloud's own
+    /// instance (MessageReadAloudController's) sets it; conversations play
+    /// through instances of their own and keep the plain graph. Not reset by
+    /// stop(), which every stream start runs first.
+    var keepsRateAdjustable = false
+    /// The time stretch of the current stream, when it has one.
+    private var timePitch: AVAudioUnitTimePitch?
     /// Plays silently while set (a live call's speaker mute, #487), across
     /// engine rebuilds. Playback and its drains run as usual.
     var isMuted = false {
@@ -119,14 +135,13 @@ final class AVSpeechPlaybackService: NSObject, SpeechPlaybackService {
         stop()
         interruptedStandaloneStream = false
         let rate = Self.clampedRate(playbackRate)
-        // Effect units render Float32 only, so a stretched stream schedules
-        // float buffers (converted in enqueuePCM16) instead of the Int16 ones
-        // the direct path plays.
-        let stretched = rate != 1
-        let format = stretched
-            ? AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)
-            : AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: sampleRate, channels: 1, interleaved: true)
-        guard let format else {
+        // Every stream schedules Float32 buffers (converted in enqueuePCM16).
+        // An Int16 player→mixer connection is rejected by some devices'
+        // mixers (an iPhone 12 on iOS 18, #969), and AVAudioEngine raises
+        // that as an Objective-C exception that aborts the app. Effect units
+        // render Float32 only too.
+        let stretched = rate != 1 || keepsRateAdjustable
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) else {
             throw VoiceAudioError.unavailable(AppLocalization.string("The gateway reported an unsupported PCM format."))
         }
         lease = try coordinator.acquire(ownershipIntent)
@@ -143,6 +158,7 @@ final class AVSpeechPlaybackService: NSObject, SpeechPlaybackService {
                         engine.attach(timePitch)
                         engine.connect(player, to: timePitch, format: format)
                         engine.connect(timePitch, to: engine.mainMixerNode, format: format)
+                        self.timePitch = timePitch
                     } else {
                         engine.connect(player, to: engine.mainMixerNode, format: format)
                     }
@@ -189,17 +205,9 @@ final class AVSpeechPlaybackService: NSObject, SpeechPlaybackService {
         let frames = AVAudioFrameCount(alignedBytes / 2)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return 0 }
         buffer.frameLength = frames
-        if let destination = buffer.int16ChannelData {
-            pcm.withUnsafeBytes { source in
-                guard let base = source.baseAddress else { return }
-                destination[0].assign(from: base.assumingMemoryBound(to: Int16.self), count: Int(frames))
-            }
-        } else if let destination = buffer.floatChannelData {
-            pcm.withUnsafeBytes { source in
-                Self.convertPCM16(source, into: destination[0], frames: Int(frames))
-            }
-        } else {
-            return 0
+        guard let destination = buffer.floatChannelData else { return 0 }
+        pcm.withUnsafeBytes { source in
+            Self.convertPCM16(source, into: destination[0], frames: Int(frames))
         }
         pendingBuffers += 1
         // A stream stays started across drains (Gemini Live keeps it open
@@ -228,7 +236,7 @@ final class AVSpeechPlaybackService: NSObject, SpeechPlaybackService {
             player.delegate = self
             // AVAudioPlayer supports up to 2x.
             let rate = min(Self.clampedRate(playbackRate), 2)
-            if rate != 1 {
+            if rate != 1 || keepsRateAdjustable {
                 player.enableRate = true
                 player.rate = rate
             }
@@ -239,6 +247,18 @@ final class AVSpeechPlaybackService: NSObject, SpeechPlaybackService {
         } catch {
             releaseOwnership()
             throw error
+        }
+    }
+
+    /// Retimes what is playing now (#759). A stream built without the time
+    /// stretch keeps its speed until the next one starts.
+    func changeRate(_ rate: Float) {
+        playbackRate = rate
+        let clamped = Self.clampedRate(rate)
+        if let timePitch {
+            timePitch.rate = clamped
+        } else if let encodedPlayer, encodedPlayer.enableRate {
+            encodedPlayer.rate = min(clamped, 2)
         }
     }
 
@@ -329,6 +349,8 @@ final class AVSpeechPlaybackService: NSObject, SpeechPlaybackService {
 
     func stop() {
         playbackGeneration &+= 1
+        let generation = playbackGeneration
+        observedPlaybackGeneration.withLock { $0 = generation }
         isFinishing = false
         if isPaused { endPause() }
         // Pause time only matters to this stream's drain watchdog, which
@@ -338,6 +360,7 @@ final class AVSpeechPlaybackService: NSObject, SpeechPlaybackService {
         encodedPlayer?.stop()
         encodedPlayer = nil
         format = nil
+        timePitch = nil
         remainder.removeAll(keepingCapacity: true)
         pendingBuffers = 0
         scheduledSeconds = 0
@@ -408,8 +431,8 @@ final class AVSpeechPlaybackService: NSObject, SpeechPlaybackService {
         return min(max(rate, 1), 4)
     }
 
-    /// Little-endian PCM16 to Float32 samples in [-1, 1), for the stretched
-    /// graph. Reads unaligned: the bytes come from a Data slice.
+    /// Little-endian PCM16 to Float32 samples in [-1, 1), the format every
+    /// stream plays. Reads unaligned: the bytes come from a Data slice.
     nonisolated static func convertPCM16(_ source: UnsafeRawBufferPointer, into destination: UnsafeMutablePointer<Float>, frames: Int) {
         for index in 0..<min(frames, source.count / 2) {
             let sample = source.loadUnaligned(fromByteOffset: index * 2, as: Int16.self)
@@ -435,8 +458,9 @@ final class AVSpeechPlaybackService: NSObject, SpeechPlaybackService {
     @objc private func handleInterruption(_ notification: Notification) {
         guard let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: typeValue), type == .began else { return }
+        let generation = generationForSessionObservers
         Task { @MainActor [weak self] in
-            guard let self else { return }
+            guard let self, self.playbackGeneration == generation else { return }
             if self.ownershipIntent == .standalonePlayback, self.lease != nil {
                 self.interruptedStandaloneStream = true
             }
@@ -450,7 +474,11 @@ final class AVSpeechPlaybackService: NSObject, SpeechPlaybackService {
     }
 
     @objc private func handleMediaServicesReset(_ notification: Notification) {
-        Task { @MainActor [weak self] in self?.stop() }
+        let generation = generationForSessionObservers
+        Task { @MainActor [weak self] in
+            guard let self, self.playbackGeneration == generation else { return }
+            self.stop()
+        }
     }
 
     /// A route change can stop the rendering engine under a live lease

@@ -1,8 +1,25 @@
 import SwiftUI
 
 enum KanbanPollingPolicy {
-    static let boardIntervalNanoseconds: UInt64 = 8_000_000_000
-    static let detailIntervalNanoseconds: UInt64 = 4_000_000_000
+    static let boardIntervalNanoseconds = nanoseconds(PollCadence.kanbanBoard)
+    static let detailIntervalNanoseconds = nanoseconds(PollCadence.kanbanTaskDetail)
+
+    /// The board's poll: 8 s, or 60 s while the live event stream is
+    /// connected and says when to read; stretched in Low Power and Low Data
+    /// Mode.
+    static func boardInterval(streaming: Bool, conditions: DeviceConditions) -> UInt64 {
+        nanoseconds(PollCadence.stretched(streaming ? PollCadence.kanbanWhileStreaming : PollCadence.kanbanBoard, by: conditions))
+    }
+
+    /// The open task's poll: 4 s, or 60 s while the stream is connected (a
+    /// batch touching the task reads it at once).
+    static func detailInterval(streaming: Bool, conditions: DeviceConditions) -> UInt64 {
+        nanoseconds(PollCadence.stretched(streaming ? PollCadence.kanbanWhileStreaming : PollCadence.kanbanTaskDetail, by: conditions))
+    }
+
+    private static func nanoseconds(_ seconds: TimeInterval) -> UInt64 {
+        UInt64(seconds * 1_000_000_000)
+    }
 }
 
 /// Pure draft-reconciliation rules for the task detail surface, extracted so
@@ -344,16 +361,41 @@ struct KanbanBulkActionsCluster<MoreMenu: View>: View {
 
 struct KanbanView: View {
     @ObservedObject var appLanguage = AppLanguageStore.shared
+    /// V2's Tasks › Board: every lane as a column, side by side in a
+    /// horizontal scroll, instead of one lane behind the chip selector.
+    var columnsLayout = false
+
+    init(columnsLayout: Bool = false) {
+        self.columnsLayout = columnsLayout
+        _store = StateObject(wrappedValue: KanbanStore())
+    }
+
+    /// Tests host the real board over a store whose service they supply.
+    init(columnsLayout: Bool, store: KanbanStore) {
+        self.columnsLayout = columnsLayout
+        _store = StateObject(wrappedValue: store)
+    }
+
     @EnvironmentObject private var appState: AppState
-    @StateObject private var store = KanbanStore()
+    @StateObject private var store: KanbanStore
     @State private var selectedTask: KanbanTask?
     @State private var showNewTask = false
     @State private var newTaskStatus = "todo"
+    @State private var newTaskContext: KanbanBoardContextStamp?
     @State private var includeArchived = false
     @State private var searchText = ""
+    @FocusState private var searchFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.v2Shell) private var shell
+    /// Control Center or a Face ID sheet only dips the scene to inactive:
+    /// the stream and the poll stop in the background, not on a dip.
+    @Environment(\.scenePhase) private var scenePhase
     /// iPhone-native interaction: one selected lane rendered as a vertical
     /// card list behind a horizontally scrolling chip selector.
     @State private var selectedLane: String?
+    /// V2 columns: the lane the sideways board is scrolled to (its leading
+    /// column), which the jump bar marks and sets.
+    @State private var scrolledColumn: String?
     /// Permanent deletion from a card is a TWO-STEP action (V2): BOTH card
     /// entry points (ellipsis menu and context menu) stage the task here
     /// TOGETHER WITH the loaded board/server context that staged it, and
@@ -487,11 +529,12 @@ struct KanbanView: View {
                 initialCursor: watermark,
                 baseURL: bridge.baseURL
             ),
-            socketFactory: { [cloudflareAccess = bridge.cloudflareAccess] url in
-                URLSessionKanbanEventSocket.open(url: url, cloudflareAccess: cloudflareAccess)
+            socketFactory: { [authorizer = bridge.requestAuthorizer] url in
+                try await URLSessionKanbanEventSocket.open(url: url, authorizer: authorizer)
             },
             ticketMinter: { try await bridge.mintTicket() },
             sleeper: { nanoseconds in try await Task.sleep(nanoseconds: nanoseconds) },
+            onConnectionChange: { [store] connected in store.setLiveStreamConnected(connected) },
             onBatch: { [includeArchived] invalidation in
                 let disposition = await store.refreshFromEvent(
                     expectedContext: invalidation.context,
@@ -558,7 +601,6 @@ struct KanbanView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     laneBoard
-                        .refreshable { await store.refresh(includeArchived: includeArchived) }
                         .overlay(alignment: .topTrailing) {
                             VStack(alignment: .trailing, spacing: 6) {
                                 if let nudgeNotice = nudgeNoticeState.notice {
@@ -617,7 +659,7 @@ struct KanbanView: View {
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showNewTask) {
-            KanbanTaskComposerView(initialStatus: newTaskStatus)
+            KanbanTaskComposerView(initialStatus: newTaskStatus, expectedContext: newTaskContext)
                 .environmentObject(store)
                 .environmentObject(appState)
                 .presentationDetents([.large])
@@ -766,6 +808,8 @@ struct KanbanView: View {
             showBoardSettings = false
             showNewBoard = false
             showFilters = false
+            // So is a New Task draft (its lane and workspace default).
+            showNewTask = false
             assigneeFilter = nil
             tenantFilter = nil
             // V3C: a board switch invalidates every selected ID - selection
@@ -779,6 +823,7 @@ struct KanbanView: View {
             showBoardSettings = false
             showNewBoard = false
             showFilters = false
+            showNewTask = false
             pendingBoardArchive = nil
             nudgeNoticeState.invalidateOnContextChange()
             exitSelectionMode()
@@ -788,8 +833,14 @@ struct KanbanView: View {
         .onChange(of: store.board) { _, _ in
             pruneSelectionAgainstBoard()
         }
-        .task(id: liveEventsKey) {
+        // V2 keeps a visited Tasks tab mounted behind the selected one: the
+        // board listens and polls only while it shows and the app is on
+        // screen, and catches up when it comes back. Outside V2 the board is
+        // always active while the app is.
+        .task(id: "\(liveEventsKey)|\(shell.isTabActive)|\(scenePhase == .background)") {
+            guard shell.isTabActive, scenePhase != .background else { return }
             await runLiveEventStream()
+            store.setLiveStreamConnected(false)
         }
         .task(id: pollingKey) {
             selectedTask = nil
@@ -798,9 +849,23 @@ struct KanbanView: View {
                 serverIdentity: appState.dashboardTicketBridge?.baseURL ?? ""
             )
             await store.reload(includeArchived: includeArchived)
+        }
+        // The stream connecting or dropping restarts the poll: a dropped
+        // stream may have missed events, so the board reads at once.
+        .task(id: "\(pollingKey)|\(shell.isTabActive)|\(scenePhase == .background)|\(store.liveStreamConnected)") {
+            guard shell.isTabActive, scenePhase != .background else { return }
+            // Back on the tab, or the stream gone: refresh what changed
+            // meanwhile. The first load is the configure task's own, and a
+            // stream that just connected has nothing to catch up on.
+            if store.loadedBoardSlug != nil, !store.liveStreamConnected {
+                await store.poll(includeArchived: includeArchived)
+            }
             while !Task.isCancelled {
                 do {
-                    try await Task.sleep(nanoseconds: KanbanPollingPolicy.boardIntervalNanoseconds)
+                    try await Task.sleep(nanoseconds: KanbanPollingPolicy.boardInterval(
+                        streaming: store.liveStreamConnected,
+                        conditions: DeviceConditionsMonitor.shared.current
+                    ))
                 } catch {
                     break
                 }
@@ -896,8 +961,184 @@ struct KanbanView: View {
     /// vertically scrolling card list for the selected lane. Locked/system
     /// lanes stay visible with their counts but are marked and never offer
     /// creation, matching upstream LOCKED_COLUMNS semantics.
-    @ViewBuilder
     private var laneBoard: some View {
+        laneLayout
+            // Scrolling the board puts the search keyboard away.
+            .scrollDismissesKeyboard(.immediately)
+    }
+
+    @ViewBuilder
+    private var laneLayout: some View {
+        if columnsLayout {
+            columnBoard
+        } else {
+            chipLaneBoard
+                .refreshable { await store.refresh(includeArchived: includeArchived) }
+        }
+    }
+
+    /// V2: each lane is a column of cards with its status symbol, name and
+    /// count; the board scrolls sideways, a column at a time, and the jump
+    /// bar above lists every lane the server reported (Blocked and Done
+    /// included) with its count, so each is one tap away.
+    ///
+    /// Pull to refresh belongs to each column's own list. On the sideways
+    /// board it made the board scroll vertically too (a refresh control
+    /// turns on vertical bounce), so a swipe that wasn't perfectly level
+    /// dragged the board up and down instead of on to the next lanes.
+    private var columnBoard: some View {
+        let columns = visibleColumns
+        return VStack(spacing: 8) {
+            columnJumpBar(columns)
+            ScrollView(.horizontal, showsIndicators: false) {
+                // Eager: eight-odd lanes, every one laid out and in the
+                // accessibility tree, not only those on screen.
+                HStack(alignment: .top, spacing: 12) {
+                    ForEach(columns) { column in
+                        boardColumn(column)
+                            .id(column.name)
+                    }
+                }
+                .scrollTargetLayout()
+                .padding(.horizontal, 2)
+                .padding(.bottom, 14)
+            }
+            .scrollTargetBehavior(.viewAligned)
+            .scrollPosition(id: $scrolledColumn, anchor: .leading)
+            // Sideways only, whatever a column holds.
+            .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+        }
+        // A lane that left the board, or another board, starts the board at
+        // its leading edge rather than at a lane id that isn't there.
+        .onChange(of: columns.map(\.name)) { _, names in
+            if let scrolled = scrolledColumn, !names.contains(scrolled) { scrolledColumn = nil }
+        }
+        .onChange(of: store.resolvedSelectedBoardSlug) { _, _ in scrolledColumn = nil }
+        .disabled(!store.isSelectedSnapshotLoaded)
+        .overlay(alignment: .top) {
+            if !store.isSelectedSnapshotLoaded {
+                Label("Loading \(store.selectedBoardMetadata?.name ?? store.resolvedSelectedBoardSlug)…", systemImage: "hourglass")
+                    .font(.caption)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(.ultraThinMaterial, in: Capsule())
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if isSelectionActive {
+                bulkActionBar
+            }
+        }
+    }
+
+    /// Every lane as a chip with its count; tapping one brings its column
+    /// into view.
+    private func columnJumpBar(_ columns: [KanbanColumn]) -> some View {
+        let current = KanbanColumnBoardPolicy.currentColumn(scrolledTo: scrolledColumn, in: columns)
+        return ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 7) {
+                    ForEach(KanbanColumnBoardPolicy.summaries(for: columns)) { summary in
+                        columnJumpChip(summary, isCurrent: summary.status == current)
+                            .id(summary.status)
+                    }
+                }
+                .padding(.horizontal, 2)
+                .padding(.vertical, 1)
+            }
+            .frame(minHeight: 34)
+            .onChange(of: current) { _, status in
+                guard let status else { return }
+                withAnimation(ConduitMotion.ease(reduceMotion: reduceMotion)) {
+                    proxy.scrollTo(status, anchor: .center)
+                }
+            }
+        }
+    }
+
+    private func columnJumpChip(_ summary: KanbanBoardColumnSummary, isCurrent: Bool) -> some View {
+        let tint = KanbanStatusPresentation.forStatus(summary.status).tint
+        return Button {
+            withAnimation(ConduitMotion.ease(reduceMotion: reduceMotion)) {
+                scrolledColumn = summary.status
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: summary.systemImage)
+                    .font(.caption2)
+                Text(summary.title)
+                    .font(.caption.weight(isCurrent ? .bold : .semibold))
+                Text(String(summary.count))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                if summary.isLocked {
+                    Image(systemName: "lock.fill")
+                        .font(.caption2)
+                        .imageScale(.small)
+                        .foregroundStyle(.conduitTertiary)
+                }
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6).frame(minHeight: 30)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isCurrent ? .primary : .secondary)
+        .conduitGlassControl(cornerRadius: 15, tint: isCurrent ? tint.opacity(0.16) : .clear)
+        .accessibilityLabel(summary.title + ", " + AppLocalization.string("\(summary.count) tasks"))
+        .accessibilityAddTraits(isCurrent ? .isSelected : [])
+    }
+
+    private func boardColumn(_ column: KanbanColumn) -> some View {
+        let presentation = KanbanStatusPresentation.forStatus(column.name)
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 6) {
+                Image(systemName: presentation.systemImage)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(presentation.tint)
+                Text(presentation.displayName)
+                    .font(.subheadline.weight(.semibold))
+                Text(String(column.tasks.count))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                if presentation.isBackendControlled {
+                    Image(systemName: "lock.fill")
+                        .font(.caption2)
+                        .imageScale(.small)
+                        .foregroundStyle(.conduitTertiary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 4)
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityLabel(presentation.displayName + ", " + AppLocalization.string("\(column.tasks.count) tasks"))
+
+            ScrollView(showsIndicators: false) {
+                LazyVStack(spacing: 9) {
+                    if KanbanRunningGroupPolicy.shouldApply(lane: column.name, enabled: groupRunningByProfile) {
+                        ForEach(KanbanRunningGroupPolicy.group(column.tasks)) { group in
+                            runningGroupHeader(group)
+                            ForEach(group.tasks) { task in
+                                taskCard(task)
+                            }
+                        }
+                    } else {
+                        ForEach(column.tasks) { task in
+                            taskCard(task)
+                        }
+                    }
+                }
+                .padding(.bottom, 8)
+            }
+            .refreshable { await store.refresh(includeArchived: includeArchived) }
+        }
+        .frame(width: 250)
+        .padding(10)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var chipLaneBoard: some View {
         let columns = visibleColumns
         VStack(spacing: 10) {
             ScrollView(.horizontal, showsIndicators: false) {
@@ -1497,8 +1738,9 @@ struct KanbanView: View {
                     .foregroundStyle(.secondary)
                 if presentation.isBackendControlled {
                     Image(systemName: "lock.fill")
-                        .font(.system(size: 8))
-                        .foregroundStyle(.tertiary)
+                        .font(.caption2)
+                        .imageScale(.small)
+                        .foregroundStyle(.conduitTertiary)
                 }
             }
             .padding(.horizontal, 11)
@@ -1718,6 +1960,7 @@ struct KanbanView: View {
                 // visible lane. Locked lanes collapse to the default unlocked
                 // landing status.
                 newTaskStatus = KanbanLanePolicy.newTaskInitialStatus(effectiveLane: effectiveSelectedLane)
+                newTaskContext = store.loadedContextStamp
                 showNewTask = true
             } label: {
                 Image(systemName: "plus")
@@ -1740,19 +1983,42 @@ struct KanbanView: View {
     /// V3B search + filters row. Hidden while selection mode is active:
     /// selection chrome owns the top area (issue #98), and search/filters
     /// are inert for multi-select anyway.
+    /// While typing, Cancel beside it clears the search and puts the
+    /// keyboard away; Search on the keyboard or a scroll keeps the search.
     private var searchAndFilterBar: some View {
+        HStack(spacing: 10) {
+            searchAndFilterCapsule
+            if searchFocused {
+                Button(AppLocalization.string("Cancel")) {
+                    searchText = ""
+                    searchFocused = false
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(Color.conduitAccent)
+                .buttonStyle(.plain)
+                .frame(minHeight: 44)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .animation(ConduitMotion.ease(reduceMotion: reduceMotion), value: searchFocused)
+    }
+
+    private var searchAndFilterCapsule: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
             TextField("Search tasks", text: $searchText)
                 .textFieldStyle(.plain)
+                .submitLabel(.search)
+                .focused($searchFocused)
+                .onSubmit { searchFocused = false }
             if !searchText.isEmpty {
                 Button { searchText = "" } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.conduitTertiary)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Clear search") // MAC: a11y
+                .accessibilityLabel(AppLocalization.string("Clear search"))
             }
             // V3B: assignee/tenant/Show Archived/grouping live behind ONE
             // compact filter button instead of crowding the header.
@@ -1804,7 +2070,7 @@ struct KanbanView: View {
                 .foregroundStyle(.secondary)
             Text(String(group.tasks.count))
                 .font(.caption2.monospacedDigit())
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.conduitTertiary)
             Spacer()
         }
         .padding(.horizontal, 4)
@@ -1920,15 +2186,15 @@ private struct KanbanCardView: View {
                             }
                         }
                         // The CURRENT lane stays visible but inert, matching
-                        // desktop StatusMenu (name === status || !locked): a
-                        // non-control child renders as a disabled Menu row.
-                        HStack {
+                        // desktop StatusMenu (name === status || !locked): an
+                        // on toggle draws the menu's own checkmark in its row
+                        // (an HStack split into a row per child).
+                        Toggle(isOn: .constant(true)) {
                             Label(presentation.displayName, systemImage: presentation.systemImage)
-                            Spacer()
-                            Image(systemName: "checkmark")
                         }
-                        .foregroundStyle(.secondary)
-                        .accessibilityHint("Current lane")
+                        .disabled(true)
+                        .accessibilityLabel(Text(presentation.displayName))
+                        .accessibilityHint(AppLocalization.string("Current lane"))
                     }
                     Section {
                         Button {
@@ -2059,7 +2325,7 @@ private struct KanbanCardView: View {
                 .font(.caption2.monospaced())
         }
         .font(.caption2)
-        .foregroundStyle(.tertiary)
+        .foregroundStyle(.conduitTertiary)
     }
 
     private func copy(text: String, notice: String) {

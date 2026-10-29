@@ -22,6 +22,9 @@ struct KanbanTaskComposerView: View {
     @Environment(\.dismiss) private var dismiss
 
     let initialStatus: String
+    /// The board the sheet was opened for: creating fails if another has
+    /// loaded since.
+    let expectedContext: KanbanBoardContextStamp?
 
     @State private var draft = KanbanComposerDraft()
     @State private var isSaving = false
@@ -35,8 +38,9 @@ struct KanbanTaskComposerView: View {
     @State private var showSkillsSheet = false
     @State private var showParentSheet = false
 
-    init(initialStatus: String) {
+    init(initialStatus: String, expectedContext: KanbanBoardContextStamp?) {
         self.initialStatus = initialStatus
+        self.expectedContext = expectedContext
     }
 
     private var statusPresentation: KanbanStatusPresentation {
@@ -214,7 +218,7 @@ struct KanbanTaskComposerView: View {
                     .lineLimit(1)
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.conduitTertiary)
             }
         }
         .accessibilityHint("Opens the per-task model, provider, and reasoning override picker")
@@ -236,7 +240,7 @@ struct KanbanTaskComposerView: View {
                     .foregroundStyle(draft.skills.isEmpty ? .secondary : .primary)
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.conduitTertiary)
             }
         }
         .accessibilityHint("Opens the task skill picker")
@@ -283,7 +287,7 @@ struct KanbanTaskComposerView: View {
                             .foregroundStyle(.secondary)
                         Image(systemName: "chevron.right")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.conduitTertiary)
                     }
                 }
                 #if os(macOS) // MAC: plain full-width row (whole row clickable), not a bordered accent slab
@@ -426,7 +430,7 @@ struct KanbanTaskComposerView: View {
             isSaving = true
             errorMessage = nil
             defer { isSaving = false }
-            _ = try await store.createTask(request, initialStatus: initialStatus)
+            _ = try await store.createTask(request, initialStatus: initialStatus, expectedContext: expectedContext)
             dismiss()
         } catch let error as KanbanDraftValidationError {
             errorMessage = UserFacingError.message(for: error)

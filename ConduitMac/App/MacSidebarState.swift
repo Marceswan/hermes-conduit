@@ -15,6 +15,7 @@ enum MacSidebarState {
     static let sidebarMaxWidth: CGFloat = 390
     static let detailMinWidth: CGFloat = 430
     static let windowMinWidth: CGFloat = 820
+    static let windowMinHeight: CGFloat = 560
 
     static func visibility(isVisible: Bool) -> NavigationSplitViewVisibility {
         isVisible ? .all : .detailOnly
@@ -33,21 +34,27 @@ enum MacSidebarState {
 }
 
 /// Native resizable two-column layout for the Mac window: sessions sidebar
-/// on the left, `MacDetailRouter` content on the right.
+/// on the left, `MacDetailRouter` content on the right. View > Zoom (D27)
+/// zooms each column's content; the column widths and the window minimum
+/// grow with it. The split view itself is not zoomed: it shares the title
+/// bar and toolbar with the window.
 struct MacSplitLayout<Sidebar: View, Chat: View>: View {
     @AppStorage private var sidebarVisible: Bool
+    @AppStorage private var zoomLevel: Double
     private let sidebar: Sidebar
     private let chat: Chat
 
     /// `defaults` is injectable so tests can host a layout without sharing the
-    /// visibility key with the live app.
+    /// visibility and zoom keys with the live app.
     init(defaults: UserDefaults = .standard, @ViewBuilder sidebar: () -> Sidebar, @ViewBuilder chat: () -> Chat) {
         _sidebarVisible = AppStorage(wrappedValue: true, MacSidebarState.defaultsKey, store: defaults)
+        _zoomLevel = AppStorage(wrappedValue: MacUIZoom.actualSize, MacUIZoom.defaultsKey, store: defaults)
         self.sidebar = sidebar()
         self.chat = chat()
     }
 
     var body: some View {
+        let zoom = MacUIZoom.scale(zoomLevel)
         NavigationSplitView(
             columnVisibility: Binding(
                 get: { MacSidebarState.visibility(isVisible: sidebarVisible) },
@@ -55,14 +62,17 @@ struct MacSplitLayout<Sidebar: View, Chat: View>: View {
             )
         ) {
             sidebar
+                .macUIZoom(zoom)
                 .navigationSplitViewColumnWidth(
-                    min: MacSidebarState.sidebarMinWidth,
-                    ideal: MacSidebarState.sidebarIdealWidth,
-                    max: MacSidebarState.sidebarMaxWidth
+                    min: MacSidebarState.sidebarMinWidth * zoom,
+                    ideal: MacSidebarState.sidebarIdealWidth * zoom,
+                    max: MacSidebarState.sidebarMaxWidth * zoom
                 )
         } detail: {
             MacDetailRouter(chat: { chat })
                 .frame(minWidth: MacSidebarState.detailMinWidth)
+                .macUIZoom(zoom)
         }
+        .frame(minWidth: MacSidebarState.windowMinWidth * zoom, minHeight: MacSidebarState.windowMinHeight * zoom)
     }
 }

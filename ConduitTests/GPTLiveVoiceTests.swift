@@ -6,7 +6,8 @@
 //  session exchange, the WebRTC session over a fake peer, delegations as
 //  Hermes background jobs, and the controller's rules. Written as
 //  extensions of existing Voice suites, like the Gemini Live tests: the CI
-//  test planner is at capacity for new XCTestCase classes.
+//  test planner was at capacity for new XCTestCase classes when
+//  this file landed (its sharded plan carries new classes again).
 //
 
 import AVFAudio
@@ -138,6 +139,14 @@ final class FakeGPTLiveAudio: GPTLiveAudioSessionControlling {
 @MainActor
 private func settle(_ iterations: Int = 20) async {
     for _ in 0..<iterations { await Task.yield() }
+}
+
+/// Yields until `done` holds, capped at 10 s of wall clock: a fixed number
+/// of yields can run out on a busy hosted runner.
+@MainActor
+private func settle(until done: () -> Bool, limit: Duration = .seconds(10)) async {
+    let deadline = ContinuousClock.now.advanced(by: limit)
+    while !done(), ContinuousClock.now < deadline { await Task.yield() }
 }
 
 // MARK: - Wire format, host client, session
@@ -367,6 +376,11 @@ extension HermesVoiceGatewayTimeoutTests {
     func testGPTLiveBriefingBuildsTheRulesPersonaAndMemorySections() {
         let plain = GPTLiveConversationController.briefing()
         XCTAssertTrue(plain.contains("[Conduit voice app rules."))
+        // Simple talk stays on the call; only real work is delegated.
+        XCTAssertTrue(plain.contains("Answer yourself, without delegating"))
+        XCTAssertTrue(plain.contains("Never say something was done"))
+        XCTAssertFalse(plain.contains("Look up:"), "web lookups are added only when the host has a search backend")
+        XCTAssertTrue(GPTLiveConversationController.webLookUpRule.contains("delegate \"Look up:\""))
         XCTAssertFalse(plain.contains("<hermes_persona>"))
         XCTAssertFalse(plain.contains("<hermes_memory>"))
 
@@ -379,6 +393,61 @@ extension HermesVoiceGatewayTimeoutTests {
         // A closing tag inside the text can't end its own section early.
         XCTAssertEqual(full.components(separatedBy: "</hermes_persona>").count, 2)
         XCTAssertEqual(full.components(separatedBy: "</hermes_memory>").count, 2)
+    }
+
+    /// The notifier plugin refuses a briefing over 32 KB ("briefing is too
+    /// long"), which ended every GPT-Live call for a user with a long memory.
+    func testALongMemoryIsCutSoTheBriefingFitsAndTheRulesStayWhole() {
+        let limit = GPTLiveConversationController.maxBriefingCharacters
+        let memory = (1...4_000).map { "Memory line \($0) ✓" }.joined(separator: "\n")
+        let tail = "\n\nThe call's own blocks end here."
+
+        let briefing = GPTLiveConversationController.briefing(
+            memory: GeminiLiveMemoryContext(text: memory, canRecall: false),
+            personality: "A calm judge",
+            followedBy: tail
+        )
+
+        XCTAssertLessThanOrEqual(briefing.unicodeScalars.count, limit)
+        XCTAssertTrue(briefing.hasPrefix("[Conduit voice app rules."))
+        XCTAssertTrue(briefing.hasSuffix(tail), "the call's own rules go out whole")
+        XCTAssertTrue(briefing.contains("<hermes_persona>\nA calm judge\n</hermes_persona>"), "the persona is kept while memory can give way")
+        XCTAssertTrue(briefing.contains("Memory line 1 ✓"), "memory is cut from the end")
+        XCTAssertFalse(briefing.contains("Memory line 4000 ✓"))
+        XCTAssertTrue(briefing.contains("[…]\n</hermes_memory>"), "the cut is marked")
+    }
+
+    func testALongPersonaIsCutOnlyOnceMemoryIsGone() {
+        let limit = GPTLiveConversationController.maxBriefingCharacters
+        let persona = String(repeating: "Speak like a judge. ", count: 3_000)
+
+        let briefing = GPTLiveConversationController.briefing(
+            memory: GeminiLiveMemoryContext(text: "Likes tea", canRecall: false),
+            personality: persona
+        )
+
+        XCTAssertLessThanOrEqual(briefing.unicodeScalars.count, limit)
+        XCTAssertFalse(briefing.contains("<hermes_memory>"), "memory gave way first")
+        XCTAssertTrue(briefing.contains("<hermes_persona>\nSpeak like a judge."))
+        XCTAssertTrue(briefing.contains("[…]\n</hermes_persona>"))
+    }
+
+    func testClosingTagsInAMemoryCountAsTheyGoOut() {
+        let memory = String(repeating: "</hermes_memory>x\n", count: 3_000)
+        let briefing = GPTLiveConversationController.briefing(
+            memory: GeminiLiveMemoryContext(text: memory, canRecall: false)
+        )
+        XCTAssertLessThanOrEqual(briefing.unicodeScalars.count, GPTLiveConversationController.maxBriefingCharacters)
+        XCTAssertEqual(briefing.components(separatedBy: "</hermes_memory>").count, 2)
+    }
+
+    func testABriefingUnderTheLimitIsUnchanged() {
+        let memory = GeminiLiveMemoryContext(text: "Likes tea", canRecall: false)
+        let briefing = GPTLiveConversationController.briefing(memory: memory, personality: "A judge", followedBy: "\nTail")
+        XCTAssertEqual(
+            briefing,
+            GPTLiveConversationController.briefing(memory: memory, personality: "A judge") + "\nTail"
+        )
     }
 
     func testGPTLiveSessionExchangesTheOfferThroughHermesAndIsReadyOnSessionStarted() async throws {
@@ -598,6 +667,37 @@ extension VoiceConversationControllerTests {
         XCTAssertNil(supervisor.takePendingNotice(), "The result is announced once, on the delegation")
     }
 
+    func testGPTLiveLookUpSearchesTheWebOnTheDelegationWithoutAHermesJob() async {
+        let fake = FakeVoiceJobBackend()
+        let supervisor = VoiceBackgroundJobSupervisor(backend: fake.backend, pollInterval: .seconds(3_600))
+        let search = FakeGeminiLiveWebSearch()
+        search.results = [GeminiLiveWebResult(title: "Boston weather", url: "https://example.com", snippet: "Sunny, 18°C")]
+        let bridge = GPTLiveDelegationBridge(supervisor: supervisor, webSearch: search)
+
+        let reply = await bridge.handleDelegation(id: "del_1", request: "Look up: weather in Boston tomorrow")
+        XCTAssertEqual(search.queries, ["weather in Boston tomorrow"])
+        XCTAssertTrue(fake.submissions.isEmpty, "a lookup is never a Hermes job")
+        guard case .delegationReply("del_1", let text, .commentary)? = reply.first, reply.count == 1 else {
+            return XCTFail("Expected the results on the delegation, got \(reply)")
+        }
+        XCTAssertTrue(text.contains("Sunny, 18°C"))
+        XCTAssertTrue(text.contains(GeminiLiveToolBridge.lookupAnswerNote))
+
+        // The host's failure is told, not turned into a job.
+        search.error = URLError(.timedOut)
+        let failed = await bridge.handleDelegation(id: "del_2", request: "lookup: news today")
+        guard case .delegationReply("del_2", let failure, _)? = failed.first else { return XCTFail("\(failed)") }
+        XCTAssertTrue(failure.contains("The lookup failed"))
+        XCTAssertTrue(fake.submissions.isEmpty)
+    }
+
+    func testGPTLiveLookUpMarkerNeedsItsOwnStart() {
+        XCTAssertEqual(GPTLiveDelegationBridge.lookUpMarker(in: " Look up: the score"), "the score")
+        XCTAssertEqual(GPTLiveDelegationBridge.lookUpMarker(in: "Look-up:"), "")
+        XCTAssertNil(GPTLiveDelegationBridge.lookUpMarker(in: "please look up: the score"))
+        XCTAssertNil(GPTLiveDelegationBridge.lookUpMarker(in: "Look up the score"))
+    }
+
     func testGPTLiveResultOfAJobWhoseCallEndedArrivesAsIdleSessionContext() async {
         let (supervisor, _, bridge) = makeGPTJobs()
         _ = await bridge.handleDelegation(id: "del_1", request: "check the server")
@@ -813,6 +913,95 @@ extension VoiceConversationControllerTests {
         older.stop()
     }
 
+    /// #761: a reply finishing in the chat as the call connects waits for
+    /// the greeting, and a greeting that never starts is asked for once.
+    func testGPTLiveGreetingGoesBeforeQuietNotesAndIsAskedForWhenItNeverStarts() async {
+        var current = Date(timeIntervalSince1970: 1_000)
+        let (controller, session, supervisor, _) = makeGPTController(openingPrompt: "[greet]", clock: { current })
+        supervisor.liveThread = VoiceThreadTarget(runtimeSessionID: "rt-chat", storedSessionID: nil, title: "New chat")
+        session.briefingApplied = true
+        session.greetingApplied = true
+        await controller.start()
+        session.becomeReady()
+        XCTAssertTrue(controller.isHoldingForOpeningForTesting)
+        XCTAssertFalse(controller.isConversationIdle, "The greeting goes first")
+
+        supervisor.observe(.messageComplete(sessionId: "rt-chat", messageId: "m1", content: "Typed reply.", reasoning: nil))
+        controller.deliverPendingJobUpdates()
+        controller.flushPendingContextIfIdle()
+        XCTAssertTrue(session.appended.isEmpty, "No note before the greeting: \(session.appended)")
+        XCTAssertEqual(controller.pendingContextCountForTesting, 1)
+
+        current += GPTLiveConversationController.openingFallbackDelay - 1
+        controller.checkOpening()
+        XCTAssertTrue(session.speakable.isEmpty, "The host's greeting still has time")
+        current += 1
+        controller.checkOpening()
+        XCTAssertEqual(session.speakable.map(\.text), ["[greet]"], "Silent past the delay: asked for as a turn")
+        controller.checkOpening()
+        XCTAssertEqual(session.speakable.count, 1, "Once per call")
+
+        session.onEvent?(.outputTranscript("Hi! Here and listening."))
+        session.onEvent?(.turnDone(role: "assistant", transcript: "Hi! Here and listening."))
+        XCTAssertFalse(controller.isHoldingForOpeningForTesting)
+        current += GPTLiveConversationController.modelQuietInterval
+        controller.flushPendingContextIfIdle()
+        XCTAssertEqual(controller.pendingContextCountForTesting, 0)
+        XCTAssertTrue(session.appended.last?.text.contains("Typed reply.") == true, "The note follows the greeting")
+        controller.stop()
+    }
+
+    func testGPTLiveGreetingHoldEndsWhenTheUserSpeaksOrItRunsOut() async {
+        var current = Date(timeIntervalSince1970: 1_000)
+        let (controller, session, _, _) = makeGPTController(openingPrompt: "[greet]", clock: { current })
+        session.briefingApplied = true
+        session.greetingApplied = true
+        await controller.start()
+        session.becomeReady()
+        session.onEvent?(.turnDone(role: "user", transcript: "Hello?"))
+        XCTAssertFalse(controller.isHoldingForOpeningForTesting, "The user spoke first: nothing to wait for")
+        current += GPTLiveConversationController.openingFallbackDelay
+        controller.checkOpening()
+        XCTAssertTrue(session.speakable.isEmpty, "No greeting over the user's turn")
+        controller.stop()
+
+        let (timed, timedSession, _, _) = makeGPTController(openingPrompt: "[greet]", clock: { current })
+        timedSession.briefingApplied = true
+        timedSession.greetingApplied = true
+        await timed.start()
+        timedSession.becomeReady()
+        timedSession.onEvent?(.outputTranscript("Hi"))
+        current += GPTLiveConversationController.openingHold
+        timed.checkOpening()
+        XCTAssertFalse(timed.isHoldingForOpeningForTesting, "Conduit's news never waits for good")
+        XCTAssertTrue(timedSession.speakable.isEmpty, "It was already speaking")
+        timed.stop()
+
+        // True silence: the hold runs out and the waiting note goes in.
+        let (expired, expiredSession, expiredSupervisor, _) = makeGPTController(openingPrompt: "[greet]", clock: { current })
+        expiredSupervisor.liveThread = VoiceThreadTarget(runtimeSessionID: "rt-chat", storedSessionID: nil, title: "New chat")
+        expiredSession.briefingApplied = true
+        expiredSession.greetingApplied = true
+        await expired.start()
+        expiredSession.becomeReady()
+        expiredSupervisor.observe(.messageComplete(sessionId: "rt-chat", messageId: "m2", content: "Typed reply.", reasoning: nil))
+        expired.deliverPendingJobUpdates()
+        XCTAssertEqual(expired.pendingContextCountForTesting, 1)
+        current += GPTLiveConversationController.openingHold
+        expired.checkOpening()
+        XCTAssertFalse(expired.isHoldingForOpeningForTesting)
+        XCTAssertEqual(expired.pendingContextCountForTesting, 0, "The note goes in once the hold runs out")
+        XCTAssertTrue(expiredSession.appended.last?.text.contains("Typed reply.") == true)
+        expired.stop()
+
+        let (silent, silentSession, _, _) = makeGPTController(clock: { current })
+        await silent.start()
+        silentSession.becomeReady()
+        XCTAssertFalse(silent.isHoldingForOpeningForTesting, "No greeting asked for: nothing waits")
+        XCTAssertTrue(silent.isConversationIdle)
+        silent.stop()
+    }
+
     /// #544: a call Hermes placed asks the host to have the model speak
     /// first, instead of the "don't speak first" policy that kept it silent.
     func testGPTLiveCallHermesPlacedAsksTheHostToSpeakFirst() async throws {
@@ -961,6 +1150,151 @@ extension VoiceConversationControllerTests {
         XCTAssertNotNil(tests)
         XCTAssertFalse(tests?.text.contains("kept talking") == true, "A late turn.done is the request, not more words")
         controller.stop()
+    }
+
+    /// #945: GPT-Live said it was sending the request to Hermes but made no
+    /// delegation. Once the call is quiet, Conduit sends the words itself.
+    func testGPTLiveSaidItWasSendingWithNoDelegationSendsTheWordsAnyway() async {
+        var current = Date(timeIntervalSince1970: 1_000)
+        let (controller, session, _, fake) = makeGPTController(clock: { current })
+        await controller.start()
+        session.becomeReady()
+        session.onEvent?(.turnDone(role: "user", transcript: "Can you check whether the build passed?"))
+        session.onEvent?(.outputTranscript("On it. I'll send that to Hermes now."))
+        session.onEvent?(.turnDone(role: "assistant", transcript: "On it. I'll send that to Hermes now."))
+        await settle(40)
+        XCTAssertEqual(fake.created, 0)
+
+        // The model still has time to make its delegation.
+        current += GPTLiveConversationController.sendClaimGrace - 1
+        controller.checkSendClaim()
+        await settle(40)
+        XCTAssertEqual(fake.created, 0)
+
+        current += 2
+        controller.checkSendClaim()
+        await settle(40)
+        XCTAssertEqual(fake.created, 1, "the words go even though the model never delegated them")
+        XCTAssertTrue(fake.submissions.first?.1.contains("whether the build passed") == true)
+        // GPT-Live made no delegation to answer: the reply goes to the session.
+        XCTAssertFalse(session.appended.contains { $0.delegationID != nil }, "\(session.appended)")
+        XCTAssertTrue(session.appended.contains { $0.delegationID == nil && $0.text.contains("background job") }, "\(session.appended)")
+
+        // Sent once: checking again sends nothing more.
+        current += GPTLiveConversationController.sendClaimGrace + 1
+        controller.checkSendClaim()
+        await settle(40)
+        XCTAssertEqual(fake.created, 1)
+
+        // The model's own delegation, late, is that same send.
+        session.onEvent?(.delegation(id: "del_late", text: ""))
+        await settle(40)
+        XCTAssertEqual(fake.created, 1)
+        XCTAssertEqual(session.appended.last { $0.delegationID == "del_late" }?.text, GPTLiveConversationController.alreadySentForModel)
+        controller.stop()
+    }
+
+    /// #945: the model's late delegation that writes out the words itself
+    /// is still the send Conduit already made, not a second job.
+    func testGPTLiveLateDelegationWithItsOwnTextIsTheSendConduitMade() async {
+        var current = Date(timeIntervalSince1970: 1_000)
+        let (controller, session, _, fake) = makeGPTController(clock: { current })
+        await controller.start()
+        session.becomeReady()
+        session.onEvent?(.turnDone(role: "user", transcript: "Can you check whether the build passed?"))
+        session.onEvent?(.turnDone(role: "assistant", transcript: "On it. I'll send that to Hermes now."))
+        current += GPTLiveConversationController.sendClaimGrace + 1
+        controller.checkSendClaim()
+        await settle(40)
+        XCTAssertEqual(fake.created, 1)
+
+        session.onEvent?(.delegation(id: "del_late", text: "check whether the build passed"))
+        await settle(40)
+        XCTAssertEqual(fake.created, 1, "no second job for the same words")
+        XCTAssertEqual(session.appended.last { $0.delegationID == "del_late" }?.text, GPTLiveConversationController.alreadySentForModel)
+        controller.stop()
+    }
+
+    func testGPTLiveConduitCommandsAreNotMistakenForALateSend() {
+        typealias C = GPTLiveConversationController
+        XCTAssertTrue(C.isConduitMarkerDelegation("Look up: weather in Boston"))
+        XCTAssertTrue(C.isConduitMarkerDelegation("Job 2: what's the status"))
+        XCTAssertTrue(C.isConduitMarkerDelegation("Send: the draft"))
+        XCTAssertTrue(C.isConduitMarkerDelegation("Mode: ask first"))
+        XCTAssertFalse(C.isConduitMarkerDelegation("check whether the build passed"))
+        XCTAssertFalse(C.isConduitMarkerDelegation(""))
+    }
+
+    /// #945: a user turn whose turn.done never came holds the send only
+    /// until it goes stale, as it holds job updates.
+    func testGPTLiveClaimedSendGoesPastAUserTurnThatNeverFinished() async {
+        var current = Date(timeIntervalSince1970: 1_000)
+        let (controller, session, _, fake) = makeGPTController(clock: { current })
+        await controller.start()
+        session.becomeReady()
+        session.onEvent?(.turnDone(role: "user", transcript: "Can you check whether the build passed?"))
+        session.onEvent?(.turnDone(role: "assistant", transcript: "On it. I'll send that to Hermes now."))
+        current += 1
+        session.onEvent?(.inputTranscript("and um"))
+        current += GPTLiveConversationController.sendClaimGrace + 1
+        controller.checkSendClaim()
+        await settle(40)
+        XCTAssertEqual(fake.created, 0, "the user is still talking")
+
+        current += GPTLiveConversationController.userTurnStaleInterval
+        controller.checkSendClaim()
+        await settle(40)
+        XCTAssertEqual(fake.created, 1)
+        controller.stop()
+    }
+
+    /// #945: a delegation that comes late, within the grace, is the send.
+    func testGPTLiveSaidItWasSendingAndThenDelegatesSendsOnce() async {
+        var current = Date(timeIntervalSince1970: 1_000)
+        let (controller, session, _, fake) = makeGPTController(clock: { current })
+        await controller.start()
+        session.becomeReady()
+        session.onEvent?(.turnDone(role: "user", transcript: "Done."))
+        session.onEvent?(.turnDone(role: "assistant", transcript: "Okay, I'll tell Hermes you're set."))
+        current += 1
+        session.onEvent?(.delegation(id: "del_1", text: ""))
+        await settle(40)
+        XCTAssertEqual(fake.created, 1)
+
+        current += GPTLiveConversationController.sendClaimGrace + 1
+        controller.checkSendClaim()
+        await settle(40)
+        XCTAssertEqual(fake.created, 1, "the model's own delegation took the words")
+        controller.stop()
+    }
+
+    /// #945: only a turn that says it is passing the words on now counts.
+    func testGPTLiveSendClaimsAreStatementsThatHermesGetsItNow() {
+        let claims = [
+            "On it. I'll send that to Hermes now.",
+            "Okay, I\u{2019}ll tell Hermes you're set.",
+            "Sending it over to Hermes.",
+            "Got it, passing that on to Hermes.",
+            "Sure, I'll ask Hermes.",
+            "Let me check with Hermes. Hang on.",
+        ]
+        for claim in claims {
+            XCTAssertTrue(GPTLiveConversationController.claimsToSendToHermes(claim), claim)
+        }
+        let notClaims = [
+            "Shall I send that to Hermes?",
+            "I'll send that to Hermes. Send it?",
+            "I can ask Hermes if you like.",
+            "I won't send that to Hermes.",
+            "I'll send that to Hermes once you say yes.",
+            "I'll let you know when Hermes replies.",
+            "Hermes is working on it.",
+            "Got it, I'll pass that on.",
+            "Hi! Here and listening.",
+        ]
+        for text in notClaims {
+            XCTAssertFalse(GPTLiveConversationController.claimsToSendToHermes(text), text)
+        }
     }
 
     func testGPTLiveDelegationResultWaitsForTheUserToFinishAndTheirWordsComeFirst() async {
@@ -1685,8 +2019,8 @@ extension AppStateVoiceCapabilityTests {
         session.becomeReady()
         XCTAssertEqual(
             coordinator.controls,
-            CarPlayVoiceControls(isClassic: false, isMicrophoneMuted: false),
-            "a live call has no chat to continue, so Ready offers no New Chat"
+            CarPlayVoiceControls(isClassic: false, isMicrophoneMuted: false, canStopReply: false),
+            "a live call has no chat to continue, so Ready offers no New Chat, and GPT-Live stops when the driver speaks"
         )
 
         coordinator.toggleMicrophone()
@@ -1871,6 +2205,48 @@ extension AppStateVoiceCapabilityTests {
         XCTAssertEqual(appState.minimisedLiveVoice, .gptLive)
     }
 
+    /// The phone presents the call (its sheet up, the screen on): the car
+    /// going away leaves it running.
+    func testCarPlayGoingAwayKeepsACallTheOpenSheetPresents() async {
+        let appState = makeGPTLiveAppState()
+        let (controller, _) = await startMinimisableGPTLive(in: appState)
+        XCTAssertTrue(appState.showGPTLiveSheet)
+
+        unplugCarPlay(from: appState, phoneScreenOn: true)
+
+        XCTAssertTrue(controller.isActive, "the phone still presents it, as its sheet")
+        XCTAssertTrue(appState.showGPTLiveSheet)
+    }
+
+    /// Only CarPlay presented it (the phone locked): unplugging ends the
+    /// call, as the release policy says, now that CarPlay's disconnect
+    /// reaches it.
+    func testCarPlayGoingAwayEndsALiveCallOnlyCarPlayPresented() async {
+        let appState = makeGPTLiveAppState()
+        let (controller, _) = await startMinimisableGPTLive(in: appState)
+        swipeGPTLiveSheetAway(appState)
+        _ = appState.handleScenePhase(.background)
+        XCTAssertTrue(controller.isActive, "a locked phone alone keeps the call")
+
+        unplugCarPlay(from: appState, phoneScreenOn: false)
+
+        XCTAssertFalse(controller.isActive)
+    }
+
+    /// The car connects and then goes away through the coordinator, as the
+    /// scene delegate's disconnect delivers it (the selector test pins that
+    /// CarPlay reaches the delegate).
+    private func unplugCarPlay(from appState: AppState, phoneScreenOn: Bool) {
+        let coordinator = CarPlayVoiceCoordinator()
+        coordinator.appStateProvider = { appState }
+        coordinator.phoneScreenProvider = { phoneScreenOn }
+        coordinator.autoEstablishOnConnect = false
+        let spy = InterfacingSpy()
+        coordinator.handleConnect(spy)
+        coordinator.handleDisconnect()
+        withExtendedLifetime(spy) {}
+    }
+
     func testCarPlayGoingAwayWhileLockedClearsTheBarOfACallThatStopped() async {
         let appState = makeGPTLiveAppState()
         let (controller, _) = await startMinimisableGPTLive(in: appState)
@@ -1985,6 +2361,90 @@ extension AppStateVoiceCapabilityTests {
         XCTAssertGreaterThan(Drag.lift(for: CGSize(width: 0, height: -1_000)), -Drag.maxLift)
         XCTAssertEqual(Drag.lift(for: CGSize(width: -100, height: -40)), 0, "a sideways drag leaves the bar")
         XCTAssertGreaterThan(Drag.lift(for: CGSize(width: 20, height: -40)), Drag.lift(for: CGSize(width: 0, height: -40)), "sideways movement takes from the rise")
+    }
+
+    // MARK: Waiting call
+
+    /// Conduit reconnecting with GPT-Live chosen over a fake call, and
+    /// Siri's request for a call pending in the shared store.
+    private func makeSiriWaitingAppState() -> (AppState, FakeGPTLiveSessionControl) {
+        let suite = "GPTLiveSiriWaiting.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let appState = AppState(defaults: defaults, loadSavedConnection: false)
+        _ = appState.handleScenePhase(.active)
+        appState.showLogin = false
+        appState.connection = HermesConnection(baseUrl: "https://example.com", ticket: "test-ticket")
+        appState.isConnecting = true
+        appState.setGPTLiveEnabled(true)
+        let (_, session) = installFakeGPTLive(in: appState)
+        PendingVoiceIntentStore.shared.enqueue(PendingVoiceLaunchPolicy.makeSiriPendingIntent(profile: nil))
+        return (appState, session)
+    }
+
+    /// Siri's call shows its screen while Conduit connects, and the call
+    /// starts on it once Hermes answers.
+    func testSiriCallWaitsOnItsOwnScreenAndStartsThere() async {
+        let store = PendingVoiceIntentStore.shared
+        defer { store.clear() }
+        let (appState, session) = makeSiriWaitingAppState()
+
+        // What the app's route does as Siri's request arrives.
+        appState.presentWaitingCallIfNeeded()
+
+        XCTAssertTrue(appState.showGPTLiveSheet, "Siri's call shows its screen at once")
+        XCTAssertEqual(appState.waitingCall?.engine, .gptLive)
+        XCTAssertFalse(appState.isVoiceCallInProgress, "a screen waiting for its call is no call yet")
+        XCTAssertEqual(session.started, 0, "the call waits for Hermes")
+
+        appState.isConnecting = false
+        appState.isConnected = true
+        guard let claim = store.takeClaim() else { return XCTFail("Siri's request should still be pending") }
+        let opened = await appState.openVoiceConversation(claim.intent)
+        await settle(until: { session.started == 1 })
+
+        XCTAssertTrue(opened)
+        XCTAssertEqual(session.started, 1, "the call starts on the screen that waited for it")
+        XCTAssertTrue(appState.gptLiveController.isActive)
+        XCTAssertNil(appState.waitingCall)
+        // The route's outcome for a call that opened leaves it be.
+        appState.endWaitingCall(owner: .siri)
+        XCTAssertTrue(appState.showGPTLiveSheet)
+        appState.closeGPTLiveConversation()
+    }
+
+    /// Hanging up on Siri's waiting screen drops Siri's request. A request
+    /// that ends without its call takes the screen with it, and a sign-out
+    /// closes the screen but leaves the request to end as it would have.
+    func testSiriWaitingScreenGoesWithItsRequest() {
+        let store = PendingVoiceIntentStore.shared
+        defer { store.clear() }
+        let (appState, session) = makeSiriWaitingAppState()
+        appState.presentWaitingCallIfNeeded()
+        XCTAssertTrue(appState.showGPTLiveSheet)
+
+        appState.closeGPTLiveConversation()
+
+        XCTAssertFalse(store.hasPendingIntent, "hanging up drops Siri's request")
+        XCTAssertFalse(appState.showGPTLiveSheet)
+
+        store.enqueue(PendingVoiceLaunchPolicy.makeSiriPendingIntent(profile: nil))
+        appState.presentWaitingCallIfNeeded()
+        XCTAssertTrue(appState.showGPTLiveSheet)
+        appState.endWaitingCall(owner: .widget)
+        XCTAssertTrue(appState.showGPTLiveSheet, "a widget launch ending leaves Siri's screen")
+        appState.endWaitingCall(owner: .siri)
+        XCTAssertFalse(appState.showGPTLiveSheet, "Siri's request failed or expired")
+        XCTAssertNil(appState.waitingCall)
+
+        store.enqueue(PendingVoiceLaunchPolicy.makeSiriPendingIntent(profile: nil))
+        appState.presentWaitingCallIfNeeded()
+        XCTAssertTrue(appState.showGPTLiveSheet)
+        appState.disconnect()
+        XCTAssertFalse(appState.showGPTLiveSheet)
+        XCTAssertNil(appState.waitingCall)
+        XCTAssertTrue(store.hasPendingIntent)
+        XCTAssertEqual(session.started, 0)
     }
 }
 
@@ -3554,6 +4014,44 @@ extension VoiceConversationControllerTests {
         }
         await settle(20)
         XCTAssertEqual(fake.created, 0, "\(fake.submissions)")
+        controller.stop()
+    }
+
+    /// "Cancel background jobs", then a hang-up before Hermes answered: the
+    /// answer (and every task the ended call left running) stays out of the
+    /// next call.
+    func testGPTLiveCancelAnswerFromAnEndedCallIsNotSpokenInTheNextCall() async {
+        let first = FakeGPTLiveSessionControl()
+        let second = FakeGPTLiveSessionControl()
+        var sessions = [first, second]
+        let client = FakeGPTLiveClient()
+        let fake = FakeVoiceJobBackend()
+        let supervisor = VoiceBackgroundJobSupervisor(backend: fake.backend, pollInterval: .seconds(3_600))
+        let controller = GPTLiveConversationController(
+            makeSession: { sessions.removeFirst() },
+            availability: { try await client.availability() },
+            briefing: { "[rules]" },
+            supervisor: supervisor,
+            requestPermission: { true },
+            headsetMute: HeadsetMicrophoneMute(system: FakeSystemInputMute())
+        )
+        _ = await supervisor.startJob(instructions: "check the server")
+        await controller.start()
+        first.becomeReady()
+        fake.parksCancel = true
+        first.onEvent?(.turnDone(role: "user", transcript: "Cancel background jobs."))
+        await fake.cancelParked.waitUntil(1)
+
+        controller.stop()
+        await controller.start()
+        second.becomeReady()
+        let before = second.appended.count
+        fake.releaseCancel()
+        await settle(until: { fake.cancelled.count == 1 })
+        await settle(20)
+
+        XCTAssertEqual(fake.cancelled, ["rt-1"], "the job is still cancelled on Hermes")
+        XCTAssertEqual(second.appended.count, before, "\(second.appended.map(\.text))")
         controller.stop()
     }
 }

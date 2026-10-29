@@ -142,6 +142,7 @@ struct GPTLiveSettingsSection: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             LiveVoiceSetupLink(mode: .gpt)
+            LiveVoiceConsentRow(mode: .gptLive)
             if enabled {
                 HStack(spacing: 10) {
                     Circle()
@@ -315,19 +316,30 @@ struct GPTLiveSettingsSection: View {
 struct GPTLiveVoiceSheet: View {
     @ObservedObject var controller: GPTLiveConversationController
     let jobs: VoiceBackgroundJobSupervisor
+    /// Passed to the call screen for its own sheets; not observed.
+    let appState: AppState
+    /// Up before its call opens, for a widget's Talk or Siri waiting on
+    /// Hermes (`AppState.waitingCall`).
+    var waitsToStart = false
     let onClose: () -> Void
     let onRetry: () -> Void
+
+    /// The screen shows its call connecting, without the last call's lines,
+    /// until the call's own connecting state takes over.
+    private var isWaiting: Bool { waitsToStart && !controller.isActive }
 
     var body: some View {
         LiveVoiceCallSheet(
             title: "GPT-Live",
-            billingBadge: controller.billing,
-            phase: Self.callPhase(controller.phase, microphoneMuted: controller.isMicrophoneMuted),
-            statusText: statusText,
-            note: controller.limitNote ?? controller.voiceNote,
-            transcript: controller.transcript,
+            billingBadge: isWaiting ? nil : controller.billing,
+            phase: isWaiting ? .connecting : Self.callPhase(controller.phase, microphoneMuted: controller.isMicrophoneMuted),
+            waitsToStart: isWaiting,
+            statusText: isWaiting ? AppLocalization.string("Connecting…") : statusText,
+            note: isWaiting ? nil : controller.limitNote ?? controller.voiceNote,
+            transcript: isWaiting ? [] : controller.transcript,
             assistantLabel: { AppLocalization.string("GPT-Live: \($0)") },
             jobs: jobs,
+            appState: appState,
             isMicrophoneMuted: controller.isMicrophoneMuted,
             isSpeakerMuted: controller.isSpeakerMuted,
             canMute: controller.isActive && !controller.isEnding,
@@ -337,11 +349,21 @@ struct GPTLiveVoiceSheet: View {
             onToggleMute: { controller.setMicrophoneMuted(!controller.isMicrophoneMuted) },
             onToggleSpeaker: { controller.setSpeakerMuted(!controller.isSpeakerMuted) },
             onEnd: onClose,
-            onRetry: onRetry
+            onRetry: onRetry,
+            // A call still waiting on Hermes has no mode to move yet.
+            modeSwitch: isWaiting ? nil : appState.voiceModeSwitch(for: .gptLive),
+            consent: isWaiting ? nil : controller.awaitingConsent,
+            onAllowConsent: {
+                guard let mode = controller.awaitingConsent else { return }
+                appState.setLiveVoiceConsent(true, for: mode)
+                onRetry()
+            }
         )
         // The status and new turns change without focus moving.
         .onChange(of: controller.phase) { _, _ in
-            AccessibilityNotification.Announcement(statusText).post()
+            // A consent stop shows the question, not the Watch's wording.
+            let consentQuestion = controller.awaitingConsent.map { AppLocalization.string("Send your voice to \($0.company)?") }
+            AccessibilityNotification.Announcement(consentQuestion ?? statusText).post()
         }
         // Said outright: the status only mentions the mute while listening.
         .onChange(of: controller.isMicrophoneMuted) { _, muted in

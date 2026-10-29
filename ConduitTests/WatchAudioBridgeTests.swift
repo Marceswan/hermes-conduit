@@ -6,8 +6,8 @@
 //  (designs/apple-watch-gpt-live.md): the sealing both ends share, the
 //  control messages, the iPhone's hand-off, the delegation requests and
 //  the call ledger's audio grant.
-//  Written as an extension of an existing suite: the CI test planner is at
-//  capacity for new XCTestCase classes.
+//  Written as an extension of an existing suite: the CI test planner was
+//  at capacity for new XCTestCase classes when this file landed.
 //
 
 import CryptoKit
@@ -253,6 +253,53 @@ extension HermesVoiceGatewayTimeoutTests {
         XCTAssertNil(try JSONDecoder().decode(WatchDirectCallLedger.GrantScope.self, from: stored).audio)
     }
 
+    /// A call whose Watch died ends on the phone after the silence limit
+    /// (#1008), but not while a grant its Watch may use wrist down is open.
+    @MainActor
+    func testWatchCallSilenceDeadlineWaitsOutTheGrant() {
+        let heard = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let limit = WatchDirectBroker.silenceLimit
+        XCTAssertEqual(WatchDirectBroker.silenceDeadline(lastHeardAt: heard, grantExpiresAt: nil), heard.addingTimeInterval(limit))
+        // A grant that ends before the limit changes nothing.
+        XCTAssertEqual(
+            WatchDirectBroker.silenceDeadline(lastHeardAt: heard, grantExpiresAt: heard.addingTimeInterval(10 * 60)),
+            heard.addingTimeInterval(limit)
+        )
+        // One that runs past it keeps the call until it ends, plus a minute.
+        let grantEnds = heard.addingTimeInterval(limit + 5 * 60)
+        XCTAssertEqual(
+            WatchDirectBroker.silenceDeadline(lastHeardAt: heard, grantExpiresAt: grantEnds),
+            grantEnds.addingTimeInterval(WatchDirectBroker.grantGrace)
+        )
+    }
+
+    /// The grant's end comes back with a call adopted after a restart, so
+    /// its watchdogs wait it out; calls stored before it read as unknown.
+    @MainActor
+    func testWatchCallLedgerKeepsTheGrantsEndAcrossARestart() throws {
+        let suite = "WatchDirectCallLedger.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var ledger = WatchDirectCallLedger(defaults: defaults)
+        ledger.begin(9, connection: WatchDirectConnection(profile: "default", dashboard: "A"), saveCalls: true)
+        let ends = Date(timeIntervalSinceReferenceDate: 800_001_800)
+        let scope = WatchDirectCallLedger.GrantScope(
+            tools: ["web_search"],
+            jobTools: [],
+            liveToken: true,
+            maxJobs: 0,
+            jobOptions: [:],
+            voiceApprovals: false,
+            grantIDs: ["grant-1"],
+            expiresAt: ends
+        )
+        ledger.setGrant(scope, for: 9)
+        XCTAssertEqual(WatchDirectCallLedger(defaults: defaults).call(9)?.grant?.expiresAt, ends)
+
+        let stored = Data(#"{"tools":[],"jobTools":[],"liveToken":false,"maxJobs":0,"jobOptions":{},"voiceApprovals":false,"grantIDs":[]}"#.utf8)
+        XCTAssertNil(try JSONDecoder().decode(WatchDirectCallLedger.GrantScope.self, from: stored).expiresAt)
+    }
+
     /// Corrections on a Watch call (#455): the marker, the words and what
     /// the model hears match the phone's, for GPT-Live and Gemini/Grok.
     @MainActor
@@ -298,6 +345,27 @@ extension HermesVoiceGatewayTimeoutTests {
         // Numbered when the host takes corrections, as the phone's note.
         XCTAssertTrue(WatchBridgeDelegation.working(title: "Tokyo weather", number: 2).contains("starting with \"Job 2:\""))
         XCTAssertFalse(WatchBridgeDelegation.working(title: "Tokyo weather").contains("Job "))
+    }
+
+    /// The Grok and Local Live bridge's keepalive: a ping still unanswered
+    /// when the next is due, or one that failed, is a miss. Two in a row is
+    /// a dead socket (one can be a late pong after a suspension); an
+    /// answered ping clears them.
+    func testWatchBridgeKeepaliveCallsTwoMissedPingsADeadSocket() {
+        var pings = WatchPingWatchdog()
+        XCTAssertFalse(pings.pingDue(), "The first ping goes out")
+        XCTAssertFalse(pings.pingDue(), "Unanswered once: maybe a late pong")
+        XCTAssertTrue(pings.pingDue(), "Unanswered twice: the socket is dead")
+
+        pings = WatchPingWatchdog()
+        XCTAssertFalse(pings.pingDue())
+        XCTAssertFalse(pings.pingDue())
+        XCTAssertFalse(pings.answered(ok: true), "A pong clears the misses")
+        XCTAssertEqual(pings.misses, 0)
+        XCTAssertFalse(pings.pingDue())
+        XCTAssertFalse(pings.answered(ok: false), "A failed ping is one miss")
+        XCTAssertFalse(pings.pingDue())
+        XCTAssertTrue(pings.answered(ok: false), "Two failed in a row: dead")
     }
 }
 

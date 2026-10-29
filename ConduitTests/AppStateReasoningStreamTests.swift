@@ -277,6 +277,93 @@ final class AppStateReasoningStreamTests: XCTestCase {
         XCTAssertLessThan(reasoningIndex, assistantIndex)
     }
 
+    // MARK: - Interim commentary
+
+    /// A gateway frame as HermesClient hands it to AppState.
+    private func frame(_ json: String) throws -> StreamEvent {
+        let data = try XCTUnwrap(json.data(using: .utf8))
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        return try XCTUnwrap(StreamEventParser.parse(params: AnyCodable.from(object)))
+    }
+
+    private func assistantRows(in state: AppState) -> [String] {
+        state.messages.filter { $0.role == .assistant }.map(\.content)
+    }
+
+    /// Commentary Hermes delivers only as `message.interim` (Codex-runtime
+    /// commentary, `already_streamed: false`) stays above the final answer.
+    func testUnstreamedInterimCommentaryStaysAboveTheAnswer() throws {
+        let state = makeAppState()
+        installActiveSession(state, id: "stored-a")
+
+        state.handleStreamEvent(.messageStart(sessionId: "stored-a"))
+        state.handleStreamEvent(try frame(#"""
+        {"type": "message.interim", "session_id": "stored-a", "payload": {"text": "Looking at the logs first.", "already_streamed": false}}
+        """#))
+        state.handleStreamEvent(.toolStart(sessionId: "stored-a", toolName: "read_file", toolInput: nil, toolID: "t1"))
+        state.handleStreamEvent(.toolComplete(sessionId: "stored-a", toolName: "read_file", toolOutput: "ok", toolID: "t1"))
+        state.handleStreamEvent(.messageDelta(sessionId: "stored-a", text: "All clear."))
+        state.handleStreamEvent(try frame(#"""
+        {"type": "message.complete", "session_id": "stored-a", "payload": {"text": "All clear.", "status": "complete"}}
+        """#))
+        state.handleStreamEvent(.messageStart(sessionId: "stored-a"))
+
+        XCTAssertEqual(assistantRows(in: state), ["Looking at the logs first.", "All clear."])
+        let commentary = try XCTUnwrap(state.messages.firstIndex { $0.content == "Looking at the logs first." })
+        let tool = try XCTUnwrap(state.messages.firstIndex { $0.role == .tool })
+        XCTAssertLessThan(commentary, tool)
+    }
+
+    /// Streamed commentary beside a tool call (`already_streamed: true`) is
+    /// sealed once and kept when the turn completes, instead of vanishing
+    /// with the partials.
+    func testStreamedInterimCommentaryIsKeptOnce() throws {
+        let state = makeAppState()
+        installActiveSession(state, id: "stored-a")
+
+        state.handleStreamEvent(.messageStart(sessionId: "stored-a"))
+        state.handleStreamEvent(.messageDelta(sessionId: "stored-a", text: "Checking "))
+        state.handleStreamEvent(.messageDelta(sessionId: "stored-a", text: "the logs."))
+        state.handleStreamEvent(try frame(#"""
+        {"type": "message.interim", "session_id": "stored-a", "payload": {"text": "Checking the logs.", "already_streamed": true}}
+        """#))
+        state.handleStreamEvent(.toolStart(sessionId: "stored-a", toolName: "read_file", toolInput: nil, toolID: "t1"))
+        state.handleStreamEvent(.toolComplete(sessionId: "stored-a", toolName: "read_file", toolOutput: "ok", toolID: "t1"))
+        state.handleStreamEvent(.messageDelta(sessionId: "stored-a", text: "Done."))
+        state.handleStreamEvent(try frame(#"""
+        {"type": "message.complete", "session_id": "stored-a", "payload": {"text": "Done.", "status": "complete"}}
+        """#))
+        state.handleStreamEvent(.messageStart(sessionId: "stored-a"))
+
+        XCTAssertEqual(assistantRows(in: state), ["Checking the logs.", "Done."])
+        XCTAssertFalse(state.messages.contains { $0.role == .partial })
+    }
+
+    /// A final answer Hermes marks as already delivered (`response_previewed`
+    /// / `response_reused`: the turn ended on the text it sealed as an
+    /// interim) settles onto that row and is not painted a second time.
+    func testPreviewedFinalAnswerIsNotPaintedTwice() throws {
+        for flags in [#""response_previewed": true, "response_reused": true"#, #""response_previewed": true"#, #""response_reused": true"#] {
+            let state = makeAppState()
+            installActiveSession(state, id: "stored-a")
+
+            state.handleStreamEvent(.messageStart(sessionId: "stored-a"))
+            state.handleStreamEvent(.messageDelta(sessionId: "stored-a", text: "Here it is."))
+            state.handleStreamEvent(try frame(#"""
+            {"type": "message.interim", "session_id": "stored-a", "payload": {"text": "Here it is.", "already_streamed": true}}
+            """#))
+            state.handleStreamEvent(.toolStart(sessionId: "stored-a", toolName: "todo", toolInput: nil, toolID: "t1"))
+            state.handleStreamEvent(.toolComplete(sessionId: "stored-a", toolName: "todo", toolOutput: "ok", toolID: "t1"))
+            state.handleStreamEvent(try frame(#"""
+            {"type": "message.complete", "session_id": "stored-a", "payload": {"text": "Here it is.", "status": "complete", \#(flags)}}
+            """#))
+            XCTAssertEqual(state.streamingText, "", flags)
+            state.handleStreamEvent(.messageStart(sessionId: "stored-a"))
+
+            XCTAssertEqual(assistantRows(in: state), ["Here it is."], flags)
+        }
+    }
+
     func testToolStartFlushesPendingReasoningAndPreservesOrdering() {
         let state = makeAppState()
         installActiveSession(state, id: "stored-a")
@@ -762,6 +849,88 @@ final class AppStateReasoningStreamTests: XCTestCase {
         )
         XCTAssertEqual(state.messages[4].content, "third segment")
         XCTAssertNil(state.liveReasoningSegment)
+    }
+
+    /// #572: Hermes' clarify tool.start is skipped, so the clarify card is
+    /// the first boundary after the explanation streamed ahead of it. The
+    /// explanation must commit above the card instead of staying in the
+    /// live tail below it.
+    func testClarifyCardCommitsPrecedingAssistantTextAboveIt() {
+        let state = makeAppState()
+        installActiveSession(state, id: "stored-a")
+
+        feedReasoning(["weighing options "], sessionId: "stored-a", state: state)
+        state.handleStreamEvent(.messageDelta(sessionId: "stored-a", text: "Two ways to do this. "))
+        state.handleStreamEvent(.toolStart(sessionId: "stored-a", toolName: "clarify", toolInput: "{}", toolID: "clarify-tool"))
+        state.handleStreamEvent(.messageDelta(sessionId: "stored-a", text: "A is faster, B is safer."))
+        state.handleStreamEvent(.clarify(sessionId: "stored-a", activity: clarifyActivity("req-1")))
+
+        XCTAssertEqual(state.messages.map(\.role), [.reasoning, .partial, .clarify])
+        XCTAssertEqual(state.messages[1].content, "Two ways to do this. A is faster, B is safer.")
+        XCTAssertEqual(state.streamingText, "")
+
+        // A replayed request updates the existing card in place: text that
+        // streamed after the card stays live below it, not above.
+        state.handleStreamEvent(.messageDelta(sessionId: "stored-a", text: "Waiting on you."))
+        state.handleStreamEvent(.clarify(sessionId: "stored-a", activity: clarifyActivity("req-1")))
+        XCTAssertEqual(state.messages.map(\.role), [.reasoning, .partial, .clarify])
+        forceFlushPendingReasoning(on: state)
+        XCTAssertEqual(state.streamingText, "Waiting on you.")
+
+        // A clarify with nothing buffered adds no empty partial row.
+        let quiet = makeAppState()
+        installActiveSession(quiet, id: "stored-a")
+        quiet.handleStreamEvent(.clarify(sessionId: "stored-a", activity: clarifyActivity("req-2")))
+        XCTAssertEqual(quiet.messages.map(\.role), [.clarify])
+    }
+
+    /// Approval and masked-input cards are the same kind of boundary: text
+    /// streamed ahead of a live one commits above it.
+    func testApprovalAndInputPromptCardsCommitPrecedingAssistantTextAboveThem() {
+        let state = makeAppState()
+        installActiveSession(state, id: "stored-a")
+
+        state.handleStreamEvent(.messageDelta(sessionId: "stored-a", text: "I need to run the tests."))
+        state.handleStreamEvent(.approval(
+            sessionId: "stored-a",
+            activity: ApprovalActivity(
+                sessionId: "stored-a",
+                command: "run tests",
+                description: "wants to run tests",
+                choices: nil,
+                allowPermanent: false,
+                smartDenied: false,
+                status: .pending,
+                choice: nil,
+                error: nil
+            )
+        ))
+        XCTAssertEqual(state.messages.map(\.role), [.partial, .approval])
+        XCTAssertEqual(state.messages.first?.content, "I need to run the tests.")
+
+        state.handleStreamEvent(.messageDelta(sessionId: "stored-a", text: "Now the token."))
+        state.handleStreamEvent(.inputPrompt(sessionId: "stored-a", activity: inputPromptActivity()))
+        XCTAssertEqual(state.messages.map(\.role), [.partial, .approval, .partial, .inputPrompt])
+        XCTAssertEqual(state.messages[2].content, "Now the token.")
+    }
+
+    private func inputPromptActivity() -> InputPromptActivity {
+        var activity = InputPromptActivity(requestId: "srq-1", sessionId: "stored-a", kind: .secret)
+        activity.envVar = "API_TOKEN"
+        activity.prompt = "Paste the token"
+        return activity
+    }
+
+    private func clarifyActivity(_ requestId: String) -> ClarifyActivity {
+        ClarifyActivity(
+            requestId: requestId,
+            questions: [
+                ClarifyQuestion(id: "q0", question: "which one?", choices: [
+                    ClarifyChoice(label: "A", value: "a"),
+                    ClarifyChoice(label: "B", value: "b")
+                ])
+            ]
+        )
     }
 
     func testSessionSwitchDiscardsPendingReasoningPublishForNewSession() async {

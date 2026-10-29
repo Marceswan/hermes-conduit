@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 enum MacDetailDestination: Equatable {
-    case chat, bots, cron, kanban
+    case chat, bots, cron, kanban, home, artifacts
 }
 
 /// Main-area content on Mac. The sidebar tab picker drives which view fills
@@ -40,6 +40,8 @@ struct MacDetailRouter<Chat: View>: View {
         case .bots: return .bots
         case .cron: return .cron
         case .kanban: return .kanban
+        case .home: return .home
+        case .artifacts: return .artifacts
         }
     }
 
@@ -56,6 +58,7 @@ struct MacDetailRouter<Chat: View>: View {
         let destination = Self.destination(for: tab)
         ZStack {
             chat
+                .overlay(alignment: .top) { MacChatFindSlot() }   // D23: whole-chat find bar
                 .opacity(destination == .chat ? 1 : 0)
                 .allowsHitTesting(destination == .chat)
                 .accessibilityHidden(destination != .chat)
@@ -97,8 +100,10 @@ struct MacDetailRouter<Chat: View>: View {
                 MacPaneHeader(title: SidebarTab.bots.displayName)
                 BotRosterView()
             }
-        case .cron: CronList()
+        case .cron: MacCronPane()
         case .kanban: KanbanView()
+        case .home: MacHomeView(appState: appState)
+        case .artifacts: MacArtifactsPane()
         }
     }
 

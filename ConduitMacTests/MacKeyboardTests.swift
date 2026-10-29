@@ -16,10 +16,12 @@ final class MacSidebarShortcutTests: XCTestCase {
         XCTAssertEqual(MacSidebarShortcut.tab(forKey: "2"), .bots)
         XCTAssertEqual(MacSidebarShortcut.tab(forKey: "3"), .cron)
         XCTAssertEqual(MacSidebarShortcut.tab(forKey: "4"), .kanban)
+        XCTAssertEqual(MacSidebarShortcut.tab(forKey: "5"), .home)
+        XCTAssertEqual(MacSidebarShortcut.tab(forKey: "6"), .artifacts)
     }
 
     func testOtherKeysMapToNothing() {
-        for key in ["0", "5", "9", "a", "[", " "] as [Character] {
+        for key in ["0", "7", "9", "a", "[", " "] as [Character] {
             XCTAssertNil(MacSidebarShortcut.tab(forKey: key), "\(key)")
         }
     }
@@ -30,7 +32,11 @@ final class MacSidebarShortcutTests: XCTestCase {
         XCTAssertEqual(tabs.count, SidebarTab.allCases.count)
         let keys = MacSidebarShortcut.allCases.map(\.key.character)
         XCTAssertEqual(Set(keys).count, keys.count)
-        XCTAssertEqual(tabs, SidebarTab.allCases, "numbered in tab-strip order")
+        XCTAssertEqual(tabs, SidebarTab.allCases, "numbered in SidebarTab order: Home is Ctrl-Cmd-5 and Artifacts Ctrl-Cmd-6, last in Go, though the strip shows Home first (D24, D26)")
+        XCTAssertEqual(MacSidebarShortcut.allCases.map(\.key.character), ["1", "2", "3", "4", "5", "6"])
+        XCTAssertEqual(MacSidebarShortcut.tab(forKey: "5"), .home)
+        XCTAssertEqual(MacSidebarShortcut.tab(forKey: "6"), .artifacts)
+        XCTAssertEqual(MacSidebarShortcut.tab(forKey: "1"), .sessions)
     }
 
     func testTitleIsTheTabsOwnName() {
@@ -361,6 +367,12 @@ final class MacKeyboardActionsTests: XCTestCase {
         XCTAssertTrue(MacKeyboardActions.commandsBlocked(by: parent), "sheet attached")
         XCTAssertTrue(MacKeyboardActions.commandsBlocked(by: sheet), "the sheet itself is the key window")
         XCTAssertFalse(MacKeyboardActions.commandsBlocked(by: nil))
+        let panel = MacFloatingPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 100, height: 40),
+            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        panel.isReleasedWhenClosed = false
+        XCTAssertTrue(MacKeyboardActions.commandsBlocked(by: panel),
+                      "tab, search and session shortcuts never act on the main window from a floating panel")
 
         let requests = MacFocusRequests()
         MacKeyboardActions.selectTab(.kanban, window: parent, defaults: suite.defaults)
@@ -461,6 +473,11 @@ final class MacKeyboardMenuTests: XCTestCase {
             ("/Go/Show Previous Tab", "\t", [.control, .shift]),
             ("/File/Close Tab", "w", .command),
             ("/File/Reopen Closed Tab", "t", [.shift, .command]),
+            ("/File/Open Session in New Window", "n", [.option, .command]),
+            // D32: Print Chat takes the slot of the system Print item, so Cmd-P has one owner.
+            ("/File/Export Chat\u{2026}", "e", [.shift, .command]),
+            ("/File/Print Chat\u{2026}", "p", .command),
+            ("/Chat/Ask About Window\u{2026}", "w", [.shift, .command]),
         ]
         table += [
             ("/Go/Previous Session", "[", .command),
@@ -468,9 +485,36 @@ final class MacKeyboardMenuTests: XCTestCase {
             ("/Go/Session Above", up, [.option, .command]),
             ("/Go/Session Below", down, [.option, .command]),
             ("/Go/Message Field", "l", .command),
-            ("/Edit/Search Sessions", "f", .command),
+            ("/Edit/Find in Chat", "f", .command),
+            ("/Edit/Find Next", "g", .command),
+            ("/Edit/Find Previous", "g", [.shift, .command]),
+            ("/Go/Command Palette", "k", .command),
+            ("/Go/Switch Dashboard\u{2026}", "d", [.shift, .command]),
+            // D27: AppKit reports Cmd-+ as "+" with .command alone (observed).
+            ("/View/Actual Size", "0", .command),
+            ("/View/Zoom In", "+", .command),
+            ("/View/Zoom Out", "-", .command),
         ]
         return table
+    }
+
+    /// Plain Cmd-= is Zoom In through `MacUIZoom.installKeyMonitor` (D27), which
+    /// runs before the menu: an item on Cmd-= would never get its key.
+    func testNoMenuItemTakesCmdEqualsFromTheZoomMonitor() throws {
+        let main = try XCTUnwrap(NSApp.mainMenu)
+        let found = entries(main).filter { matches($0, key: "=", mask: .command) }.map(\.path)
+        XCTAssertEqual(found, [])
+    }
+
+    /// Chat > Artifacts... (Task 13): in the Chat menu right after Ask About Window, with no key equivalent.
+    func testMenuTableHasChatArtifacts() throws {
+        let main = try XCTUnwrap(NSApp.mainMenu, "SwiftUI has not built the main menu")
+        let all = entries(main)
+        let paths = all.map(\.path)
+        let artifacts = try XCTUnwrap(all.first { $0.path == "/Chat/Artifacts\u{2026}" }, "\(paths)")
+        XCTAssertEqual(artifacts.item.keyEquivalent, "")
+        let ask = try XCTUnwrap(paths.firstIndex(of: "/Chat/Ask About Window\u{2026}"))
+        XCTAssertEqual(paths.firstIndex(of: "/Chat/Artifacts\u{2026}"), ask + 1)
     }
 
     func testEveryShortcutIsInTheMenuAndWinsItsKey() throws {
@@ -486,10 +530,23 @@ final class MacKeyboardMenuTests: XCTestCase {
     func testOurShortcutsAreUnique() throws {
         let main = try XCTUnwrap(NSApp.mainMenu)
         let all = entries(main)
-        for expected in shortcuts() where expected.key != "f" {
+        for expected in shortcuts() where expected.key != "f" && expected.key != "g" {
             let found = all.filter { matches($0, key: expected.key, mask: expected.mask) }
             XCTAssertEqual(found.map(\.path), [expected.path], "no other item may share \(expected.path)'s shortcut")
         }
+    }
+
+    func testSettingsIsInTheAppMenuOnCmdCommaAndNothingElseOwnsIt() throws {
+        let main = try XCTUnwrap(NSApp.mainMenu)
+        let appMenu = try XCTUnwrap(main.items.first?.submenu)
+        let titles = appMenu.items.map(\.title)
+        let settings = try XCTUnwrap(appMenu.items.first { $0.title == "Settings\u{2026}" }, "\(titles)")
+        XCTAssertEqual(settings.keyEquivalent, ",")
+        XCTAssertEqual(settings.keyEquivalentModifierMask.intersection(.deviceIndependentFlagsMask), .command)
+        let about = try XCTUnwrap(titles.firstIndex { $0.hasPrefix("About") }, "\(titles)")
+        XCTAssertGreaterThan(try XCTUnwrap(appMenu.items.firstIndex(of: settings)), about)
+        let comma = entries(main).filter { matches($0, key: ",", mask: .command) }.map(\.path)
+        XCTAssertEqual(comma.count, 1, "Cmd-, belongs to one item: \(comma)")
     }
 
     func testFindItemStaysInTheMenuWithoutCmdF() throws {
@@ -499,8 +556,10 @@ final class MacKeyboardMenuTests: XCTestCase {
         let all = entries(main)
         let find = try XCTUnwrap(all.first { $0.path == "/Edit/Find/Find\u{2026}" }, "per-message find stays reachable from the menu")
         let cmdF = all.filter { matches($0, key: "f", mask: .command) }.map(\.path)
-        XCTAssertEqual(cmdF.first, "/Edit/Search Sessions")
+        XCTAssertEqual(cmdF.first, "/Edit/Find in Chat")
         XCTAssertEqual(cmdF.count, 1, "Cmd-F belongs to one item (Find is '\(find.item.keyEquivalent)'): \(cmdF)")
+        let search = try XCTUnwrap(all.first { $0.path == "/Edit/Search Sessions" }, "Search Sessions stays in the menu")
+        XCTAssertEqual(search.item.keyEquivalent, "", "and has no key equivalent of its own")
     }
 
     func testSidebarToggleShortcutIsUntouched() throws {
@@ -1026,13 +1085,9 @@ final class MacComposerKeyboardTests: XCTestCase {
     /// Cmd-L from another pane, end to end: the route holds the hidden chat's
     /// focus, the command returns the route to chat and focus comes back.
     func testFocusRequestFromAnotherPaneReturnsToChatAndFocuses() throws {
-        // ComposerPasteTextView reads the standard defaults; put the key back after.
+        // The composer reads the standard defaults, not a suite: put the sidebar tab back after.
+        preserveStandardDefaults(MacSidebarState.tabDefaultsKey)
         let defaults = UserDefaults.standard
-        let original = defaults.object(forKey: MacSidebarState.tabDefaultsKey)
-        defer {
-            if let original { defaults.set(original, forKey: MacSidebarState.tabDefaultsKey) }
-            else { defaults.removeObject(forKey: MacSidebarState.tabDefaultsKey) }
-        }
         defaults.set(SidebarTab.sessions.rawValue, forKey: MacSidebarState.tabDefaultsKey)
         let center = NotificationCenter()
         let window = HostedTestSupport.host(Composer(center: center), size: NSSize(width: 300, height: 100))
@@ -1052,6 +1107,29 @@ final class MacComposerKeyboardTests: XCTestCase {
         XCTAssertTrue(HostedTestSupport.waitUntil { window.firstResponder === view }, "focus is back in the composer")
         HostedTestSupport.settle(0.2)
         XCTAssertTrue(window.firstResponder === view, "and stays there once the route update lands")
+    }
+
+    /// Send, steer, queue and Stop all run `ComposerBar.dismissComposer`. On iOS
+    /// it drops `isFocused` to put the software keyboard away; on Mac the paste
+    /// view then resigned first responder, so every sent message left the field
+    /// unfocused. Source pin, as in `MacRichContentInteractionTests`.
+    func testSendingKeepsTheComposerFocusedOnMac() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let file = try String(contentsOf: root.appendingPathComponent("Conduit/Views/Components/ComposerBar.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(file.range(of: "private func dismissComposer() {"), "ComposerBar.dismissComposer must exist")
+        let end = try XCTUnwrap(file.range(of: "\n    }\n", range: start.upperBound..<file.endIndex))
+        let body = String(file[start.upperBound..<end.lowerBound])
+
+        let open = try XCTUnwrap(body.range(of: "#if os(macOS) // MAC:"), "dismissComposer must hold a `#if os(macOS) // MAC:` region")
+        let split = try XCTUnwrap(body.range(of: "#else // MAC:", range: open.upperBound..<body.endIndex))
+        let close = try XCTUnwrap(body.range(of: "#endif // MAC:", range: split.upperBound..<body.endIndex))
+        let mac = String(body[open.upperBound..<split.lowerBound])
+        let other = String(body[split.upperBound..<close.lowerBound])
+
+        XCTAssertTrue(mac.contains("isFocused = true"), "the Mac field keeps (or takes back) the keyboard after a send")
+        XCTAssertFalse(mac.contains("isFocused = false"))
+        XCTAssertTrue(other.contains("isFocused = false"), "upstream's keyboard dismissal stays for iOS")
+        XCTAssertTrue(body[close.upperBound...].contains("isShowingSlashSuggestions = false"))
     }
 
     // MARK: Tab
@@ -1159,5 +1237,76 @@ final class MacComposerKeyboardTests: XCTestCase {
         window.sendEvent(tabEvent(shift: true, in: window))
         XCTAssertTrue(HostedTestSupport.waitUntil { window.firstResponder === list },
                       "composer -> list: \(String(describing: window.firstResponder))")
+    }
+}
+
+/// The cursor order follows the nested session list: children only under an expanded parent.
+extension MacSessionListKeyboardTests {
+    private func nestRow(_ id: String, stored: String? = nil, activity: TimeInterval? = nil) -> SessionSummary {
+        SessionSummary(id: id, storedSessionId: stored, alternateIds: [], title: id, model: "claude",
+                       updatedLabel: "2h", lastActivityAt: activity, profile: "default", source: .chat,
+                       isActive: false, isArchived: false)
+    }
+
+    func testCursorSkipsChildrenOfACollapsedParent() {
+        let rows = [nestRow("p1"), nestRow("c1", activity: 20), nestRow("c2", activity: 10), nestRow("p2"), nestRow("g1")]
+        let parents = ["c1": "p1", "c2": "p1", "g1": "c1"]
+        let sections = SessionNesting.sections(rows, query: "", statusFilterActive: false,
+                                               isPinned: { _ in false }, parentKeyOf: { parents[$0.id] })
+        XCTAssertEqual(MacVisibleSessionRows.ids(pinned: sections.pinned, recent: sections.recent, expanded: []),
+                       ["p1", "p2"])
+        XCTAssertEqual(MacVisibleSessionRows.ids(pinned: sections.pinned, recent: sections.recent, expanded: ["p1"]),
+                       ["p1", "c1", "c2", "p2"])
+        XCTAssertEqual(MacVisibleSessionRows.ids(pinned: sections.pinned, recent: sections.recent, expanded: ["p1", "c1"]),
+                       ["p1", "c1", "g1", "c2", "p2"])
+    }
+
+    func testCursorListsPinnedNodesFirstAndUsesTheStoredIdAsNestKey() {
+        let rows = [nestRow("a"), nestRow("pinned-parent", stored: "st-1"), nestRow("pinned-child", activity: 5), nestRow("b")]
+        let parents = ["pinned-child": "st-1"]
+        let sections = SessionNesting.sections(rows, query: "", statusFilterActive: false,
+                                               isPinned: { $0.id == "pinned-parent" }, parentKeyOf: { parents[$0.id] })
+        let collapsed = MacVisibleSessionRows.ids(pinned: sections.pinned, recent: sections.recent, expanded: [])
+        XCTAssertEqual(collapsed.first, "pinned-parent")
+        XCTAssertFalse(collapsed.contains("pinned-child"))
+        // The old flat order listed every row, including the hidden child.
+        XCTAssertEqual(rows.count, 4)
+        XCTAssertEqual(MacVisibleSessionRows.ids(pinned: sections.pinned, recent: sections.recent, expanded: ["st-1"]).count,
+                       collapsed.count + 1)
+    }
+
+    /// The cursor sits on a child row; its parent collapses, so the child leaves the visible rows. The cursor is
+    /// cleared, not moved to a neighbour, and Return opens nothing.
+    func testCollapsingTheParentOfTheCursorRowClearsTheCursor() throws {
+        let rows = [nestRow("p1"), nestRow("c1", activity: 20), nestRow("c2", activity: 10), nestRow("p2")]
+        let parents = ["c1": "p1", "c2": "p1"]
+        let sections = SessionNesting.sections(rows, query: "", statusFilterActive: false,
+                                               isPinned: { _ in false }, parentKeyOf: { parents[$0.id] })
+        func visible(expanded: Set<String>) -> [String] {
+            MacVisibleSessionRows.ids(pinned: sections.pinned, recent: sections.recent, expanded: expanded)
+        }
+        let model = Model()
+        model.ids = visible(expanded: ["p1"])
+        model.activeID = "p1"
+        XCTAssertEqual(model.ids, ["p1", "c1", "c2", "p2"])
+        let window = host(model)
+        let table = try waitForTable(in: window)
+        focusList(table, in: window)
+        pressDown(window)   // the open session is "p1": the cursor lands on its child "c1"
+        pressReturn(window)
+        XCTAssertTrue(HostedTestSupport.waitUntil { model.opened == ["c1"] }, "the cursor reached the child: \(model.opened)")
+
+        model.ids = visible(expanded: [])   // "p1" collapses: "c1" and "c2" leave the list
+        HostedTestSupport.settle(0.3)
+        model.opened.removeAll()
+        pressReturn(window)
+        HostedTestSupport.settle(0.2)
+        XCTAssertTrue(model.opened.isEmpty, "the cursor was on a row that is gone: \(model.opened)")
+
+        // Control: key handling still works after the list changed. The open session is "p1", so Down moves to the
+        // next visible row, "p2", and Return opens it.
+        pressDown(window)
+        pressReturn(window)
+        XCTAssertTrue(HostedTestSupport.waitUntil { model.opened == ["p2"] }, "Down then Return after the collapse: \(model.opened)")
     }
 }

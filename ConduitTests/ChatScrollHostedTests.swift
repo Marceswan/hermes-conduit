@@ -54,7 +54,7 @@ final class ChatScrollHostedTests: XCTestCase {
         }
     }
 
-    private func mount(_ messages: [ChatMessage]) throws -> Mounted {
+    private func mount(_ messages: [ChatMessage], composerRests: Bool = false) throws -> Mounted {
         let suiteName = "chat-scroll-hosted"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
@@ -64,6 +64,7 @@ final class ChatScrollHostedTests: XCTestCase {
         let host = UIHostingController(
             rootView: DormancyHarnessEnvironment.applying(
                 ChatView(chatTextSizeOverride: DormancyHarnessEnvironment.pinnedChatTextSize)
+                    .environment(\.v2ComposerRests, composerRests)
                     .environmentObject(appState)
             )
         )
@@ -314,6 +315,36 @@ final class ChatScrollHostedTests: XCTestCase {
         }
     }
 
+    func testARunningReplyOpenedAgainShowsWhatWasWrittenAtOnce() throws {
+        // Opening a chat whose reply is still running seeds the live bubble
+        // with everything written so far. It must not be typed out again:
+        // only its newest characters fade in.
+        let mounted = try mount(Self.transcript(0..<40))
+        let transcriptOnly = mounted.scrollView.contentSize.height
+        mounted.appState.setStreamingTextForTesting(String(
+            repeating: "Everything the reply wrote before the chat was opened again. ",
+            count: 50
+        ))
+        // The first sample is taken once the bubble is laid out well past a
+        // first line (the reply is about 70 lines), however long a busy
+        // simulator takes to get there. Typed out, it would only be a few
+        // hundred points in and keep growing.
+        let deadline = Date().addingTimeInterval(5)
+        repeat {
+            settle(mounted.host.view, seconds: 0.05)
+        } while mounted.scrollView.contentSize.height <= transcriptOnly + 600 && Date() < deadline
+        settle(mounted.host.view, seconds: 0.1)
+        let shownAtOnce = mounted.scrollView.contentSize.height
+        settle(mounted.host.view, seconds: 1.0)
+        let shownLater = mounted.scrollView.contentSize.height
+        XCTAssertLessThan(
+            shownLater - shownAtOnce,
+            80,
+            "the written reply showed at once (\(shownAtOnce) then \(shownLater) pt)"
+        )
+        assertAtLatest(mounted, "the reopened reply is followed")
+    }
+
     func testAReaderScrolledUpIsNotMovedByNewMessages() throws {
         let mounted = try mount(Self.transcript(0..<120))
         browse(mounted, to: mounted.scrollView.contentOffset.y - 1500)
@@ -425,10 +456,25 @@ final class ChatScrollHostedTests: XCTestCase {
         }
         mounted.engine.userDragEnded()
         settle(mounted.host.view, seconds: 0.3)
+        XCTAssertTrue(mounted.engine.chrome.inputs.showsJumpToLatest)
 
-        // The jump-to-latest button appearing is the one expected re-run.
-        XCTAssertLessThanOrEqual(TranscriptPerf.chatViewBodyEvaluations - bodiesBefore, 2)
-        XCTAssertTrue(mounted.engine.showsJumpToLatest)
+        // Back down to the latest message, which follows again.
+        mounted.engine.userDragBegan()
+        for step in (0..<20).reversed() {
+            mounted.scrollView.contentOffset.y = step == 0
+                ? maxOffset(mounted.scrollView)
+                : start - CGFloat(step) * 90
+            settle(mounted.host.view, seconds: 0.03)
+        }
+        mounted.engine.userDragEnded()
+        settle(mounted.host.view, seconds: 0.3)
+        XCTAssertTrue(mounted.engine.chrome.inputs.isFollowingLatest)
+        XCTAssertFalse(mounted.engine.chrome.inputs.showsJumpToLatest)
+
+        // Leaving and returning to the latest message, and the jump button
+        // coming and going, re-render only the button: a chat re-render
+        // re-ran every row, a hitch at the start of each scroll.
+        XCTAssertEqual(TranscriptPerf.chatViewBodyEvaluations - bodiesBefore, 0)
     }
 
     func testJumpToLatestReturnsToTheBottomAndFollowsAgain() throws {
@@ -498,6 +544,36 @@ final class ChatScrollHostedTests: XCTestCase {
         XCTAssertTrue(mounted.engine.isFollowingLatest)
     }
 
+    /// A finished run of steps shows as one collapsed line. Its other
+    /// steps draw nothing, so they must not add the transcript's row
+    /// spacing each: the reply sits one spacing below the line, not seven.
+    func testACollapsedRunOfStepsSitsOneRowSpacingAboveTheReply() throws {
+        let steps = (0..<7).map { index in
+            ChatMessage(
+                id: "step-\(index)",
+                role: .tool,
+                content: "",
+                timestamp: "2026-01-01T00:00:0\(index)Z",
+                tool: ToolActivity(id: "step-\(index)", name: "web_search", input: #"{"query": "q\#(index)"}"#, output: "ok", status: .complete)
+            )
+        }
+        let messages = [ChatMessage(id: "ask", role: .user, content: "Look it up.", timestamp: "2026-01-01T00:00:00Z")]
+            + steps
+            + [ChatMessage(id: "reply", role: .assistant, content: "Here it is.", timestamp: "2026-01-01T00:00:09Z")]
+        let mounted = try mount(messages)
+        settle(mounted.host.view, seconds: 0.4)
+
+        let header = try XCTUnwrap(mounted.engine.rowFrame(for: "step-0"), "the run's line is laid out")
+        let reply = try XCTUnwrap(mounted.engine.rowFrame(for: "reply"), "the reply is laid out")
+        XCTAssertGreaterThan(header.maxY - header.minY, 1, "the run shows as one line")
+        XCTAssertEqual(
+            reply.minY - header.maxY,
+            ChatStepStyle.transcriptRowSpacing,
+            accuracy: 1,
+            "one row spacing between the collapsed run and the reply"
+        )
+    }
+
     /// Eric's report: opening a Thinking or tool row at the bottom of the
     /// chat jumped far down. A row growing in place (as an opening one does)
     /// after the reader taps it keeps its top where it was.
@@ -525,6 +601,49 @@ final class ChatScrollHostedTests: XCTestCase {
         XCTAssertEqual(after, before, accuracy: 1, "the tapped row stays put\n\(recorder.dump(since: mark))")
         XCTAssertEqual(mounted.engine.mode, .browsing)
         XCTAssertTrue(mounted.engine.showsJumpToLatest)
+    }
+
+    /// A tester's report: at the bottom of a chat, a band of empty space
+    /// (~126 pt) sat between the last reply and the composer. The composer
+    /// is a bar the scroll view already insets for, so the latest row ends
+    /// one row spacing above it, with the resting V2 composer and the
+    /// stacked one alike.
+    func testTheLatestReplyEndsJustAboveTheRestingComposer() throws {
+        try assertLatestReplyEndsJustAboveTheComposer(composerRests: true)
+    }
+
+    func testTheLatestReplyEndsJustAboveTheStackedComposer() throws {
+        try assertLatestReplyEndsJustAboveTheComposer(composerRests: false)
+    }
+
+    private func assertLatestReplyEndsJustAboveTheComposer(composerRests: Bool) throws {
+        let count = 40
+        let mounted = try mount(Self.transcript(0..<count), composerRests: composerRests)
+        // Scrolled to the very bottom, whoever placed the offset: this
+        // measures the layout under the latest row, not the follow logic.
+        let view = mounted.scrollView
+        for _ in 0..<3 {
+            view.contentOffset.y = maxOffset(view)
+            settle(mounted.host.view, seconds: 0.3)
+        }
+        XCTAssertEqual(view.contentOffset.y, maxOffset(view), accuracy: 1, "still at the very bottom when measured")
+
+        let last = try XCTUnwrap(mounted.engine.rowFrame(for: "hosted-\(count - 1)"), "the latest row is laid out")
+        let surface = try XCTUnwrap(mounted.engine.surface)
+        let rowBottom = surface.transcriptOriginY + last.maxY - view.contentOffset.y
+        let composerTop = view.bounds.height - view.adjustedContentInset.bottom
+        if composerRests {
+            XCTAssertGreaterThan(view.adjustedContentInset.bottom, 40, "the scroll view insets for the resting composer")
+        } else {
+            XCTAssertLessThanOrEqual(view.adjustedContentInset.bottom, 1, "the stacked composer sits below the scroll view")
+        }
+        XCTAssertLessThan(composerTop - rowBottom, 30, "no band of empty space above the composer")
+        XCTAssertEqual(
+            composerTop - rowBottom,
+            ChatStepStyle.transcriptRowSpacing,
+            accuracy: 2,
+            "one row spacing between the latest reply and the composer"
+        )
     }
 
     /// Issue #302: the transcript bounced on its own until touched. With no

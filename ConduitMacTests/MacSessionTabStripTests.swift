@@ -393,4 +393,39 @@ final class MacSessionTabStripTests: XCTestCase {
         let whole = expectSteadyToolbar(in: window, "extra item removed", minRatio: 0.6, idealWidth: ideal(window, sidebar: 340))
         XCTAssertEqual(whole.itemCount, 5)
     }
+
+    // MARK: Busy dot
+
+    /// A repeating animation started with `withAnimation` also takes any other
+    /// change in the same update. The busy dot's pulse did that in the toolbar:
+    /// the whole tab row swung up and left and back, every 1.8 s, for as long as
+    /// the chat worked. A repeat goes on the one attribute it pulses
+    /// (`.animation(_:body:)`), never on a whole transaction.
+    func testNoRepeatingAnimationStartsWithWithAnimation() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        var offenders: [String] = []
+        for dir in ["ConduitMac", "Conduit"] {
+            let files = FileManager.default.enumerator(at: root.appendingPathComponent(dir), includingPropertiesForKeys: nil)?
+                .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" } ?? []
+            XCTAssertFalse(files.isEmpty, dir)
+            for file in files {
+                let source = try String(contentsOf: file, encoding: .utf8)
+                var rest = source[...]
+                while let call = rest.range(of: "withAnimation(") {
+                    // The call's argument list, to its closing parenthesis.
+                    var depth = 1
+                    var end = call.upperBound
+                    while end < rest.endIndex, depth > 0 {
+                        if rest[end] == "(" { depth += 1 } else if rest[end] == ")" { depth -= 1 }
+                        end = rest.index(after: end)
+                    }
+                    if rest[call.upperBound..<end].contains("repeatForever") {
+                        offenders.append("\(dir)/\(file.lastPathComponent): \(rest[call.lowerBound..<end])")
+                    }
+                    rest = rest[end...]
+                }
+            }
+        }
+        XCTAssertEqual(offenders, [])
+    }
 }

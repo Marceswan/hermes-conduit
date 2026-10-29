@@ -117,7 +117,7 @@ final class ComposerToolCardContrastTests: XCTestCase {
 
         for dark in [false, true] {
             let rep = try bitmap(
-                ComposerBar().environmentObject(appState)
+                ComposerBar(appState: appState).environmentObject(appState)
                     .background(dark ? Color(white: 0.12) : Color.white),
                 size: CGSize(width: 720, height: 140), dark: dark)
             let name = dark ? "reasoning-dark" : "reasoning-light"
@@ -143,6 +143,9 @@ final class ComposerToolCardContrastTests: XCTestCase {
         for dark in [false, true] {
             let rep = try bitmap(
                 ToolCard(message: message)
+                    // The row reads its actions from the chat-row environment (upstream 86f838a4 made
+                    // `ToolCard` call `rowActions.required`): host it as the chat does (R31).
+                    .chatRows()
                     .environmentObject(appState)
                     .background(dark ? Color(white: 0.12) : Color.white),
                 size: CGSize(width: 420, height: 44), dark: dark)

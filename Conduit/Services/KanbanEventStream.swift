@@ -40,11 +40,18 @@ final class URLSessionKanbanEventSocket: KanbanEventSocket {
         self.task = task
     }
 
-    /// Opens the live-update socket. Behind Cloudflare Access the upgrade
-    /// must carry the service-token headers like the dashboard's REST
-    /// requests, or Access refuses the handshake and Kanban drops to polling.
-    static func open(url: URL, cloudflareAccess: CloudflareAccessCredentials?) -> URLSessionKanbanEventSocket {
-        let task = URLSession.shared.webSocketTask(with: upgradeRequest(url: url, cloudflareAccess: cloudflareAccess))
+    /// Opens the live-update socket for the selected dashboard. Behind
+    /// Cloudflare Access the upgrade must carry the service-token headers
+    /// like the dashboard's REST requests, or Access refuses the handshake
+    /// and Kanban drops to polling; the authorizer then adds the dashboard's
+    /// own session cookies (cookie mode). The socket opens on the
+    /// cookie-less, redirect-refusing dashboard socket session.
+    @MainActor
+    static func open(url: URL, authorizer: DashboardRequestAuthorizer) async throws -> URLSessionKanbanEventSocket {
+        let request = try await authorizer.authorizeUpgrade(
+            upgradeRequest(url: url, cloudflareAccess: authorizer.cloudflareAccess)
+        )
+        let task = authorizer.webSocketTask(with: request)
         task.resume()
         return URLSessionKanbanEventSocket(task: task)
     }
@@ -266,6 +273,10 @@ final class KanbanEventStreamCoordinator {
     private let heartbeatIntervalNanoseconds: UInt64
     private let heartbeatSleeper: @MainActor (UInt64) async throws -> Void
     private let onBatch: BatchHandler
+    /// Told when a confirmed socket starts receiving (true) and when it goes
+    /// (false), so the board's poll can back off while the stream works.
+    private let onConnectionChange: (@MainActor (Bool) -> Void)?
+    private var reportedConnected = false
 
     /// Diagnostics/assertion surface for tests (capped - URLs embed tickets).
     private(set) var issuedURLs: [URL] = []
@@ -302,8 +313,10 @@ final class KanbanEventStreamCoordinator {
         heartbeatIntervalNanoseconds: UInt64 = KanbanLiveUpdatePolicy.heartbeatIntervalNanoseconds,
         pingTimeoutNanoseconds: UInt64 = KanbanLiveUpdatePolicy.pingTimeoutNanoseconds,
         pinger: Pinger? = nil,
+        onConnectionChange: (@MainActor (Bool) -> Void)? = nil,
         onBatch: @escaping BatchHandler
     ) {
+        self.onConnectionChange = onConnectionChange
         self.configuration = configuration
         self.socketFactory = socketFactory
         self.ticketMinter = ticketMinter
@@ -389,6 +402,13 @@ final class KanbanEventStreamCoordinator {
         }
         pendingTaskIDs.removeAll()
         pendingBoardInvalidation = false
+        reportConnected(false)
+    }
+
+    private func reportConnected(_ connected: Bool) {
+        guard connected != reportedConnected else { return }
+        reportedConnected = connected
+        onConnectionChange?(connected)
     }
 
     private func isCurrent(_ myRun: Int) -> Bool {
@@ -407,7 +427,10 @@ final class KanbanEventStreamCoordinator {
         }
         socket.cancel()
         cancelledSockets += 1
-        if currentSocket?.socket === socket { currentSocket = nil }
+        if currentSocket?.socket === socket {
+            currentSocket = nil
+            reportConnected(false)
+        }
     }
 
     private func runLoop(_ myRun: Int) async {
@@ -478,6 +501,7 @@ final class KanbanEventStreamCoordinator {
                 continue
             }
             consecutiveFailures = 0
+            reportConnected(true)
 
             // 5. Heartbeat + receive until failure/cancellation.
             heartbeatTask = Task { [weak self] in

@@ -36,8 +36,13 @@ final class GrokLiveSession: GeminiLiveSessionControlling {
     var onEvent: (@MainActor (GeminiLiveProtocol.ServerEvent) -> Void)?
     var onStateChange: (@MainActor (State) -> Void)?
     var onConnectionReplaced: (@MainActor () -> Void)?
+    /// Privacy-safe steps for the call's trace: event kinds and function
+    /// names, never what the user or the model said.
+    var onTrace: (@MainActor (String) -> Void)?
     private(set) var connectionGeneration = 0
     var stateDescription: String { "\(state)" }
+    /// xAI transcribes the user's speech once an utterance is complete.
+    var transcribesWholeUtterances: Bool { true }
 
     private let client: GrokLiveConnecting
     private let instructions: String
@@ -52,6 +57,8 @@ final class GrokLiveSession: GeminiLiveSessionControlling {
     private var socket: GeminiLiveSocket?
     /// Identity of the current connection; frames from any other are ignored.
     private var connectionID = UUID()
+    /// The connection's capture, upsampled as one stream.
+    private var inputUpsampler = GrokInputUpsampler()
     private var receiveTask: Task<Void, Never>?
     private var connectTask: Task<Void, Never>?
     private var hasConnectedOnce = false
@@ -89,6 +96,9 @@ final class GrokLiveSession: GeminiLiveSessionControlling {
     /// Item ids in the order they arrived, oldest first.
     private var inputSnapshotOrder: [String] = []
     private static let rememberedInputItems = 4
+    /// Function calls already passed on, on this connection: one call can
+    /// arrive both as its arguments event and as its finished item.
+    private var deliveredCallIDs: Set<String> = []
 
     init(
         client: GrokLiveConnecting,
@@ -128,11 +138,13 @@ final class GrokLiveSession: GeminiLiveSessionControlling {
     }
 
     func send(_ message: LiveVoiceClientMessage, onSent: (@MainActor () -> Void)?, onFailure: (@MainActor () -> Void)?) {
-        let (frames, wantsResponse) = GrokLiveProtocol.frames(for: message)
+        // Before the upsampler moves: capture dropped while (re)connecting
+        // must not become the next connection's held sample.
         guard state == .ready, let socket else {
             onFailure?()
             return
         }
+        let (frames, wantsResponse) = GrokLiveProtocol.frames(for: message, upsampler: &inputUpsampler)
         let texts = frames.compactMap { try? GrokLiveProtocol.encode($0) }
         guard texts.count == frames.count else {
             onFailure?()
@@ -292,6 +304,7 @@ final class GrokLiveSession: GeminiLiveSessionControlling {
         socket?.close()
         socket = nil
         connectionID = UUID()
+        inputUpsampler.reset()
         dropResponseState()
     }
 
@@ -309,6 +322,8 @@ final class GrokLiveSession: GeminiLiveSessionControlling {
         let update = GrokLiveProtocol.sessionUpdate(instructions: instructions, functions: functions, voice: voice)
         do {
             try await socket.send(try GrokLiveProtocol.encode(update))
+            let declared = functions.filter { !GrokLiveProtocol.reservedToolNames.contains($0.name) }.count
+            onTrace?("Sent session.update: \(declared) functions, web_search, x_search")
         } catch {
             // A refused WebSocket upgrade surfaces here, on the first send.
             let close = await socket.serverClose(within: .milliseconds(400))
@@ -337,6 +352,7 @@ final class GrokLiveSession: GeminiLiveSessionControlling {
         // Item ids belong to the xAI session, which a new connection replaces.
         inputSnapshots = [:]
         inputSnapshotOrder = []
+        deliveredCallIDs = []
         receiveTask = Task { [weak self] in await self?.receiveLoop(socket, id: id) }
         // A server that neither confirms the session nor closes would leave
         // the call connecting forever.
@@ -383,6 +399,7 @@ final class GrokLiveSession: GeminiLiveSessionControlling {
                 connectionGeneration += 1
                 onConnectionReplaced?()
             }
+            onTrace?(replaced ? "Session ready again (new xAI session)" : "Session ready")
             state = .ready
         case .error(let message):
             // Before the session is set up, xAI refused it (the instructions,
@@ -415,6 +432,8 @@ final class GrokLiveSession: GeminiLiveSessionControlling {
             // A response that ended without ever starting answered nothing.
             failUnconfirmedTurns()
             if responseRequested { sendResponseCreate() }
+        case .acceptedFunctions(let names):
+            onTrace?("Grok took \(names.count) of \(functions.filter { !GrokLiveProtocol.reservedToolNames.contains($0.name) }.count) functions: \(names.sorted().joined(separator: ", "))")
         case .outputTranscriptDone(let text):
             if !responseHadTranscript { onEvent?(.outputTranscription(text)) }
         case .inputTranscriptSnapshot(let itemID, let text):
@@ -434,6 +453,14 @@ final class GrokLiveSession: GeminiLiveSessionControlling {
             if let added = GrokLiveProtocol.inputTranscriptDelta(previous: previous, snapshot: text) {
                 onEvent?(.inputTranscription(added))
             }
+        case .event(.toolCall(let calls)):
+            let fresh = calls.filter { deliveredCallIDs.insert($0.id).inserted }
+            for call in fresh {
+                onTrace?("Function call \(call.name)\(call.hasInvalidArguments ? " (arguments not valid JSON)" : "")")
+            }
+            if responseActive { armResponseWatchdog() }
+            guard !fresh.isEmpty else { return }
+            onEvent?(.toolCall(fresh))
         case .event(let event):
             if case .outputTranscription = event { responseHadTranscript = true }
             if responseActive { armResponseWatchdog() }
@@ -468,6 +495,7 @@ final class GrokLiveSession: GeminiLiveSessionControlling {
         setupTimeoutTask?.cancel()
         setupTimeoutTask = nil
         connectionID = UUID()
+        inputUpsampler.reset()
         dropResponseState()
         if let serverClose, Self.isRefusal(serverClose) {
             fail(Self.refusalMessage(serverClose))
@@ -512,7 +540,9 @@ final class GrokLiveSession: GeminiLiveSessionControlling {
     /// other 4xxx is the plugin or xAI refusing what a retry would resend,
     /// as is a dashboard that refused the upgrade.
     nonisolated static func isRefusal(_ close: GeminiLiveServerClose) -> Bool {
-        if close.isHTTPStatus { return [400, 401, 403, 404].contains(close.code) }
+        // A redirect (never followed) wants a browser session: retrying
+        // can't change that.
+        if close.isHTTPStatus { return [400, 401, 403, 404].contains(close.code) || (300...399).contains(close.code) }
         if close.code == 4502 { return false }
         return [1003, 1007, 1008, 1009].contains(close.code) || (4000...4999).contains(close.code)
     }

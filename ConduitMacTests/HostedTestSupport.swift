@@ -8,14 +8,16 @@ import XCTest
 /// neither see another test's state nor leave a live window behind.
 @MainActor
 enum HostedTestSupport {
-    /// A throwaway defaults suite; remove with `dropSuite`.
+    /// A throwaway defaults suite; remove with `dropSuite`. It has its own folder under the temporary
+    /// directory, not a plist in the user's Preferences folder (see `TestDefaultsSuites`). A test creates
+    /// its suites only here: `TestDefaultsIsolationTests` fails on a suite made in any other test file.
     static func makeSuite() -> (defaults: UserDefaults, name: String) {
-        let name = "conduit.mac.tests.\(UUID().uuidString)"
-        return (UserDefaults(suiteName: name)!, name)
+        TestDefaultsSuites.make()
     }
 
+    /// Clears the suite and deletes its plist.
     static func dropSuite(_ suite: (defaults: UserDefaults, name: String)) {
-        suite.defaults.removePersistentDomain(forName: suite.name)
+        TestDefaultsSuites.remove(suite.name, defaults: suite.defaults)
     }
 
     /// Runs the main run loop until `predicate` holds or `timeout` passes.
@@ -60,8 +62,13 @@ enum AccessibilityProbe {
     struct Node {
         var role: String
         var label: String?
+        /// The element's string value (static text carries its text here, not in the label).
+        var value: String?
         /// Relative to the content view's top-left.
         var frame: CGRect
+        var identifier: String?
+        /// `nil` when the element does not report it.
+        var isEnabled: Bool? = nil
     }
 
     /// Every accessibility element below the window's content view, depth-first.
@@ -75,8 +82,11 @@ enum AccessibilityProbe {
                 let r = frame.rectValue
                 // Screen space is bottom-left; report top-left relative to the host.
                 nodes.append(Node(role: role, label: element.axValue("accessibilityLabel"),
+                                  value: AccessibilityProbe.stringValue(of: element),
                                   frame: CGRect(x: r.minX - content.minX, y: content.maxY - r.maxY,
-                                                width: r.width, height: r.height)))
+                                                width: r.width, height: r.height),
+                                  identifier: element.axValue("accessibilityIdentifier"),
+                                  isEnabled: element.axValue("accessibilityEnabled")))
             }
             let kids: [Any]? = element.axValue("accessibilityChildren")
             if depth < 10 { for kid in kids ?? [] { if let o = kid as? NSObject { walk(o, depth: depth + 1) } } }
@@ -87,8 +97,26 @@ enum AccessibilityProbe {
 
     static func labels(in window: NSWindow) -> [String] { nodes(in: window).compactMap(\.label) }
 
+    /// Every label and string value: what a screen reader can read, including static text.
+    static func texts(in window: NSWindow) -> [String] {
+        nodes(in: window).flatMap { [$0.label, $0.value].compactMap { $0 } }
+    }
+
+    private static func stringValue(of element: NSObject) -> String? {
+        // SwiftUI exposes `.accessibilityValue` as the value for controls and static text,
+        // and as the value description for other elements.
+        let raw: Any? = element.axValue("accessibilityValue")
+        if let text = raw as? String { return text }
+        let description: String? = element.axValue("accessibilityValueDescription")
+        return description
+    }
+
     static func frame(of label: String, in window: NSWindow) -> CGRect? {
         nodes(in: window).first { $0.label == label }?.frame
+    }
+
+    static func frame(identifier: String, in window: NSWindow) -> CGRect? {
+        nodes(in: window).first { $0.identifier == identifier }?.frame
     }
 
     /// Presses the element labelled `label` (its default accessibility action).

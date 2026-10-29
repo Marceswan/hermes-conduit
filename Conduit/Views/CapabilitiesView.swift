@@ -1,145 +1,318 @@
 import SwiftUI
 
-/// Settings-owned capabilities browser. It remains scoped to the active Hermes
-/// profile and intentionally reuses AppState's existing loading/mutation APIs.
+/// Settings > Capabilities, as Hermes Desktop's: Skills, Tools, Connectors
+/// and Plugins, each its own tab. Scoped to the active Hermes profile. Skills
+/// and toolsets still load through AppState (the Board's skill picker reads
+/// them too); connectors, plugins and the catalogs live in `CapabilitiesStore`.
 struct CapabilitiesView: View {
     @ObservedObject var appLanguage = AppLanguageStore.shared
     @EnvironmentObject var appState: AppState
+    @StateObject private var store = CapabilitiesStore()
+    @AppStorage("capabilities.tab") private var tabRaw = CapabilitiesTab.skills.rawValue
     @State private var searchText = ""
+    @FocusState private var searchFocused: Bool
+    /// The scope whose unvisited tabs a search has already loaded.
+    @State private var searchLoadedScope: Scope?
+    @State private var countsMemo = CapabilityListMemo<CountsInput, [CapabilitiesTab: Int]>()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var capabilitiesLoading = false
     @State private var loadError: String?
     /// Token of the most recent request. An older completion can never clear
     /// the loading flag or set the error of a newer one.
     @State private var capabilityRequestID = UUID()
+    /// The profile and dashboard the store was last pointed at. The tabs show
+    /// only once it matches, so their first load never runs against the
+    /// store's previous (or empty) scope.
+    @State private var configuredScope: Scope?
+
+    private struct Scope: Hashable {
+        let profile: String
+        let dashboard: ObjectIdentifier?
+    }
+
+    private var scope: Scope {
+        Scope(
+            profile: appState.activeProfile,
+            dashboard: appState.dashboardTicketBridge.map { ObjectIdentifier($0) }
+        )
+    }
+
+    private var tab: CapabilitiesTab {
+        CapabilitiesTab(rawValue: tabRaw) ?? .skills
+    }
+
+    private var query: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
-        // Single authoritative rendering boundary: foreign snapshots can never
-        // reach a row-bearing state, so stale toggles can never fire mutations
-        // against the wrong profile.
         Group {
+            if configuredScope == scope {
+                tabContent
+                    .id(scope)
+            } else {
+                loadingView
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .v2EdgeBar(.top) {
+            VStack(spacing: 0) {
+                searchField
+                tabPicker
+                otherTabMatches
+            }
+            .modifier(V2LegacyScrollEdge())
+        }
+        // The other settings pages' backdrop and small title.
+        .background { SettingsBackdrop() }
+        .navigationTitle("Capabilities")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
+        .task(id: scope) {
+            let scope = self.scope
+            store.configure(requester: appState.dashboardTicketBridge, profile: scope.profile)
+            configuredScope = scope
+            await loadCapabilities()
+        }
+        .task(id: SearchLoad(scope: configuredScope, searching: !query.isEmpty)) {
+            await loadForSearch()
+        }
+    }
+
+    // MARK: Search
+
+    private struct SearchLoad: Hashable {
+        let scope: Scope?
+        let searching: Bool
+    }
+
+    private struct CountsInput: Equatable {
+        let query: String
+        let sources: CapabilitySearchCounts.Sources
+    }
+
+    /// Always on screen, rather than `.searchable`'s field that hides until
+    /// the list is pulled down. One search for all four tabs: switching tabs
+    /// keeps it.
+    private var searchField: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                TextField(searchPrompt, text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(.subheadline)
+                    .submitLabel(.search)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .focused($searchFocused)
+                    .onSubmit { searchFocused = false }
+                    .accessibilityIdentifier("capabilities.search")
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                            .frame(minWidth: 44, minHeight: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(AppLocalization.string("Clear search"))
+                }
+            }
+            .padding(.leading, 14)
+            .padding(.trailing, 6)
+            .frame(minHeight: 40)
+            .conduitGlassSurface(cornerRadius: 20)
+            if searchFocused {
+                Button(AppLocalization.string("Cancel")) {
+                    searchText = ""
+                    searchFocused = false
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(Color.conduitAccent)
+                .buttonStyle(.plain)
+                .frame(minHeight: 44)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .animation(ConduitMotion.ease(reduceMotion: reduceMotion), value: searchFocused)
+        .dynamicTypeSize(...DynamicTypeSize.pinnedChromeCap)
+        .padding(.horizontal, 16)
+        .padding(.top, 4)
+        .padding(.bottom, 4)
+    }
+
+    /// What the search finds on the other tabs, each a button to go there.
+    @ViewBuilder
+    private var otherTabMatches: some View {
+        // Kept until the query or what it searches changes: this bar
+        // re-renders on every AppState and store publish.
+        let counts = countsMemo.value(for: CountsInput(query: query, sources: searchSources)) {
+            CapabilitySearchCounts.counts(query: $0.query, in: $0.sources)
+        }
+        let others = CapabilitiesTab.allCases.filter { $0 != tab && (counts[$0] ?? 0) > 0 }
+        if !others.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    Text(verbatim: AppLocalization.string("Also in"))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    ForEach(others) { other in
+                        Button {
+                            tabRaw = other.rawValue
+                        } label: {
+                            Text(verbatim: "\(other.title) \((counts[other] ?? 0).formatted())")
+                                .font(.footnote.weight(.semibold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(Color.conduitAccent.opacity(0.15), in: Capsule())
+                                .foregroundStyle(Color.conduitAccent)
+                        }
+                        .buttonStyle(PressableButtonStyle())
+                        .accessibilityLabel(Text(verbatim: AppLocalization.string("Show matches in \(other.title)")))
+                        .accessibilityValue(Text(verbatim: (counts[other] ?? 0).formatted()))
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+            .dynamicTypeSize(...DynamicTypeSize.pinnedChromeCap)
+            .padding(.bottom, 8)
+        }
+    }
+
+    private var searchSources: CapabilitySearchCounts.Sources {
+        guard !query.isEmpty else { return CapabilitySearchCounts.Sources() }
+        // Skills and tools only once they're this profile's.
+        let ownRows = CapabilityLoadPolicy.shouldPresentRows(
+            snapshotProfile: appState.capabilitiesProfile,
+            activeProfile: appState.activeProfile
+        )
+        return CapabilitySearchCounts.Sources(
+            skills: ownRows ? appState.skills : [],
+            officialSkills: store.officialSkills,
+            toolsets: ownRows ? appState.toolsets : [],
+            servers: store.servers,
+            connectorCatalog: store.connectorCatalog,
+            plugins: store.plugins,
+            pluginCatalog: store.pluginCatalog
+        )
+    }
+
+    /// A search reads the tabs not opened yet, once per profile, so their
+    /// finds can show.
+    private func loadForSearch() async {
+        guard !query.isEmpty, let scope = configuredScope, scope == self.scope,
+              searchLoadedScope != scope else { return }
+        let store = self.store
+        await withTaskGroup(of: Void.self) { group in
+            if store.officialSkills.isEmpty { group.addTask { await store.loadOfficialSkills() } }
+            if !store.connectorsLoaded || store.connectorsError != nil { group.addTask { await store.loadConnectors() } }
+            if !store.pluginsLoaded || store.pluginsError != nil { group.addTask { await store.loadPlugins() } }
+        }
+        // Only a full read counts: one cleared mid-read or failed is tried
+        // again on the next search.
+        if !Task.isCancelled, configuredScope == scope, !store.officialSkills.isEmpty,
+           store.connectorsLoaded, store.connectorsError == nil,
+           store.pluginsLoaded, store.pluginsError == nil {
+            searchLoadedScope = scope
+        }
+    }
+
+    private var tabPicker: some View {
+        Picker(AppLocalization.string("Capabilities"), selection: $tabRaw) {
+            ForEach(CapabilitiesTab.allCases) { tab in
+                Text(verbatim: tab.title).tag(tab.rawValue)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .padding(.horizontal, 16)
+        .padding(.top, 4)
+        .padding(.bottom, 8)
+        .onChange(of: tabRaw) { _, _ in Haptics.selection() }
+    }
+
+    private var searchPrompt: String {
+        switch tab {
+        case .skills: return AppLocalization.string("Search skills")
+        case .tools: return AppLocalization.string("Search tools")
+        case .connectors: return AppLocalization.string("Search connectors")
+        case .plugins: return AppLocalization.string("Search plugins")
+        }
+    }
+
+    @ViewBuilder
+    private var tabContent: some View {
+        switch tab {
+        case .skills, .tools:
+            // Single authoritative rendering boundary: foreign snapshots can
+            // never reach a row-bearing state, so stale toggles can never fire
+            // mutations against the wrong profile. A refresh of rows this
+            // profile already shows keeps them on screen.
+            let hasRows = !appState.skills.isEmpty || !appState.toolsets.isEmpty
+            let showsOwnRows = hasRows && CapabilityLoadPolicy.shouldPresentRows(
+                snapshotProfile: appState.capabilitiesProfile,
+                activeProfile: appState.activeProfile
+            )
             switch CapabilityLoadPolicy.resolvePresentation(
                 snapshotProfile: appState.capabilitiesProfile,
                 activeProfile: appState.activeProfile,
-                isLoading: capabilitiesLoading,
+                isLoading: capabilitiesLoading && !showsOwnRows,
                 loadError: loadError,
-                hasRows: !appState.skills.isEmpty || !appState.toolsets.isEmpty
+                hasRows: hasRows
             ) {
-        case .loading:
-            VStack(spacing: 0) {
-                Spacer()
-                ProgressView("Loading capabilities…")
-                    .tint(.conduitAccent)
-                Spacer()
-            }
-        case .failure(let message):
-            VStack(spacing: 0) {
-                ContentUnavailableView(
-                    "Couldn't Load",
-                    systemImage: "exclamationmark.triangle",
-                    description: Text(message)
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .refreshable { await loadCapabilities() }
-        case .emptySuccess:
-            VStack(spacing: 0) {
-                ContentUnavailableView(
-                    AppLocalization.string("No capabilities found"),
-                    systemImage: "tray",
-                    description: Text("This profile has no enabled skills or toolsets.")
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .refreshable { await loadCapabilities() }
-        case .list(let banner):
-            List {
-                skillsSection
-                toolsetsSection
-            }
-            .searchable(text: $searchText, prompt: AppLocalization.string("Search skills"))
-            .scrollContentBackground(.hidden)
-            .listStyle(.plain)
-            .refreshable { await loadCapabilities() }
-            .overlay(alignment: .top) {
-                if let banner {
-                    Text("Refresh failed: \(banner)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(8)
-                        .background(.ultraThinMaterial, in: Capsule())
-                        .padding(.top, 6)
+            case .loading:
+                loadingView
+            case .failure(let message):
+                CapabilityTabScroll(refresh: loadCapabilities) {
+                    CapabilityEmptyState(
+                        title: AppLocalization.string("Couldn't Load"),
+                        symbol: "exclamationmark.triangle",
+                        message: message
+                    ) {
+                        Task { await loadCapabilities() }
+                    }
                 }
-            }
-            }
-        }
-        .navigationTitle("Capabilities")
-        .toolbarBackground(.hidden, for: .navigationBar)
-        .task(id: appState.activeProfile) { await loadCapabilities() }
-    }
-
-    @ViewBuilder
-    private var skillsSection: some View {
-        if !filteredSkills.isEmpty {
-            if hasCategories {
-                ForEach(skillsByCategory, id: \.0) { category, skills in
-                    Section(category) {
-                        ForEach(skills) { skill in
-                            CapabilitySkillRow(skill: skill)
+            case .emptySuccess:
+                // A profile with nothing installed still has the catalog.
+                skillsOrTools
+            case .list(let banner):
+                skillsOrTools
+                    .overlay(alignment: .top) {
+                        if let banner {
+                            CapabilityRefreshBanner(message: banner)
+                                .padding(.horizontal, 16)
+                                .padding(.top, 6)
                         }
                     }
-                }
-            } else {
-                Section("Skills") {
-                    ForEach(filteredSkills) { skill in
-                        CapabilitySkillRow(skill: skill)
-                    }
-                }
             }
+        case .connectors:
+            CapabilityConnectorsTab(store: store, query: query)
+        case .plugins:
+            CapabilityPluginsTab(store: store, query: query)
         }
     }
 
     @ViewBuilder
-    private var toolsetsSection: some View {
-        if !filteredToolsets.isEmpty {
-            Section("Toolsets") {
-                ForEach(filteredToolsets) { toolset in
-                    CapabilityToolsetRow(toolset: toolset)
-                }
-            }
+    private var skillsOrTools: some View {
+        if tab == .skills {
+            CapabilitySkillsTab(store: store, query: query, refresh: loadCapabilities)
+        } else {
+            CapabilityToolsTab(store: store, query: query, refresh: loadCapabilities)
         }
     }
 
-    private var filteredSkills: [CapabilitySkill] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return appState.skills }
-        return appState.skills.filter { skill in
-            skill.name.localizedCaseInsensitiveContains(query)
-                || skill.description?.localizedCaseInsensitiveContains(query) == true
-                || skill.category?.localizedCaseInsensitiveContains(query) == true
+    private var loadingView: some View {
+        VStack(spacing: 0) {
+            Spacer()
+            ProgressView("Loading capabilities…")
+                .tint(.conduitAccent)
+            Spacer()
         }
-    }
-
-    private var filteredToolsets: [CapabilityToolset] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return appState.toolsets }
-        return appState.toolsets.filter { toolset in
-            toolset.name.localizedCaseInsensitiveContains(query)
-                || toolset.label?.localizedCaseInsensitiveContains(query) == true
-                || toolset.description?.localizedCaseInsensitiveContains(query) == true
-                || toolset.tools?.joined(separator: " ").localizedCaseInsensitiveContains(query) == true
-        }
-    }
-
-    private var hasCategories: Bool {
-        filteredSkills.contains { $0.category?.isEmpty == false }
-    }
-
-    private var skillsByCategory: [(String, [CapabilitySkill])] {
-        Dictionary(grouping: filteredSkills) { skill in
-            let category = skill.category?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return category.isEmpty ? AppLocalization.string("Other") : category
-        }
-        .sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
+        .frame(maxWidth: .infinity)
     }
 
     private func loadCapabilities() async {
@@ -182,119 +355,5 @@ struct CapabilitiesView: View {
         case .superseded:
             return nil
         }
-    }
-}
-
-private struct CapabilitySkillRow: View {
-    @EnvironmentObject var appState: AppState
-    let skill: CapabilitySkill
-
-    private var provenanceIcon: String? {
-        switch skill.provenance {
-        case "hub": return "bag"
-        case "bundled": return "shippingbox"
-        case "agent": return "wrench"
-        default: return nil
-        }
-    }
-
-    var body: some View {
-        Toggle(isOn: Binding(
-            get: { skill.enabled },
-            set: { newValue in
-                Task { await appState.toggleSkill(name: skill.name, enabled: newValue) }
-            }
-        )) {
-            HStack(spacing: 11) {
-                Image(systemName: provenanceIcon ?? "puzzlepiece.extension")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(skill.enabled ? .conduitAccent : .secondary)
-                    .frame(width: 30, height: 30)
-                    .background(
-                        (skill.enabled ? Color.conduitAccent : Color.secondary).opacity(0.13),
-                        in: Circle()
-                    )
-
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(skill.name)
-                            .font(.subheadline.weight(.medium))
-                            .lineLimit(1)
-                            .layoutPriority(1)
-                        if let category = skill.category, !category.isEmpty {
-                            Text(category)
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.conduitAura.opacity(0.14), in: Capsule())
-                                .lineLimit(1)
-                        }
-                    }
-                    if let desc = skill.description, !desc.isEmpty {
-                        Text(desc)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                }
-            }
-        }
-        .tint(.conduitAccent)
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(top: 3, leading: 16, bottom: 3, trailing: 16))
-    }
-}
-
-private struct CapabilityToolsetRow: View {
-    @EnvironmentObject var appState: AppState
-    let toolset: CapabilityToolset
-
-    var body: some View {
-        Toggle(isOn: Binding(
-            get: { toolset.enabled },
-            set: { newValue in
-                Task { await appState.toggleToolset(name: toolset.name, enabled: newValue) }
-            }
-        )) {
-            HStack(spacing: 11) {
-                Image(systemName: "wrench.and.screwdriver")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(toolset.enabled ? .conduitAccent : .secondary)
-                    .frame(width: 30, height: 30)
-                    .background(
-                        (toolset.enabled ? Color.conduitAccent : Color.secondary).opacity(0.13),
-                        in: Circle()
-                    )
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(toolset.label ?? toolset.name.capitalized)
-                        .font(.subheadline.weight(.medium))
-                        .lineLimit(1)
-                    if let desc = toolset.description, !desc.isEmpty {
-                        Text(desc)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                    if let tools = toolset.tools, !tools.isEmpty {
-                        Text(tools.joined(separator: ", "))
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                    }
-                }
-
-                Spacer(minLength: 0)
-                Image(systemName: toolset.configured == true ? "checkmark.circle.fill" : "circle.dashed")
-                    .font(.caption)
-                    .foregroundStyle(toolset.configured == true ? .green : .secondary)
-            }
-        }
-        .tint(.conduitAccent)
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(top: 3, leading: 16, bottom: 3, trailing: 16))
     }
 }

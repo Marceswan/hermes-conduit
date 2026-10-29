@@ -233,9 +233,109 @@ final class SessionRenameTests: XCTestCase {
         XCTAssertEqual(appState.sessions.map(\.title), ["Original"])
         XCTAssertEqual(appState.activeSessionTitle, previousActiveTitle)
         XCTAssertEqual(
-            appState.errorMessage,
+            appState.pinSyncNotice?.message,
             "Could not rename this conversation: Gateway rejected rename"
         )
+    }
+
+    // Archive and delete failures show over the Chats list and the open chat:
+    // `errorMessage` only shows while the composer is locked, so a refused
+    // change looked like the tap did nothing.
+
+    func testRefusedArchiveKeepsTheChatAndSaysWhy() async {
+        let appState = AppState(loadSavedConnection: false)
+        let session = makeSession(profile: appState.activeProfile)
+        appState.sessions = [session]
+        appState.widgetSessionMutationRequestOverride = { _, method, _ in
+            if method == "GET" { return ["runtime_revision": 3, "runtime_generation": 1] }
+            throw DashboardTicketBridgeError.http(status: 403, detail: "permission_denied")
+        }
+
+        let archived = await appState.archiveSession(session)
+
+        XCTAssertFalse(archived)
+        XCTAssertEqual(appState.sessions.map(\.id), [session.id])
+        XCTAssertEqual(
+            appState.pinSyncNotice?.message,
+            "Could not archive this conversation: Hermes only lets the computer it runs on change this older chat. Change it there instead."
+        )
+    }
+
+    func testRefusedDeleteKeepsTheChatAndSaysWhy() async {
+        let appState = AppState(loadSavedConnection: false)
+        let session = makeSession(profile: appState.activeProfile)
+        appState.sessions = [session]
+        var deletePath: String?
+        appState.widgetSessionMutationRequestOverride = { path, method, _ in
+            if method == "GET" { return ["runtime_revision": 3, "runtime_generation": 1] }
+            deletePath = path
+            throw DashboardTicketBridgeError.http(status: 403, detail: "permission_denied")
+        }
+
+        let deleted = await appState.deleteSession(session)
+
+        XCTAssertFalse(deleted)
+        XCTAssertEqual(appState.sessions.map(\.id), [session.id])
+        XCTAssertTrue(deletePath?.contains("expected_generation=1") == true)
+        XCTAssertEqual(
+            appState.pinSyncNotice?.message,
+            "Could not delete this conversation: Hermes only lets the computer it runs on change this older chat. Change it there instead."
+        )
+    }
+
+    func testDeleteRemovesTheChatWhenHermesTakesIt() async {
+        let appState = AppState(loadSavedConnection: false)
+        let session = makeSession(profile: appState.activeProfile)
+        appState.sessions = [session]
+        appState.widgetSessionMutationRequestOverride = { _, method, _ in
+            method == "GET" ? ["runtime_revision": 3, "runtime_generation": 1] : ["ok": true]
+        }
+
+        let deleted = await appState.deleteSession(session)
+
+        XCTAssertTrue(deleted)
+        XCTAssertTrue(appState.sessions.isEmpty)
+        XCTAssertNil(appState.pinSyncNotice)
+    }
+
+    func testDeleteDuringAnotherChangeSaysToWait() async {
+        let appState = AppState(loadSavedConnection: false)
+        let session = makeSession(profile: appState.activeProfile)
+        appState.sessions = [session]
+        var release: CheckedContinuation<Void, Never>?
+        appState.widgetSessionMutationRequestOverride = { _, method, _ in
+            if method == "GET" { return ["runtime_revision": 3, "runtime_generation": 1] }
+            await withCheckedContinuation { release = $0 }
+            return ["ok": true]
+        }
+
+        let archive = Task { await appState.archiveSession(session) }
+        let deadline = Date().addingTimeInterval(5)
+        while !appState.isSessionMutationInFlight(session) || release == nil {
+            guard Date() < deadline else { return XCTFail("The archive never reached Hermes") }
+            await Task.yield()
+        }
+        let deleted = await appState.deleteSession(session)
+
+        XCTAssertFalse(deleted)
+        XCTAssertEqual(
+            appState.pinSyncNotice?.message,
+            "Wait for the current conversation change to finish, then try again."
+        )
+        release?.resume()
+        let archived = await archive.value
+        XCTAssertTrue(archived)
+    }
+
+    func testArchiveWithoutHermesSaysToReconnect() async {
+        let appState = AppState(loadSavedConnection: false)
+        let session = makeSession(profile: appState.activeProfile)
+        appState.sessions = [session]
+
+        let archived = await appState.archiveSession(session)
+
+        XCTAssertFalse(archived)
+        XCTAssertEqual(appState.pinSyncNotice?.message, "Reconnect to Hermes to change this conversation.")
     }
 
     func testTransportCancellationRemainsAUserVisibleFailure() async {
@@ -312,6 +412,138 @@ final class SessionRenameTests: XCTestCase {
         XCTAssertTrue(tracker.isCurrent(currentToken, for: key))
 
         await tracker.cancel([key])
+    }
+
+    // Archiving or deleting the open chat leaves an empty canvas with a
+    // live composer. A message sent there starts a new chat and goes
+    // into it; it used to be dropped without a word.
+
+    func testAMessageSentAfterArchivingTheOpenChatStartsANewChat() async {
+        var prompts: [(sessionID: String, text: String)] = []
+        let appState = makeConnectedAppState { sessionID, text in prompts.append((sessionID, text)) }
+        let session = makeSession(profile: appState.activeProfile)
+        appState.sessions = [session]
+        appState.activeSessionId = session.id
+
+        let archived = await appState.archiveSession(session)
+
+        XCTAssertTrue(archived)
+        XCTAssertNil(appState.activeSessionId)
+        XCTAssertEqual(appState.composerChatOnScreen, .none)
+        XCTAssertEqual(appState.composerAction(hasText: true, hasAttachments: false), .send)
+
+        let sent = await appState.submitComposer(text: "hi")
+
+        XCTAssertTrue(sent, "The message goes into a new chat")
+        XCTAssertEqual(appState.activeSessionId, "created-runtime")
+        XCTAssertEqual(prompts.map(\.sessionID), ["created-runtime"])
+        XCTAssertEqual(prompts.map(\.text), ["hi"])
+        XCTAssertTrue(appState.messages.contains { $0.role == .user && $0.content == "hi" })
+        XCTAssertNil(appState.errorMessage)
+    }
+
+    func testASlashCommandOnTheEmptyCanvasStartsNoChat() async {
+        var created = 0
+        let appState = makeConnectedAppState { _, _ in }
+        appState.widgetSessionCreatorOverride = { _, _ in
+            created += 1
+            return ("created-runtime", "created-stored", "default")
+        }
+        XCTAssertNil(appState.activeSessionId)
+
+        _ = await appState.submitComposer(text: "/help")
+
+        XCTAssertEqual(created, 0, "A slash command runs as before, without a chat")
+    }
+
+    func testAMessageThatCantStartAChatSaysWhyAndIsKept() async {
+        struct CreateRefused: Error {}
+        var prompts = 0
+        let appState = makeConnectedAppState { _, _ in prompts += 1 }
+        appState.widgetSessionCreatorOverride = { _, _ in throw CreateRefused() }
+        XCTAssertNil(appState.activeSessionId)
+
+        let sent = await appState.submitComposer(text: "hi")
+
+        // False: the composer puts the text back (ComposerBar).
+        XCTAssertFalse(sent)
+        XCTAssertNil(appState.activeSessionId)
+        XCTAssertEqual(prompts, 0)
+        XCTAssertNotNil(appState.errorMessage, "A send that goes nowhere says why")
+        XCTAssertFalse(appState.isStartingNewChat, "a failed start leaves New Chat and the next send free")
+    }
+
+    func testAMessageSentDisconnectedSaysToConnectOverAnOlderMessage() async {
+        var created = 0
+        let appState = makeConnectedAppState { _, _ in }
+        appState.widgetSessionCreatorOverride = { _, _ in
+            created += 1
+            return ("created-runtime", "created-stored", "default")
+        }
+        appState.isConnected = false
+        appState.errorMessage = "An older, unrelated failure."
+
+        let sent = await appState.submitComposer(text: "hi")
+
+        XCTAssertFalse(sent)
+        XCTAssertEqual(created, 0)
+        XCTAssertEqual(appState.errorMessage, AppLocalization.string("Connect to Hermes to start a conversation."))
+        XCTAssertFalse(appState.isStartingNewChat)
+    }
+
+    func testAMessageSentWhileConnectedButNotReadyIsNotToldToConnect() async {
+        var created = 0
+        let appState = makeConnectedAppState { _, _ in }
+        appState.widgetSessionCreatorOverride = { _, _ in
+            created += 1
+            return ("created-runtime", "created-stored", "default")
+        }
+        // Connected, with a reconnect under way: no chat can start yet,
+        // but the connection isn't what the user has to fix.
+        appState.isConnecting = true
+
+        let sent = await appState.submitComposer(text: "hi")
+
+        XCTAssertFalse(sent)
+        XCTAssertEqual(created, 0)
+        XCTAssertNotEqual(appState.errorMessage, AppLocalization.string("Connect to Hermes to start a conversation."))
+    }
+
+    private func makeConnectedAppState(
+        onPrompt: @escaping @MainActor (String, String) -> Void
+    ) -> AppState {
+        let suite = "ArchiveThenSendTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let appState = AppState(
+            defaults: defaults,
+            loadSavedConnection: false,
+            chatResumeLifecycleOperations: ChatResumeLifecycleOperations(
+                loadCatalog: { _, _ in [] },
+                openSession: { _, sessionID, _ in
+                    SessionResumeResult(
+                        sessionId: sessionID,
+                        messages: [],
+                        snapshot: SessionRuntimeSnapshot(object: ["running": .bool(false)])
+                    )
+                },
+                refreshContext: { _, _ in },
+                sendPrompt: { _, sessionID, text in
+                    onPrompt(sessionID, text)
+                    return .accepted
+                }
+            ),
+            sessionPresentationCache: SessionPresentationCache(defaults: defaults)
+        )
+        let connection = HermesConnection(baseUrl: "https://one.example", ticket: "ticket")
+        appState.connection = connection
+        appState.client = HermesClient(connection: connection, profile: "default")
+        appState.isConnected = true
+        appState.widgetSessionMutationRequestOverride = { _, method, _ in
+            method == "GET" ? ["runtime_revision": 3, "runtime_generation": 1] : ["ok": true]
+        }
+        appState.widgetSessionCreatorOverride = { _, _ in ("created-runtime", "created-stored", "default") }
+        return appState
     }
 
     private func makeSession(

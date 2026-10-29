@@ -623,7 +623,7 @@ extension MarkdownBlock {
         case .code(_, let source): return source.utf8.count + 16
         case .callout(_, let text): return text.utf8.count + 16
         case .columns(let columns): return columns.reduce(0) { $0 + $1.utf8.count + 4 }
-        case .image, .math, .divider: return 64
+        case .image, .math, .divider, .htmlPreview: return 64
         }
     }
 }
@@ -795,7 +795,7 @@ struct MarkdownStableBoundaryScanner {
     private(set) var consumedOffset: Int = 0
     /// Trailing partial line awaiting its newline.
     private var pendingLine = ""
-    private var fenceMarker: String?
+    private var fenceMarker: MarkdownFence?
     /// The close marker the open math region expects (`$$` or `\]`), so a
     /// block opened with one cannot close on the other.
     private var mathClose: String?
@@ -921,7 +921,7 @@ struct MarkdownStableBoundaryScanner {
 
     private mutating func updateStateForLine(_ trimmedLine: String, lineStartOffset: Int, lineBytes: Int) {
         if let marker = fenceMarker {
-            if trimmedLine.hasPrefix(marker) {
+            if marker.closes(trimmedLine) {
                 fenceMarker = nil
             }
             return
@@ -934,11 +934,8 @@ struct MarkdownStableBoundaryScanner {
             if trimmedLine == ":::" { inDirective = false }
             return
         }
-        if trimmedLine.hasPrefix("```") {
-            fenceMarker = "```"
-            constructIntervals.append((start: lineStartOffset, end: nil))
-        } else if trimmedLine.hasPrefix("~~~") {
-            fenceMarker = "~~~"
+        if let fence = MarkdownFence.opening(trimmedLine) {
+            fenceMarker = fence
             constructIntervals.append((start: lineStartOffset, end: nil))
         } else if trimmedLine == "$$" {
             mathClose = "$$"

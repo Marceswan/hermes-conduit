@@ -480,14 +480,38 @@ def enforce_batches_per_job(items: list, n_lanes: int, cfg: dict) -> tuple:
         if all(-(-len(lane) // size) <= max_batches for lane in candidate):
             return n, candidate
         n += 1
-    # Bounds exhausted without a policy-satisfying assignment: return the
-    # best (largest) attempt and let validate_plan fail the run closed -
+    # Bounds exhausted without a policy-satisfying assignment: at the lane
+    # maximum, LPT can still overfill one lane by a class or two while
+    # others have room (one heavy class alone in a lane pushes the many
+    # light ones onto the rest). Move the lightest classes off overfull lanes
+    # onto the lightest lanes with room; if the suite simply doesn't fit,
+    # return the attempt and let validate_plan fail the run closed -
     # planning must never silently ship a plan that violates the policy.
     # (The floor may exceed hi outright; hi >= 1 whenever there are classes,
     # so the returned assignment is still well-defined.)
     if candidate is None:
         candidate = longest_processing_time_first(items, hi)
-    return hi, candidate
+    return hi, rebalance_class_counts(candidate, dict(items), size * max_batches)
+
+
+def rebalance_class_counts(lanes: list, seconds_for: dict, capacity: int) -> list:
+    """Moves classes off lanes holding more than `capacity` classes, lightest
+    first, onto the lightest-loaded lane that has room. Deterministic.
+    Unchanged when nothing is over capacity or there's no room anywhere."""
+    if sum(len(lane) for lane in lanes) > capacity * len(lanes):
+        return lanes
+    lanes = [list(lane) for lane in lanes]
+    loads = [sum(seconds_for[name] for name in lane) for lane in lanes]
+    for i, lane in enumerate(lanes):
+        while len(lane) > capacity:
+            name = min(lane, key=lambda n: (seconds_for[n], n))
+            target = min((j for j in range(len(lanes)) if len(lanes[j]) < capacity),
+                         key=lambda j: (loads[j], j))
+            lane.remove(name)
+            lanes[target].append(name)
+            loads[i] -= seconds_for[name]
+            loads[target] += seconds_for[name]
+    return lanes
 
 
 def imbalance_pct(values: list) -> float:
@@ -1025,10 +1049,10 @@ def load_smoke_suite(path: str) -> tuple:
 def cmd_smoke(args) -> int:
     """Validate the curated smoke selection against the discovered inventory.
 
-    GitHub-hosted CI runs only these classes (docs/CI.md): the exhaustive and
-    timing-sensitive families belong to the Mac local gate. This subcommand is
-    what keeps that selection honest - a class that is renamed, deleted or moved
-    between targets fails the plan job instead of silently shrinking hosted
+    PR and main CI runs only these classes (docs/CI.md, CI v5): every other
+    class runs in the nightly workflow (`cmd_hosted`). This subcommand is what
+    keeps that selection honest - a class that is renamed, deleted or moved
+    between targets fails the plan job instead of silently shrinking PR
     coverage, and the delegated counts are printed so the split is visible on
     every run.
     """
@@ -1077,9 +1101,9 @@ def cmd_smoke(args) -> int:
     delegated_unit = len(discovery["unit"]) - len(unit)
     delegated_ui = len(discovery["ui"]) - len(ui)
     print(f"smoke selection: {len(unit)} unit + {len(ui)} UI classes")
-    print(f"not in the UI smoke set: {delegated_unit} unit + "
-          f"{delegated_ui} UI classes (unit classes run in the hosted shards; the "
-          f"full UI suite and timing families run nightly)")
+    print(f"not in the smoke set: {delegated_unit} unit + "
+          f"{delegated_ui} UI classes (they run only in the nightly workflow: "
+          f"the unit shards, the timing families and the full UI suite)")
 
     if args.out:
         payload = {
@@ -1145,12 +1169,13 @@ def split_lpt(names: list, estimates: dict, shards: int) -> list:
 
 
 def cmd_hosted(args) -> int:
-    """Split the discovered inventory for the hosted CI v4 jobs.
+    """Split the discovered inventory for the nightly workflow (CI v5).
 
-    PR runs: every unit class except the nightly-only timing families, split
-    into `unit_shards` balanced shards. Nightly runs: those families, plus the
-    whole UI suite split into `nightly_ui_shards` shards. Every discovered class
-    lands in exactly one PR or nightly list, so nothing is silently unrun.
+    Every unit class except the nightly-only timing families, split into
+    `unit_shards` balanced shards; the timing families, run with repeats; and
+    the whole UI suite split into `nightly_ui_shards` shards. Every discovered
+    class lands in exactly one of those lists, so nothing is silently unrun
+    (PR and main runs only run the smoke sample of `cmd_smoke`).
     """
     discovery = discover_test_classes(args.repo_root)
     for w in discovery["warnings"]:
@@ -1194,13 +1219,13 @@ def cmd_hosted(args) -> int:
     unit_shards = split_lpt(pr_unit, estimates, suite["unit_shards"])
     ui_shards = split_lpt(ui_names, estimates, suite["nightly_ui_shards"])
     if not unit_shards:
-        print("::error::hosted selection has no unit classes for PR runs")
+        print("::error::hosted selection has no unit classes for the nightly unit shards")
         return 1
     if not ui_shards:
         print("::error::hosted selection has no UI classes for the nightly run")
         return 1
 
-    print("hosted selection: {0} unit classes in {1} PR shards ({2}), "
+    print("hosted selection: {0} unit classes in {1} nightly unit shards ({2}), "
           "{3} nightly-only unit classes, {4} UI classes in {5} nightly shards".format(
               len(pr_unit), len(unit_shards), "/".join(str(len(s)) for s in unit_shards),
               len(nightly), len(ui_names), len(ui_shards)))

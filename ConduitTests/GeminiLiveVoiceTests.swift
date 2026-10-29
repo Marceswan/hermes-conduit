@@ -5,7 +5,7 @@
 //  Gemini Live voice mode: wire format, Hermes-hosted token client, the
 //  resumable session, the background-job tool bridge, and the controller's
 //  "never talk over the user" rules. Written as extensions of existing
-//  Voice suites: the CI test planner is at capacity for new XCTestCase
+//  Voice suites: the CI test planner was at capacity for new XCTestCase
 //  classes.
 //
 
@@ -114,8 +114,10 @@ final class FakeGeminiLiveSessionControl: GeminiLiveSessionControlling {
     var onEvent: (@MainActor (GeminiLiveProtocol.ServerEvent) -> Void)?
     var onStateChange: (@MainActor (GeminiLiveSession.State) -> Void)?
     var onConnectionReplaced: (@MainActor () -> Void)?
+    var onFreshSession: (@MainActor (_ heardDropout: Bool) -> Void)?
     var isReady = false
     var connectionGeneration = 0
+    var transcribesWholeUtterances = false
     private(set) var started = 0
     private(set) var stopped = 0
     private(set) var sent: [[String: Any]] = []
@@ -202,6 +204,14 @@ private func settle(until done: () -> Bool, limit: Duration = .seconds(10)) asyn
     while !done(), ContinuousClock.now < deadline { await Task.yield() }
 }
 
+extension GeminiLiveSession.State {
+    /// Failed for any reason, for waits that end when a session gives up.
+    var isFailed: Bool {
+        if case .failed = self { return true }
+        return false
+    }
+}
+
 // MARK: - Wire format and token client
 
 @MainActor
@@ -278,6 +288,28 @@ extension HermesVoiceGatewayTimeoutTests {
         XCTAssertEqual(try decode(["goAway": ["timeLeft": ["seconds": 5, "nanos": 500_000_000]]]), [.goAway(timeLeft: 5.5)])
         XCTAssertEqual(try decode(["sessionResumptionUpdate": ["newHandle": "h2", "resumable": true]]), [.resumptionUpdate(handle: "h2", resumable: true)])
         XCTAssertEqual(try decode(["setupComplete": [String: Any]()]), [.setupComplete])
+    }
+
+    func testHostCallsWaitPastTheHostsOwnTimeout() async throws {
+        // The host mints a Gemini token with a 15 s timeout to Google
+        // (plugin_api REQUEST_TIMEOUT_S): giving up first spends a mint for
+        // nothing and the call doesn't start.
+        var timeouts: [String: Int] = [:]
+        let client = GeminiLiveTokenClient(request: { path, _, _, timeout in
+            timeouts[path] = timeout
+            return ["ok": true, "token": "abc", "websocket_url": "wss://example.com/ws", "model": "gemini-3.8-live"]
+        })
+        _ = try? await client.freshToken()
+        XCTAssertGreaterThan(try XCTUnwrap(timeouts[GeminiLiveTokenClient.tokenPath]), 15_000)
+
+        // The host claims a pairing at the relay with a 15 s timeout
+        // (plugin_api PAIR_TIMEOUT_S), then writes it.
+        XCTAssertGreaterThan(PushNotificationService.pairTimeoutMilliseconds, 15_000)
+
+        // A room's files go to /room-files, which takes 50 MiB
+        // (plugin_api ROOM_FILE_MAX_BYTES), whatever the composer allows.
+        XCTAssertEqual(GroupRoomFilesClient.stagingLimit(preference: AttachmentSizeLimit.hostMaximumMegabytes), 50)
+        XCTAssertEqual(GroupRoomFilesClient.stagingLimit(preference: 16), 16)
     }
 
     func testGeminiLiveTokenClientParsesStatusAndTokensAndNeverFallsBackSilently() async throws {
@@ -530,11 +562,184 @@ extension VoiceConversationControllerTests {
         session.start()
         await settle()
         try XCTUnwrap(sockets().first).serverClose(.init(code: 1008, reason: "models/gemini-3.8-live is not found"))
-        await settle(80)
+        await settle(until: { session.state.isFailed })
 
         XCTAssertEqual(session.state, .failed(AppLocalization.string("Gemini Live refused the connection: \("models/gemini-3.8-live is not found")")))
         XCTAssertEqual(sockets().count, 1, "a refused setup is not retried")
         XCTAssertEqual(tokens.issued, 1)
+    }
+
+    private var resumptionLost: GeminiLiveServerClose {
+        GeminiLiveServerClose(code: 1008, reason: "BidiGenerateContent session not found or expired")
+    }
+
+    private func resumptionHandle(_ socket: FakeGeminiLiveSocket) -> String? {
+        ((socket.attempted.first?["setup"] as? [String: Any])?["sessionResumption"] as? [String: Any])?["handle"] as? String
+    }
+
+    /// Build 208: a dropped call came back with its handle and Google
+    /// answered "session not found or expired". The call goes on as a new
+    /// session instead of failing.
+    func testGeminiLiveRefusedResumptionStartsAFreshSessionOnce() async throws {
+        let tokens = FakeGeminiLiveTokens()
+        let (session, sockets) = makeGeminiSession(tokens: tokens)
+        var fresh: [Bool] = []
+        session.onFreshSession = { fresh.append($0) }
+        session.start()
+        await settle()
+        let first = try XCTUnwrap(sockets().first)
+        first.deliver(["setupComplete": [String: Any]()])
+        first.deliver(["sessionResumptionUpdate": ["newHandle": "h-1", "resumable": true]])
+        await settle()
+        first.serverClose(nil)
+        await settle(until: { sockets().count == 2 })
+        XCTAssertEqual(resumptionHandle(sockets()[1]), "h-1")
+
+        sockets()[1].serverClose(resumptionLost)
+        await settle(until: { sockets().count == 3 })
+        XCTAssertEqual(sockets().count, 3, "a lost session is started again, not failed")
+        XCTAssertNil(resumptionHandle(sockets()[2]), "the new session carries no handle")
+        XCTAssertTrue(fresh.isEmpty, "reported once the new session is ready")
+
+        sockets()[2].deliver(["setupComplete": [String: Any]()])
+        await settle()
+        XCTAssertEqual(session.state, .ready)
+        XCTAssertEqual(fresh, [true])
+        session.stop()
+    }
+
+    func testGeminiLiveRefusedFreshSessionAfterALostResumptionFails() async throws {
+        let tokens = FakeGeminiLiveTokens()
+        let (session, sockets) = makeGeminiSession(tokens: tokens)
+        session.onFreshSession = { _ in }
+        session.start()
+        await settle()
+        let first = try XCTUnwrap(sockets().first)
+        first.deliver(["setupComplete": [String: Any]()])
+        first.deliver(["sessionResumptionUpdate": ["newHandle": "h-1", "resumable": true]])
+        await settle()
+        first.serverClose(nil)
+        await settle(until: { sockets().count == 2 })
+        sockets()[1].serverClose(resumptionLost)
+        await settle(until: { sockets().count == 3 })
+        sockets()[2].serverClose(resumptionLost)
+        await settle(until: { session.state.isFailed })
+
+        XCTAssertEqual(sockets().count, 3, "only one fresh start per lost session")
+        XCTAssertEqual(session.state, .failed(AppLocalization.string("Gemini Live lost this conversation on its side. Tap Try again to start a new one.")))
+    }
+
+    /// A GoAway handoff whose setup Google won't resume: the old connection
+    /// keeps serving while a fresh session sets up, and the user heard no
+    /// break.
+    func testGeminiLiveRefusedHandoffResumptionStartsFreshWhileTheOldConnectionServes() async throws {
+        let tokens = FakeGeminiLiveTokens()
+        let (session, sockets) = makeGeminiSession(tokens: tokens)
+        var fresh: [Bool] = []
+        session.onFreshSession = { fresh.append($0) }
+        session.start()
+        await settle()
+        let first = try XCTUnwrap(sockets().first)
+        first.deliver(["setupComplete": [String: Any]()])
+        first.deliver(["sessionResumptionUpdate": ["newHandle": "h-1", "resumable": true]])
+        first.deliver(["goAway": ["timeLeft": "5s"]])
+        await settle(until: { sockets().dropFirst().first?.sent.first != nil })
+        XCTAssertEqual(resumptionHandle(sockets()[1]), "h-1")
+
+        sockets()[1].serverClose(resumptionLost)
+        await settle(until: { sockets().count == 3 })
+        XCTAssertNil(resumptionHandle(sockets()[2]))
+        XCTAssertEqual(session.state, .ready, "the old connection still serves")
+        XCTAssertFalse(first.closed)
+
+        sockets()[2].deliver(["setupComplete": [String: Any]()])
+        await settle(until: { first.closed })
+        XCTAssertTrue(first.closed)
+        XCTAssertEqual(session.state, .ready)
+        XCTAssertEqual(fresh, [false])
+        session.stop()
+    }
+
+    func testGeminiLiveFreshSessionAfterAHandoffDoesNotMentionAReconnection() async {
+        var current = Date(timeIntervalSince1970: 1_000)
+        let (controller, session, _, _, _) = makeGeminiController(clock: { current })
+        await controller.start()
+        session.becomeReady()
+        session.onEvent?(.inputTranscription("what's the weather"))
+        session.onEvent?(.outputTranscription("Sunny all day."))
+        session.onEvent?(.turnComplete)
+
+        session.onFreshSession?(false)
+        session.becomeReady()
+        current += GeminiLiveConversationController.userQuietInterval + GeminiLiveConversationController.modelQuietInterval + 1
+        controller.flushPendingTextIfIdle()
+        let recap = session.textTurns.last ?? ""
+        XCTAssertTrue(recap.contains("User: what's the weather"), recap)
+        XCTAssertTrue(recap.contains("don't mention a reconnection"), recap)
+        controller.stop()
+    }
+
+    /// The lost session was mid-answer during a handoff: its turn never
+    /// completes, so the fresh start closes it and the recap still goes out.
+    func testGeminiLiveFreshSessionMidTurnClosesTheDeadTurnAndSendsTheRecap() async {
+        var current = Date(timeIntervalSince1970: 1_000)
+        let (controller, session, _, _, _) = makeGeminiController(clock: { current })
+        await controller.start()
+        session.becomeReady()
+        session.onEvent?(.inputTranscription("what's the weather"))
+        session.onEvent?(.outputTranscription("Sunny all"))
+
+        session.onFreshSession?(false)
+        session.becomeReady()
+        XCTAssertEqual(controller.phase, .listening)
+        current += GeminiLiveConversationController.userQuietInterval + GeminiLiveConversationController.modelQuietInterval + 1
+        controller.flushPendingTextIfIdle()
+        let recap = session.textTurns.last ?? ""
+        XCTAssertTrue(recap.contains("You: Sunny all"), recap)
+
+        // The new session's answer is a line of its own.
+        session.onEvent?(.outputTranscription("Sunny all day."))
+        XCTAssertEqual(controller.transcript.filter { $0.speaker == .assistant }.map(\.text), ["Sunny all", "Sunny all day."])
+        controller.stop()
+    }
+
+    func testGeminiLiveOtherRefusalOfAResumptionFailsWithoutAFreshStart() async throws {
+        let tokens = FakeGeminiLiveTokens()
+        let (session, sockets) = makeGeminiSession(tokens: tokens)
+        session.onFreshSession = { _ in XCTFail("only a lost session starts fresh") }
+        session.start()
+        await settle()
+        let first = try XCTUnwrap(sockets().first)
+        first.deliver(["setupComplete": [String: Any]()])
+        first.deliver(["sessionResumptionUpdate": ["newHandle": "h-1", "resumable": true]])
+        await settle()
+        first.serverClose(nil)
+        await settle(until: { sockets().count == 2 })
+        sockets()[1].serverClose(.init(code: 1008, reason: "API key expired. Please renew the API key."))
+        await settle(until: { session.state.isFailed })
+
+        XCTAssertEqual(sockets().count, 2)
+        XCTAssertEqual(session.state, .failed(AppLocalization.string("Gemini Live refused the connection: \("API key expired. Please renew the API key.")")))
+    }
+
+    func testGeminiLiveFreshSessionTellsTheModelWhatWasSaid() async {
+        var current = Date(timeIntervalSince1970: 1_000)
+        let (controller, session, _, _, _) = makeGeminiController(clock: { current })
+        await controller.start()
+        session.becomeReady()
+        session.onEvent?(.inputTranscription("what's the weather"))
+        session.onEvent?(.outputTranscription("Sunny all day."))
+        session.onEvent?(.turnComplete)
+
+        session.onFreshSession?(true)
+        session.becomeReady()
+        current += GeminiLiveConversationController.userQuietInterval + GeminiLiveConversationController.modelQuietInterval + 1
+        controller.flushPendingTextIfIdle()
+        let recap = session.textTurns.last ?? ""
+        XCTAssertTrue(recap.contains("User: what's the weather"), recap)
+        XCTAssertTrue(recap.contains("You: Sunny all day."), recap)
+        XCTAssertTrue(recap.contains("you're back"), recap)
+        controller.stop()
     }
 
     private func searches(_ socket: FakeGeminiLiveSocket) -> Bool {
@@ -569,7 +774,7 @@ extension VoiceConversationControllerTests {
         XCTAssertEqual(session.state, .ready)
 
         try XCTUnwrap(sockets().first).serverClose(spentQuota)
-        await settle(80)
+        await settle(until: { sockets().count == 2 })
         XCTAssertEqual(sockets().count, 2)
         XCTAssertFalse(searches(try XCTUnwrap(sockets().last)))
         try XCTUnwrap(sockets().last).deliver(["setupComplete": [String: Any]()])
@@ -583,7 +788,7 @@ extension VoiceConversationControllerTests {
         session.start()
         await settle()
         try XCTUnwrap(sockets().first).serverClose(spentQuota)
-        await settle(80)
+        await settle(until: { sockets().count == 2 })
         XCTAssertEqual(sockets().count, 2)
         try XCTUnwrap(sockets().last).deliver(["setupComplete": [String: Any]()])
         await settle()
@@ -599,7 +804,7 @@ extension VoiceConversationControllerTests {
         await settle()
 
         try XCTUnwrap(sockets().first).serverClose(.init(code: 1007, reason: "Invalid frame"))
-        await settle(80)
+        await settle(until: { sockets().count == 2 })
         XCTAssertEqual(sockets().count, 2, "a live connection reconnects with resumption")
         XCTAssertTrue(searches(try XCTUnwrap(sockets().last)), "only a spent quota drops Search")
         try XCTUnwrap(sockets().last).deliver(["setupComplete": [String: Any]()])
@@ -616,13 +821,13 @@ extension VoiceConversationControllerTests {
         XCTAssertTrue(searches(try XCTUnwrap(sockets().first)))
 
         try XCTUnwrap(sockets().first).serverClose(quota)
-        await settle(80)
+        await settle(until: { sockets().count == 2 })
         XCTAssertEqual(sockets().count, 2, "Search's own quota doesn't end the conversation")
         XCTAssertFalse(searches(try XCTUnwrap(sockets().last)))
         if case .failed = session.state { XCTFail("the retry without Search should still be connecting") }
 
         try XCTUnwrap(sockets().last).serverClose(quota)
-        await settle(80)
+        await settle(until: { session.state.isFailed })
         XCTAssertEqual(session.state, .failed(AppLocalization.string("Gemini Live refused the connection: \(quota.summary)")))
         XCTAssertEqual(sockets().count, 2, "without Search a quota refusal is final")
     }
@@ -631,7 +836,7 @@ extension VoiceConversationControllerTests {
         let tokens = FakeGeminiLiveTokens()
         let (session, sockets) = makeGeminiSession(tokens: tokens)
         session.start()
-        await driveUntilFailed(session) { sockets().last?.serverClose(.init(code: 1001, reason: "going away")) }
+        await driveUntilFailed(session, sockets: sockets) { $0.serverClose(.init(code: 1001, reason: "going away")) }
 
         XCTAssertEqual(session.state, .failed(AppLocalization.string("Couldn't connect to Gemini Live: \("going away")")))
         XCTAssertEqual(sockets().count, 1 + GeminiLiveSession.maximumReconnectAttempts)
@@ -641,7 +846,7 @@ extension VoiceConversationControllerTests {
         let tokens = FakeGeminiLiveTokens()
         let (session, sockets) = makeGeminiSession(tokens: tokens)
         session.start()
-        await driveUntilFailed(session) { sockets().last?.serverClose(nil) }
+        await driveUntilFailed(session, sockets: sockets) { $0.serverClose(nil) }
 
         XCTAssertEqual(session.state, .failed(AppLocalization.string("Couldn't connect to Gemini Live.")))
         XCTAssertEqual(sockets().count, 1 + GeminiLiveSession.maximumReconnectAttempts)
@@ -676,11 +881,18 @@ extension VoiceConversationControllerTests {
     }
 
     /// Closes each new connection before setup until the session gives up.
-    private func driveUntilFailed(_ session: GeminiLiveSession, close: () -> Void) async {
+    /// Each round waits for the session to open its next connection or
+    /// fail: a dropped close only reaches it after the fake socket's own
+    /// yields, which a fixed count could outrun.
+    private func driveUntilFailed(
+        _ session: GeminiLiveSession,
+        sockets: () -> [FakeGeminiLiveSocket],
+        close: (FakeGeminiLiveSocket) -> Void
+    ) async {
         for _ in 0..<10 {
-            await settle(80)
-            if case .failed = session.state { return }
-            close()
+            await settle(until: { session.state.isFailed || sockets().last?.closed == false })
+            guard !session.state.isFailed, let open = sockets().last, !open.closed else { return }
+            close(open)
         }
     }
 
@@ -937,7 +1149,7 @@ extension VoiceConversationControllerTests {
     func testLiveModelsAreAskedForSubstantiveAnswersNotOneLiners() throws {
         let gpt = GPTLiveConversationController.briefing(personality: "Judge Hermes")
         // Grok Live is built from Gemini Live's instructions (AppState.grokLiveController).
-        let gemini: [GeminiLiveSearchSource] = [.google, .hermes, .none]
+        let gemini: [GeminiLiveSearchSource] = [.google, .hermes, .grok, .none]
         var engines: [(String, String)] = gemini.map { search in
             ("Gemini and Grok (\(search))", GeminiLiveConversationController.instructions(search: search, personality: "Judge Hermes"))
         }
@@ -1644,6 +1856,22 @@ extension VoiceConversationControllerTests {
         output.stop()
     }
 
+    /// A session notification seen between calls (an interruption or a
+    /// media reset while idle) never stops the next call's echo-cancelling
+    /// audio: each call's audio is a lifetime of its own.
+    func testEchoCancellingAudioIgnoresANotificationSeenBeforeTheCallStarted() {
+        var lifetime = LiveVoiceAudioLifetime()
+        lifetime.begin()
+        let duringCall = lifetime.id
+        XCTAssertTrue(lifetime.accepts(duringCall), "The call's own notification stops it")
+        lifetime.end()
+        XCTAssertFalse(lifetime.accepts(duringCall), "An earlier call's notification is stale")
+        let whileIdle = lifetime.id
+        lifetime.begin()
+        XCTAssertFalse(lifetime.accepts(whileIdle), "Seen while idle: not the new call's")
+        XCTAssertTrue(lifetime.accepts(lifetime.id))
+    }
+
     func testGeminiLivePromptsAnAcknowledgementOnlyWhenTheModelStayedSilent() async {
         var current = Date(timeIntervalSince1970: 1_000)
         let (controller, session, _, _, _) = makeGeminiController(clock: { current })
@@ -2108,7 +2336,7 @@ extension HermesVoiceGatewayTimeoutTests {
 
         // With no Search to drop, a spent quota is final.
         try XCTUnwrap(sockets.first).serverClose(.init(code: 1011, reason: "You exceeded your current quota, please check your plan and billing details."))
-        await settle(80)
+        await settle(until: { session.state.isFailed })
         XCTAssertEqual(sockets.count, 1)
         guard case .failed = session.state else { return XCTFail("Expected failed, got \(session.state)") }
     }
@@ -2556,6 +2784,122 @@ extension VoiceConversationControllerTests {
         controller.stop()
     }
 
+    /// Grok spoke "<tool_call>…" aloud instead of calling the tool: the
+    /// speech stops, the markup never reaches the transcript, and the model
+    /// is told nothing ran once its turn is over.
+    func testLiveCallCutsOffToolMarkupSpokenAsText() async {
+        var current = Date(timeIntervalSince1970: 1_000)
+        let (controller, session, _, output, _) = makeGeminiController(clock: { current })
+        await controller.start()
+        session.becomeReady()
+
+        session.onEvent?(.inputTranscription("Check the server."))
+        session.onEvent?(.audio(Data([0, 0]), sampleRate: 24_000))
+        session.onEvent?(.outputTranscription("Sure, I'll queue that. <tool"))
+        XCTAssertEqual(output.interrupts, 0, "not markup yet")
+        session.onEvent?(.outputTranscription(#"_call>{"name":"start_job","arguments":{"instructions":"dummy task"}}"#))
+        XCTAssertEqual(output.interrupts, 1, "the speech stops at the markup")
+        session.onEvent?(.outputTranscription("</tool_call> Done!"))
+        let reply = controller.transcript.last(where: { $0.speaker == .assistant })?.text
+        XCTAssertEqual(reply, "Sure, I'll queue that.")
+        XCTAssertFalse(controller.transcript.contains { $0.text.contains("dummy task") || $0.text.contains("Done!") })
+        XCTAssertTrue(session.textTurns.isEmpty, "nothing is sent mid-turn")
+
+        session.onEvent?(.turnComplete)
+        current += 5
+        controller.flushPendingTextIfIdle()
+        XCTAssertEqual(session.textTurns, [GeminiLiveConversationController.spokenToolMarkupPrompt])
+        controller.stop()
+    }
+
+    func testLiveCallLineThatIsOnlyToolMarkupLeavesNoBlankLine() async {
+        let (controller, session, _, output, _) = makeGeminiController(clock: { Date(timeIntervalSince1970: 1_000) })
+        await controller.start()
+        session.becomeReady()
+
+        session.onEvent?(.inputTranscription("Check the server."))
+        session.onEvent?(.outputTranscription(#"<tool_call>{"name":"list_jobs"}"#))
+        XCTAssertEqual(output.interrupts, 1)
+        XCTAssertFalse(controller.transcript.contains { $0.speaker == .assistant }, "no empty assistant line")
+        session.onEvent?(.turnComplete)
+        XCTAssertFalse(controller.transcript.contains { $0.speaker == .assistant })
+        controller.stop()
+    }
+
+    func testSpokenToolMarkupIsFoundAnywhereInALine() {
+        XCTAssertNotNil(GeminiLiveConversationController.spokenToolMarkupStart(in: "ok <TOOL_CALL>list_jobs"))
+        XCTAssertNotNil(GeminiLiveConversationController.spokenToolMarkupStart(in: "<function_call name=start_job>"))
+        XCTAssertNil(GeminiLiveConversationController.spokenToolMarkupStart(in: "I'll call the tool shop for you."))
+        XCTAssertNil(GeminiLiveConversationController.spokenToolMarkupStart(in: "Use a < b, then tool calls."))
+    }
+
+    func testToolCallWithUnreadableArgumentsStartsNothingAndSaysWhy() async {
+        let fake = FakeVoiceJobBackend()
+        let supervisor = VoiceBackgroundJobSupervisor(backend: fake.backend, pollInterval: .seconds(3_600))
+        let bridge = GeminiLiveToolBridge(supervisor: supervisor, holdsJobCalls: false)
+        let call = GeminiLiveProtocol.FunctionCall(id: "c1", name: "start_job", arguments: [GeminiLiveProtocol.FunctionCall.invalidArgumentsKey: "true"])
+        let outgoing = await bridge.handle(call)
+        XCTAssertTrue(fake.submissions.isEmpty)
+        XCTAssertEqual(outgoing, [.toolResponse(id: "c1", name: "start_job", result: ["error": GeminiLiveToolBridge.invalidArgumentsError("start_job")], scheduling: .whenIdle)])
+        XCTAssertEqual(GeminiLiveConversationController.traceStatus(of: outgoing, answering: "c1"), "error")
+    }
+
+    func testLiveCallTraceKeepsStepsWithoutContent() {
+        let trace = LiveCallTrace()
+        XCTAssertNil(trace.report)
+        trace.note("before any call")
+        XCTAssertNil(trace.report, "nothing is kept before a call starts")
+        let start = Date(timeIntervalSince1970: 1_000)
+        trace.begin("Grok Live", at: start)
+        trace.note("Function call start_job", at: start + 2.5)
+        XCTAssertEqual(trace.report, "Last Grok Live call: tool steps\n+0.0s Starting call\n+2.5s Function call start_job")
+        for index in 0..<LiveCallTrace.maximumSteps { trace.note("step \(index)", at: start + 3) }
+        XCTAssertEqual(trace.steps.count, LiveCallTrace.maximumSteps)
+        XCTAssertTrue(trace.report?.hasSuffix("… 2 more steps not kept") == true)
+    }
+
+    func testGeminiLiveAskingToHangUpEndsTheCall() async {
+        let (controller, session, _, _, _) = makeGeminiController(endPhrases: ["goodbye"], clock: Date.init)
+        await controller.start()
+        session.becomeReady()
+
+        // Not in the end phrases, but asking to hang up all the same.
+        session.onEvent?(.inputTranscription("Okay, end call."))
+        session.onEvent?(.outputTranscription("Talk soon!"))
+        session.onEvent?(.turnComplete)
+        XCTAssertTrue(controller.isEnding)
+        controller.stop()
+    }
+
+    func testGeminiLiveEmptiedEndPhrasesKeepHangUpRequestsFromEnding() async {
+        let (controller, session, _, _, _) = makeGeminiController(endPhrases: [], clock: Date.init)
+        await controller.start()
+        session.becomeReady()
+
+        session.onEvent?(.inputTranscription("End call."))
+        session.onEvent?(.outputTranscription("Sure."))
+        session.onEvent?(.turnComplete)
+        XCTAssertFalse(controller.isEnding, "an emptied list turns ending by voice off")
+        controller.stop()
+    }
+
+    func testGrokLiveUnpunctuatedLateGoodbyeStillEnds() async {
+        let (controller, session, _, _, _) = makeGeminiController(endPhrases: ["bye"], clock: Date.init)
+        session.transcribesWholeUtterances = true
+        controller.lateEndPhraseDelay = 0.01
+        await controller.start()
+        session.becomeReady()
+
+        // xAI's transcript of the whole utterance lands after the reply,
+        // with no punctuation.
+        session.onEvent?(.outputTranscription("Bye!"))
+        session.onEvent?(.turnComplete)
+        session.onEvent?(.inputTranscription("bye"))
+        try? await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(controller.isEnding)
+        controller.stop()
+    }
+
     func testGeminiLiveSeparateUtterancesNeverCombineIntoAnEndPhrase() async {
         let (controller, session, _, _, _) = makeGeminiController(endPhrases: ["end conversation"], clock: Date.init)
         controller.lateEndPhraseDelay = 0.01
@@ -2828,5 +3172,34 @@ extension VoiceConversationControllerTests {
         XCTAssertGreaterThan(try XCTUnwrap(timeouts[GeminiLiveTokenClient.webSearchPath]), 20_000)
         XCTAssertGreaterThan(try XCTUnwrap(timeouts[GeminiLiveTokenClient.memoryRecallPath]), 12_000)
         XCTAssertEqual(timeouts[GeminiLiveTokenClient.webSearchStatusPath], GeminiLiveTokenClient.defaultTimeoutMilliseconds)
+    }
+}
+
+// MARK: - Rich cards on the call screen
+
+extension VoiceConversationControllerTests {
+    func testGeminiLiveShowOnScreenDrawsCardsWithoutMarkdown() async throws {
+        let (supervisor, _, bridge) = makeJobs()
+        supervisor.liveCallTranscript = { [] }
+        supervisor.beginLiveCall()
+        var shownCards: [VoiceScreenCard] = []
+        supervisor.onScreenCardShown = { shownCards.append($0) }
+
+        let cards = #"[{"type": "place", "places": [{"name": "Tartine", "rating": {"value": 4.6}}]}, {"type": "weather"}]"#
+        let shown = await bridge.handle(.init(id: "c1", name: "show_on_screen", arguments: ["title": "Breakfast", "cards": cards]))
+        guard case .toolResponse(_, _, let result, _)? = shown.first else { return XCTFail("\(shown)") }
+        XCTAssertEqual(result["status"], "shown")
+        let card = try XCTUnwrap(supervisor.callScreenCards(supervisor.liveCallID).first)
+        XCTAssertEqual(card.markdown, "")
+        XCTAssertEqual(card.cards.map(\.kind), [.place], "only valid cards")
+        XCTAssertNil(card.cards.first?.places.first?.rating, "an unsourced rating isn't shown")
+        let saved = try XCTUnwrap(card.cardsJSON.flatMap { try JSONSerialization.jsonObject(with: $0) as? [[String: Any]] })
+        XCTAssertEqual(saved.count, 1, "the saved call keeps the normalized cards")
+        XCTAssertEqual(shownCards.map(\.id), [card.id], "the saved call hears about it")
+
+        let invalid = await bridge.handle(.init(id: "c2", name: "show_on_screen", arguments: ["title": "Weather", "cards": #"[{"type": "weather"}]"#]))
+        guard case .toolResponse(_, _, let refused, _)? = invalid.first else { return XCTFail("\(invalid)") }
+        XCTAssertEqual(refused["error"], GeminiLiveToolBridge.invalidCardsNote)
+        XCTAssertEqual(supervisor.callScreenCards(supervisor.liveCallID).count, 1)
     }
 }
