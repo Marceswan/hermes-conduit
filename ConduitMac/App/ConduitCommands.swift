@@ -18,8 +18,10 @@ struct ConduitCommands: Commands {
     @Environment(\.openWindow) private var openWindow
     @AppStorage(MacQuickAskHotKeyManager.enabledKey) private var quickAskEnabled = true
     @AppStorage(ConduitCommands.sidebarVisibleKey) private var sidebarVisible = true
-    /// The sidebar pane, for Chat > Artifacts... (enabled only while the chat tab shows).
+    /// The sidebar pane, for Chat > Show Artifacts (enabled only while the chat tab shows).
     @AppStorage(MacSidebarState.tabDefaultsKey) private var sidebarTab = SidebarTab.sessions.rawValue
+    /// The open chat's artifacts panel (D33): the Chat menu item's title and state follow it.
+    @ObservedObject private var artifactsPanel = MacChatArtifactsPanelStore.shared
     @AppStorage(HoverAccessibilityEngine.highlightDefaultsKey) private var hoverHighlight = true
     /// Publishes after each change of the key window or of a sheet, so File > Export Chat... and Print Chat...
     /// follow the window (D32).
@@ -126,10 +128,13 @@ struct ConduitCommands: Commands {
                 Task { await MacAskAboutWindow.run(appState: appState, window: NSApp.keyWindow) }
             }
             .keyboardShortcut("w", modifiers: [.shift, .command])
-            // No key equivalent. Disabled without an open chat on the chat tab, and for a session window (the menu is not rebuilt on a key-window change, so the action checks again); a
-            // disabled item with no key cannot swallow a key (see the note above).
-            Button("Artifacts\u{2026}") { MacAppActions.showChatArtifacts(window: NSApp.keyWindow, appState: appState) }
-                .disabled(!MacAppActions.canShowChatArtifacts(appState: appState, window: NSApp.keyWindow, tabRaw: sidebarTab))
+            // No key equivalent. Shows or hides the open chat's artifacts panel (D33), as the toolbar button does. Disabled
+            // while the chat has no artifact, off the chat tab, and for a session window (the menu is not rebuilt on a
+            // key-window change, so the action checks again); a disabled item with no key cannot swallow a key (see the note above).
+            Button(artifactsPanel.isOpen ? "Hide Artifacts" : "Show Artifacts") {
+                MacAppActions.toggleChatArtifactsPanel(window: NSApp.keyWindow)
+            }
+            .disabled(!MacAppActions.canToggleChatArtifactsPanel(window: NSApp.keyWindow, tabRaw: sidebarTab, panel: artifactsPanel))
             Divider()
             // No key equivalent (the global hotkey is the shortcut) and never
             // `.disabled`: this is the way in when the hotkey could not register.
