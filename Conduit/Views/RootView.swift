@@ -141,6 +141,9 @@ struct MainView: View {
     private var chatPaneActive: Bool { MacChatRoute.isChatActive(tabRaw: macTabRaw) }
     private var chatWindowTitle: String { MacChatRoute.navigationTitle(tabRaw: macTabRaw) }
     #endif // MAC:
+    #if os(macOS) // MAC: the open chat's artifacts (D33): the toolbar adds the Artifacts button once the chat has one
+    @ObservedObject private var macArtifactsPanel = MacChatArtifactsPanelStore.shared
+    #endif // MAC:
     private var isVoiceConversationShown: Bool {
         appState.showVoiceSheet || appState.showGeminiLiveSheet || appState.showGPTLiveSheet
             || appState.showGrokLiveSheet || appState.showLocalLiveSheet
@@ -574,6 +577,13 @@ struct MainView: View {
                 .disabled(!appState.isConnected || appState.isChatRefreshing || appState.showsPendingNewChat)
                 .accessibilityLabel("Refresh conversation")
             }
+            #if os(macOS) // MAC: the open chat's artifacts (D33): shows or hides the panel beside the chat
+            if macArtifactsPanel.showsButton {
+                ToolbarItem(placement: .topBarTrailing) {
+                    MacChatArtifactsToolbarButton()
+                }
+            }
+            #endif // MAC:
         }
         ToolbarItem(placement: .topBarTrailing) {
             ConnectionStatusIndicator()
@@ -600,7 +610,12 @@ struct MainView: View {
                     GroupChatView()
                         .id(appState.activeRoomSurface?.room.roomID)
                 } else {
+                    #if os(macOS) // MAC: the open chat's artifacts panel on the chat's trailing side (D33)
                     ChatView()
+                        .macChatArtifactsPanel()
+                    #else // MAC:
+                    ChatView()
+                    #endif // MAC:
                 }
             }
             .overlay(alignment: .leading) {

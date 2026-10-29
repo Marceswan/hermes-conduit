@@ -102,6 +102,8 @@ struct ConduitMacApp: App {
             // Whole-chat find (D23): this window's controller, in the environment.
             .macChatFind(appState: appState)
             .task { MacSessionTabsStore.shared.bind(to: appState) }
+            // The open chat's artifacts for the toolbar button and the side panel (D33).
+            .task { MacChatArtifactsPanelStore.shared.bind(to: appState) }
             .task(id: appState.isConnected) { NotchStatusController.shared.bind(to: appState) }   // no-op once bound; the feed is created by the shared base's bootstrap
             .macSpotlightBinding(appState: appState, openLink: { pendingExternalLink = $0 })
             .task { MacPaletteStore.shared.bind(to: appState) }

@@ -14,7 +14,8 @@ import SwiftUI
 //     a page opens `HTMLPreviewSheet` in a sheet.
 //   - The loading state is a plain value (`MacArtifactsListState`) so its paging rules are tested
 //     without a view; with `MacArtifactsSource` and `MacArtifactOpen` it is in
-//     MacArtifactsListState.swift (no upstream counterpart).
+//     MacArtifactsListState.swift (no upstream counterpart). Open is `MacArtifactOpener`
+//     (MacArtifactOpener.swift), shared with the chat's side panel (D33).
 //   - The load also runs again when the plugin's capability report lands after the pane opened
 //     (upstream's list waits for the next key change).
 //   - The pager also restarts when a reload ends, and a page that answers with the cursor it was
@@ -40,26 +41,14 @@ struct MacArtifactsList: View {
     @AppStorage(ArtifactsClient.showMissingKey) private var showMissing = false
     @State private var filter: ArtifactFilter = .all
     @State private var state = MacArtifactsListState()
-    @State private var openingID: String?
-    @State private var page: OpenPage?
-    @State private var missing: ArtifactItem?
-    /// The open alert is for a file too big to download, not a gone one.
-    @State private var missingIsTooLarge = false
-    /// Cancelled when the list goes, so a slow fetch can't present a viewer over whatever the
-    /// user moved on to.
-    @State private var openTask: Task<Void, Never>?
+    /// Open, its page sheet and its alert (shared with the chat's side panel, D33).
+    @StateObject private var opener = MacArtifactOpener()
 
     init(scope: ArtifactScope, chatIsOpen: Bool, query: String = "", showInChat: @escaping (ArtifactItem) -> Void) {
         self.scope = scope
         self.chatIsOpen = chatIsOpen
         self.query = query
         self.showInChat = showInChat
-    }
-
-    private struct OpenPage: Identifiable {
-        let id = UUID()
-        let name: String
-        let html: String
     }
 
     /// What reads the host again: the list's key, or the host starting to offer artifacts.
@@ -100,23 +89,10 @@ struct MacArtifactsList: View {
             }
             await reload()
         }
-        .sheet(item: $page) { page in
-            HTMLPreviewSheet(name: page.name, html: page.html)
-                .macFormSheetSize(minWidth: 560, idealWidth: 800, minHeight: 420, idealHeight: 640)
-        }
-        .onDisappear { openTask?.cancel() }
+        .macArtifactOpenPresentation(opener)
         .onChange(of: currentKey.dashboard) { _, _ in
             // A download or page read for the old server must not open its file under the new one.
-            openTask?.cancel()
-            openingID = nil
-        }
-        .alert(
-            missingIsTooLarge ? Text("Too large to open on this Mac") : Text("This file is no longer on your Hermes host."),
-            isPresented: Binding(get: { missing != nil }, set: { if !$0 { missing = nil } })
-        ) {
-            Button("OK", role: .cancel) { missing = nil }
-        } message: {
-            Text(verbatim: missing?.path ?? "")
+            opener.cancel()
         }
     }
 
@@ -303,7 +279,7 @@ struct MacArtifactsList: View {
                                  dashboard: source.dashboardID(appState), profile: appState.activeProfile)
                 .aspectRatio(1, contentMode: .fit)
                 .overlay {
-                    if openingID == item.id {
+                    if opener.openingID == item.id {
                         ProgressView().controlSize(.small)
                     }
                 }
@@ -352,7 +328,7 @@ struct MacArtifactsList: View {
                         .lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                if openingID == item.id {
+                if opener.openingID == item.id {
                     ProgressView().controlSize(.small)
                 }
             }
@@ -454,81 +430,11 @@ struct MacArtifactsList: View {
     // MARK: - Opening
 
     static func openAction(for item: ArtifactItem) -> MacArtifactOpen? {
-        if let url = item.url, item.path == nil { return .link(url) }
-        guard let path = item.path else { return nil }
-        guard item.exists else { return .missing }
-        return item.kind == .page ? .page(path: path) : .file(path: path)
+        MacArtifactOpener.action(for: item)
     }
 
     private func open(_ item: ArtifactItem) {
-        guard let action = Self.openAction(for: item) else { return }
-        if case .link(let url) = action {
-            openURL(url)
-            return
-        }
-        guard openingID == nil else { return }
-        let reader = source.reader(appState)
-        switch action {
-        case .link:
-            break   // opened above
-        case .missing:
-            missingIsTooLarge = false
-            missing = item
-        case .page(let path):
-            openingID = item.id
-            openTask = Task { @MainActor in
-                defer { openingID = nil }
-                if let dataURL = await reader.dataURL(path), !Task.isCancelled,
-                   let html = HTMLPreviewPage.decodedDocument(fromDataURL: dataURL) {
-                    page = OpenPage(name: item.name, html: html)
-                    return
-                }
-                // Not drawable in the sheet (no data URL, over the size limit, not UTF-8): open it
-                // like any other file, which also says why when it cannot.
-                guard !Task.isCancelled else { return }
-                await openFile(item, path: path, reader: reader)
-            }
-        case .file(let path):
-            openingID = item.id
-            openTask = Task { @MainActor in
-                defer { openingID = nil }
-                await openFile(item, path: path, reader: reader)
-            }
-        }
-    }
-
-    /// Downloads the file and shows it (quarantined, in Finder), else shows it from its data URL.
-    private func openFile(_ item: ArtifactItem, path: String, reader: MacArtifactsReader) async {
-        switch await reader.file(path) {
-        case .downloaded(let download):
-            guard !Task.isCancelled else {
-                MediaPreviewPresenter.removeDirectory(download.directory)
-                return
-            }
-            if source.present(download) { return }
-        case .tooLarge:
-            openFailed(item, tooLarge: true)
-            return
-        case .unavailable:
-            break
-        }
-        // A cancelled download reads as unavailable; no fallback for a list that has gone.
-        guard !Task.isCancelled else { return }
-        guard let dataURL = await reader.dataURL(path) else {
-            openFailed(item)
-            return
-        }
-        guard !Task.isCancelled else { return }
-        guard await source.presentDataURL(dataURL, item.name) else {
-            openFailed(item)
-            return
-        }
-    }
-
-    private func openFailed(_ item: ArtifactItem, tooLarge: Bool = false) {
-        guard !Task.isCancelled else { return }
-        missingIsTooLarge = tooLarge
-        missing = item
+        opener.open(item, source: source, appState: appState, openURL: openURL)
     }
 
     // MARK: - Loading
@@ -569,19 +475,20 @@ struct MacArtifactsList: View {
 }
 
 /// A row's round-cornered kind glyph.
-private struct MacArtifactIcon: View {
+struct MacArtifactIcon: View {
     let kind: ArtifactItem.Kind
 
     var body: some View {
-        Image(systemName: symbol)
+        Image(systemName: Self.symbol(for: kind))
             .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(tint)
+            .foregroundStyle(Self.tint(for: kind))
             .frame(width: 30, height: 30)
-            .background(tint.opacity(0.16), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .background(Self.tint(for: kind).opacity(0.16), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             .accessibilityHidden(true)
     }
 
-    private var symbol: String {
+    /// Also the chat panel's row glyph (D33).
+    static func symbol(for kind: ArtifactItem.Kind) -> String {
         switch kind {
         case .image: return "photo"
         case .video: return "play.rectangle"
@@ -593,7 +500,7 @@ private struct MacArtifactIcon: View {
         }
     }
 
-    private var tint: Color {
+    static func tint(for kind: ArtifactItem.Kind) -> Color {
         switch kind {
         case .page: return .conduitAccent
         case .document, .file: return .red

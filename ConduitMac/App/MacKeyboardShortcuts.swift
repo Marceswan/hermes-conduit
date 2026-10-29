@@ -599,4 +599,30 @@ enum MacAppActions {
         (store ?? .shared).present(sessionIDs: sessionIDs)
         return true
     }
+
+    /// Whether Chat > Show Artifacts has a panel to show or hide (D33): the main window shows the
+    /// chat tab and the open chat has an artifact (the toolbar shows the button). A session window
+    /// is refused, as for the sheet above.
+    static func canToggleChatArtifactsPanel(window: NSWindow?, tabRaw: String?,
+                                            panel: MacChatArtifactsPanelStore? = nil) -> Bool {
+        !MacSessionWindows.isSessionWindow(window)
+            && MacChatRoute.isChatActive(tabRaw: tabRaw)
+            && (panel ?? .shared).showsButton
+    }
+
+    /// Chat > Show Artifacts / Hide Artifacts: the toolbar button's action, from the menu.
+    @discardableResult
+    static func toggleChatArtifactsPanel(
+        window: NSWindow?,
+        windows: [NSWindow]? = nil,
+        palette: MacPaletteStore? = nil,
+        panel: MacChatArtifactsPanelStore? = nil,
+        tabRaw: String? = UserDefaults.standard.string(forKey: MacSidebarState.tabDefaultsKey),
+        openMainWindow: (() -> Void)? = nil
+    ) -> Bool {
+        guard canToggleChatArtifactsPanel(window: window, tabRaw: tabRaw, panel: panel) else { return false }
+        guard prepare(window: window, windows: windows, palette: palette, openMainWindow: openMainWindow) else { return false }
+        (panel ?? .shared).toggle()
+        return true
+    }
 }

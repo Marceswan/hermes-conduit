@@ -77,8 +77,9 @@ final class MacChatArtifactsSheetTests: XCTestCase {
         let store = MacChatArtifactsStore()
         XCTAssertFalse(MacAppActions.showChatArtifacts(window: nil, appState: appState, store: store))
         XCTAssertNil(store.sessionIDs)
-        let commands = try source(of: "ConduitMac/App/ConduitCommands.swift")
-        XCTAssertTrue(commands.contains(".disabled(!MacAppActions.canShowChatArtifacts(appState: appState, window: NSApp.keyWindow, tabRaw: sidebarTab))"))
+        // The Chat menu item shows the side panel now (D33); the panel's Show as List opens this sheet.
+        let panel = try source(of: "ConduitMac/Artifacts/MacChatArtifactsPanel.swift")
+        XCTAssertTrue(panel.contains("MacAppActions.showChatArtifacts(window: NSApp.keyWindow, appState: appState, ids: ids)"))
     }
 
     func testActionPresentsTheGivenIDsFromTheMainWindow() {
