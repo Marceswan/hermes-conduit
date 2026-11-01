@@ -275,6 +275,8 @@ final class MacArtifactsListHostedTests: XCTestCase {
         var heldFile: CheckedContinuation<Void, Never>?
         var presented: [URL] = []
         var presentResult = true
+        /// The real presenter instead of the record below, for an open from the row to the sheet.
+        var realPresenter = false
         var presentedDataURLs: [String] = []
         var presentDataURLResult = true
     }
@@ -327,6 +329,7 @@ final class MacArtifactsListHostedTests: XCTestCase {
                     })
             },
             present: { download in
+                if env.realPresenter { return MediaPreviewPresenter().present(downloaded: download) }
                 env.presented.append(download.file)
                 return env.presentResult
             },
@@ -578,6 +581,45 @@ final class MacArtifactsListHostedTests: XCTestCase {
         XCTAssertTrue(HostedTestSupport.waitUntil { webView(in: sheet.contentView) != nil },
                       "the sheet draws the page in a web view")
         XCTAssertTrue(env.presented.isEmpty, "a page is drawn, not revealed")
+    }
+
+    func testAPageSheetClosesLikeAnyOtherPreview() throws {
+        host.pages = [ArtifactsTestSupport.response([
+            ArtifactsTestSupport.row(["kind": "page", "name": "chart.html", "path": "/root/chart.html"])])]
+        env.dataURLs["/root/chart.html"] = dataURL("<html><body>hello</body></html>")
+        let w = try show()
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "chart.html") }, "\(texts(w))")
+        XCTAssertTrue(press(prefix: "chart.html", in: w))
+        XCTAssertTrue(HostedTestSupport.waitUntil { w.attachedSheet != nil })
+        let sheet = try XCTUnwrap(w.attachedSheet)
+        HostedTestSupport.settle(0.3)
+        XCTAssertTrue(SheetCloseButton.decorateIfNeeded(sheet), "no Done: the X, Esc and a click behind it close it")
+    }
+
+    func testAFileOpensFromItsRowInASheetNotFinder() throws {
+        for name in ["notes.md", "report.pdf"] {
+            host.pages = [ArtifactsTestSupport.response([document(name)])]
+            env.file = .downloaded(try download(name))
+            env.realPresenter = true
+            let w = try show()
+            window = w
+            let savedPresent = MediaPreviewPresenter.presentPreview
+            let savedReveal = MediaPreviewPresenter.revealInFinder
+            var revealed: [URL] = []
+            MediaPreviewPresenter.presentPreview = { MacFilePreviewSheet.present($0, over: w) }
+            MediaPreviewPresenter.revealInFinder = { revealed.append($0) }
+            defer {
+                MediaPreviewPresenter.presentPreview = savedPresent
+                MediaPreviewPresenter.revealInFinder = savedReveal
+            }
+            XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, name) }, "\(texts(w))")
+            XCTAssertTrue(press(prefix: name, in: w))
+            XCTAssertTrue(HostedTestSupport.waitUntil { w.attachedSheet != nil }, "\(name) opens in a sheet")
+            XCTAssertTrue(revealed.isEmpty, "\(name): Finder stays out of it")
+            w.endSheet(try XCTUnwrap(w.attachedSheet))
+            HostedTestSupport.tearDown(w)
+            window = nil
+        }
     }
 
     func testAPageThatCannotBeDrawnOpensAsAFile() throws {
