@@ -1,4 +1,5 @@
 import AppKit
+import PDFKit
 import Quartz
 import SwiftUI
 import WebKit
@@ -92,7 +93,7 @@ final class MacFilePreviewSheetTests: XCTestCase {
 
     func testAMediaFileDrawsInQuickLookFromItsFile() throws {
         let window = parent()
-        let item = try preview("report.pdf", .quickLook)
+        let item = try preview("photo.png", .quickLook)
         XCTAssertTrue(MacFilePreviewSheet.present(item, over: window))
         let sheet = try XCTUnwrap(window.attachedSheet)
         XCTAssertTrue(HostedTestSupport.waitUntil { self.find(QLPreviewView.self, in: sheet.contentView) != nil })
@@ -138,6 +139,40 @@ final class MacFilePreviewSheetTests: XCTestCase {
         let text = try XCTUnwrap(find(NSTextView.self, in: sheet.contentView))
         _ = text.delegate?.textView?(text, clickedOnLink: url, at: 0)
         XCTAssertEqual(routed, [url], "gateway-controlled links do not reach SwiftUI's default action")
+    }
+
+    func testALinkInAPDFPassesTheAppsLinkPolicy() throws {
+        let window = parent()
+        var routed: [URL] = []
+        let links = MacFilePreviewLinks(routeWidgetLaunch: { routed.append($0); return true }, openAppLink: { _ in })
+        let item = try preview("report.pdf", .pdf)
+        let document = PDFDocument()
+        document.insert(PDFPage(), at: 0)
+        XCTAssertTrue(document.write(to: item.file))
+        XCTAssertTrue(MacFilePreviewSheet.present(item, over: window, links: links))
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.find(PDFView.self, in: sheet.contentView)?.document != nil })
+        let pdf = try XCTUnwrap(find(PDFView.self, in: sheet.contentView))
+        XCTAssertNotNil(pdf.delegate, "without a delegate PDFKit opens the link through the system")
+        let url = try XCTUnwrap(URL(string: "conduit-preview-test://pdf"))
+        pdf.delegate?.pdfViewWillClick?(onLink: pdf, with: url)
+        XCTAssertEqual(routed, [url])
+    }
+
+    func testALinkInRTFPassesTheAppsLinkPolicy() throws {
+        let window = parent()
+        var routed: [URL] = []
+        let links = MacFilePreviewLinks(routeWidgetLaunch: { routed.append($0); return true }, openAppLink: { _ in })
+        let url = try XCTUnwrap(URL(string: "conduit-preview-test://rtf"))
+        let rich = NSAttributedString(string: "link", attributes: [.link: url])
+        XCTAssertTrue(MacFilePreviewSheet.present(try preview("brief.rtf", .richText(rich)), over: window, links: links))
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.find(NSTextView.self, in: sheet.contentView)?.string == "link" })
+        let text = try XCTUnwrap(find(NSTextView.self, in: sheet.contentView))
+        XCTAssertFalse(text.isEditable)
+        XCTAssertTrue(text.usesAdaptiveColorMappingForDarkAppearance, "black RTF text stays readable in dark")
+        _ = text.delegate?.textView?(text, clickedOnLink: url, at: 0)
+        XCTAssertEqual(routed, [url])
     }
 
     // MARK: closing, whatever the file shows

@@ -1,4 +1,5 @@
 import AppKit
+import PDFKit
 import XCTest
 @testable import ConduitMac
 
@@ -58,8 +59,8 @@ final class MediaPreviewPresenterMacTests: XCTestCase {
 
     func testAMediaOrDocumentFileOpensInQuickLookNotFinder() throws {
         for (name, mime) in [("map.png", "image/png"), ("clip.mp4", "video/mp4"), ("note.m4a", "audio/mp4"),
-                             ("report.pdf", "application/pdf"), ("brief.docx", nil), ("data.csv", "text/csv"),
-                             ("bundle.zip", "application/zip"), ("brief.rtf", "application/rtf")] as [(String, String?)] {
+                             ("brief.docx", nil), ("sheet.xlsx", nil), ("deck.pptx", nil), ("deck.key", nil),
+                             ("data.csv", "text/csv")] as [(String, String?)] {
             previews = []
             let file = try download(name, mimeType: mime)
             XCTAssertTrue(MediaPreviewPresenter().present(downloaded: file), name)
@@ -151,23 +152,75 @@ final class MediaPreviewPresenterMacTests: XCTestCase {
         }
     }
 
-    func testATextFileWithBinaryBytesFallsBackToQuickLook() throws {
+    func testATextFileWithBinaryBytesHasNoPreview() throws {
         for bytes in [Data([0xFF, 0xFE, 0xFA]), Data([0x61, 0x00, 0x62])] {
             previews = []
             let file = try download("run.log", mimeType: nil)
             try bytes.write(to: file.file)
             XCTAssertTrue(MediaPreviewPresenter().present(downloaded: file))
-            XCTAssertEqual(previews.first?.content, .quickLook, "\(bytes as NSData)")
+            XCTAssertEqual(previews.first?.content, .unavailable, "\(bytes as NSData)")
         }
     }
 
-    func testQuickLookKeepsTheTextFormatsItDrawsBest() throws {
-        for name in ["data.csv", "brief.rtf"] {
+    // MARK: Quick Look gets only what is on its list
+
+    func testATypeNotOnTheListNeverReachesQuickLook() throws {
+        // None is on upstream's list, and Quick Look would draw or follow each of them.
+        for name in ["mail.eml", "mail.emlx", "box.mbox", "place.webloc", "link.url", "settings.plist", "book.epub",
+                     "bundle.zip", "backup.tgz", "logo.eps", "blob.unknownext"] {
             previews = []
-            let file = try download(name, mimeType: nil, contents: "a,b")
+            let file = try download(name, mimeType: nil)
+            try Data([0xFF, 0xFE, 0x00]).write(to: file.file)
             XCTAssertTrue(MediaPreviewPresenter().present(downloaded: file), name)
-            XCTAssertEqual(previews.first?.content, .quickLook, name)
+            XCTAssertEqual(previews.first?.content, .unavailable, name)
+            XCTAssertTrue(revealed.isEmpty, name)
         }
+    }
+
+    func testAMailMessageShowsItsTextNeverItsRenderedBody() throws {
+        let file = try download("mail.eml", mimeType: nil, contents: "Subject: x\n\n<html><img src=https://t.example/a></html>")
+        XCTAssertTrue(MediaPreviewPresenter().present(downloaded: file))
+        XCTAssertEqual(previews.first?.content, .text("Subject: x\n\n<html><img src=https://t.example/a></html>"))
+    }
+
+    func testWebContentUnderADocumentNameNeverReachesQuickLook() throws {
+        for (name, body) in [("brief.doc", "<html><script>alert(1)</script></html>"), ("photo.png", "<!DOCTYPE HTML><p>x"),
+                             ("sheet.xlsx", "<svg onload=alert(1)>"), ("data.csv", "a,<script>alert(1)</script>")] {
+            previews = []
+            let file = try download(name, mimeType: nil, contents: body)
+            XCTAssertTrue(MediaPreviewPresenter().present(downloaded: file), name)
+            XCTAssertEqual(previews.first?.content, .text(body), "\(name): as text, so nothing runs")
+        }
+    }
+
+    // MARK: PDF and RTF, whose links pass the app's policy
+
+    func testAPDFDrawsInPDFKitNotQuickLook() throws {
+        let file = try download("report.pdf", mimeType: "application/pdf")
+        let document = PDFDocument()
+        document.insert(PDFPage(), at: 0)
+        XCTAssertTrue(document.write(to: file.file))
+        XCTAssertTrue(MediaPreviewPresenter().present(downloaded: file))
+        XCTAssertEqual(previews.first?.content, .pdf)
+    }
+
+    func testABrokenPDFIsNeverHandedToQuickLook() throws {
+        let file = try download("report.pdf", mimeType: "application/pdf")
+        try Data([0xFF, 0xFE, 0xFA]).write(to: file.file)
+        XCTAssertTrue(MediaPreviewPresenter().present(downloaded: file))
+        XCTAssertEqual(previews.first?.content, .unavailable)
+    }
+
+    func testRTFDrawsAsRichTextNotQuickLook() throws {
+        let rich = NSAttributedString(string: "Styled", attributes: [.font: NSFont.boldSystemFont(ofSize: 14)])
+        let data = try XCTUnwrap(rich.rtf(from: NSRange(location: 0, length: rich.length)))
+        let file = try download("brief.rtf", mimeType: "application/rtf")
+        try data.write(to: file.file)
+        XCTAssertTrue(MediaPreviewPresenter().present(downloaded: file))
+        guard case .richText(let drawn)? = previews.first?.content else {
+            return XCTFail("\(String(describing: previews.first?.content))")
+        }
+        XCTAssertEqual(drawn.string, "Styled")
     }
 
     func testXMLShowsAsTextNeverQuickLook() throws {
@@ -198,17 +251,17 @@ final class MediaPreviewPresenterMacTests: XCTestCase {
         XCTAssertEqual(previews.first?.content, .unavailable, "these bytes would draw as garbage")
     }
 
-    func testAMarkdownFileThatCannotDrawFallsBackToQuickLook() throws {
+    func testAMarkdownFileThatCannotDrawHasNoPreview() throws {
         let blank = try download("blank.md", mimeType: nil, contents: " \n\t\n")
         XCTAssertTrue(MediaPreviewPresenter().present(downloaded: blank))
-        XCTAssertEqual(previews.last?.content, .quickLook)
+        XCTAssertEqual(previews.last?.content, .unavailable)
 
         let huge = try download("huge.md", mimeType: nil)
         let handle = try FileHandle(forWritingTo: huge.file)
         try handle.truncate(atOffset: UInt64(MacFilePreview.maximumTextBytes) + 1)
         try handle.close()
         XCTAssertTrue(MediaPreviewPresenter().present(downloaded: huge))
-        XCTAssertEqual(previews.last?.content, .quickLook)
+        XCTAssertEqual(previews.last?.content, .unavailable)
         XCTAssertTrue(revealed.isEmpty)
     }
 
