@@ -74,7 +74,8 @@ final class MacArtifactOpener: ObservableObject {
         }
     }
 
-    /// Downloads the file and shows it (quarantined, in Finder), else shows it from its data URL.
+    /// Downloads the file and shows it (`MediaPreviewPresenter`, quarantined, in a sheet, D34), else
+    /// shows it from its data URL.
     private func openFile(_ item: ArtifactItem, path: String, reader: MacArtifactsReader,
                           source: MacArtifactsSource) async {
         switch await reader.file(path) {
@@ -116,7 +117,7 @@ private struct MacArtifactOpenPresentation: ViewModifier {
     func body(content: Content) -> some View {
         content
             .sheet(item: $opener.page) { page in
-                HTMLPreviewSheet(name: page.name, html: page.html)
+                MacFilePreviewView(name: page.name, content: .html(page.html), close: { opener.page = nil })
                     .macFormSheetSize(minWidth: 560, idealWidth: 800, minHeight: 420, idealHeight: 640)
             }
             .onDisappear { opener.cancel() }

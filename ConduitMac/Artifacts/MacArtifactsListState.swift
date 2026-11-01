@@ -125,7 +125,7 @@ struct MacArtifactsReader {
 
 /// Where the list reads from. The defaults read the app. A test swaps them: the plugin report and
 /// the saved dashboards on `AppState` are `private(set)`, its dashboard bridge needs a live host,
-/// and `MediaPreviewPresenter` would open Finder.
+/// and `MediaPreviewPresenter` would open a sheet.
 struct MacArtifactsSource {
     var supported: @MainActor (AppState) -> Bool = { $0.supportsArtifacts }
     var client: @MainActor (AppState) -> ArtifactsClient = { $0.artifactsClient }

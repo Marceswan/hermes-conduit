@@ -10,8 +10,8 @@ import SwiftUI
 //     The search text comes in as `query` from the pane's `MacSearchPill`; Refresh is in the
 //     More menu.
 //   - Mac density (`MacSidebarMetrics`), click instead of tap, no haptics, no Share item.
-//   - Open reveals the downloaded file in Finder (`MediaPreviewPresenter`, quarantined first);
-//     a page opens `HTMLPreviewSheet` in a sheet.
+//   - Open draws the file in a sheet inside Conduit (`MacFilePreviewView`, D34). A downloaded file
+//     goes through `MediaPreviewPresenter`, quarantined first.
 //   - The loading state is a plain value (`MacArtifactsListState`) so its paging rules are tested
 //     without a view; with `MacArtifactsSource` and `MacArtifactOpen` it is in
 //     MacArtifactsListState.swift (no upstream counterpart). Open is `MacArtifactOpener`
@@ -22,9 +22,8 @@ import SwiftUI
 //     asked for ends the list (upstream's pager waits on an id that did not change).
 //   - No row of another server is drawn while that server's list loads, and a dashboard change
 //     cancels an open in flight (upstream draws the old rows dimmed for one pass).
-//   - A page that cannot be drawn in the sheet (no data URL, over the size limit, not UTF-8)
-//     opens as a file: download, quarantine, Finder (upstream ends without a message, or says the
-//     file is gone).
+//   - A page the data URL cannot draw (no data URL, over 4 MB) opens as a file: download, then the
+//     same sheet (upstream ends without a message, or says the file is gone).
 
 struct MacArtifactsList: View {
     @EnvironmentObject private var appState: AppState
