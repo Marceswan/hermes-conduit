@@ -19,6 +19,7 @@ enum SheetCloseButton {
     /// sheet closed) is not checked twice.
     private static let checked = NSHashTable<NSWindow>.weakObjects()
     private static let decorated = NSHashTable<NSWindow>.weakObjects()
+    private static let contentSheets = NSHashTable<NSWindow>.weakObjects()
     /// Long enough for the sheet's content to lay out, so the check sees its
     /// own controls.
     static let checkDelay: TimeInterval = 0.25
@@ -49,7 +50,7 @@ enum SheetCloseButton {
     @discardableResult
     static func decorateIfNeeded(_ window: NSWindow) -> Bool {
         guard isClosableSheet(window), !decorated.contains(window),
-              !SheetEscape.hasDismissControl(in: window),
+              isContentSheet(window) || !SheetEscape.hasDismissControl(in: window),
               let frame = window.contentView?.superview else { return false }
         let button = NSHostingView(rootView: CloseButtonView { [weak window] in window.map(close) })
         // Placed by frame and autoresizing, not constraints: a constraint in
@@ -70,16 +71,25 @@ enum SheetCloseButton {
 
     static func isDecorated(_ window: NSWindow) -> Bool { decorated.contains(window) }
 
+    /// A sheet that shows a file's content (the file preview, D34). A file can show a button named
+    /// Close, Cancel or Done, so nothing in the content counts as the sheet's way out: the sheet
+    /// always gets the X, and Esc closes it without looking at the content.
+    static func markContentSheet(_ window: NSWindow) { contentSheets.add(window) }
+
+    static func isContentSheet(_ window: NSWindow) -> Bool { contentSheets.contains(window) }
+
     static func close(_ window: NSWindow) {
         window.cancelOperation(nil)
     }
 
-    /// A click in the content of the window behind a decorated sheet closes
-    /// the sheet. The title bar keeps working: drag, close, zoom.
+    /// A click in the content of a window behind a decorated sheet closes the sheet. With a stack
+    /// (a file preview over Show as List) it closes only the top sheet, and only if that one is
+    /// decorated. The title bar keeps working: drag, close, zoom.
     static func handleOutsideClick(_ event: NSEvent) -> Bool {
-        guard let parent = event.window, let sheet = parent.attachedSheet,
-              sheet.attachedSheet == nil, decorated.contains(sheet),
+        guard let parent = event.window, var sheet = parent.attachedSheet,
               parent.contentLayoutRect.contains(event.locationInWindow) else { return false }
+        while let next = sheet.attachedSheet { sheet = next }
+        guard decorated.contains(sheet) else { return false }
         close(sheet)
         return true
     }

@@ -26,6 +26,11 @@ enum SheetEscape {
     static func handleEscape(in window: NSWindow?) -> Bool {
         guard let window, window.sheetParent != nil, isSwiftUIHosted(window) else { return false }
         if let editor = window.firstResponder as? NSTextView, editor.hasMarkedText() { return false }
+        // Never presses a control that a file's content shows (D34).
+        if SheetCloseButton.isContentSheet(window) {
+            SheetCloseButton.close(window)
+            return true
+        }
         let handled = AccessibilityTreeBoost.withTree {
             guard let control = closeControl(in: window.contentView) else { return false }
             return pressed(control)

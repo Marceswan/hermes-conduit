@@ -126,6 +126,21 @@ final class SheetCloseButtonTests: XCTestCase {
         XCTAssertTrue(ctx.box.presented)
     }
 
+    // MARK: a sheet of content (a file preview, D34)
+
+    func testAContentSheetGetsTheXAndEscPressesNothingInTheContent() throws {
+        var pressed = false
+        let ctx = try XCTUnwrap(present(Button("Cancel") { pressed = true }))
+        defer { ctx.parent.orderOut(nil) }
+        XCTAssertFalse(SheetCloseButton.isContentSheet(ctx.sheet))
+        SheetCloseButton.markContentSheet(ctx.sheet)
+        XCTAssertTrue(SheetCloseButton.decorateIfNeeded(ctx.sheet), "a button in the content is not the sheet's way out")
+        XCTAssertTrue(SheetEscape.handleEscape(in: ctx.sheet))
+        spin(0.6)
+        XCTAssertFalse(ctx.box.presented)
+        XCTAssertFalse(pressed, "Esc closes the sheet; it does not press the content's Cancel")
+    }
+
     // MARK: click outside
 
     func testClickBehindADecoratedSheetClosesIt() throws {

@@ -271,6 +271,14 @@ Human pass at release time (agents never click or type into the running app, R18
 - [ ] With a D21 session window key, Ctrl-Cmd-5 leaves the main window on its pane; a session window shows no Home tab.
 - [ ] The Home strings in the 13 shipped languages are model-generated: have native speakers review them before a localized release.
 
+## File preview (D34)
+- [ ] Click each kind of artifact in the chat's panel, in the Artifacts pane and in Show as List: a sheet opens under the file name and Finder does not open. Markdown is rendered. A page draws and its script runs, also over 4 MB. A picture, a PDF, a Word and an Excel file draw. A video and a clip show a player and do not start by themselves. Text, JSON, YAML and a log show as selectable text. A zip shows its icon.
+- [ ] A file card and a picture in a message open the same sheet. An attachment you sent opens it too, and your own file stays where it is.
+- [ ] Show in Finder (the folder button in the title bar) reveals the file, and the file is still there after the sheet closes. Without it, the staged copy is gone after the sheet closes.
+- [ ] The X, Esc and a click on the window behind the sheet each close it, and a playing video or clip stops. Over Show as List, closing the preview leaves the list open. Drag a sheet edge: the sheet resizes and the content follows.
+- [ ] Light and dark: the sheet follows the app's look, also when the app's look differs from the system's.
+- [ ] A link in a page opens in the browser, and the page stays in the sheet. A link artifact opens in the browser. A session window (D21): a file card opens the sheet over that window.
+
 ## Artifacts (D26)
 - [ ] Artifacts pane against a host whose notifier plugin offers `artifacts` (0.40+): the pane lists the profile's artifacts under day headings, pictures and videos as a 3-column grid with thumbnails, the rest as rows; the chips (All, Images, Pages, Files, Links) filter; scrolling to the end reads the next page; typing in the search pill filters after a short pause.
 - [ ] Open: a picture or file downloads and Finder shows it selected (it carries the quarantine flag); a page opens in a sheet with a Done button that closes it; a page that is not UTF-8 text or is over the size limit is revealed in Finder instead; a link opens in the browser; a file the host no longer has shows the alert with its path; a very large file shows "Too large to open on this Mac".
