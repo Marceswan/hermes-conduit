@@ -1,4 +1,5 @@
 import AppKit
+import PDFKit
 import Quartz
 import SwiftUI
 import UniformTypeIdentifiers
@@ -17,9 +18,13 @@ struct MacFilePreview: Equatable {
         case html(String)
         /// Shown as it is, so nothing in it runs.
         case text(String)
-        /// Drawn from the file by Quick Look.
+        /// Drawn by PDFKit, whose delegate sends links through the app's policy.
+        case pdf
+        /// RTF in the text view, whose delegate sends links through the app's policy.
+        case richText(NSAttributedString)
+        /// Drawn from the file by Quick Look. Only the types on its list reach it.
         case quickLook
-        /// Must not reach Quick Look and is not text.
+        /// No drawing for this file: Show in Finder is the way to it.
         case unavailable
     }
 
@@ -30,33 +35,36 @@ struct MacFilePreview: Equatable {
     let ownedDirectory: URL?
     let content: Content
 
-    /// Larger text does not draw here: Quick Look takes it, or the sheet says it has no preview.
-    /// Above `HTMLPreviewPage.maximumDocumentBytes` (4 MB), the limit for a page in a message on a
-    /// phone: here a page has a sheet of its own, and embedded pictures pass 4 MB easily.
+    /// Larger text says it has no preview. Above `HTMLPreviewPage.maximumDocumentBytes` (4 MB), the
+    /// limit for a page in a message on a phone: here a page has a sheet of its own, and embedded
+    /// pictures pass 4 MB easily.
     static let maximumTextBytes = 32 * 1024 * 1024
 
     /// `quickLookAllowed` is false for what upstream's policy keeps from Quick Look's web renderer
     /// (`MediaPreviewPresenter.isPreviewable`, by extension and by MIME type).
     static func content(of file: URL, quickLookAllowed: Bool) -> Content {
-        switch file.pathExtension.lowercased() {
+        let fileExtension = file.pathExtension.lowercased()
+        switch fileExtension {
         case "md", "markdown":
             if let text = readableText(of: file) { return .markdown(text) }
         // The extensions the host's plugin lists as pages, and SVG, which is active content too.
         case "html", "htm", "xhtml", "svg":
             if let text = readableText(of: file) { return .html(text) }
+        case "pdf" where quickLookAllowed:
+            if PDFDocument(url: file) != nil { return .pdf }
+        case "rtf" where quickLookAllowed:
+            if let rich = richText(of: file) { return .richText(rich) }
         default:
             break
         }
-        if drawsAsText(extension: file.pathExtension.lowercased()), let text = readableText(of: file) {
-            return .text(text)
-        }
-        if quickLookAllowed { return .quickLook }
+        if drawsAsText(extension: fileExtension), let text = readableText(of: file) { return .text(text) }
+        if quickLookAllowed, quickLookDraws(extension: fileExtension), !startsLikeWebContent(file) { return .quickLook }
         if let text = readableText(of: file) { return .text(text) }
         return .unavailable
     }
 
-    /// Quick Look draws these as a table or as styled text. Measured on macOS 27.2.
-    private static let textQuickLookDrawsBetter: Set<String> = ["csv", "rtf"]
+    /// Quick Look draws this as a table. Measured on macOS 27.2.
+    private static let textQuickLookDrawsBetter: Set<String> = ["csv"]
     /// Text files whose declared types do not conform to `public.text`. Quick Look shows an icon.
     private static let textOfOtherTypes: Set<String> = ["vcf", "ics", "gpx", "kml"]
 
@@ -68,6 +76,36 @@ struct MacFilePreview: Equatable {
         if textOfOtherTypes.contains(fileExtension) { return true }
         guard let type = UTType(filenameExtension: fileExtension), type.isDeclared else { return true }
         return type.conforms(to: .text)
+    }
+
+    /// Documents whose declared types are not one of the groups below.
+    private static let quickLookDocuments: Set<String> = ["doc", "docx", "pages", "odt", "ods", "csv"]
+
+    /// The list of what reaches Quick Look. Upstream's policy is a list of what must not, and mail
+    /// (`.eml`), web locations (`.webloc`, `.url`) and any later type pass it, so on Mac nothing
+    /// reaches Quick Look unless it is named here.
+    private static func quickLookDraws(extension fileExtension: String) -> Bool {
+        if quickLookDocuments.contains(fileExtension) { return true }
+        guard let type = UTType(filenameExtension: fileExtension) else { return false }
+        return [UTType.image, .audiovisualContent, .presentation, .spreadsheet].contains { type.conforms(to: $0) }
+    }
+
+    /// A page under a document's name. Quick Look goes by the name, so this should only fail to draw,
+    /// but nothing relies on that for a file the host or a model named.
+    private static func startsLikeWebContent(_ file: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return false }
+        defer { try? handle.close() }
+        guard let head = try? handle.read(upToCount: 4096) else { return false }
+        let text = String(decoding: head, as: UTF8.self).lowercased()
+        return ["<html", "<!doctype html", "<svg", "<script"].contains { text.contains($0) }
+    }
+
+    /// Nil when the file is over the limit or is not RTF.
+    private static func richText(of file: URL) -> NSAttributedString? {
+        guard let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
+              size <= maximumTextBytes,
+              let data = try? Data(contentsOf: file) else { return nil }
+        return NSAttributedString(rtf: data, documentAttributes: nil)
     }
 
     /// Nil when the file is over the limit, is not UTF-8 (any bytes decode as Latin-1, so they would
@@ -155,7 +193,13 @@ struct MacFilePreviewView: View {
                 onFailed: close
             )
         case .text(let text):
-            MacFilePreviewTextView(text: text)
+            MacFilePreviewTextView(source: .plain(text))
+        case .richText(let rich):
+            MacFilePreviewTextView(source: .rich(rich))
+        case .pdf:
+            if let file {
+                MacFilePreviewPDFView(url: file)
+            }
         case .quickLook:
             if let file {
                 MacFilePreviewQuickLookView(url: file)
@@ -180,29 +224,95 @@ private struct MacFilePreviewSheetMarker: NSViewRepresentable {
     func updateNSView(_ view: Marker, context: Context) {}
 }
 
-/// Text as it is, selectable and not editable.
+/// Text, selectable and not editable. A link in it passes the app's policy.
 private struct MacFilePreviewTextView: NSViewRepresentable {
-    let text: String
+    enum Source {
+        /// Shown as it is.
+        case plain(String)
+        case rich(NSAttributedString)
+    }
+
+    let source: Source
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSTextView.scrollableTextView()
         scroll.drawsBackground = false
+        context.coordinator.openURL = context.environment.openURL
         if let view = scroll.documentView as? NSTextView {
             view.isEditable = false
             view.isSelectable = true
             view.drawsBackground = false
-            view.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-            view.textColor = .labelColor
             view.textContainerInset = NSSize(width: 16, height: 16)
-            view.string = text
+            view.delegate = context.coordinator
+            switch source {
+            case .plain(let text):
+                view.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+                view.textColor = .labelColor
+                view.string = text
+            case .rich(let rich):
+                view.isRichText = true
+                // An RTF file's black text stays readable in dark.
+                view.usesAdaptiveColorMappingForDarkAppearance = true
+                view.textStorage?.setAttributedString(rich)
+            }
         }
         return scroll
     }
 
-    func updateNSView(_ scroll: NSScrollView, context: Context) {}
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        context.coordinator.openURL = context.environment.openURL
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var openURL: OpenURLAction?
+
+        /// True in every case, so a link never reaches NSTextView's default NSWorkspace handling.
+        func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+            if let url = SelectableTextView.Coordinator.url(fromLink: link) { openURL?(url) }
+            return true
+        }
+    }
 }
 
-/// Quick Look's view of a file in the sheet. A video or a clip waits for the user.
+/// A PDF in PDFKit, not Quick Look, because a Quick Look link leaves the app's link policy.
+private struct MacFilePreviewPDFView: NSViewRepresentable {
+    let url: URL
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> PDFView {
+        let view = PDFView()
+        view.autoScales = true
+        view.displayMode = .singlePageContinuous
+        context.coordinator.openURL = context.environment.openURL
+        view.delegate = context.coordinator
+        view.document = PDFDocument(url: url)
+        return view
+    }
+
+    func updateNSView(_ view: PDFView, context: Context) {
+        context.coordinator.openURL = context.environment.openURL
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, PDFViewDelegate {
+        var openURL: OpenURLAction?
+
+        /// In place of PDFKit's default, which opens the link through the system.
+        func pdfViewWillClick(onLink sender: PDFView, with url: URL) {
+            openURL?(url)
+        }
+
+        /// A PDF in the sheet does not open another file.
+        func pdfViewOpenPDF(_ sender: PDFView, forRemoteGoToAction action: PDFActionRemoteGoTo) {}
+    }
+}
+
+/// Quick Look's view of a file in the sheet. A video or a clip waits for the user. A link in an office
+/// file is Quick Look's own and does not pass the app's policy (D34).
 private struct MacFilePreviewQuickLookView: NSViewRepresentable {
     let url: URL
 
