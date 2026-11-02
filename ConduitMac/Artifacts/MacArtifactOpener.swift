@@ -40,7 +40,9 @@ final class MacArtifactOpener: ObservableObject {
     func open(_ item: ArtifactItem, source: MacArtifactsSource, appState: AppState, openURL: OpenURLAction) {
         guard let action = Self.action(for: item) else { return }
         if case .link(let url) = action {
-            openURL(url)
+            // A web address opens in a sheet (D35). Anything else, or with no window to hold the
+            // sheet, takes the app's link policy.
+            if !MacLinkBrowserPolicy.opensInSheet(url) || !source.presentLink(url) { openURL(url) }
             return
         }
         guard openingID == nil else { return }
