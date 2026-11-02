@@ -143,9 +143,34 @@ final class MacLinkBrowserLiveTests: XCTestCase {
                 };
                 </script>
                 """)
+            case "/clicks-download-by-itself":
+                return MacLinkBrowserLiveTests.html("""
+                <a id=save href='/second' download='s.html'>save</a>
+                <script>
+                onload = () => {
+                    document.getElementById('save').click();
+                    document.title = 'clicked';
+                    parent.postMessage('clicked', '*');
+                };
+                </script>
+                """)
+            case "/held-open":
+                // Committed, and not finished until the picture answers.
+                return MacLinkBrowserLiveTests.html("<img src='/slow-picture'><p id=here>held open</p>")
+            case "/slow-picture":
+                Thread.sleep(forTimeInterval: 0.6)
+                return .status(404)
+            case "/no-content":
+                // A load that ends with no new page: the old one stays.
+                Thread.sleep(forTimeInterval: 0.3)
+                return .status(204)
             case "/slow":
                 Thread.sleep(forTimeInterval: 1.5)
                 return MacLinkBrowserLiveTests.html("<p>slow page</p>", title: "Slow")
+            case let path where path.hasPrefix("/redirect-to-port/"):
+                // The other name of this host, so that the landing has a host of its own.
+                let port = path.dropFirst("/redirect-to-port/".count)
+                return LoopbackHTTPResponse(status: 302, headers: [("Location", "http://localhost:\(port)/second")], body: Data())
             case "/file":
                 return LoopbackHTTPResponse(status: 200, headers: [("Content-Type", "application/octet-stream"),
                                                                    ("Content-Disposition", "attachment; filename=x.bin")],
@@ -233,6 +258,74 @@ final class MacLinkBrowserLiveTests: XCTestCase {
         XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 10) { model.address == "localhost:\(self.server.port)" })
     }
 
+    /// Every value the bar shows while the page runs for `seconds`.
+    private func addressesShown(by model: MacLinkBrowserModel, for seconds: TimeInterval) -> Set<String> {
+        var shown: Set<String> = []
+        let end = Date().addingTimeInterval(seconds)
+        while Date() < end {
+            shown.insert(model.address)
+            HostedTestSupport.settle(0.02)
+        }
+        shown.insert(model.address)
+        return shown
+    }
+
+    /// The hazard: `url` names a load as soon as the app asks for it. WebKit's own order cannot be forced
+    /// here, so this delivers the old page's finish in that moment, as a late message would.
+    func testALateFinishDoesNotNameALoadStillInFlight() throws {
+        let model = try browser()
+        XCTAssertTrue(loaded(model))
+        let start = try address()
+        let target = try address("/slow", host: "localhost")
+        model.webView.load(URLRequest(url: target))
+        XCTAssertEqual(model.webView.url, target, "the view already names the load")
+        model.webView(model.webView, didFinish: nil)
+        XCTAssertEqual(model.address, "127.0.0.1:\(server.port)", "the old page still draws")
+        XCTAssertEqual(model.fullAddress, start.absoluteString)
+        model.openInBrowser()
+        XCTAssertEqual(opened, [start])
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 10) { model.address == "localhost:\(self.server.port)" },
+                      "and the new page still arrives")
+    }
+
+    func testAPageThatStartsALoadBeforeItFinishesKeepsItsOwnHostInTheBar() throws {
+        let model = try browser("/held-open")
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 10) { (try? self.pageIsAlive(model, showing: "here")) == true })
+        XCTAssertTrue(model.isLoading, "the page has not finished")
+        let target = try address("/no-content", host: "localhost").absoluteString
+        try js("location.href = '\(target)';", in: model.webView)
+        XCTAssertEqual(addressesShown(by: model, for: 1.5), ["127.0.0.1:\(server.port)"],
+                       "the other host never drew, so the bar never names it")
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 5) { !model.isLoading })
+        model.openInBrowser()
+        XCTAssertEqual(opened, [try address("/held-open")])
+    }
+
+    func testALoadThatEndsWithNoPageLeavesTheBarOnTheOldPage() throws {
+        let model = try browser()
+        XCTAssertTrue(loaded(model))
+        let start = try address()
+        for host in ["localhost", "127.0.0.1"] {
+            let target = try address("/no-content", host: host).absoluteString
+            try js("location.href = '\(target)';", in: model.webView)
+            XCTAssertEqual(addressesShown(by: model, for: 0.8), ["127.0.0.1:\(server.port)"], host)
+            XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 5) { !model.isLoading }, host)
+            XCTAssertEqual(model.fullAddress, start.absoluteString, host)
+        }
+        model.openInBrowser()
+        XCTAssertEqual(opened, [start])
+    }
+
+    func testARedirectNamesWhereItLanded() throws {
+        let model = try browser()
+        XCTAssertTrue(loaded(model))
+        let landed = try address("/second", host: "localhost")
+        try js("location.href = '/redirect-to-port/\(server.port)';", in: model.webView)
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 10) { model.address == "localhost:\(self.server.port)" }, model.address)
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 5) { !model.isLoading })
+        XCTAssertEqual(model.fullAddress, landed.absoluteString)
+    }
+
     func testAClickedLinkLoadsAndBackAndForwardWork() throws {
         let model = try browser()
         XCTAssertTrue(loaded(model))
@@ -240,10 +333,15 @@ final class MacLinkBrowserLiveTests: XCTestCase {
         try click("second", in: model)
         XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 10) { self.path(of: model) == "/second" && !model.isLoading })
         XCTAssertTrue(model.canGoBack)
+        let first = try address().absoluteString
+        let second = try address("/second").absoluteString
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 5) { model.fullAddress == second }, model.fullAddress)
         model.goBack()
         XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 10) { self.path(of: model) == "/" && model.canGoForward })
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 5) { model.fullAddress == first }, "a page from the cache has no response: \(model.fullAddress)")
         model.goForward()
         XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 10) { self.path(of: model) == "/second" })
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 5) { model.fullAddress == second }, model.fullAddress)
         XCTAssertTrue(opened.isEmpty)
     }
 
@@ -388,11 +486,11 @@ final class MacLinkBrowserLiveTests: XCTestCase {
         XCTAssertTrue(loaded(model))
         let target = try address("/file")
         try js("location.href = '\(target.absoluteString)';", in: model.webView)
-        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 10) { model.failure != nil })
+        // The message goes up as the sheet cancels the load, a moment before the load has ended.
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 10) { model.failure != nil && !model.isLoading })
         XCTAssertEqual(model.failure, MacLinkBrowserModel.Failure(url: target, message: nil))
-        XCTAssertFalse(model.isLoading)
-        model.openInBrowser()
-        XCTAssertEqual(opened, [target])
+        model.openFailureInBrowser()
+        XCTAssertEqual(opened, [target], "the message's button goes to the address the message names")
         XCTAssertTrue(model.canGoBack, "the page is still under the message")
         model.goBack()
         XCTAssertNil(model.failure)
@@ -408,6 +506,43 @@ final class MacLinkBrowserLiveTests: XCTestCase {
         XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 10) { model.failure != nil })
         XCTAssertEqual(model.failure?.url, try address("/second"))
         XCTAssertEqual(path(of: model), "/", "the page stays under the message")
+    }
+
+    func testTheBarsOpenInBrowserGoesToThePageTheBarNames() throws {
+        let model = try browser()
+        XCTAssertTrue(loaded(model))
+        try click("save", in: model)
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 10) { model.failure != nil })
+        model.openInBrowser()
+        XCTAssertEqual(opened, [try address()], "the message does not change where the bar's button goes")
+        model.openFailureInBrowser()
+        XCTAssertEqual(opened, [try address(), try address("/second")])
+    }
+
+    func testAPageCannotPutUpTheMessageByClickingItsOwnDownloadLink() throws {
+        let model = try browser("/clicks-download-by-itself")
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 10) { model.webView.title == "clicked" })
+        HostedTestSupport.settle(0.3)
+        XCTAssertNil(model.failure, "no person clicked")
+        XCTAssertEqual(path(of: model), "/clicks-download-by-itself")
+    }
+
+    func testAFrameCannotPutUpTheMessageOverThePage() throws {
+        let model = try browser()
+        XCTAssertTrue(loaded(model))
+        let frame = try address("/clicks-download-by-itself", host: "localhost").absoluteString
+        try js("""
+            await new Promise(done => {
+                addEventListener('message', done);
+                const f = document.createElement('iframe');
+                f.src = '\(frame)';
+                document.body.append(f);
+            });
+            """, in: model.webView)
+        HostedTestSupport.settle(0.3)
+        XCTAssertNil(model.failure, "\(String(describing: model.failure))")
+        model.openInBrowser()
+        XCTAssertEqual(opened, [try address()])
     }
 
     func testAFailedLoadSaysWhyOffersTheBrowserAndCanTryAgain() throws {

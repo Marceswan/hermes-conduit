@@ -82,6 +82,8 @@ final class MacLinkBrowserModel: NSObject, ObservableObject, WKNavigationDelegat
     private let open: @MainActor (URL) -> Void
     /// The page on the screen; nil before the first one arrives and after a page dies.
     private var onScreen: URL?
+    /// The address of the response about to replace the page.
+    private var arriving: URL?
     private var observations: [NSKeyValueObservation] = []
 
     /// WebKit asks macOS for the camera or the microphone before it asks the delegate, so a page that
@@ -210,12 +212,19 @@ final class MacLinkBrowserModel: NSObject, ObservableObject, WKNavigationDelegat
         webView.load(URLRequest(url: target ?? requested))
     }
 
+    /// The bar's button: the page the bar names, whatever a message says. A frame or a page can bring a
+    /// message up with an address of its own choice.
     func openInBrowser() {
+        open(onScreen ?? failure?.url ?? requested)
+    }
+
+    /// The message's button, under the address the message names.
+    func openFailureInBrowser() {
         open(failure?.url ?? onScreen ?? requested)
     }
 
-    private func arrived(in view: WKWebView) {
-        guard let url = view.url else { return }
+    private func arrived(at url: URL?) {
+        guard let url else { return }
         onScreen = url
         address = MacLinkBrowserPolicy.address(of: url)
         fullAddress = url.absoluteString
@@ -252,16 +261,19 @@ final class MacLinkBrowserModel: NSObject, ObservableObject, WKNavigationDelegat
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
         let url = navigationAction.request.url
-        // Nothing here saves a file: the browser can.
+        let isMainFrame = navigationAction.targetFrame?.isMainFrame ?? true
+        let isRealClick = Self.isRealClick(navigationAction)
+        // Nothing here saves a file: the browser can. A script or a frame can ask for this too, and the
+        // message would cover the page, so only a person's click in the page brings it up.
         if navigationAction.shouldPerformDownload {
-            let webAddress = url.flatMap { MacLinkBrowserPolicy.opensInSheet($0) ? $0 : nil }
-            failure = Failure(url: webAddress ?? onScreen ?? requested, message: nil)
+            if isMainFrame, isRealClick {
+                let webAddress = url.flatMap { MacLinkBrowserPolicy.opensInSheet($0) ? $0 : nil }
+                failure = Failure(url: webAddress ?? onScreen ?? requested, message: nil)
+            }
             decisionHandler(.cancel)
             return
         }
-        switch MacLinkBrowserPolicy.navigation(to: url,
-                                               isMainFrame: navigationAction.targetFrame?.isMainFrame ?? true,
-                                               userTapped: Self.isRealClick(navigationAction)) {
+        switch MacLinkBrowserPolicy.navigation(to: url, isMainFrame: isMainFrame, userTapped: isRealClick) {
         case .allow:
             decisionHandler(.allow)
         case .cancel:
@@ -275,6 +287,9 @@ final class MacLinkBrowserModel: NSObject, ObservableObject, WKNavigationDelegat
     /// What WebKit can draw draws; the rest would be a download, and nothing here saves a file.
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void) {
         if navigationResponse.canShowMIMEType {
+            if navigationResponse.isForMainFrame {
+                arriving = navigationResponse.response.url
+            }
             decisionHandler(.allow)
             return
         }
@@ -286,16 +301,22 @@ final class MacLinkBrowserModel: NSObject, ObservableObject, WKNavigationDelegat
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         failure = nil
+        arriving = nil
     }
 
-    /// Here the new page has replaced the old one, also on Back, which may come from the page cache.
+    /// Here the new page has replaced the old one, also on Back, which may come from the page cache and
+    /// has no response. `url` can already name a load the app asked for in this moment (a new-window
+    /// link, Back), so the bar goes by the response.
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         failure = nil
-        arrived(in: webView)
+        arrived(at: arriving ?? webView.url)
+        arriving = nil
     }
 
+    /// The end of a load brings no new page, and `url` can already name the next load.
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        arrived(in: webView)
+        followSameDocument(in: webView)
+        updateSecurity()
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -444,7 +465,7 @@ struct MacLinkBrowserView: View {
                 }
             }
         } actions: {
-            Button("Open in Browser", action: model.openInBrowser)
+            Button("Open in Browser", action: model.openFailureInBrowser)
             Button("Try Again", action: model.retry)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
