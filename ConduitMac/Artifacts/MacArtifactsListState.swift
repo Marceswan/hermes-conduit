@@ -140,6 +140,8 @@ struct MacArtifactsSource {
     var presentDataURL: @MainActor (String, String) async -> Bool = {
         await MediaPreviewPresenter.shared.present(dataURL: $0, filename: $1)
     }
+    /// Shows a web link in a sheet (`MacLinkBrowser`); false when no window can hold it.
+    var presentLink: @MainActor (URL) -> Bool = { MacLinkBrowser.present($0) }
 }
 
 private struct MacArtifactsSourceKey: EnvironmentKey {

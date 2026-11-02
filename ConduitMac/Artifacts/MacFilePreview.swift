@@ -211,7 +211,7 @@ struct MacFilePreviewView: View {
 }
 
 /// Marks the window that holds the view, a SwiftUI sheet's or `MacFilePreviewSheet`'s.
-private struct MacFilePreviewSheetMarker: NSViewRepresentable {
+struct MacFilePreviewSheetMarker: NSViewRepresentable {
     final class Marker: NSView {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -349,8 +349,8 @@ struct MacFilePreviewLinks {
 
 /// What every scene's root gives its views. A sheet opened from AppKit is a root of its own, so it
 /// inherits none of this. Not zoom: sheets are not zoomed (D27).
-private struct MacFilePreviewRoot: View {
-    let view: MacFilePreviewView
+private struct MacFilePreviewRoot<Content: View>: View {
+    let view: Content
     let links: MacFilePreviewLinks
     @ObservedObject private var appLanguage = AppLanguageStore.shared
 
@@ -394,6 +394,29 @@ enum MacFilePreviewSheet {
 
     @discardableResult
     static func present(_ preview: MacFilePreview, over window: NSWindow?, links: MacFilePreviewLinks? = nil) -> Bool {
+        let session = Session()
+        let size = NSSize(width: idealSize.width, height: min(idealSize.height, MacFormSheet.idealHeight))
+        return begin(over: window, links: links, size: size, ended: {
+            if !session.keepsFile { MediaPreviewPresenter.removeDirectory(preview.ownedDirectory) }
+        }, content: { close in
+            MacFilePreviewView(
+                name: preview.name,
+                content: preview.content,
+                showInFinder: {
+                    if MediaPreviewPresenter.reveal(preview.file, ownedDirectory: nil) { session.keepsFile = true }
+                },
+                close: close,
+                file: preview.file)
+        })
+    }
+
+    /// `content` as a sheet over the top sheet of `window`, with what a scene's root gives its views.
+    /// `content` gets the way to close it. `ended` runs when the sheet has gone. False when there is
+    /// no window.
+    @discardableResult
+    static func begin<Content: View>(over window: NSWindow?, links: MacFilePreviewLinks? = nil, size: NSSize,
+                                     ended: @escaping @MainActor () -> Void,
+                                     content: (_ close: @escaping () -> Void) -> Content) -> Bool {
         let links = links ?? .app
         guard var parent = window else { return false }
         while let sheet = parent.attachedSheet { parent = sheet }
@@ -402,25 +425,17 @@ enum MacFilePreviewSheet {
         sheet.isReleasedWhenClosed = false
         // SwiftUI's `preferredColorScheme` sets the look on the app's own windows, not on this one.
         sheet.appearance = parent.effectiveAppearance
-        let session = Session()
-        let view = MacFilePreviewView(
-            name: preview.name,
-            content: preview.content,
-            showInFinder: {
-                if MediaPreviewPresenter.reveal(preview.file, ownedDirectory: nil) { session.keepsFile = true }
-            },
-            close: { [weak sheet] in sheet?.cancelOperation(nil) },
-            file: preview.file)
+        let view = content({ [weak sheet] in sheet?.cancelOperation(nil) })
         let controller = NSHostingController(rootView: MacFilePreviewRoot(view: view, links: links))
         // The window sets the size: the content's ideal size would collapse the web view.
         controller.sizingOptions = []
         sheet.contentViewController = controller
         sheet.contentMinSize = minSize
-        sheet.setContentSize(NSSize(width: idealSize.width, height: min(idealSize.height, MacFormSheet.idealHeight)))
+        sheet.setContentSize(size)
         parent.beginSheet(sheet) { _ in
             // Takes the view down now, so a playing clip stops with the sheet.
             sheet.contentViewController = nil
-            if !session.keepsFile { MediaPreviewPresenter.removeDirectory(preview.ownedDirectory) }
+            ended()
         }
         return true
     }

@@ -253,6 +253,7 @@ list after each `git merge upstream/main`.
 | Conduit/Views/RootView.swift `MainView` artifacts panel (D33) | R4 (3 `#if os(macOS) // MAC:` regions) | the open chat's artifacts: `@ObservedObject macArtifactsPanel` (the shared `MacChatArtifactsPanelStore`), a conditional trailing `ToolbarItem` with `MacChatArtifactsToolbarButton` after Refresh in `chatToolbarContent`, and `ChatView().macChatArtifactsPanel()` in `chatNavigationContent` (upstream's `ChatView()` in `#else // MAC:`) | ConduitMac/Artifacts/MacChatArtifactsPanel.swift, MacChatArtifactsPanelStore.swift, MacArtifactTree.swift; pinned by MacChatArtifactsPanelStoreTests |
 | Conduit/Localizable.xcstrings keys of D33 | additive keys, R27 pattern | "Show Artifacts", "Hide Artifacts", "Show as List..." (English-text keys, 13 languages) | ConduitMac/Artifacts/MacChatArtifactsPanel.swift, ConduitMac/App/ConduitCommands.swift |
 | Conduit/Localizable.xcstrings key of D34 | additive key, R27 pattern | "Show in Finder" (English-text key, 13 languages) | ConduitMac/Artifacts/MacFilePreview.swift |
+| Conduit/Localizable.xcstrings keys of D35 | additive keys, R27 pattern | "Reload", "Go Forward", "Open in Browser", "Not secure", "Couldn’t load page", "This can’t show here. Open it in your browser." (English-text keys, 13 languages) | ConduitMac/Artifacts/MacLinkBrowser.swift |
 
 ## Sync routine
 

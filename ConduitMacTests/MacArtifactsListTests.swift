@@ -279,6 +279,10 @@ final class MacArtifactsListHostedTests: XCTestCase {
         var realPresenter = false
         var presentedDataURLs: [String] = []
         var presentDataURLResult = true
+        var presentedLinks: [URL] = []
+        var presentLinkResult = true
+        /// What reached the app's link policy.
+        var openedURLs: [URL] = []
     }
 
     private var suite: (defaults: UserDefaults, name: String)!
@@ -336,10 +340,18 @@ final class MacArtifactsListHostedTests: XCTestCase {
             presentDataURL: { dataURL, _ in
                 env.presentedDataURLs.append(dataURL)
                 return env.presentDataURLResult
+            },
+            presentLink: { url in
+                env.presentedLinks.append(url)
+                return env.presentLinkResult
             })
         return AnyView(
             MacArtifactsList(scope: .profile, chatIsOpen: false, query: query, showInChat: { _ in })
                 .environment(\.macArtifactsSource, source)
+                .environment(\.openURL, OpenURLAction { url in
+                    env.openedURLs.append(url)
+                    return .handled
+                })
                 .environmentObject(appState)
                 .defaultAppStorage(suite.defaults)
                 .frame(width: 560, height: 640))
@@ -620,6 +632,41 @@ final class MacArtifactsListHostedTests: XCTestCase {
             HostedTestSupport.tearDown(w)
             window = nil
         }
+    }
+
+    private func linkRow(_ url: String) -> [String: Any] {
+        ArtifactsTestSupport.row(["kind": "link", "source": "link", "path": NSNull(), "url": url, "name": "Curate"])
+    }
+
+    func testAWebLinkOpensFromItsRowInTheBrowserSheetNotTheSystemBrowser() throws {
+        host.pages = [ArtifactsTestSupport.response([linkRow("https://curate.example/r")])]
+        let w = try show()
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "Curate") }, "\(texts(w))")
+        XCTAssertTrue(press(prefix: "Curate", in: w))
+        XCTAssertTrue(HostedTestSupport.waitUntil { !self.env.presentedLinks.isEmpty })
+        XCTAssertEqual(env.presentedLinks, [URL(string: "https://curate.example/r")!])
+        XCTAssertTrue(env.openedURLs.isEmpty, "the system browser stays out of it")
+    }
+
+    func testALinkTheSheetCannotHoldTakesTheAppsLinkPolicy() throws {
+        // `ArtifactItem` admits only web addresses, so this is the one a row can hold: no host to name.
+        host.pages = [ArtifactsTestSupport.response([linkRow("https:///no-host")])]
+        let w = try show()
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "Curate") }, "\(texts(w))")
+        XCTAssertTrue(press(prefix: "Curate", in: w))
+        XCTAssertTrue(HostedTestSupport.waitUntil { !self.env.openedURLs.isEmpty })
+        XCTAssertEqual(env.openedURLs, [URL(string: "https:///no-host")!])
+        XCTAssertTrue(env.presentedLinks.isEmpty)
+    }
+
+    func testAWebLinkWithNoWindowForTheSheetStillOpens() throws {
+        host.pages = [ArtifactsTestSupport.response([linkRow("https://curate.example/r")])]
+        env.presentLinkResult = false
+        let w = try show()
+        XCTAssertTrue(HostedTestSupport.waitUntil { self.has(w, "Curate") }, "\(texts(w))")
+        XCTAssertTrue(press(prefix: "Curate", in: w))
+        XCTAssertTrue(HostedTestSupport.waitUntil { !self.env.openedURLs.isEmpty })
+        XCTAssertEqual(env.openedURLs, [URL(string: "https://curate.example/r")!])
     }
 
     func testAPageThatCannotBeDrawnOpensAsAFile() throws {

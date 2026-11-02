@@ -506,6 +506,8 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: ConduitMacTests
+      # The real HTTP server of the iOS tests: the link browser's tests load real pages (D35).
+      - path: ConduitTests/LoopbackHTTPServer.swift
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
