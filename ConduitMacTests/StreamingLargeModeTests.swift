@@ -136,7 +136,9 @@ final class StreamingLargeModeTests: XCTestCase {
     func testSettledReplyBetweenThresholdsRendersAsOneDocument() {
         // Above the old threshold a settled MarkdownText parses only a 16 KB
         // preview; below it, the whole source.
-        let source = prose(bytes: 40_000)
+        // A unique source per run: MarkdownRenderCache is process-wide, and a
+        // cached source records no parse.
+        let source = "Run \(UUID().uuidString).\n\n" + prose(bytes: 40_000)
         XCTAssertTrue(policy.isLargeStreamingReply(source))
         MarkdownParser.parseSourceSizes = []
         let window = HostedTestSupport.host(
@@ -149,6 +151,50 @@ final class StreamingLargeModeTests: XCTestCase {
             MarkdownParser.parseSourceSizes.contains { $0 > policy.previewBytes },
             "a settled reply under documentThresholdBytes must parse as one document"
         )
+    }
+
+    // MARK: Stable chunks
+
+    func testChunkEqualityIgnoresTheGatewayClosure() {
+        let first = LargeStreamChunkView(source: "same", gatewayMediaDataURL: { _ in nil })
+        let second = LargeStreamChunkView(source: "same", gatewayMediaDataURL: { _ in "other" })
+        XCTAssertEqual(first, second)
+        XCTAssertNotEqual(first, LargeStreamChunkView(source: "different"))
+    }
+
+    @MainActor
+    func testStableChunksSkipTheirBodyAndNeverParseAgain() {
+        // 300 chunks is more than MarkdownRenderCache holds (countLimit 256),
+        // so a body that ran again on each tick would scan past the limit and
+        // evict. The parent re-evaluates with a new gateway closure each tick.
+        let tag = UUID().uuidString
+        let chunks = (0..<300).map { index in
+            "Chunk \(index) of run \(tag). " + String(repeating: "A finished chunk holds stable words. ", count: 8)
+        }
+        let model = TickModel()
+        LargeStreamChunkView.bodyEvaluations = 0
+        ChunkHarness.evaluations = 0
+        MarkdownParser.parseSourceSizes = []
+        let window = HostedTestSupport.host(
+            ChunkHarness(model: model, chunks: chunks),
+            size: NSSize(width: 640, height: 600)
+        )
+        defer { HostedTestSupport.tearDown(window) }
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 30) {
+            LargeStreamChunkView.bodyEvaluations >= chunks.count
+        }, "every chunk must mount")
+        HostedTestSupport.settle(0.3)
+
+        let bodies = LargeStreamChunkView.bodyEvaluations
+        let parses = MarkdownParser.parseSourceSizes.count
+        let evaluations = ChunkHarness.evaluations
+        for _ in 0..<10 {
+            model.generation += 1
+            HostedTestSupport.settle(0.1)
+        }
+        XCTAssertGreaterThanOrEqual(ChunkHarness.evaluations - evaluations, 10, "the parent must re-evaluate on each tick")
+        XCTAssertEqual(LargeStreamChunkView.bodyEvaluations, bodies, "an unchanged chunk must not run its body again")
+        XCTAssertEqual(MarkdownParser.parseSourceSizes.count, parses, "no chunk may parse again across ticks")
     }
 
     // MARK: Tail bound
@@ -244,5 +290,26 @@ final class StreamingLargeModeTests: XCTestCase {
         XCTAssertTrue(StreamingText.drawsMarkupInPlace(revealedBytes: 8_000))
         XCTAssertTrue(StreamingText.drawsMarkupInPlace(revealedBytes: policy.documentThresholdBytes - 1))
         XCTAssertFalse(StreamingText.drawsMarkupInPlace(revealedBytes: policy.documentThresholdBytes))
+    }
+}
+
+private final class TickModel: ObservableObject {
+    @Published var generation = 0
+}
+
+/// Stands in for `StreamingBubble`: it re-evaluates on every tick and builds a
+/// new gateway closure each time.
+private struct ChunkHarness: View {
+    nonisolated(unsafe) static var evaluations = 0
+    @ObservedObject var model: TickModel
+    let chunks: [String]
+
+    var body: some View {
+        let _ = { Self.evaluations += 1 }()
+        let generation = model.generation
+        VStack(alignment: .leading, spacing: 10) {
+            LargeStreamChunkList(chunks: chunks, gatewayMediaDataURL: { _ in "tick \(generation)" })
+        }
+        .frame(width: 600)
     }
 }

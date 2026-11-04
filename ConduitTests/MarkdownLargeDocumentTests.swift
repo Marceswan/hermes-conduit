@@ -96,6 +96,8 @@ final class MarkdownLargeDocumentTests: XCTestCase {
         XCTAssertEqual(MarkdownLargeDocumentPolicy.streamingMinChunkBytes, MarkdownLargeDocumentPolicy.chunkTargetBytes)
         XCTAssertNil(StreamingText.charactersRevealedAtCrossing(visible: Array("ab"), in: "abc"))
         XCTAssertFalse(StreamingText.drawsMarkupInPlace(revealedBytes: MarkdownLargeDocumentPolicy.documentThresholdBytes))
+        // A reseed to a text under 100 KB leaves iOS in large mode; the source still shows.
+        XCTAssertFalse(StreamingText.drawsMarkupInPlace(revealedBytes: 8_000))
     }
 
     // MARK: 2/3. Initial presentation is bounded

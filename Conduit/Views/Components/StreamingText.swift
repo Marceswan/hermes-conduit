@@ -244,13 +244,10 @@ struct StreamingText: View {
                 // streaming — they render literally until the message
                 // settles, at which point the settled view parses the whole
                 // message and resolves them message-wide.
-                ForEach(Array(largeStableChunks.enumerated()), id: \.offset) { _, chunk in
-                    MarkdownText(
-                        source: chunk,
-                        gatewayMediaDataURL: gatewayMediaDataURL,
-                        isStreaming: false
-                    )
-                }
+                LargeStreamChunkList(
+                    chunks: largeStableChunks,
+                    gatewayMediaDataURL: gatewayMediaDataURL
+                )
                 MarkdownText(
                     source: largeTailSource,
                     gatewayMediaDataURL: gatewayMediaDataURL,
@@ -466,10 +463,13 @@ struct StreamingText: View {
     /// Whether diagrams and formulas draw in the large stream. Below the
     /// settled-document threshold the finished chunks are few, so they draw
     /// as they do in the small stream; above it they show their source
-    /// until the reply settles. Large mode starts at that threshold on iOS,
-    /// so there this is always false.
+    /// until the reply settles.
     static func drawsMarkupInPlace(revealedBytes: Int) -> Bool {
+        #if os(macOS) // MAC: Mac enters large mode at 8 KB; iOS enters at 100 KB (and a reseed can leave it below that), where the source always showed
         revealedBytes < MarkdownLargeDocumentPolicy.documentThresholdBytes
+        #else // MAC:
+        false
+        #endif // MAC:
     }
 
     /// Pure append-delta derivation. Returns nil when the projection must
@@ -528,5 +528,56 @@ struct StreamingText: View {
         revealDates = []
         isAnimating = false
         promoteLargeChunks()
+    }
+}
+
+// MARK: - Stable chunks of a large stream
+
+/// One finished chunk of a large stream. A promoted chunk never changes. On
+/// Mac the chunk is `Equatable` on its source (see below), so SwiftUI skips
+/// its body on each tick although the gateway closure is new on every
+/// `StreamingBubble` evaluation.
+struct LargeStreamChunkView: View {
+    let source: String
+    var gatewayMediaDataURL: ((String) async -> String?)? = nil
+
+    #if DEBUG
+    /// Test instrumentation: how many chunk bodies have run.
+    nonisolated(unsafe) static var bodyEvaluations = 0
+    private static func noteBodyEvaluation() { bodyEvaluations += 1 }
+    #endif
+
+    var body: some View {
+        #if DEBUG
+        let _ = Self.noteBodyEvaluation()
+        #endif
+        MarkdownText(
+            source: source,
+            gatewayMediaDataURL: gatewayMediaDataURL,
+            isStreaming: false
+        )
+    }
+}
+
+#if os(macOS) // MAC: Mac chunks are small and many (about 300 per MB); a body that runs again on each tick also scans past the render cache limit (256) and evicts. iOS keeps its previous view updates (D36)
+extension LargeStreamChunkView: Equatable {
+    static func == (lhs: LargeStreamChunkView, rhs: LargeStreamChunkView) -> Bool {
+        lhs.source == rhs.source
+    }
+}
+#endif // MAC:
+
+/// The finished chunks of a large stream, one view each.
+struct LargeStreamChunkList: View {
+    let chunks: [String]
+    var gatewayMediaDataURL: ((String) async -> String?)? = nil
+
+    var body: some View {
+        ForEach(Array(chunks.enumerated()), id: \.offset) { _, chunk in
+            LargeStreamChunkView(source: chunk, gatewayMediaDataURL: gatewayMediaDataURL)
+            #if os(macOS) // MAC: skip the body of an unchanged chunk
+                .equatable()
+            #endif // MAC:
+        }
     }
 }
