@@ -3144,8 +3144,9 @@ enum MarkdownParser {
         let name = String(value.dropFirst(3)).trimmingCharacters(in: .whitespaces).lowercased()
         return ["note", "info", "tip", "hint", "warning", "caution", "danger", "error", "important", "columns"].contains(name) ? name : nil
     }
+    private static let imageMarkdownExpression = try? NSRegularExpression(pattern: #"^!\[([^\]]*)\]\((https?://[^\s)]+)(?:\s+\"[^\"]*\")?\)$"#) // MAC: compiled once (D36)
     private static func imageMarkdown(_ value: String) -> (url: String, alt: String)? {
-        guard let match = try? NSRegularExpression(pattern: #"^!\[([^\]]*)\]\((https?://[^\s)]+)(?:\s+\"[^\"]*\")?\)$"#).firstMatch(in: value, range: NSRange(value.startIndex..., in: value)), let altRange = Range(match.range(at: 1), in: value), let urlRange = Range(match.range(at: 2), in: value) else { return nil }
+        guard let match = imageMarkdownExpression?.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)), let altRange = Range(match.range(at: 1), in: value), let urlRange = Range(match.range(at: 2), in: value) else { return nil }
         return (String(value[urlRange]), String(value[altRange]))
     }
     private static func directImageURL(_ value: String) -> String? {
@@ -3252,14 +3253,14 @@ enum SyntaxHighlighter {
         return highlighted
     }
 
+    private static let tokenKeywords: Set<String> = ["as", "async", "await", "break", "case", "catch", "class", "const", "continue", "def", "else", "enum", "false", "final", "for", "func", "guard", "if", "import", "in", "init", "let", "nil", "null", "private", "public", "return", "self", "static", "struct", "switch", "throw", "true", "try", "var", "while"] // MAC: built once (D36)
+    // String-literal alternatives must be disjoint (`\\.` vs `[^"\\]`):
+    // if both branches can match a backslash, an unterminated literal with
+    // many escapes — the normal transient state while a code block streams —
+    // backtracks exponentially and wedges the main thread (~2^k paths).
+    private static let tokenExpression = try? NSRegularExpression(pattern: #"(//[^\n]*|#[^\n]*|/\*[\s\S]*?\*/|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\b\d+(?:\.\d+)?\b|\b[A-Za-z_][A-Za-z0-9_]*\b)"#) // MAC: compiled once (D36)
     private static func tokenize(_ source: String, language: String) -> AttributedString {
-        let keywords: Set<String> = ["as", "async", "await", "break", "case", "catch", "class", "const", "continue", "def", "else", "enum", "false", "final", "for", "func", "guard", "if", "import", "in", "init", "let", "nil", "null", "private", "public", "return", "self", "static", "struct", "switch", "throw", "true", "try", "var", "while"]
-        // String-literal alternatives must be disjoint (`\\.` vs `[^"\\]`):
-        // if both branches can match a backslash, an unterminated literal with
-        // many escapes — the normal transient state while a code block streams —
-        // backtracks exponentially and wedges the main thread (~2^k paths).
-        let pattern = #"(//[^\n]*|#[^\n]*|/\*[\s\S]*?\*/|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\b\d+(?:\.\d+)?\b|\b[A-Za-z_][A-Za-z0-9_]*\b)"#
-        guard let expression = try? NSRegularExpression(pattern: pattern) else { return AttributedString(source) }
+        guard let expression = tokenExpression else { return AttributedString(source) } // MAC: compiled once (D36)
         let range = NSRange(source.startIndex..., in: source)
         var cursor = source.startIndex
         var output = AttributedString()
@@ -3271,7 +3272,7 @@ enum SyntaxHighlighter {
             if token.hasPrefix("//") || token.hasPrefix("#") || token.hasPrefix("/*") { color = .secondary }
             else if token.hasPrefix("\"") || token.hasPrefix("'") { color = .conduitAura }
             else if Double(token) != nil { color = .orange }
-            else if keywords.contains(token) { color = .conduitAccent }
+            else if tokenKeywords.contains(token) { color = .conduitAccent } // MAC: built once (D36)
             else { color = .primary }
             append(token, color: color, to: &output)
             cursor = matchRange.upperBound
