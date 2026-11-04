@@ -11855,6 +11855,11 @@ final class AppState: ObservableObject {
     }
 
     func disconnect() {
+        #if os(macOS) // MAC: a sign-out ends any restore in flight; the offline retry monitor can start one at any time (D36)
+        // Nothing inside a connect or a dashboard switch calls disconnect(): its callers are the user's Sign Out,
+        // Sign Out of This Dashboard, and Remove Dashboard. A restore past its await then stops at its fence.
+        dashboardSwitchGeneration &+= 1
+        #endif // MAC:
         // The next sign-in to it asks for Face ID again.
         if let activeDashboardID { faceIDUnlockedDashboards[activeDashboardID] = nil }
         // Its turns' Lock Screen progress has nothing left to follow.
@@ -12685,6 +12690,19 @@ final class AppState: ObservableObject {
     /// as a connected Conduit never asks again on return; a cold launch
     /// asks.
     private var faceIDUnlockedDashboards: [UUID: SHA256.Digest] = [:]
+
+    #if os(macOS) // MAC: the offline retry monitor must never cause a Touch ID prompt (D36)
+    /// Whether a saved-dashboard restore now would ask for Touch ID. It follows `loadSavedConnection`: browser
+    /// sign-in tokens restore with no prompt; a saved password behind the gate prompts until this launch's
+    /// unlock holds for that password. Explicit Retry is not gated by this.
+    var restoreWouldPromptForBiometrics: Bool {
+        guard let dashboardID = activeDashboardID,
+              KeychainHelper.loadNativeOAuthTokens(dashboardID: dashboardID) == nil,
+              let credentials = KeychainHelper.loadCredentials(dashboardID: dashboardID),
+              credentials.requiresFaceID else { return false }
+        return faceIDUnlockedDashboards[dashboardID] != Self.faceIDUnlockFingerprint(credentials)
+    }
+    #endif // MAC:
 
     /// Clears the dashboard's saved password and the Face ID unlock that
     /// held for it: a password saved for it again asks again.
@@ -16742,6 +16760,9 @@ final class AppState: ObservableObject {
 
     @discardableResult
     func handleScenePhase(_ phase: ScenePhase) -> Task<Void, Never>? {
+        #if os(macOS) // MAC: shows whether this handler runs when the Mac brings the app forward (D36)
+        lifecycleLog.notice("handleScenePhase: \(String(describing: phase), privacy: .public)")
+        #endif // MAC:
         HermesCallTrace.shared.note("App \(phase)")
         if phase != .active {
             responseHapticConclusionTask?.cancel()
