@@ -11855,6 +11855,11 @@ final class AppState: ObservableObject {
     }
 
     func disconnect() {
+        #if os(macOS) // MAC: a sign-out ends any restore in flight; the offline retry monitor can start one at any time (D36)
+        // Nothing inside a connect or a dashboard switch calls disconnect(): its callers are the user's Sign Out,
+        // Sign Out of This Dashboard, and Remove Dashboard. A restore past its await then stops at its fence.
+        dashboardSwitchGeneration &+= 1
+        #endif // MAC:
         // The next sign-in to it asks for Face ID again.
         if let activeDashboardID { faceIDUnlockedDashboards[activeDashboardID] = nil }
         // Its turns' Lock Screen progress has nothing left to follow.

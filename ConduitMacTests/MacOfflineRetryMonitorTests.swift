@@ -205,6 +205,7 @@ final class MacOfflineRetryMonitorTests: XCTestCase {
         harness.events.send(.didWake)
         harness.change { $0.pathUsable = true }
         XCTAssertEqual(harness.triggers, [.didWake], "the wake attempt covers the path return")
+        XCTAssertEqual(harness.pendingCount, 1, "the dropped return still leaves a timer armed")
     }
 
     func testTheWindowBeforeConnectingStartsIsClosed() {
@@ -245,6 +246,16 @@ final class MacOfflineRetryMonitorTests: XCTestCase {
         XCTAssertEqual(harness.retries, 0, "a late timer callback is dropped while the path is down")
     }
 
+    func testATimerThatFiresBeforeThePathChangeNoticeStartsNothing() {
+        let harness = started()
+        // The app state changed, but the change notice (it hops one main turn) has not reached the monitor yet.
+        harness.snapshot.pathUsable = false
+        harness.fireTimer()
+        XCTAssertEqual(harness.retries, 0, "the timer reads the path itself")
+        harness.changes.send()
+        XCTAssertEqual(harness.pendingCount, 0, "and nothing is armed while the path is down")
+    }
+
     func testTheTimerRunsAgainOnceThePathIsUsable() {
         let harness = started()
         harness.change { $0.pathUsable = false }
@@ -255,18 +266,41 @@ final class MacOfflineRetryMonitorTests: XCTestCase {
 
     // MARK: - Touch ID
 
-    func testNoAttemptWhileARestoreWouldPrompt() {
-        let harness = started()
+    func testNoTimerStaysArmedWhileARestoreWouldPrompt() {
+        let harness = RetryHarness()
         harness.wouldPrompt = true
+        harness.monitor.start()
+        XCTAssertEqual(harness.delays, [], "no poll while the gate is up")
         harness.events.send(.didBecomeActive)
         harness.events.send(.didWake)
+        XCTAssertEqual(harness.retries, 0)
+        harness.change { $0.pathUsable = false }
+        harness.change { $0.pathUsable = true }
+        XCTAssertEqual(harness.retries, 0, "a path return is no unlock")
+        XCTAssertEqual(harness.pendingCount, 0)
+        XCTAssertEqual(harness.delays, [])
+    }
+
+    func testAnUnlockRestartsTheAttempts() {
+        let harness = RetryHarness()
+        harness.wouldPrompt = true
+        harness.monitor.start()
+        XCTAssertEqual(harness.pendingCount, 0, "precondition")
+        // The unlock changes published state (the restore it belongs to sets isConnecting), which reaches evaluate.
+        harness.wouldPrompt = false
+        harness.changes.send()
+        XCTAssertEqual(harness.delays, [5])
+        harness.fireTimer()
+        XCTAssertEqual(harness.retries, 1)
+    }
+
+    func testAGateThatComesUpAfterTheTimerIsArmedEndsItWithoutPolling() {
+        let harness = started()
+        harness.wouldPrompt = true
         harness.fireTimer()
         XCTAssertEqual(harness.retries, 0)
-        XCTAssertEqual(harness.pendingCount, 1, "the timer keeps checking")
-        XCTAssertEqual(harness.delays.last, 5, "a blocked attempt does not advance the backoff")
-        harness.wouldPrompt = false
-        harness.events.send(.didBecomeActive)
-        XCTAssertEqual(harness.retries, 1)
+        XCTAssertEqual(harness.pendingCount, 0, "the blocked timer is not armed again")
+        XCTAssertEqual(harness.delays, [5])
     }
 
     // MARK: - Dashboard
@@ -431,5 +465,72 @@ final class MacOfflineRetryPresentationTests: XCTestCase {
             DashboardCredentials(baseURL: dashboard.normalizedURL, username: "u", password: "p", requiresFaceID: true),
             dashboardID: dashboard.id)
         XCTAssertTrue(appState.restoreWouldPromptForBiometrics, "the unlock is not held this launch")
+    }
+}
+
+/// A sign-out ends a restore that the monitor started (D36). `retryFromOfflineChat` re-runs the launch restore at any
+/// time, and the restore awaits a ticket: a sign-out in that await must not be undone by the restore's connect.
+@MainActor
+final class MacOfflineRetrySignOutTests: XCTestCase {
+    func testSignOutWhileARestoreWaitsAtItsTicketLeavesNoConnection() async throws {
+        let suite = HostedTestSupport.makeSuite()
+        let defaults = suite.defaults
+        addTeardownBlock { @MainActor in HostedTestSupport.dropSuite(suite) }
+        let dashboard = SavedDashboard(id: UUID(), label: "One", normalizedURL: "https://one.example")
+        KeychainHelper.saveNativeOAuthTokens(
+            NativeOAuthTokenSet(
+                accessToken: "access", refreshToken: "refresh",
+                expiresAt: Date().addingTimeInterval(3_600).timeIntervalSince1970,
+                provider: "google", userID: "user"),
+            dashboardID: dashboard.id)
+        addTeardownBlock { KeychainHelper.clearNativeOAuthTokens(dashboardID: dashboard.id) }
+
+        let mintStarted = expectation(description: "the restore waits at the ticket")
+        var release: CheckedContinuation<String, Never>?
+        var connectCalls = 0
+        let lifecycle = ChatResumeLifecycleOperations(
+            connectClient: { _ in connectCalls += 1 },
+            loadCatalog: { _, _ in [] },
+            mintTicket: { _ in
+                mintStarted.fulfill()
+                return await withCheckedContinuation { release = $0 }
+            },
+            refreshContext: { _, _ in },
+            loadProfiles: {},
+            loadBusyInputMode: { _ in },
+            loadProfileDisplayPreferences: {},
+            loadSlashCommands: {})
+        let appState = AppState(
+            defaults: defaults,
+            loadSavedConnection: false,
+            dashboardRegistry: SavedDashboardRegistry(activeDashboardID: dashboard.id, dashboards: [dashboard]),
+            clearSessionPresentationCache: {},
+            chatResumeLifecycleOperations: lifecycle,
+            sessionPresentationCache: SessionPresentationCache(defaults: defaults)
+        )
+        appState.offlineChatCacheForTesting.record(
+            dashboardID: dashboard.id, profile: "default", sessionID: "saved", title: "Saved",
+            messages: [ChatMessage(id: "c1", role: .user, content: "cached", timestamp: "1")], sessions: [])
+        appState.presentOfflineChatIfAvailable(dashboardID: dashboard.id)
+        appState.showLogin = false
+        XCTAssertTrue(appState.macShowsHermesUnreachable, "precondition: the waiting state")
+
+        // The monitor's attempt, and the user's sign-out in the middle of it.
+        appState.retryFromOfflineChat()
+        await fulfillment(of: [mintStarted], timeout: 5)
+        appState.signOutDashboard(dashboard.id)
+        XCTAssertTrue(appState.showLogin, "precondition: sign-out shows sign-in")
+
+        release?.resume(returning: "late-ticket")
+        // Without the fix the restore connects at once, so the wait ends early. With it, the restore returns.
+        for _ in 0..<40 where connectCalls == 0 && appState.connection == nil {
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertNil(appState.connection, "the restore must not undo the sign-out")
+        XCTAssertEqual(connectCalls, 0)
+        XCTAssertFalse(appState.isConnected)
+        XCTAssertTrue(appState.showLogin, "sign-in stays as sign-out set it")
     }
 }

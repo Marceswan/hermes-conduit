@@ -17,7 +17,7 @@ private let offlineRetryLog = Logger(subsystem: "com.milim.relay", category: "Of
 /// - Events: the app becoming active, the Mac waking, and the network path returning each start one attempt at once.
 /// - No timer attempt runs while the network path is not usable.
 /// - Triggers close together start one attempt (`coalesceWindow`).
-/// - A restore that would ask for Touch ID is never started here.
+/// - A restore that would ask for Touch ID is never started here, and no timer polls while that holds.
 @MainActor
 final class MacOfflineRetryMonitor {
     enum Trigger: String, Equatable {
@@ -112,6 +112,8 @@ final class MacOfflineRetryMonitor {
         if snap.isConnecting || !snap.pathUsable || !snap.waiting { cancelPending() }
         if pathReturned, snap.waiting, !snap.isConnecting {
             attempt(.networkReturned, delay: 0)
+            // A dropped attempt (coalesced) leaves no timer: the path loss cancelled it. Arm it again.
+            scheduleIfIdle(seams.snapshot())
             return
         }
         scheduleIfIdle(snap)
@@ -139,6 +141,9 @@ final class MacOfflineRetryMonitor {
 
     private func scheduleIfIdle(_ snap: Snapshot) {
         guard cancelTimer == nil, snap.waiting, !snap.isConnecting, snap.pathUsable, let tracked else { return }
+        // Gate up: no timer, so no poll. An unlock changes published state (the restore it belongs to sets
+        // `isConnecting`), which reaches `evaluate` and arms the timer then.
+        guard !seams.restoreWouldPrompt() else { return }
         let delay = Self.delay(afterAttempts: tracked.attempts)
         let dashboardID = tracked.dashboardID
         timerToken &+= 1
@@ -162,14 +167,16 @@ final class MacOfflineRetryMonitor {
         let isTimer = trigger == .timer
         guard snap.waiting, !snap.isConnecting else { return }
         track(snap)
-        // A blocked timer attempt keeps polling at the same delay, with no backoff step.
-        func blocked() {
-            if isTimer { evaluate() }
-        }
+        // The change notice hops one main turn, so a timer can fire before it reports the path loss.
         if isTimer, !snap.pathUsable { return }
-        if seams.restoreWouldPrompt() { return blocked() }
+        // Gate up: no attempt and no poll (see `scheduleIfIdle`).
+        if seams.restoreWouldPrompt() { return }
         let now = seams.now()
-        if let lastAttemptAt, now.timeIntervalSince(lastAttemptAt) < Self.coalesceWindow { return blocked() }
+        if let lastAttemptAt, now.timeIntervalSince(lastAttemptAt) < Self.coalesceWindow {
+            // Dropped as a duplicate. Keep a timer armed: a fired timer, or a path-loss cancel, left none.
+            scheduleIfIdle(seams.snapshot())
+            return
+        }
 
         lastAttemptAt = now
         tracked?.attempts += 1
