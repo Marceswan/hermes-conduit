@@ -417,6 +417,34 @@ final class SelectableTextViewTests: XCTestCase {
         XCTAssertEqual(style?.lineSpacing, 20)
     }
 
+    func testMeasureWithNewInputsBeforeTheyAreAppliedDoesNotReturnTheOldSize() {
+        // SwiftUI may call `sizeThatFits` on a new struct before `updateNSView` applies it. The cache is keyed
+        // by the applied presentation, so it must not answer for inputs that are not applied yet.
+        let text = String(repeating: "word ", count: 100)
+        let coordinator = SelectableTextView.Coordinator()
+        let base = SelectableTextView(text: text, font: .systemFont(ofSize: 12))
+        let textView = makeApplied(base, coordinator: coordinator)
+        let baseSize = base.measuredSizeCached(proposalWidth: 300, coordinator: coordinator)
+        XCTAssertEqual(coordinator.measureCount, 1, "precondition: the base size is cached")
+
+        let bigger = SelectableTextView(text: text, font: .systemFont(ofSize: 28))
+        let biggerSize = bigger.measuredSizeCached(proposalWidth: 300, coordinator: coordinator)
+        XCTAssertGreaterThan(biggerSize?.height ?? 0, baseSize?.height ?? 0, "the new inputs get their own size")
+        XCTAssertEqual(biggerSize, bigger.measuredSize(proposalWidth: 300))
+
+        // The unapplied measure left the applied entry alone.
+        let again = base.measuredSizeCached(proposalWidth: 300, coordinator: coordinator)
+        XCTAssertEqual(again, baseSize)
+
+        // Once the new inputs are applied, the cache works for them.
+        bigger.apply(to: textView, coordinator: coordinator, environment: EnvironmentValues())
+        let appliedSize = bigger.measuredSizeCached(proposalWidth: 300, coordinator: coordinator)
+        XCTAssertEqual(appliedSize, biggerSize)
+        let measured = coordinator.measureCount
+        _ = bigger.measuredSizeCached(proposalWidth: 300, coordinator: coordinator)
+        XCTAssertEqual(coordinator.measureCount, measured, "applied inputs are cached again")
+    }
+
     func testIdenticalInputDoesNotSetTextChangedTextDoes() {
         let coordinator = SelectableTextView.Coordinator()
         let first = SelectableTextView(text: "hello world")

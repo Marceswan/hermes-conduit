@@ -321,7 +321,19 @@ extension SelectableTextView {
     /// Cached entry for `sizeThatFits` (twin of upstream `measuredSizeCached`):
     /// the same presentation generation at the same effective width returns
     /// the last size without a new TextKit layout.
+    ///
+    /// The entry belongs to the presentation `apply` last applied. SwiftUI can
+    /// call `sizeThatFits` on a new struct before `updateNSView` applies it, at
+    /// the same width. Those inputs get a fresh measure that is not stored. The
+    /// appearance is left out of the check: it does not change the size.
     func measuredSizeCached(proposalWidth: CGFloat?, coordinator: Coordinator) -> CGSize? {
+        guard let applied = coordinator.appliedPresentation,
+              Coordinator.Presentation(view: self, appearance: applied.appearance) == applied else {
+            #if DEBUG
+            coordinator.measureCount += 1
+            #endif
+            return measuredSize(proposalWidth: proposalWidth)
+        }
         let key: Coordinator.MeasurementKey
         if !wrapsLines {
             key = .nonWrapping
