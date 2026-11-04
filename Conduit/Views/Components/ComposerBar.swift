@@ -883,21 +883,46 @@ struct ComposerBar: View, Equatable {
         appState.showsConnectionRepair
     }
 
+    /// What the locked composer says while its chat is not on its way. A failed launch restore with no
+    /// connection runs nothing: no spinner, and not "Synchronizing" (D36, Mac only; iOS passes false).
+    struct StateNoticeContent: Equatable {
+        let showsProgress: Bool
+        let text: String
+    }
+
+    static func stateNoticeContent(turnState: TurnState, hermesUnreachable: Bool) -> StateNoticeContent {
+        if turnState == .unsupportedGateway {
+            return StateNoticeContent(
+                showsProgress: false,
+                text: AppLocalization.string("Update this Hermes gateway to recover active turns safely."))
+        }
+        if hermesUnreachable {
+            return StateNoticeContent(showsProgress: false, text: AppLocalization.string("Can't reach Hermes"))
+        }
+        return StateNoticeContent(
+            showsProgress: true,
+            text: AppLocalization.string("Synchronizing with Hermes before enabling chat controls"))
+    }
+
     @ViewBuilder
     private var stateNotice: some View {
+        #if os(macOS) // MAC: see stateNoticeContent (D36)
+        let hermesUnreachable = appState.macShowsHermesUnreachable
+        #else // MAC:
+        let hermesUnreachable = false
+        #endif // MAC:
+        let notice = Self.stateNoticeContent(turnState: appState.turnState, hermesUnreachable: hermesUnreachable)
         VStack(alignment: .leading, spacing: 4) {
             if !appState.composerWaitsForChat {
                 HStack(spacing: 8) {
-                if appState.turnState != .unsupportedGateway {
+                if notice.showsProgress {
                     ProgressView()
                         .controlSize(.small)
                 } else {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                 }
-                Text(appState.turnState == .unsupportedGateway
-                     ? AppLocalization.string("Update this Hermes gateway to recover active turns safely.")
-                     : AppLocalization.string("Synchronizing with Hermes before enabling chat controls"))
+                Text(notice.text)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     Spacer(minLength: 0)

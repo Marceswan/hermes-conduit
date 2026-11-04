@@ -456,10 +456,17 @@ struct SessionList: View {
                 sourceFilters
                     .dynamicTypeSize(...DynamicTypeSize.pinnedChromeCap)
             }
+            #if os(macOS) // MAC: the failed launch restore runs nothing, so no spinner; Try Again re-runs the restore (D36)
+            let hermesUnreachable = appState.macShowsHermesUnreachable
+            let retryList: () -> Void = { appState.macRetrySessionList() }
+            #else // MAC:
+            let hermesUnreachable = false
+            let retryList: () -> Void = { Task { await appState.refreshSessionCatalog() } }
+            #endif // MAC:
             let layout = SidebarOfflineLayout.visibility(
                 showingProjects: showingProjects,
                 displayedSessionsEmpty: displayedSessions.isEmpty,
-                isLoadingList: appState.isLoadingChatList
+                isLoadingList: appState.isLoadingChatList && !hermesUnreachable
             )
             #if os(macOS) // MAC: no "No Sessions" over message matches (D30)
             .macWithoutEmptyState(when: MacSidebarContentSearchRules.coversEmptyList(
@@ -493,7 +500,8 @@ struct SessionList: View {
                             hasOfflineCopy: false,
                             catalogPhase: appState.sessionCatalogPhase,
                             isRefreshing: appState.isRefreshingSessionCatalog,
-                            filteredOutRows: !appState.listedSessions.isEmpty || !appState.listedCronSessions.isEmpty
+                            filteredOutRows: !appState.listedSessions.isEmpty || !appState.listedCronSessions.isEmpty,
+                            hermesUnreachable: hermesUnreachable
                         ),
                         emptyTitle: statusFilter?.emptyTitle
                             ?? (selectedSource == nil ? AppLocalization.string("No Sessions") : AppLocalization.string("No \(selectedSource!.label) Sessions")),
@@ -501,7 +509,7 @@ struct SessionList: View {
                             ? statusFilter?.emptyDescription ?? AppLocalization.string("Sessions will appear here once created.")
                             : AppLocalization.string("Try a different search."),
                         emptySystemImage: statusFilter?.emptySystemImage ?? "tray",
-                        retry: { Task { await appState.refreshSessionCatalog() } }
+                        retry: retryList
                     )
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)

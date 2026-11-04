@@ -73,7 +73,8 @@ enum SessionListPlaceholder: Equatable {
         hasOfflineCopy: Bool,
         catalogPhase: SessionCatalogLoadPhase,
         isRefreshing: Bool,
-        filteredOutRows: Bool = false
+        filteredOutRows: Bool = false,
+        hermesUnreachable: Bool = false
     ) -> SessionListPlaceholder {
         if hasRows || hasOfflineCopy { return .none }
         // Rows are listed (live or saved) and a search or filter matched
@@ -85,7 +86,8 @@ enum SessionListPlaceholder: Equatable {
         case .failed(let message):
             return isRefreshing ? .loading : .failed(message)
         case .notLoaded:
-            return .loading
+            // A launch restore that failed with no connection has no read on the wire: no spinner (D36).
+            return hermesUnreachable ? .failed(AppLocalization.string("Can't reach Hermes")) : .loading
         }
     }
 }
