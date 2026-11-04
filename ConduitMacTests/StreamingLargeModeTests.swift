@@ -197,6 +197,46 @@ final class StreamingLargeModeTests: XCTestCase {
         XCTAssertEqual(MarkdownParser.parseSourceSizes.count, parses, "no chunk may parse again across ticks")
     }
 
+    @MainActor
+    private static func textView(in view: NSView) -> NSTextView? {
+        if let text = view as? NSTextView { return text }
+        for sub in view.subviews { if let found = textView(in: sub) { return found } }
+        return nil
+    }
+
+    @MainActor
+    func testFinishedChunkFollowsTheChatTextSize() {
+        // `LargeStreamChunkView ==` compares only `source`, so SwiftUI skips a finished chunk's body when the
+        // size changes. That is correct only if `MarkdownText` gets `chatTextSize` through its own
+        // `@Environment`. This test changes the size under a chunk that finished earlier, and the chunk's
+        // height must follow. (A guard: it passes while the environment path works.)
+        let chunk = "Run \(UUID().uuidString). " + String(repeating: "A finished chunk holds stable words. ", count: 12)
+        let model = TextSizeModel()
+        let window = HostedTestSupport.host(
+            ChunkSizeHarness(model: model, chunks: [chunk]),
+            size: NSSize(width: 640, height: 1600)
+        )
+        defer { HostedTestSupport.tearDown(window) }
+        func chunkHeight() -> CGFloat {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return window.contentView.flatMap { Self.textView(in: $0) }?.frame.height ?? 0
+        }
+        XCTAssertTrue(HostedTestSupport.waitUntil(timeout: 10) { chunkHeight() > 0 }, "the chunk must mount")
+        HostedTestSupport.settle(0.3)
+        let normal = chunkHeight()
+
+        model.size = .largest
+        XCTAssertTrue(
+            HostedTestSupport.waitUntil(timeout: 10) { chunkHeight() > normal },
+            "a larger text size must make the finished chunk taller (was \(normal), is \(chunkHeight()))"
+        )
+        model.size = .smallest
+        XCTAssertTrue(
+            HostedTestSupport.waitUntil(timeout: 10) { chunkHeight() < normal },
+            "a smaller text size must make it shorter (was \(normal), is \(chunkHeight()))"
+        )
+    }
+
     // MARK: Tail bound
 
     func testProseStreamKeepsTailAtOrBelow8KBAtEveryStep() {
@@ -311,5 +351,24 @@ private struct ChunkHarness: View {
             LargeStreamChunkList(chunks: chunks, gatewayMediaDataURL: { _ in "tick \(generation)" })
         }
         .frame(width: 600)
+    }
+}
+
+private final class TextSizeModel: ObservableObject {
+    @Published var size: ChatTextSize = .default
+}
+
+/// Stands in for the chat root, which writes `\.chatTextSize` above its rows.
+private struct ChunkSizeHarness: View {
+    @ObservedObject var model: TextSizeModel
+    let chunks: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            LargeStreamChunkList(chunks: chunks)
+        }
+        .frame(width: 600, alignment: .topLeading)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .environment(\.chatTextSize, model.size)
     }
 }
