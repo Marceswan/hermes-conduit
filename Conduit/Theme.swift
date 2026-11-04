@@ -349,8 +349,12 @@ enum ConduitBackdropMotionPolicy {
         idle: Bool,
         thermalState: ProcessInfo.ThermalState
     ) -> Bool {
+        #if os(macOS) // MAC: a still backdrop. The 10 fps drift cost 25% to 30% of a core in the real window (D36).
+        return false
+        #else // MAC:
         let thermalStateAllowsMotion = thermalState == .nominal || thermalState == .fair
         return drifts && sceneIsActive && !reduceMotion && !lowPowerMode && !idle && thermalStateAllowsMotion
+        #endif // MAC:
     }
 
     /// One smooth out-and-back drift over 26 seconds, matching the previous

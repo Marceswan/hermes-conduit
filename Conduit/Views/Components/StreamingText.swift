@@ -9,7 +9,7 @@
 //  steady, adaptive pace and retain individual reveal timestamps, allowing
 //  the Markdown renderer to fade the newest glyphs independently.
 //
-//  Once the accumulated text crosses the large-document threshold, the
+//  Once the accumulated text crosses the streaming threshold, the
 //  component switches to a bounded mode: everything behind the live tail is
 //  promoted into immutable chunks (rendered once through the ordinary
 //  cached path) and only the tail — a window of a few KB — keeps
@@ -43,9 +43,9 @@ struct StreamingText: View {
     // arithmetic) so a tick never walks the accumulated megabytes; index
     // math happens only at promotion boundaries, which are rare.
 
-    /// True once the accumulated text has crossed the large-document
-    /// threshold; the component never switches back mid-stream (a message
-    /// only grows while streaming).
+    /// True once the accumulated text has crossed the streaming threshold
+    /// (`MarkdownLargeDocumentPolicy.streamingThresholdBytes`); the component
+    /// never switches back mid-stream (a message only grows while streaming).
     @State private var isLargeStream = false
     /// The accumulated target text (append-only while the stream grows).
     @State private var largeAccumulated = ""
@@ -76,11 +76,6 @@ struct StreamingText: View {
 
     private let timer = Timer.publish(every: 1.0 / 30.0, on: .main, in: .common).autoconnect()
     private let fadeDuration = 0.18
-
-    /// Tail window: the live region kept out of the stable chunks so it can
-    /// keep re-parsing per tick. Same order as the chunk target, so a tick's
-    /// whole-document work stays bounded by ~2 chunks.
-    private static let largeTailWindowBytes = MarkdownLargeDocumentPolicy.chunkTargetBytes
 
     var body: some View {
         if isLargeStream {
@@ -145,11 +140,15 @@ struct StreamingText: View {
         }
 
         // Cross into large mode instead of growing the per-character
-        // machinery past the threshold: seed the large state with everything
-        // accumulated so far (revealed wholesale — the animation that
-        // matters is the tail that keeps streaming).
-        if MarkdownLargeDocumentPolicy.isLargeDocument(newText) {
-            enterLargeMode(with: newText)
+        // machinery past the threshold: seed the large state with the text
+        // accumulated so far. Text the small stream had not shown yet stays
+        // hidden where the platform allows it (see
+        // charactersRevealedAtCrossing); otherwise it is revealed wholesale.
+        if MarkdownLargeDocumentPolicy.isLargeStreamingReply(newText) {
+            enterLargeMode(
+                with: newText,
+                revealedCharacters: Self.charactersRevealedAtCrossing(visible: visibleCharacters, in: newText)
+            )
             return
         }
 
@@ -245,13 +244,10 @@ struct StreamingText: View {
                 // streaming — they render literally until the message
                 // settles, at which point the settled view parses the whole
                 // message and resolves them message-wide.
-                ForEach(Array(largeStableChunks.enumerated()), id: \.offset) { _, chunk in
-                    MarkdownText(
-                        source: chunk,
-                        gatewayMediaDataURL: gatewayMediaDataURL,
-                        isStreaming: false
-                    )
-                }
+                LargeStreamChunkList(
+                    chunks: largeStableChunks,
+                    gatewayMediaDataURL: gatewayMediaDataURL
+                )
                 MarkdownText(
                     source: largeTailSource,
                     gatewayMediaDataURL: gatewayMediaDataURL,
@@ -260,10 +256,10 @@ struct StreamingText: View {
                 )
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            // Finished chunks pile up for the whole stream, so diagrams and
+            // Finished chunks pile up for a very large stream, so diagrams and
             // formulas show their source until the reply settles; the
             // settled large-document view draws them, a window at a time.
-            .environment(\.markupDrawsInPlace, false)
+            .environment(\.markupDrawsInPlace, Self.drawsMarkupInPlace(revealedBytes: largeRevealedBytes))
         }
         .onChange(of: reduceMotion) { _, shouldReduceMotion in
             if shouldReduceMotion {
@@ -286,12 +282,19 @@ struct StreamingText: View {
     /// (Re)seeds large mode from `fullText`. Used on first crossing and on a
     /// non-append target (branch swap / regeneration), which resets
     /// everything — matching the small-mode reset semantics.
-    private func enterLargeMode(with fullText: String) {
+    private func enterLargeMode(with fullText: String, revealedCharacters: Int? = nil) {
         largeAccumulated = fullText
         largeAccumulatedChars = fullText.count
-        largeRevealedEnd = fullText.endIndex
-        largeRevealedChars = fullText.count
-        largeRevealedBytes = fullText.utf8.count
+        if let revealedCharacters, revealedCharacters < largeAccumulatedChars {
+            let end = fullText.index(fullText.startIndex, offsetBy: revealedCharacters)
+            largeRevealedEnd = end
+            largeRevealedChars = revealedCharacters
+            largeRevealedBytes = fullText.utf8.distance(from: fullText.startIndex, to: end)
+        } else {
+            largeRevealedEnd = fullText.endIndex
+            largeRevealedChars = largeAccumulatedChars
+            largeRevealedBytes = fullText.utf8.count
+        }
         largePromotedBytes = 0
         largeStableChunks = []
         largeScanner = MarkdownStableBoundaryScanner()
@@ -410,10 +413,9 @@ struct StreamingText: View {
     /// (safe scanner boundary, with hard-cut fallback for unbroken blocks)
     /// lives in the pure, unit-tested `LargeStreamPromotion`.
     private func promoteLargeChunks() {
-        while let next = LargeStreamPromotion.nextPromotionBoundary(
+        while let next = LargeStreamPromotion.nextStreamingBoundary(
             promotedBytes: largePromotedBytes,
             revealedBytes: largeRevealedBytes,
-            tailWindowBytes: Self.largeTailWindowBytes,
             boundaries: largeBoundaries,
             constructIntervals: largeScanner.constructIntervals
         ) {
@@ -443,6 +445,31 @@ struct StreamingText: View {
             }
             largeBoundaries.removeAll { $0 <= largePromotedBytes }
         }
+    }
+
+    /// How many characters of `text` stay revealed when the small stream
+    /// crosses into large mode, or nil to reveal everything. The small
+    /// stream lags the arriving text by up to a few hundred characters; the
+    /// lag keeps its pace across the crossing instead of appearing at once.
+    static func charactersRevealedAtCrossing(visible: [Character], in text: String) -> Int? {
+        #if os(macOS) // MAC: the crossing is at 8 KB here, where the lag is visible; iOS crosses at 100 KB and keeps revealing at once
+        guard !visible.isEmpty, text.starts(with: visible) else { return nil }
+        return visible.count
+        #else // MAC:
+        return nil
+        #endif // MAC:
+    }
+
+    /// Whether diagrams and formulas draw in the large stream. Below the
+    /// settled-document threshold the finished chunks are few, so they draw
+    /// as they do in the small stream; above it they show their source
+    /// until the reply settles.
+    static func drawsMarkupInPlace(revealedBytes: Int) -> Bool {
+        #if os(macOS) // MAC: Mac enters large mode at 8 KB; iOS enters at 100 KB (and a reseed can leave it below that), where the source always showed
+        revealedBytes < MarkdownLargeDocumentPolicy.documentThresholdBytes
+        #else // MAC:
+        false
+        #endif // MAC:
     }
 
     /// Pure append-delta derivation. Returns nil when the projection must
@@ -501,5 +528,56 @@ struct StreamingText: View {
         revealDates = []
         isAnimating = false
         promoteLargeChunks()
+    }
+}
+
+// MARK: - Stable chunks of a large stream
+
+/// One finished chunk of a large stream. A promoted chunk never changes. On
+/// Mac the chunk is `Equatable` on its source (see below), so SwiftUI skips
+/// its body on each tick although the gateway closure is new on every
+/// `StreamingBubble` evaluation.
+struct LargeStreamChunkView: View {
+    let source: String
+    var gatewayMediaDataURL: ((String) async -> String?)? = nil
+
+    #if DEBUG
+    /// Test instrumentation: how many chunk bodies have run.
+    nonisolated(unsafe) static var bodyEvaluations = 0
+    private static func noteBodyEvaluation() { bodyEvaluations += 1 }
+    #endif
+
+    var body: some View {
+        #if DEBUG
+        let _ = Self.noteBodyEvaluation()
+        #endif
+        MarkdownText(
+            source: source,
+            gatewayMediaDataURL: gatewayMediaDataURL,
+            isStreaming: false
+        )
+    }
+}
+
+#if os(macOS) // MAC: Mac chunks are small and many (about 300 per MB); a body that runs again on each tick also scans past the render cache limit (256) and evicts. iOS keeps its previous view updates (D36)
+extension LargeStreamChunkView: Equatable {
+    static func == (lhs: LargeStreamChunkView, rhs: LargeStreamChunkView) -> Bool {
+        lhs.source == rhs.source
+    }
+}
+#endif // MAC:
+
+/// The finished chunks of a large stream, one view each.
+struct LargeStreamChunkList: View {
+    let chunks: [String]
+    var gatewayMediaDataURL: ((String) async -> String?)? = nil
+
+    var body: some View {
+        ForEach(Array(chunks.enumerated()), id: \.offset) { _, chunk in
+            LargeStreamChunkView(source: chunk, gatewayMediaDataURL: gatewayMediaDataURL)
+            #if os(macOS) // MAC: skip the body of an unchanged chunk
+                .equatable()
+            #endif // MAC:
+        }
     }
 }

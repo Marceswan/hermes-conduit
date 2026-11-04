@@ -25,6 +25,12 @@ struct ComposerInputs: Equatable {
     let errorMessage: String?
     let isConnected: Bool
     let hasConnection: Bool
+    #if os(macOS) // MAC: the locked composer's notice reads `macShowsHermesUnreachable` (D36)
+    /// The failed launch restore is waiting with no attempt running. It depends on `offlineChatPresentation`,
+    /// `connection`, `showLogin` and `isConnecting`, so it is held here and not left to the inputs that happen to
+    /// move with them.
+    let hermesUnreachable: Bool
+    #endif // MAC:
     let lastConnectionFailure: ConnectionFailure?
     let showsConnectionRepair: Bool
     let isCompressing: Bool
@@ -75,6 +81,9 @@ struct ComposerInputs: Equatable {
         errorMessage = appState.errorMessage
         isConnected = appState.isConnected
         hasConnection = appState.connection != nil
+        #if os(macOS) // MAC: see `hermesUnreachable` (D36)
+        hermesUnreachable = appState.macShowsHermesUnreachable
+        #endif // MAC:
         lastConnectionFailure = appState.lastConnectionFailure
         showsConnectionRepair = appState.showsConnectionRepair
         isCompressing = appState.isCompressingActiveSession

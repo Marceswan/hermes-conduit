@@ -94,6 +94,18 @@ struct ChatReadState: Equatable {
 
     // MARK: Reading
 
+    // MAC: D36 what a row can show, so bookkeeping-only changes do not publish
+    /// Whether `other` answers every read below the same way (`isUnread`,
+    /// `serverUnread`, `isExplicitlyUnread`, `desktopSeenTime`). The seen
+    /// moments, the write attempts and the write counter only steer
+    /// `observe`, `markSeen` and passive rewrites: a change in them alone
+    /// moves nothing a row shows.
+    func readsTheSame(as other: ChatReadState) -> Bool {
+        ledger == other.ledger
+            && pendingServerValues == other.pendingServerValues
+            && desktopSeenThrough == other.desktopSeenThrough
+    }
+
     /// Whether the row has something the user hasn't seen.
     func isUnread(_ session: SessionSummary, profile: String, now: Date = Date()) -> Bool {
         if locallyUnread(session, profile: profile) { return true }

@@ -282,22 +282,83 @@ extension SelectableTextView {
     }
 
     func updateNSView(_ view: NSTextView, context: Context) {
-        let styled = styledText()
-        let textChanged = view.attributedString() != styled
-        if textChanged {
-            view.textStorage?.setAttributedString(styled)
+        apply(to: view, coordinator: context.coordinator, environment: context.environment)
+    }
+
+    /// The body of `updateNSView`; tests call it because a `Context` cannot be
+    /// built outside SwiftUI.
+    ///
+    /// Presentation gate (twin of upstream `updateUIViewForTests`): when every
+    /// input that affects styling or layout is unchanged, the styled copy, the
+    /// comparison and `setAttributedString` are skipped. Selection tint, the
+    /// link opener and find registration are not part of the gate.
+    func apply(to view: NSTextView, coordinator: Coordinator, environment: EnvironmentValues) {
+        let presentation = Coordinator.Presentation(view: self, appearance: view.effectiveAppearance.name)
+        var textChanged = false
+        if coordinator.appliedPresentation != presentation {
+            let styled = styledText()
+            textChanged = view.attributedString() != styled
+            if textChanged {
+                view.textStorage?.setAttributedString(styled)
+            }
+            view.textContainer?.maximumNumberOfLines = maximumNumberOfLines
+            view.linkTextAttributes = [.foregroundColor: linkColor, .cursor: NSCursor.pointingHand]
+            coordinator.appliedPresentation = presentation
+            coordinator.presentationGeneration &+= 1
+            coordinator.cachedMeasurement = nil
         }
-        view.textContainer?.maximumNumberOfLines = maximumNumberOfLines
-        view.linkTextAttributes = [.foregroundColor: linkColor, .cursor: NSCursor.pointingHand]
-        Self.applySelectionTint(context.environment.textSelectionTint, to: view)
-        context.coordinator.openURL = context.environment.openURL
+        Self.applySelectionTint(environment.textSelectionTint, to: view)
+        coordinator.openURL = environment.openURL
         // D23: whole-chat find registers each message text view under its row id.
-        context.coordinator.attachFind(
+        coordinator.attachFind(
             view,
-            controller: context.environment.macChatFindController,
-            messageID: context.environment.macChatFindMessageID,
+            controller: environment.macChatFindController,
+            messageID: environment.macChatFindMessageID,
             textChanged: textChanged
         )
+    }
+
+    /// Cached entry for `sizeThatFits` (twin of upstream `measuredSizeCached`):
+    /// the same presentation generation at the same effective width returns
+    /// the last size without a new TextKit layout.
+    ///
+    /// The entry belongs to the presentation `apply` last applied. SwiftUI can
+    /// call `sizeThatFits` on a new struct before `updateNSView` applies it, at
+    /// the same width. Those inputs get a fresh measure that is not stored. The
+    /// appearance is left out of the check: it does not change the size.
+    func measuredSizeCached(proposalWidth: CGFloat?, coordinator: Coordinator) -> CGSize? {
+        guard let applied = coordinator.appliedPresentation,
+              Coordinator.Presentation(view: self, appearance: applied.appearance) == applied else {
+            #if DEBUG
+            coordinator.measureCount += 1
+            #endif
+            return measuredSize(proposalWidth: proposalWidth)
+        }
+        let key: Coordinator.MeasurementKey
+        if !wrapsLines {
+            key = .nonWrapping
+        } else if selfSizingWidthRange != nil {
+            key = .selfSizing
+        } else if let width = proposalWidth, width > 0, width.isFinite {
+            key = .wrapping(width: width)
+        } else {
+            key = .natural
+        }
+        if let cached = coordinator.cachedMeasurement,
+           cached.generation == coordinator.presentationGeneration,
+           cached.key == key {
+            return cached.size
+        }
+        let size = measuredSize(proposalWidth: proposalWidth)
+        #if DEBUG
+        coordinator.measureCount += 1
+        #endif
+        coordinator.cachedMeasurement = Coordinator.CachedMeasurement(
+            generation: coordinator.presentationGeneration,
+            key: key,
+            size: size
+        )
+        return size
     }
 
     static func dismantleNSView(_ view: NSTextView, coordinator: Coordinator) {
@@ -341,7 +402,7 @@ extension SelectableTextView {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? {
-        measuredSize(proposalWidth: proposal.width)
+        measuredSizeCached(proposalWidth: proposal.width, coordinator: context.coordinator)
     }
 
     /// R11/R27: link clicks never reach NSTextView's default NSWorkspace
@@ -354,6 +415,58 @@ extension SelectableTextView {
         var openURL: OpenURLAction?
         weak var findController: MacChatFindController?
         var findMessageID: String?
+
+        /// Every input that affects styling or layout, plus the appearance.
+        /// `NSAttributedString`, `NSFont` and `NSColor` compare by content.
+        struct Presentation: Equatable {
+            let attributedText: NSAttributedString
+            let font: NSFont
+            let textColor: NSColor
+            let lineSpacing: CGFloat
+            let maximumNumberOfLines: Int
+            let wrapsLines: Bool
+            let linkColor: NSColor
+            let textAlignment: NSTextAlignment
+            let selfSizingWidthRange: ClosedRange<CGFloat>?
+            let keepsParagraphStyles: Bool
+            let appearance: NSAppearance.Name
+
+            init(view: SelectableTextView, appearance: NSAppearance.Name) {
+                attributedText = view.attributedText
+                font = view.font
+                textColor = view.textColor
+                lineSpacing = view.lineSpacing
+                maximumNumberOfLines = view.maximumNumberOfLines
+                wrapsLines = view.wrapsLines
+                linkColor = view.linkColor
+                textAlignment = view.textAlignment
+                selfSizingWidthRange = view.selfSizingWidthRange
+                keepsParagraphStyles = view.keepsParagraphStyles
+                self.appearance = appearance
+            }
+        }
+
+        enum MeasurementKey: Equatable {
+            case nonWrapping
+            case selfSizing
+            case natural
+            case wrapping(width: CGFloat)
+        }
+
+        struct CachedMeasurement {
+            let generation: UInt64
+            let key: MeasurementKey
+            let size: CGSize
+        }
+
+        var appliedPresentation: Presentation?
+        var presentationGeneration: UInt64 = 0
+        /// One-entry measurement cache for the current presentation generation.
+        var cachedMeasurement: CachedMeasurement?
+        #if DEBUG
+        /// Counts uncached measurements, so tests can see a cache hit.
+        var measureCount = 0
+        #endif
         private let opener: @MainActor (URL) -> Void
 
         init(opener: @escaping @MainActor (URL) -> Void = { UIApplication.shared.open($0) }) {
