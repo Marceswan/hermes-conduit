@@ -224,6 +224,7 @@ list after each `git merge upstream/main`.
 | Conduit/Views/Components/MarkdownText.swift | R4 | D36: the `imageMarkdown` regex and the `SyntaxHighlighter.tokenize` regexes and keyword set compile once, not on each call | Shared with iOS (a ruling: iOS does not ship from this branch). The regexes are not gated |
 | Conduit/Views/Components/StreamingText.swift | R4 | D36: a finished chunk is `Equatable` on its source, so it does not run its body on each tick (300 chunks over 10 ticks: 300 parses, 3,300 without). Mac also enters large mode at 8 KB | Mac only: `#if os(macOS)` regions |
 | Conduit/Views/SidebarView.swift | R4 | D36: a failed launch restore with no connection shows "Can't reach Hermes" with no spinner. Try Again re-runs the restore | Mac only: the `#if os(macOS)` region sets `hermesUnreachable` and `retryList` (`macRetrySessionList`) |
+| Conduit/Views/Components/ComposerUpdates.swift | R4 | D36: `ComposerInputs` tracks `hermesUnreachable`, the value that the composer notice reads in the failed restore state. The placeholder already changes with `isConnecting`, so this removes a latent dependency and fixes no visible bug today | Mac only: 2 `#if os(macOS)` regions (`// MAC:`, D36). Tests: `MacOfflineRetryPresentationTests` |
 
 ## Kept off on Mac
 
