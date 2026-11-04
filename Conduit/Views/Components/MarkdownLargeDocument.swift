@@ -97,6 +97,36 @@ enum MarkdownLargeDocumentPolicy {
     static func isLargeCodeBlock(_ source: String) -> Bool {
         source.utf8.count >= codeBlockThresholdBytes
     }
+
+    // --- Streaming replies (D36) ---
+    // A streaming reply re-parses and re-lays-out its live region on every
+    // tick. Large-stream mode keeps that region to the unpromoted tail. These
+    // values decide where the mode starts and how big the tail can get; the
+    // settled-document threshold above is unaffected.
+    //
+    // The tail the view re-renders is `revealed - promoted`. After each
+    // tick's promotion it is at most `streamingTailWindowBytes +
+    // 2 * streamingMinChunkBytes` (the hard cut when no safe boundary
+    // exists), plus one reveal batch. Fences, math and directives cannot be
+    // cut, so inside one the tail grows with the construct.
+
+    // A streaming reply enters large-stream mode at streamingThresholdBytes.
+    // streamingTailWindowBytes is the live region kept out of the stable
+    // chunks. streamingMinChunkBytes is the smallest stable chunk promotion
+    // cuts.
+    #if os(macOS) // MAC: a 10 KB reply costs about 29 ms per tick against a 33 ms budget, so Mac enters large-stream mode at 8 KB and keeps the re-rendered tail near 8 KB (D36)
+    static let streamingThresholdBytes = 8_000
+    static let streamingTailWindowBytes = 2_000
+    static let streamingMinChunkBytes = 3_000
+    #else // MAC:
+    static let streamingThresholdBytes = documentThresholdBytes
+    static let streamingTailWindowBytes = chunkTargetBytes
+    static let streamingMinChunkBytes = chunkTargetBytes
+    #endif // MAC:
+
+    static func isLargeStreamingReply(_ text: String) -> Bool {
+        text.utf8.count >= streamingThresholdBytes
+    }
 }
 
 /// One bounded rendering unit of a large document. Consecutive selectable
@@ -643,6 +673,24 @@ extension MarkdownBlock {
 /// - otherwise the text is genuinely unstructured prose and a bounded,
 ///   grapheme-aligned hard cut advances one piece.
 enum LargeStreamPromotion {
+    /// The streaming view's step: `nextPromotionBoundary` with the streaming
+    /// policy values. The view and its tests share this one entry point.
+    static func nextStreamingBoundary(
+        promotedBytes: Int,
+        revealedBytes: Int,
+        boundaries: [Int],
+        constructIntervals: [(start: Int, end: Int?)] = []
+    ) -> Int? {
+        nextPromotionBoundary(
+            promotedBytes: promotedBytes,
+            revealedBytes: revealedBytes,
+            tailWindowBytes: MarkdownLargeDocumentPolicy.streamingTailWindowBytes,
+            minChunkBytes: MarkdownLargeDocumentPolicy.streamingMinChunkBytes,
+            boundaries: boundaries,
+            constructIntervals: constructIntervals
+        )
+    }
+
     static func nextPromotionBoundary(
         promotedBytes: Int,
         revealedBytes: Int,

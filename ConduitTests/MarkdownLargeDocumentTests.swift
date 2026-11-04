@@ -89,6 +89,15 @@ final class MarkdownLargeDocumentTests: XCTestCase {
         XCTAssertTrue(MarkdownLargeDocumentPolicy.isLargeDocument(multibyte))
     }
 
+    func testStreamingPolicyKeepsThePreviousValuesOnIOS() {
+        // D36: Mac enters large-stream mode early; iOS must not change.
+        XCTAssertEqual(MarkdownLargeDocumentPolicy.streamingThresholdBytes, MarkdownLargeDocumentPolicy.documentThresholdBytes)
+        XCTAssertEqual(MarkdownLargeDocumentPolicy.streamingTailWindowBytes, MarkdownLargeDocumentPolicy.chunkTargetBytes)
+        XCTAssertEqual(MarkdownLargeDocumentPolicy.streamingMinChunkBytes, MarkdownLargeDocumentPolicy.chunkTargetBytes)
+        XCTAssertNil(StreamingText.charactersRevealedAtCrossing(visible: Array("ab"), in: "abc"))
+        XCTAssertFalse(StreamingText.drawsMarkupInPlace(revealedBytes: MarkdownLargeDocumentPolicy.documentThresholdBytes))
+    }
+
     // MARK: 2/3. Initial presentation is bounded
 
     func testPreviewSourceIsBoundedPrefix() {
