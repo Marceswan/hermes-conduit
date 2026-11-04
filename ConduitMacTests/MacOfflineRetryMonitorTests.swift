@@ -449,6 +449,41 @@ final class MacOfflineRetryPresentationTests: XCTestCase {
         XCTAssertEqual(gateway.text, AppLocalization.string("Update this Hermes gateway to recover active turns safely."))
     }
 
+    /// The composer redraws only when a `ComposerInputs` value changes. A restore attempt flips `isConnecting`,
+    /// which the composer's notice reads through `macShowsHermesUnreachable`.
+    func testComposerInputsChangeWhenAnAttemptStartsAndEnds() throws {
+        let (appState, _) = try makeAppState()
+        XCTAssertTrue(appState.macShowsHermesUnreachable, "precondition: the waiting state")
+        let waiting = ComposerInputs(appState)
+
+        appState.isConnecting = true
+        XCTAssertNotEqual(waiting, ComposerInputs(appState), "the composer must redraw when an attempt starts")
+
+        appState.isConnecting = false
+        XCTAssertEqual(ComposerInputs(appState), waiting, "and again when it ends")
+    }
+
+    /// The notice must not depend on other inputs moving with it (the placeholder does today). The inputs carry the
+    /// notice's own state, and it follows the attempt.
+    func testComposerInputsCarryTheUnreachableState() throws {
+        let (appState, _) = try makeAppState()
+        XCTAssertTrue(appState.macShowsHermesUnreachable, "precondition: the waiting state")
+        XCTAssertEqual(Self.unreachable(in: ComposerInputs(appState)), true, "the waiting state")
+
+        appState.isConnecting = true
+        XCTAssertFalse(appState.macShowsHermesUnreachable, "precondition: an attempt is running")
+        XCTAssertEqual(Self.unreachable(in: ComposerInputs(appState)), false, "the attempt keeps the loading notice")
+
+        appState.isConnecting = false
+        XCTAssertEqual(Self.unreachable(in: ComposerInputs(appState)), true, "the attempt ended")
+    }
+
+    /// `hermesUnreachable` of `inputs`, or nil when `ComposerInputs` has no such value. Read by name so that
+    /// this test builds, and fails, before the value exists.
+    private static func unreachable(in inputs: ComposerInputs) -> Bool? {
+        Mirror(reflecting: inputs).children.first { $0.label == "hermesUnreachable" }?.value as? Bool
+    }
+
     // MARK: - Touch ID
 
     func testRestoreWouldPromptForASavedPasswordThatNeedsBiometricsAndIsNotUnlocked() throws {
