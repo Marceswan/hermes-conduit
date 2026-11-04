@@ -17,6 +17,8 @@ final class MacChatListPollQuietTests: XCTestCase {
         var projects: [ProjectSummary] = []
         var projectsError: Error?
         var tags: [String: Any] = [:]
+        /// What the dashboard bridge was asked, oldest first.
+        var requests: [(method: String, path: String, body: [String: Any]?)] = []
         var loads = 0
         var projectReads = 0
         var tagReads = 0
@@ -50,7 +52,7 @@ final class MacChatListPollQuietTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    private func makeAppState(_ box: Box) -> AppState {
+    private func makeAppState(_ box: Box, dashboard: SavedDashboard? = nil) -> AppState {
         var operations = ChatResumeLifecycleOperations()
         operations.loadProjects = { _ in
             box.projectReads += 1
@@ -61,7 +63,8 @@ final class MacChatListPollQuietTests: XCTestCase {
         let appState = AppState(
             defaults: suite.defaults,
             loadSavedConnection: false,
-            dashboardRegistry: SavedDashboardRegistry(),
+            dashboardRegistry: dashboard.map { SavedDashboardRegistry(activeDashboardID: $0.id, dashboards: [$0]) }
+                ?? SavedDashboardRegistry(),
             clearSessionPresentationCache: {},
             sessionCatalogLoader: { _ in
                 box.loads += 1
@@ -86,7 +89,13 @@ final class MacChatListPollQuietTests: XCTestCase {
         return appState
     }
 
-    private func row(_ id: String, profile: String, title: String? = nil) -> SessionSummary {
+    private func row(
+        _ id: String,
+        profile: String,
+        title: String? = nil,
+        unread: Bool? = nil,
+        watermark: Double? = nil
+    ) -> SessionSummary {
         SessionSummary(
             id: id,
             alternateIds: [],
@@ -99,8 +108,8 @@ final class MacChatListPollQuietTests: XCTestCase {
             isActive: false,
             isArchived: false,
             messageCount: 3,
-            isUnread: nil,
-            readWatermark: nil,
+            isUnread: unread,
+            readWatermark: watermark,
             lineageRootId: nil
         )
     }
@@ -118,11 +127,33 @@ final class MacChatListPollQuietTests: XCTestCase {
         )
     }
 
-    private func installClient(_ appState: AppState) {
-        appState.client = HermesClient(
+    @discardableResult
+    private func installClient(_ appState: AppState) -> HermesClient {
+        let client = HermesClient(
             connection: HermesConnection(baseUrl: "https://hermes.test", ticket: "ticket"),
             profile: "default"
         )
+        appState.client = client
+        return client
+    }
+
+    /// A dashboard bridge that answers every request with `{}` and records it in the box. The
+    /// requests go out the way they do while the app is in the background (without the page), which
+    /// does not depend on WebKit in the test host.
+    private func recordingBridge(_ box: Box) -> DashboardTicketBridge {
+        let bridge = DashboardTicketBridge(baseURL: "https://hermes.test")
+        bridge.webViewCanRun = { false }
+        if let cookie = HTTPCookie(properties: [.name: "session", .value: "test", .domain: "hermes.test", .path: "/"]) {
+            bridge.backgroundIssuedCookies = [cookie]
+        }
+        bridge.loadWithoutPageForTesting = { request in
+            let body = request.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            box.requests.append((request.httpMethod ?? "GET", request.url?.path ?? "", body))
+            let url = request.url ?? URL(fileURLWithPath: "/")
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)
+            return (Data("{}".utf8), response ?? URLResponse())
+        }
+        return bridge
     }
 
     private func watch(_ appState: AppState) -> Publishes {
@@ -210,10 +241,13 @@ final class MacChatListPollQuietTests: XCTestCase {
 
     // MARK: - What the equal read still does
 
-    /// `sessions.didSet` ran the read-state upkeep on every read. An equal list is not assigned, so
-    /// the read runs the upkeep itself: here `observe` seeds a row the ledger lost, and the row
-    /// publishes once for that change alone.
-    func testReadStateUpkeepStillRunsOnAnEqualRead() async {
+    // `sessions.didSet` ran the read-state upkeep (`observeChatReadState`) on every read. An equal list
+    // is not assigned, so the read runs the upkeep itself. The three tests below read an equal list
+    // and check one thing of the upkeep each: `ChatReadState.observe` seeds a row, `observe` lets a
+    // pending server value lapse, and `clearHermesFlagsSeenHere` retries the clear of an unread flag.
+
+    /// `observe` seeds a row the ledger lost, and the read publishes once for that change alone.
+    func testAnEqualReadStillSeedsALostLedgerRow() async {
         let box = Box()
         let appState = makeAppState(box)
         let profile = appState.activeProfile
@@ -236,6 +270,91 @@ final class MacChatListPollQuietTests: XCTestCase {
         box.now += 40
         await poll(appState)
         XCTAssertEqual(box.loads, 3)
+        XCTAssertEqual(published.count, 1)
+    }
+
+    /// `observe` lets a pending server value lapse: a flag write sent 31 s ago that no listing
+    /// confirmed no longer outranks the listing. The read publishes once, for that stored change.
+    func testAnEqualReadStillExpiresAPendingServerValue() async {
+        let box = Box()
+        let appState = makeAppState(box)
+        let profile = appState.activeProfile
+        let listed = row("a", profile: profile)
+        box.catalog = [listed, row("b", profile: profile)]
+        await appState.loadSessions()
+        let sentAt = Date().addingTimeInterval(-(ChatReadState.pendingServerValueLifetime + 1))
+        appState.updateChatReadState { _ = $0.recordServerWrite(listed, profile: profile, unread: true, at: sentAt) }
+        XCTAssertEqual(appState.chatReadState.pendingServerValues.count, 1, "precondition")
+
+        let published = watch(appState)
+        box.now += 40
+        await poll(appState)
+
+        XCTAssertEqual(box.loads, 2)
+        XCTAssertEqual(appState.sessions.map(\.id), ["a", "b"], "the list is the equal one")
+        XCTAssertTrue(appState.chatReadState.pendingServerValues.isEmpty, "the lapsed value is dropped")
+        // The dropped value is the one change. The list is equal and is not written.
+        XCTAssertEqual(published.count, 1)
+
+        box.now += 40
+        await poll(appState)
+        XCTAssertEqual(box.loads, 3)
+        XCTAssertEqual(published.count, 1, "nothing is left to drop")
+    }
+
+    /// `clearHermesFlagsSeenHere` retries the clear of an unread flag. The user saw the chat before
+    /// leaving it, Hermes still flags it unread, and the earlier clear was sent 6 minutes ago and never
+    /// confirmed. The upkeep of an equal read lets that attempt lapse and sends the clear again, once.
+    func testAnEqualReadStillRetriesAnUnreadFlagClear() async throws {
+        let box = Box()
+        let appState = makeAppState(box)
+        let profile = appState.activeProfile
+        appState.installDashboardTicketBridgeForTesting(recordingBridge(box))
+        let flagged = row("a", profile: profile, unread: true, watermark: 1_850_000)
+        box.catalog = [flagged, row("b", profile: profile)]
+        await appState.loadSessions()
+        appState.updateChatReadState { $0.markSeen(flagged, profile: profile, at: Date()) }
+        let attemptedAt = Date().addingTimeInterval(-(ChatReadState.passiveRewriteInterval + 60))
+        appState.updateChatReadState { state in
+            let generation = state.recordServerWrite(flagged, profile: profile, unread: false, at: attemptedAt)
+            state.discardServerWrite(flagged, profile: profile, generation: generation)
+        }
+        XCTAssertTrue(appState.chatReadState.pendingServerValues.isEmpty, "precondition")
+        XCTAssertFalse(appState.chatReadState.lastWriteAttempts.isEmpty, "precondition: the earlier attempt is on record")
+
+        func flagClears() -> [[String: Any]] {
+            box.requests.filter { $0.method == "PATCH" && $0.path == "/api/sessions/a" }.compactMap(\.body)
+        }
+        let published = watch(appState)
+        box.now += 40
+        await poll(appState)
+
+        XCTAssertEqual(box.loads, 2)
+        XCTAssertEqual(appState.sessions.map(\.id), ["a", "b"], "the list is the equal one")
+        // The retry records its write as pending before it sends it.
+        let retried = try XCTUnwrap(appState.chatReadState.pendingServerValues.values.first, "the retry recorded its write")
+        XCTAssertFalse(retried.unread)
+        // That pending write is the one change. The list is equal and is not written.
+        XCTAssertEqual(published.count, 1)
+        // Each request waits for the web view's cookie store for up to 2 s in the test host: the
+        // limit is a cap, not a timing.
+        // The send is a task on the main actor: the wait must suspend, not spin the run loop. The
+        // limit is a cap, not a timing.
+        for _ in 0..<2_000 where flagClears().isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(
+            flagClears().isEmpty,
+            "the clear was sent again; the bridge was asked \(box.requests.map { "\($0.method) \($0.path)" })"
+        )
+        XCTAssertEqual(flagClears().first?["unread"] as? Bool, false)
+
+        // The clear just recorded holds the next read back: no second write.
+        box.now += 40
+        await poll(appState)
+        XCTAssertEqual(box.loads, 3)
+        XCTAssertEqual(appState.chatReadState.pendingServerValues.values.first?.generation, retried.generation)
+        XCTAssertEqual(flagClears().count, 1)
         XCTAssertEqual(published.count, 1)
     }
 
@@ -387,6 +506,58 @@ final class MacChatListPollQuietTests: XCTestCase {
         XCTAssertEqual(appState.projects.map(\.id), ["home"])
     }
 
+    /// A read over the project pages the saved Chats list brought keeps its loading state, also when
+    /// Hermes sends the same pages and this client and profile answered before: the answer ends the
+    /// seeding, so the pages are not yet Hermes' own.
+    func testAReadOverSavedListPagesKeepsTheLoadingFlag() async {
+        let dashboard = SavedDashboard(id: UUID(), label: "One", normalizedURL: "https://one.example")
+        let box = Box()
+        let appState = makeAppState(box, dashboard: dashboard)
+        let client = installClient(appState)
+        let pages = [project("home", title: "Home", isHome: true, sessions: 4)]
+        box.projects = pages
+        await appState.refreshProjects()
+        XCTAssertEqual(box.loadingDuringProjectReads, [true], "precondition")
+        XCTAssertEqual(appState.projects, pages, "precondition")
+
+        // A server change clears the projects and the list, and not what the client answered.
+        appState.prepareChatResumeForConnection(to: "https://one.example", dashboardID: UUID())
+        XCTAssertTrue(appState.prepareChatResumeForConnection(to: "https://two.example", dashboardID: UUID()), "precondition")
+        appState.client = client
+        XCTAssertTrue(appState.projects.isEmpty, "precondition")
+        XCTAssertFalse(appState.supportsProjects, "precondition")
+
+        // The saved Chats list of the scope brings the same pages.
+        appState.offlineChatCacheForTesting.recordChatList(
+            SavedChatList.capture(
+                sessions: [row("a", profile: appState.activeProfile)],
+                cronSessions: [],
+                isPinned: { _ in false },
+                voiceTags: [:],
+                projects: pages,
+                supportsProjects: true
+            ),
+            dashboardID: dashboard.id,
+            profile: appState.activeProfile
+        )
+        appState.presentSavedChatListIfAvailable(dashboardID: dashboard.id)
+        XCTAssertTrue(appState.projectsSeededFromSavedList, "precondition")
+        XCTAssertEqual(appState.projects, pages, "precondition")
+        XCTAssertTrue(appState.supportsProjects, "precondition")
+
+        await appState.refreshProjects()
+
+        XCTAssertEqual(box.projectReads, 2)
+        XCTAssertEqual(box.loadingDuringProjectReads, [true, true], "the read over saved pages shows its loading state")
+        XCTAssertFalse(appState.projectsSeededFromSavedList, "Hermes' answer ends the seeding, though it is equal")
+        XCTAssertEqual(appState.projects, pages)
+        XCTAssertFalse(appState.projectsLoading)
+
+        // Now that the pages are Hermes' own, the next read repeats the answer.
+        await appState.refreshProjects()
+        XCTAssertEqual(box.loadingDuringProjectReads, [true, true, false])
+    }
+
     // MARK: - Voice tags
 
     func testVoiceTagsReadWithTheSameContentPublishNothing() {
@@ -401,17 +572,23 @@ final class MacChatListPollQuietTests: XCTestCase {
             return ["ok": true, "tags": box.tags]
         })
 
-        appState.refreshVoiceSessionTags(force: true)
+        // A call returns early while an earlier read's task lives, so a read is started by calling
+        // until it runs. A read that starts proves that the one before it has ended.
+        func startRead(number: Int) -> Bool {
+            HostedTestSupport.waitUntil {
+                if box.tagReads < number { appState.refreshVoiceSessionTags(force: true) }
+                return box.tagReads >= number
+            }
+        }
+        XCTAssertTrue(startRead(number: 1), "precondition")
         XCTAssertTrue(HostedTestSupport.waitUntil { !appState.voiceSessionTagsByKey.isEmpty }, "precondition")
-        // The read's task ends after the tags land.
-        HostedTestSupport.settle(0.2)
 
+        // The watch covers the whole second read: the first one's tags have landed, and the second
+        // read has not started yet.
         let published = watch(appState)
-        appState.refreshVoiceSessionTags(force: true)
-        XCTAssertTrue(HostedTestSupport.waitUntil { box.tagReads >= 2 })
-        HostedTestSupport.settle(0.2)
+        XCTAssertTrue(startRead(number: 2))
+        XCTAssertTrue(startRead(number: 3), "the third read starts only after the second one ended")
 
-        XCTAssertEqual(box.tagReads, 2, "the second read ran once")
         XCTAssertEqual(published.count, 0)
     }
 }

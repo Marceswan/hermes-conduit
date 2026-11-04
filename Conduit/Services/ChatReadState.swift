@@ -94,6 +94,7 @@ struct ChatReadState: Equatable {
 
     // MARK: Reading
 
+    // MAC: D36 what a row can show, so bookkeeping-only changes do not publish
     /// Whether `other` answers every read below the same way (`isUnread`,
     /// `serverUnread`, `isExplicitlyUnread`, `desktopSeenTime`). The seen
     /// moments, the write attempts and the write counter only steer

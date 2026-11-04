@@ -164,7 +164,7 @@ struct ChatResumeLifecycleOperations {
     var createSession: (@MainActor (HermesClient, String?) async throws -> BranchResult)?
     /// Test seam for the project tree read (`projects.tree`). Not an init
     /// parameter: tests set it on the value.
-    var loadProjects: (@MainActor (HermesClient) async throws -> [ProjectSummary])?
+    var loadProjects: (@MainActor (HermesClient) async throws -> [ProjectSummary])? // MAC: D36 test seam for the quiet-poll tests
 
     init(
         connectClient: (@MainActor (HermesClient) async throws -> Void)? = nil,
@@ -893,7 +893,7 @@ final class AppState: ObservableObject {
     /// Not `@Published`: `updateChatReadState` announces a change a row can
     /// show. A seen moment restamped for the chat on screen, once a minute,
     /// moves no row and must not redraw the list.
-    private(set) var chatReadState = ChatReadState()
+    private(set) var chatReadState = ChatReadState() // MAC: D36 not @Published, so a restamped seen moment does not redraw the sidebar
     /// The latest `session.active_list` snapshot and the profile it belongs
     /// to (#454).
     @Published private(set) var liveSessionStatusIndex = SessionLiveStatusIndex()
@@ -4490,6 +4490,7 @@ final class AppState: ObservableObject {
     private let chatListPollSleep = WakeableSleep()
     private var chatListCatalogGeneration = 0
     private var projectsRequestGeneration = 0
+    // MAC: D36 a project read that repeats its answer shows no loading state
     /// What the last project read answered (a tree, or "no projects here")
     /// and for whom, so a read that repeats it shows no loading state. A
     /// reset of the projects (sign-out) no longer matches `supportsProjects`.
@@ -6387,11 +6388,11 @@ final class AppState: ObservableObject {
                 // Tags this device just wrote may not have reached the host's
                 // listing yet; the host's own win where both exist, except
                 // that a local parent link beats a host tag still lacking it.
-                let merged = (self.voiceSessionTagsByKey[key] ?? [:]).merging(tags) { local, host in
+                let merged = (self.voiceSessionTagsByKey[key] ?? [:]).merging(tags) { local, host in // MAC: D36 merged first, so equal tags compare equal
                     host.parentID == nil && local.parentID != nil && host.kind == local.kind ? local : host
                 }
                 // Assigned only on a change: every publish redraws the chat list.
-                if self.voiceSessionTagsByKey[key] != merged { self.voiceSessionTagsByKey[key] = merged }
+                if self.voiceSessionTagsByKey[key] != merged { self.voiceSessionTagsByKey[key] = merged } // MAC: D36 equal tags do not redraw the sidebar
             } catch {
                 // An older plugin has no tags: rows stay under their source.
                 Self.voiceHistoryLog.debug("Voice tags unavailable: \(LogRedaction.describing(error), privacy: .public)")
@@ -8407,12 +8408,12 @@ final class AppState: ObservableObject {
     /// on a change a row can show: listings arrive often and most change
     /// nothing here, a few only move the bookkeeping `observe` and
     /// `markSeen` keep. (Internal for tests.)
-    func updateChatReadState(_ change: (inout ChatReadState) -> Void) {
+    func updateChatReadState(_ change: (inout ChatReadState) -> Void) { // MAC: D36 internal for tests
         var next = chatReadState
         change(&next)
         guard next != chatReadState else { return }
         let ledgerChanged = next.ledger != chatReadState.ledger
-        if !next.readsTheSame(as: chatReadState) { objectWillChange.send() }
+        if !next.readsTheSame(as: chatReadState) { objectWillChange.send() } // MAC: D36 announce only what a row can show
         chatReadState = next
         if ledgerChanged, let data = try? JSONEncoder().encode(next.ledger) {
             defaults.set(data, forKey: chatReadLedgerKey)
@@ -8654,7 +8655,7 @@ final class AppState: ObservableObject {
 
     private func setActiveSessionTitle(_ title: String) {
         // Assigned only on a change: every publish redraws the chat list.
-        if activeSessionTitle != title { activeSessionTitle = title }
+        if activeSessionTitle != title { activeSessionTitle = title } // MAC: D36 an equal title does not redraw the sidebar
         activeSessionTitlesByProfile[activeProfile] = title
         persistActiveSessionTitles()
         publishWidgetSnapshot()
@@ -13262,7 +13263,7 @@ final class AppState: ObservableObject {
             // A list read that started after this sync's read already
             // listed newer rows; the sync still resumes its chat.
             if claimSessionListListing(readTicket) {
-                listCatalogRows(
+                listCatalogRows( // MAC: D36 an equal catalog does not redraw the sidebar
                     allSessions.filter { $0.source != .cron },
                     cron: allSessions.filter { $0.source == .cron }
                 )
@@ -13271,7 +13272,7 @@ final class AppState: ObservableObject {
                     dashboardID: dashboardID
                 )
             }
-            markSessionCatalogLoaded(SessionCatalogOwner(dashboardID: dashboardID, profile: profile))
+            markSessionCatalogLoaded(SessionCatalogOwner(dashboardID: dashboardID, profile: profile)) // MAC: D36 an equal load state does not redraw the sidebar
             if let dashboardID {
                 widgetSettledCatalogOwner = WidgetWorkspaceID(dashboardID: dashboardID, profile: profile)
                 widgetLaunchCoordinator.readinessChanged()
@@ -18489,11 +18490,11 @@ final class AppState: ObservableObject {
             let listedSessions = allSessions.filter { $0.source != .cron }
             let listedCron = allSessions.filter { $0.source == .cron }
             // A read that changed the list keeps the list's poll quick.
-            if listCatalogRows(listedSessions, cron: listedCron) { chatListCatalogGeneration &+= 1 }
+            if listCatalogRows(listedSessions, cron: listedCron) { chatListCatalogGeneration &+= 1 } // MAC: D36 an equal catalog does not redraw the sidebar
             chatListCatalogFreshness.noteLoaded(at: chatSyncNow())
             observeOpenChatCatalog()
             savedChatListReplacedByLiveList(newestPageOnly: false, dashboardID: dashboardID)
-            markSessionCatalogLoaded(SessionCatalogOwner(dashboardID: dashboardID, profile: profile))
+            markSessionCatalogLoaded(SessionCatalogOwner(dashboardID: dashboardID, profile: profile)) // MAC: D36 an equal load state does not redraw the sidebar
             refreshVoiceSessionTags()
             // Labeled rows are positive identity evidence; commit them so
             // notification routing survives a later catalog omission.
@@ -18548,6 +18549,7 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MAC: D36 the two writes of a catalog read that an equal read skips
     /// Marks the catalog loaded for `owner`. Written only when it is not
     /// already: every write redraws the chat list.
     private func markSessionCatalogLoaded(_ owner: SessionCatalogOwner) {
@@ -27963,20 +27965,21 @@ final class AppState: ObservableObject {
         let repeatsAnswer = projectsAnswer.map {
             $0.client === client && $0.profile == profile && $0.supportsProjects == supportsProjects
         } ?? false
-        if !(repeatsAnswer && !projectsLoadFailed && !projectsSeededFromSavedList), !projectsLoading {
+        let showsLoading = !repeatsAnswer || projectsLoadFailed || projectsSeededFromSavedList
+        if showsLoading, !projectsLoading { // MAC: D36 a repeated answer shows no loading state
             projectsLoading = true
         }
         defer {
             if generation == projectsRequestGeneration,
                profile == activeProfile,
                self.client === client,
-               projectsLoading {
+               projectsLoading { // MAC: D36 clear the flag only when it is set
                 projectsLoading = false
             }
         }
         do {
             let loaded: [ProjectSummary]
-            if let loadProjects = chatResumeLifecycleOperations.loadProjects {
+            if let loadProjects = chatResumeLifecycleOperations.loadProjects { // MAC: D36 test seam for the quiet-poll tests
                 loaded = try await loadProjects(client)
             } else {
                 loaded = try await client.projects()
@@ -27984,7 +27987,7 @@ final class AppState: ObservableObject {
             guard generation == projectsRequestGeneration,
                   profile == activeProfile,
                   self.client === client else { return }
-            let sorted = loaded.sorted {
+            let sorted = loaded.sorted { // MAC: D36 sorted first, so equal pages compare equal
                 if $0.isHome != $1.isHome { return $0.isHome }
                 if $0.sessionCount != $1.sessionCount { return $0.sessionCount > $1.sessionCount }
                 return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
@@ -27992,7 +27995,7 @@ final class AppState: ObservableObject {
             // Written only on a change: every write redraws the chat list.
             // Pages the saved list seeded are replaced even by equal ones,
             // which ends their seeding.
-            if sorted != projects || projectsSeededFromSavedList { projects = sorted }
+            if sorted != projects || projectsSeededFromSavedList { projects = sorted } // MAC: D36 equal pages do not redraw the sidebar
             if !supportsProjects { supportsProjects = true }
             if projectsLoadFailed { projectsLoadFailed = false }
             projectsAnswer = ProjectsAnswer(client: client, profile: profile, supportsProjects: true)
@@ -28004,10 +28007,10 @@ final class AppState: ObservableObject {
             if error is CancellationError || Task.isCancelled { return }
             guard isProjectsUnavailable(error) else {
                 let failed = projects.isEmpty
-                if projectsLoadFailed != failed { projectsLoadFailed = failed }
+                if projectsLoadFailed != failed { projectsLoadFailed = failed } // MAC: D36 an unchanged flag does not redraw the sidebar
                 return
             }
-            if !projects.isEmpty || projectsSeededFromSavedList { projects = [] }
+            if !projects.isEmpty || projectsSeededFromSavedList { projects = [] } // MAC: D36 an unchanged answer does not redraw the sidebar
             if supportsProjects { supportsProjects = false }
             if projectsLoadFailed { projectsLoadFailed = false }
             projectsAnswer = ProjectsAnswer(client: client, profile: profile, supportsProjects: false)
