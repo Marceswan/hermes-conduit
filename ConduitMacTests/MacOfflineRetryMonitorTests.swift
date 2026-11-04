@@ -521,10 +521,16 @@ final class MacOfflineRetrySignOutTests: XCTestCase {
         addTeardownBlock { KeychainHelper.clearNativeOAuthTokens(dashboardID: dashboard.id) }
 
         let mintStarted = expectation(description: "the restore waits at the ticket")
+        // Inverted: the restore must not reach `connect`. If it did, this fulfills at once and the test fails.
+        let restoreConnected = expectation(description: "the restore connects after the sign-out")
+        restoreConnected.isInverted = true
         var release: CheckedContinuation<String, Never>?
         var connectCalls = 0
         let lifecycle = ChatResumeLifecycleOperations(
-            connectClient: { _ in connectCalls += 1 },
+            connectClient: { _ in
+                connectCalls += 1
+                restoreConnected.fulfill()
+            },
             loadCatalog: { _, _ in [] },
             mintTicket: { _ in
                 mintStarted.fulfill()
@@ -557,11 +563,11 @@ final class MacOfflineRetrySignOutTests: XCTestCase {
         XCTAssertTrue(appState.showLogin, "precondition: sign-out shows sign-in")
 
         release?.resume(returning: "late-ticket")
-        // Without the fix the restore connects at once, so the wait ends early. With it, the restore returns.
-        for _ in 0..<40 where connectCalls == 0 && appState.connection == nil {
-            try await Task.sleep(nanoseconds: 25_000_000)
-        }
-        try await Task.sleep(nanoseconds: 200_000_000)
+        // Without the fix the restore goes on to `connect` within a few main-actor turns and fulfills the
+        // inverted expectation, which ends the wait and fails the test. The timeout is only the time a
+        // slow machine gets to reach that point, so it is long. With the fix the restore stops at its fence,
+        // nothing fulfills the expectation, and the wait runs to its end.
+        await fulfillment(of: [restoreConnected], timeout: 3)
 
         XCTAssertNil(appState.connection, "the restore must not undo the sign-out")
         XCTAssertEqual(connectCalls, 0)
