@@ -352,4 +352,119 @@ final class SelectableTextViewTests: XCTestCase {
             }
         }
     }
+
+    // D36 Task 5: presentation gate and one-entry measure cache.
+
+    private func makeApplied(_ view: SelectableTextView, coordinator: SelectableTextView.Coordinator) -> NSTextView {
+        let textView = SelectableTextView.makeTextView(delegate: coordinator)
+        view.apply(to: textView, coordinator: coordinator, environment: EnvironmentValues())
+        return textView
+    }
+
+    private func countEdits(of textView: NSTextView, _ body: () -> Void) -> Int {
+        var edits = 0
+        let token = NotificationCenter.default.addObserver(
+            forName: NSTextStorage.didProcessEditingNotification,
+            object: textView.textStorage,
+            queue: nil
+        ) { _ in edits += 1 }
+        body()
+        NotificationCenter.default.removeObserver(token)
+        return edits
+    }
+
+    func testSecondMeasureWithSameInputAndWidthDoesNotLayOutAgain() {
+        let view = SelectableTextView(text: String(repeating: "word ", count: 200))
+        let coordinator = SelectableTextView.Coordinator()
+        _ = makeApplied(view, coordinator: coordinator)
+        let first = view.measuredSizeCached(proposalWidth: 300, coordinator: coordinator)
+        let laidOut = coordinator.measureCount
+        let second = view.measuredSizeCached(proposalWidth: 300, coordinator: coordinator)
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(coordinator.measureCount, laidOut)
+        XCTAssertEqual(laidOut, 1)
+    }
+
+    func testNewWidthMeasuresAgain() {
+        let view = SelectableTextView(text: String(repeating: "word ", count: 200))
+        let coordinator = SelectableTextView.Coordinator()
+        _ = makeApplied(view, coordinator: coordinator)
+        let wide = view.measuredSizeCached(proposalWidth: 600, coordinator: coordinator)
+        let narrow = view.measuredSizeCached(proposalWidth: 200, coordinator: coordinator)
+        XCTAssertEqual(coordinator.measureCount, 2)
+        XCTAssertGreaterThan(narrow?.height ?? 0, wide?.height ?? 0)
+    }
+
+    func testFontAndLineSpacingChangesMeasureAndApply() {
+        let text = String(repeating: "word ", count: 100)
+        let coordinator = SelectableTextView.Coordinator()
+        let base = SelectableTextView(text: text, font: .systemFont(ofSize: 12))
+        let textView = makeApplied(base, coordinator: coordinator)
+        let baseSize = base.measuredSizeCached(proposalWidth: 300, coordinator: coordinator)
+
+        let bigger = SelectableTextView(text: text, font: .systemFont(ofSize: 28))
+        bigger.apply(to: textView, coordinator: coordinator, environment: EnvironmentValues())
+        let biggerSize = bigger.measuredSizeCached(proposalWidth: 300, coordinator: coordinator)
+        XCTAssertEqual(coordinator.measureCount, 2)
+        XCTAssertGreaterThan(biggerSize?.height ?? 0, baseSize?.height ?? 0)
+
+        let spaced = SelectableTextView(text: text, font: .systemFont(ofSize: 28), lineSpacing: 20)
+        spaced.apply(to: textView, coordinator: coordinator, environment: EnvironmentValues())
+        let spacedSize = spaced.measuredSizeCached(proposalWidth: 300, coordinator: coordinator)
+        XCTAssertEqual(coordinator.measureCount, 3)
+        XCTAssertGreaterThan(spacedSize?.height ?? 0, biggerSize?.height ?? 0)
+        let style = textView.textStorage?.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle
+        XCTAssertEqual(style?.lineSpacing, 20)
+    }
+
+    func testIdenticalInputDoesNotSetTextChangedTextDoes() {
+        let coordinator = SelectableTextView.Coordinator()
+        let first = SelectableTextView(text: "hello world")
+        let textView = makeApplied(first, coordinator: coordinator)
+        let same = SelectableTextView(text: "hello world")
+        let generation = coordinator.presentationGeneration
+        defer { XCTAssertEqual(coordinator.presentationGeneration, generation &+ 1) }
+        XCTAssertEqual(countEdits(of: textView) {
+            same.apply(to: textView, coordinator: coordinator, environment: EnvironmentValues())
+        }, 0)
+        let changed = SelectableTextView(text: "hello there")
+        XCTAssertGreaterThan(countEdits(of: textView) {
+            changed.apply(to: textView, coordinator: coordinator, environment: EnvironmentValues())
+        }, 0)
+        XCTAssertEqual(textView.string, "hello there")
+    }
+
+    func testAppearanceChangeApplies() {
+        let coordinator = SelectableTextView.Coordinator()
+        let view = SelectableTextView(text: "hello world")
+        let textView = makeApplied(view, coordinator: coordinator)
+        // A view outside a window reports the app appearance, so host it.
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [], backing: .buffered, defer: true)
+        window.appearance = NSAppearance(named: .aqua)
+        window.contentView = textView
+        view.apply(to: textView, coordinator: coordinator, environment: EnvironmentValues())
+        let generation = coordinator.presentationGeneration
+        window.appearance = NSAppearance(named: .darkAqua)
+        view.apply(to: textView, coordinator: coordinator, environment: EnvironmentValues())
+        XCTAssertEqual(coordinator.presentationGeneration, generation &+ 1)
+        view.apply(to: textView, coordinator: coordinator, environment: EnvironmentValues())
+        XCTAssertEqual(coordinator.presentationGeneration, generation &+ 1)
+    }
+
+    func testFindRegistrationStillReceivesTextChanges() {
+        let coordinator = SelectableTextView.Coordinator()
+        let textView = SelectableTextView.makeTextView(delegate: coordinator)
+        var environment = EnvironmentValues()
+        let controller = MacChatFindController()
+        environment.macChatFindController = controller
+        environment.macChatFindMessageID = "m1"
+        SelectableTextView(text: "one").apply(to: textView, coordinator: coordinator, environment: environment)
+        XCTAssertTrue(coordinator.findController === controller)
+        var registered = 0
+        controller.registry.didRegister = { _ in registered += 1 }
+        SelectableTextView(text: "one").apply(to: textView, coordinator: coordinator, environment: environment)
+        XCTAssertEqual(registered, 0)
+        SelectableTextView(text: "two").apply(to: textView, coordinator: coordinator, environment: environment)
+        XCTAssertEqual(registered, 1)
+    }
 }
