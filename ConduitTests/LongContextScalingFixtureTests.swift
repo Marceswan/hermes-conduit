@@ -29,9 +29,12 @@ final class LongContextScalingFixtureTests: XCTestCase {
     }
 
     override func tearDown() {
+        // A bounded pump, as in TranscriptPerformanceFixtureTests: a
+        // zero-interval tick lets cold-simulator dismantle transactions land
+        // inside the next test's measurement window.
         testWindow?.isHidden = true
         testWindow?.rootViewController = nil
-        RunLoop.current.run(until: Date())
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
         testWindow = nil
         TranscriptPerf.reset()
         super.tearDown()
@@ -133,7 +136,9 @@ final class LongContextScalingFixtureTests: XCTestCase {
         )
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
         window.rootViewController = host
-        window.isHidden = false
+        // Key and visible now, so the key/attach transition completes in the
+        // mount drain, never inside a measurement window.
+        window.makeKeyAndVisible()
         testWindow = window
         host.view.setNeedsLayout()
         host.view.layoutIfNeeded()
@@ -157,8 +162,7 @@ final class LongContextScalingFixtureTests: XCTestCase {
         var sources = Set<String>()
         func walk(_ view: UIView) {
             if let host = view as? SelectableTextViewHostView,
-               let text = host.mountedTextView.text,
-               let match = text.firstMatch(of: #/answer (\d+) /#),
+               let match = host.displayedText.firstMatch(of: #/answer (\d+) /#),
                let index = Int(match.1),
                transcript.indices.contains(index) {
                 sources.insert(transcript[index].content)
@@ -183,6 +187,18 @@ final class LongContextScalingFixtureTests: XCTestCase {
         appState.messages = Self.deepTranscript()
 
         let host = mountChat(appState: appState)
+        // On a loaded runner the counters can go quiet before the bottom
+        // landing: only the top layout's first rows are mounted then, and the
+        // landing's rows render inside the measurement window below. Wait
+        // (capped) until the tail is mounted, then for quiet again.
+        let tail = Set(appState.messages.suffix(4).map(\.content))
+        let landingDeadline = Date().addingTimeInterval(10)
+        while mountedSettledSources(in: host.view, transcript: appState.messages).isDisjoint(with: tail),
+              Date() < landingDeadline {
+            host.view.setNeedsLayout()
+            host.view.layoutIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
         guard PerformanceFixtureWait.settleUntilCountersQuiet(quietFor: 1.0) else {
             XCTFail("deep transcript never reached a quiet state; measurement would be meaningless")
             return
@@ -193,7 +209,7 @@ final class LongContextScalingFixtureTests: XCTestCase {
         // transcript, or the stack is not lazy and the measurement below
         // would tolerate a full cascade.
         let mountedAtWindowOpen = mountedSettledSources(in: host.view, transcript: appState.messages)
-        XCTAssertFalse(mountedAtWindowOpen.isEmpty, "the visible tail must be mounted")
+        XCTAssertFalse(mountedAtWindowOpen.isDisjoint(with: tail), "the visible tail must be mounted")
         XCTAssertLessThan(
             mountedAtWindowOpen.count, 40,
             "an 800-row transcript must mount only a small window: \(mountedAtWindowOpen.count) rows"
@@ -250,12 +266,42 @@ final class LongContextScalingFixtureTests: XCTestCase {
         let atRestRerenders = TranscriptPerf.settledMarkdownPreWindowRepeatEvaluations
         let unmountedRerenders = TranscriptPerf.recentPreWindowRepeatSources
             .filter { !mountedAtWindowOpen.contains($0) }
+        // What drove the window's first re-renders of earlier rows, for a
+        // failure on a hosted runner.
+        let reports = TranscriptPerf.recentGateReopenReports
+        let firstReport = TranscriptPerf.firstGateReopenReport
+        let repeatSpans = TranscriptPerf.preWindowRepeatSpans
+        let reopens: String = reports.isEmpty
+            ? ""
+            : " (gate reopens: "
+                + (firstReport.map { first in
+                    reports.contains(first) ? "" : "first " + first + "; then "
+                } ?? "")
+                + reports.joined(separator: "; ") + ")"
+        // Spans of rows not mounted at window open (the offenders) when
+        // any were recorded; a span's `src=` is its source's first 24
+        // characters.
+        func spanSource(_ span: String) -> String? {
+            span.range(of: " src=").map { String(span[$0.upperBound...].prefix(24)) }
+        }
+        let offenderSpans = repeatSpans.filter { span in
+            guard let prefix = spanSource(span) else { return true }
+            return !mountedAtWindowOpen.contains { $0.hasPrefix(prefix) }
+        }
+        let printedSpans = offenderSpans.isEmpty ? repeatSpans : offenderSpans
+        let coveredRows = Set(offenderSpans.compactMap(spanSource)).count
+        let offendingRows = Set(unmountedRerenders).count
+        let spansLabel: String = offenderSpans.isEmpty
+            ? " — spans (mounted rows only; no offending row's span was recorded):\n"
+            : " — spans of \(coveredRows) of \(offendingRows) offending rows:\n"
+        let spans: String = printedSpans.isEmpty ? "" : spansLabel + printedSpans.joined(separator: "\n")
         XCTAssertTrue(
             unmountedRerenders.isEmpty,
             "live reasoning re-rendered \(unmountedRerenders.count) settled rows that were not mounted "
                 + "(of \(atRestRerenders) at-rest re-renders; mounted rows are tolerated): "
                 + "\(unmountedRerenders.map { String($0.prefix(32)) }); "
                 + "mounted: \(mountedAtWindowOpen.map { String($0.prefix(14)) }.sorted())"
+                + reopens + spans
         )
 
         // And the live card content must actually be visible.

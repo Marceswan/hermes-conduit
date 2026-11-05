@@ -112,6 +112,56 @@ final class ChatReadStateTests: XCTestCase {
         XCTAssertTrue(state.isUnread(laterReply, profile: profile, now: t0.addingTimeInterval(70)))
     }
 
+    /// Leaving a chat moments after opening it still counts the turn that
+    /// ran in between: the leave restamps the seen moment.
+    func testLeavingRightAfterOpeningCountsTheTurnInBetween() {
+        let opened = row("a", count: 4)
+        let turn = row("a", count: 6, lastActivityAt: t0.timeIntervalSince1970 + 40)
+        let leftAt = t0.addingTimeInterval(50)
+
+        var restamped = ChatReadState()
+        restamped.observe([opened], profile: profile, now: t0)
+        restamped.markSeen(opened, profile: profile, at: t0)
+        restamped.markSeen(opened, profile: profile, at: leftAt, restamp: true)
+        restamped.observe([turn], profile: profile, now: leftAt.addingTimeInterval(1))
+        XCTAssertFalse(restamped.isUnread(turn, profile: profile, now: leftAt.addingTimeInterval(1)))
+
+        // An ordinary re-look inside a minute keeps the first moment.
+        var kept = ChatReadState()
+        kept.observe([opened], profile: profile, now: t0)
+        kept.markSeen(opened, profile: profile, at: t0)
+        kept.markSeen(opened, profile: profile, at: leftAt)
+        kept.observe([turn], profile: profile, now: leftAt.addingTimeInterval(1))
+        XCTAssertTrue(kept.isUnread(turn, profile: profile, now: leftAt.addingTimeInterval(1)))
+    }
+
+    /// A listing that predates the turn (or a local edit of the catalog)
+    /// doesn't use up the seen moment before the real count arrives.
+    func testAStaleListingDoesNotSpendTheSeenMoment() {
+        var state = ChatReadState()
+        state.observe([row("a", count: 4)], profile: profile, now: t0)
+        state.markSeen(row("a", count: 4), profile: profile, at: t0)
+        state.observe([row("a", count: 4, lastActivityAt: t0.timeIntervalSince1970 - 30)], profile: profile, now: t0.addingTimeInterval(1))
+        let current = row("a", count: 6, lastActivityAt: t0.timeIntervalSince1970 - 1)
+        state.observe([current], profile: profile, now: t0.addingTimeInterval(2))
+        XCTAssertFalse(state.isUnread(current, profile: profile, now: t0.addingTimeInterval(2)))
+    }
+
+    func testObserveReportsRowsSeenThroughTheirLatestActivity() {
+        var state = ChatReadState()
+        state.observe([row("seen", count: 2), row("later", count: 2), row("other", count: 2)], profile: profile, now: t0)
+        state.markSeen(row("seen", count: 2), profile: profile, at: t0)
+        state.markSeen(row("later", count: 2), profile: profile, at: t0)
+
+        let reported = state.observe([
+            row("seen", count: 4, unread: true, lastActivityAt: t0.timeIntervalSince1970 - 1, watermark: 1_799_999_000),
+            row("later", count: 4, unread: true, lastActivityAt: t0.timeIntervalSince1970 + 60, watermark: 1_799_999_000),
+            row("other", count: 4, unread: true, lastActivityAt: t0.timeIntervalSince1970 - 1, watermark: 1_799_999_000),
+        ], profile: profile, now: t0.addingTimeInterval(70))
+
+        XCTAssertEqual(reported, ["seen"])
+    }
+
     func testOnlyAZeroWatermarkIsAnExplicitHermesMark() {
         let state = ChatReadState()
         let marked = row("a", count: 3, unread: true, watermark: 0)
@@ -336,5 +386,45 @@ final class ChatReadStateTests: XCTestCase {
         )
         XCTAssertEqual(sessions.first { $0.id == "a" }?.isUnread, true)
         XCTAssertNil(sessions.first { $0.id == "b" }?.isUnread)
+    }
+
+    @MainActor
+    func testProfileStripDotsMarkEachProfileWithAnUnreadChat() {
+        let suite = "ChatReadStateTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let appState = AppState(
+            defaults: defaults,
+            loadSavedConnection: false,
+            clearSessionPresentationCache: {},
+            sessionPresentationCache: SessionPresentationCache(defaults: defaults)
+        )
+        func chat(_ id: String, owner: String?) -> SessionSummary {
+            SessionSummary(
+                id: id,
+                alternateIds: [],
+                title: id,
+                model: "Hermes",
+                updatedLabel: "",
+                profile: owner,
+                source: .chat,
+                isActive: false,
+                isArchived: false
+            )
+        }
+        let workUnread = chat("work-unread", owner: " Work ")
+        let homeRead = chat("home-read", owner: "home")
+        let defaultUnread = chat("default-unread", owner: "default")
+        appState.sessions = [chat("work-read", owner: "work"), workUnread, homeRead, defaultUnread, chat("ownerless", owner: nil)]
+        appState.setActiveProfileForTesting("work")
+        appState.markSessionUnread(workUnread)
+        appState.setActiveProfileForTesting("default")
+        appState.markSessionUnread(defaultUnread)
+
+        // An owner spelled differently still counts for its profile.
+        XCTAssertEqual(appState.profilesWithUnread(among: ["work", "home"]), ["work"])
+        XCTAssertEqual(appState.profilesWithUnread(among: ["default", "work", "home"]), ["default", "work"])
+        XCTAssertEqual(appState.profilesWithUnread(among: ["home"]), [])
+        XCTAssertEqual(appState.profilesWithUnread(among: []), [])
     }
 }

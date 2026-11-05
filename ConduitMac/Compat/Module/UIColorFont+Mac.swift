@@ -4,9 +4,23 @@ import SwiftUI
 public extension NSColor {
     static var label: NSColor { .labelColor }
     static var secondaryLabel: NSColor { .secondaryLabelColor }
+    static var tertiaryLabel: NSColor { .tertiaryLabelColor }
     static var link: NSColor { .linkColor }
     static var systemBackground: NSColor { .windowBackgroundColor }
     static var secondarySystemBackground: NSColor { .controlBackgroundColor }
+    static var separator: NSColor { .separatorColor }
+
+    /// UIColor.resolvedColor(with:): the concrete sRGB colour under the
+    /// traits' appearance.
+    func resolvedColor(with traits: UITraitCollection) -> NSColor {
+        let name: NSAppearance.Name = traits.userInterfaceStyle == .dark ? .darkAqua : .aqua
+        guard let appearance = NSAppearance(named: name) else { return self }
+        var resolved = self
+        appearance.performAsCurrentDrawingAppearance {
+            resolved = self.usingColorSpace(.sRGB) ?? self
+        }
+        return resolved
+    }
 }
 
 public extension NSFont {

@@ -10,15 +10,23 @@ public extension NSImage {
         self.init(cgImage: cgImage, size: .zero)
     }
 
-    /// UIImage.scale: pixels per point of the sharpest representation.
+    /// UIImage.scale: pixels per point of the sharpest representation. A bitmap reports its own pixels. An image
+    /// built from a `CGImage` has a snapshot representation whose `pixelsWide` follows the screen's scale (2 for a
+    /// 1x image on a Retina Mac), so those use the pixels of the `CGImage`.
     var scale: CGFloat {
-        guard size.width > 0,
-              let pixels = representations.map(\.pixelsWide).max(), pixels > 0 else { return 1 }
+        guard size.width > 0 else { return 1 }
+        let bitmapPixels = representations.compactMap { ($0 as? NSBitmapImageRep)?.pixelsWide }.max()
+        guard let pixels = bitmapPixels ?? cgImage?.width ?? representations.map(\.pixelsWide).max(), pixels > 0 else { return 1 }
         return CGFloat(pixels) / size.width
     }
 
     var cgImage: CGImage? {
         cgImage(forProposedRect: nil, context: nil, hints: nil)
+    }
+
+    /// UIImage.draw(at:): the image at its natural size, origin at `point`.
+    func draw(at point: CGPoint) {
+        draw(in: CGRect(origin: point, size: size))
     }
 
     func pngData() -> Data? {

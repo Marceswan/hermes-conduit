@@ -158,6 +158,18 @@ final class MediaPreviewPresenter {
         return presentStaged(staged, previewable: previewable)
     }
 
+    /// Previews a gateway file already downloaded into its own directory
+    /// (#569); the directory is removed when the preview closes.
+    @discardableResult
+    func present(downloaded download: DashboardDownloadedFile) -> Bool {
+        let previewable = Self.isPreviewable(filename: download.file.lastPathComponent, mimeType: download.mimeType)
+        return presentStaged((download.directory, download.file), previewable: previewable)
+    }
+
+    /// Where downloads for preview are staged. Reached through `shared`, so
+    /// the sweep of a previous run's leftovers has already happened.
+    var stagingDirectory: URL { Self.stagingRoot }
+
     private func presentStaged(_ staged: (directory: URL, file: URL)?, previewable: Bool) -> Bool {
         guard let staged else { return false }
         guard !Task.isCancelled else {
@@ -193,7 +205,17 @@ final class MediaPreviewPresenter {
         sessions[key] = session
         controller.dataSource = session
         controller.delegate = session
-        controller.modalPresentationStyle = .fullScreen
+        // Over, not in place of, the screens under it: a `.fullScreen`
+        // preview takes the app's views out of the window, and closing it
+        // puts them back, which re-laid out every live tab. Under the
+        // Artifacts page that re-layout of the Chats list never settled and
+        // the watchdog killed the app.
+        controller.modalPresentationStyle = .overFullScreen
+        // As `.fullScreen` did: Quick Look's chrome sets the status bar.
+        controller.modalPresentationCapturesStatusBarAppearance = true
+        // The rows under it stay on screen, so their `onDisappear` no longer
+        // stops an inline clip: Quick Look has its own player.
+        ChatAudioClipPlayer.shared.stop()
         presenter.present(controller, animated: true) {
             session.didPresent = true
         }
@@ -287,10 +309,17 @@ final class MediaPreviewPresenter {
     // MARK: - Download
 
     nonisolated static func boundedDownload(_ url: URL, limit: Int = DataURLLimits.maxDecodedBytes) async -> (Data, URLResponse)? {
+        guard case .downloaded(let data, let response) = await boundedDownloadResult(url, limit: limit) else { return nil }
+        return (data, response)
+    }
+
+    /// `boundedDownload`, telling a body over `limit` apart from a failed
+    /// fetch.
+    nonisolated static func boundedDownloadResult(_ url: URL, limit: Int = DataURLLimits.maxDecodedBytes) async -> BoundedDownloadResult {
         do {
             let (bytes, response) = try await URLSession.shared.bytes(from: url)
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return nil }
-            if response.expectedContentLength > Int64(limit) { return nil }
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return .failed }
+            if response.expectedContentLength > Int64(limit) { return .tooLarge }
             var data = Data()
             if response.expectedContentLength > 0 { data.reserveCapacity(Int(response.expectedContentLength)) }
             // Gather into a fixed chunk and append in bulk: appending each
@@ -303,14 +332,14 @@ final class MediaPreviewPresenter {
                 if chunk.count == chunkSize {
                     data.append(contentsOf: chunk)
                     chunk.removeAll(keepingCapacity: true)
-                    if data.count > limit { return nil }
+                    if data.count > limit { return .tooLarge }
                 }
             }
             data.append(contentsOf: chunk)
-            guard data.count <= limit else { return nil }
-            return data.isEmpty ? nil : (data, response)
+            guard data.count <= limit else { return .tooLarge }
+            return data.isEmpty ? .failed : .downloaded(data, response)
         } catch {
-            return nil
+            return .failed
         }
     }
 
@@ -405,4 +434,13 @@ extension View {
     func opensMediaPreview(_ action: @escaping () -> Void) -> some View {
         modifier(MediaPreviewTapModifier(action: action))
     }
+}
+
+/// A streamed download against a size ceiling.
+enum BoundedDownloadResult {
+    case downloaded(Data, URLResponse)
+    /// The body was larger than the ceiling: abandoned, not buffered whole.
+    case tooLarge
+    /// Not a 2xx answer, no body, or the fetch failed.
+    case failed
 }

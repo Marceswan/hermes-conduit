@@ -141,6 +141,62 @@ final class MacToolbarRealWindowTests: XCTestCase {
         return found
     }
 
+    // MARK: The settle check itself
+
+    /// Under load the toolbar's layout can arrive seconds late (the main thread
+    /// or the window server stalls). The 36 pt strip platter of a toolbar that
+    /// had not laid out yet read as quiet, and the test then failed on it or saw
+    /// it move during the watch. Quiet counts only while the strip is settled.
+    func testQuietCountsOnlyWhileTheStripIsSettled() {
+        let flat = ToolbarStability.Snapshot(windowWidth: 1291, platters: [], visible: [], hidden: [])
+        let t0 = Date(timeIntervalSinceReferenceDate: 1000)
+        func at(_ seconds: TimeInterval) -> Date { t0.addingTimeInterval(seconds) }
+
+        // Steady, closely spaced samples: quiet after half a second.
+        var steady = ToolbarStability.QuietDetector(flat, at: t0)
+        var time = 0.0
+        while time < 0.45 { time += 0.02; XCTAssertFalse(steady.observe(flat, at: at(time)), "not before 0.5 s (\(time))") }
+        time += 0.06
+        XCTAssertTrue(steady.observe(flat, at: at(time)), "0.5 s of steady samples is quiet")
+
+        // Still but not laid out (the strip platter at its starting size): never
+        // quiet, however long, and quiet half a second after it is.
+        var late = ToolbarStability.QuietDetector(flat, at: t0)
+        time = 0
+        while time < 3 { time += 0.02; XCTAssertFalse(late.observe(flat, ready: false, at: at(time)), "unsettled is not quiet (\(time))") }
+        while time < 3.45 { time += 0.02; XCTAssertFalse(late.observe(flat, ready: true, at: at(time))) }
+        time += 0.06
+        XCTAssertTrue(late.observe(flat, ready: true, at: at(time)))
+
+        // The settled check: the 36 pt platter is not a strip, the ideal width is.
+        func snap(strip: CGFloat) -> ToolbarStability.Snapshot {
+            func platter(_ x: CGFloat, _ w: CGFloat) -> ToolbarPlatter { ToolbarPlatter(frame: CGRect(x: x, y: 0, width: w, height: 36), cornerRadius: 18) }
+            return ToolbarStability.Snapshot(windowWidth: 1291, platters: [platter(296, 36), platter(526, strip), platter(1159, 36), platter(1203, 36), platter(1247, 36)],
+                                             visible: [], hidden: [])
+        }
+        XCTAssertFalse(ToolbarStability.stripIsSettled(snap(strip: 36), minRatio: 0, idealWidth: nil))
+        XCTAssertTrue(ToolbarStability.stripIsSettled(snap(strip: 583), minRatio: 0, idealWidth: nil))
+        XCTAssertFalse(ToolbarStability.stripIsSettled(snap(strip: 400), minRatio: 0, idealWidth: 583))
+        XCTAssertTrue(ToolbarStability.stripIsSettled(snap(strip: 583), minRatio: 0, idealWidth: 583))
+        XCTAssertFalse(ToolbarStability.stripIsSettled(snap(strip: 700), minRatio: 0, idealWidth: nil), "overlaps the next item")
+
+        // The spring's tail (a fraction of a point) is the same toolbar; a point or
+        // more is not.
+        XCTAssertTrue(snap(strip: 834.998).matches(snap(strip: 835)))
+        XCTAssertFalse(snap(strip: 834).matches(snap(strip: 835)))
+        XCTAssertFalse(snap(strip: 835).matches(ToolbarStability.Snapshot(windowWidth: 1291, platters: [], visible: [], hidden: [])))
+
+        // A change restarts it, as before.
+        var moving = ToolbarStability.QuietDetector(flat, at: t0)
+        var other = flat
+        other.windowWidth = 1000
+        XCTAssertFalse(moving.observe(flat, at: at(0.2)))
+        XCTAssertFalse(moving.observe(other, at: at(0.4)), "a changed snapshot restarts the quiet period")
+        XCTAssertFalse(moving.observe(other, at: at(0.6)))
+        XCTAssertFalse(moving.observe(other, at: at(0.8)))
+        XCTAssertTrue(moving.observe(other, at: at(0.95)))
+    }
+
     // MARK: What the reader's sidebar lookup sees
 
     /// The reader takes the first `NSSplitView` under the theme frame. In the
@@ -153,7 +209,10 @@ final class MacToolbarRealWindowTests: XCTestCase {
     func testTheOnlySplitViewIsTheNavigationSplitAndTheReaderReadsItsSidebar() throws {
         for shown in [true, false] {
             let window = try appWindow(width: 1291, sidebarShown: shown)
-            ToolbarStability.expectSteady(in: window, "1291 pt, sidebar \(shown ? "shown" : "hidden")")
+            // The ideal is the strip's end state: without it the check settles on any strip
+            // 120 pt or wider, one still growing from its first layout included.
+            ToolbarStability.expectSteady(in: window, "1291 pt, sidebar \(shown ? "shown" : "hidden")",
+                                          idealWidth: ideal(window, sidebar: shown ? MacSidebarState.sidebarIdealWidth : 0))
             let splits = splitViews(in: window)
             XCTAssertEqual(splits.count, 1, "one NSSplitView under the theme frame: \(splits)")
             let split = try XCTUnwrap(splits.first)

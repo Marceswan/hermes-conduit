@@ -268,3 +268,18 @@ enum MacToolbarSearch {
         return nil
     }
 }
+
+/// The session ids the keyboard cursor reaches, in the order the nested list draws them (D10):
+/// pinned nodes, then recent nodes; a node's children only while its nest is expanded.
+enum MacVisibleSessionRows {
+    static func ids(pinned: [SessionNesting.Node], recent: [SessionNesting.Node], expanded: Set<String>) -> [String] {
+        func walk(_ node: SessionNesting.Node) -> [String] {
+            var ids = [node.session.id]
+            if expanded.contains(SessionNesting.nestKey(of: node.session)) {
+                ids += node.children.flatMap(walk)
+            }
+            return ids
+        }
+        return (pinned + recent).flatMap(walk)
+    }
+}

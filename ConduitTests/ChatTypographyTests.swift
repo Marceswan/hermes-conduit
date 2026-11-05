@@ -675,19 +675,20 @@ final class ChatTypographyTests: XCTestCase {
 
     func testSettledAssistantGateReOpensOnChatSizeChange() {
         let message = assistantMessage()
+        let identity = ConversationAgentIdentity.workspace(name: "Hermes", photoURL: nil)
         let baseline = SettledAssistantMessageContent(
-            message: message, displayName: "Hermes", avatarURL: nil,
+            message: message, identity: identity,
             gatewayResolver: nil, sizeCategory: .large, chatTextSize: .default
         )
         let sameInputs = SettledAssistantMessageContent(
-            message: message, displayName: "Hermes", avatarURL: nil,
+            message: message, identity: identity,
             gatewayResolver: nil, sizeCategory: .large, chatTextSize: .default
         )
         XCTAssertEqual(baseline, sameInputs,
                        "identical inputs (the ordinary streaming publish) must stay gated")
 
         let resized = SettledAssistantMessageContent(
-            message: message, displayName: "Hermes", avatarURL: nil,
+            message: message, identity: identity,
             gatewayResolver: nil, sizeCategory: .large, chatTextSize: .larger
         )
         XCTAssertNotEqual(baseline, resized,
@@ -714,15 +715,15 @@ final class ChatTypographyTests: XCTestCase {
     func testSettledThinkingGateReOpensOnChatSizeChange() {
         let message = assistantMessage()
         let baseline = SettledThinkingCardContent(
-            message: message, displayName: "Hermes", avatarURL: nil,
+            message: message,
             sizeCategory: .large, chatTextSize: .default
         )
         XCTAssertEqual(baseline, SettledThinkingCardContent(
-            message: message, displayName: "Hermes", avatarURL: nil,
+            message: message,
             sizeCategory: .large, chatTextSize: .default
         ))
         XCTAssertNotEqual(baseline, SettledThinkingCardContent(
-            message: message, displayName: "Hermes", avatarURL: nil,
+            message: message,
             sizeCategory: .large, chatTextSize: .largest
         ))
     }

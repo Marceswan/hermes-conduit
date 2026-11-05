@@ -224,7 +224,8 @@ final class HermesClientTests: XCTestCase {
         // socket with close code 1009 as soon as a single message exceeds it,
         // which is how resuming large sessions used to disconnect Conduit in
         // a loop. The production transport must install the explicit bounded
-        // 4 MiB limit on the real socket.
+        // 64 MiB limit on the real socket (4 MiB still closed it on a tool
+        // result carrying a video).
         let transport = URLSessionWebSocketTransport()
         defer { transport.invalidate() }
         let request = URLRequest(url: URL(string: "wss://gateway.example/api/ws")!)
@@ -237,7 +238,7 @@ final class HermesClientTests: XCTestCase {
         let task = socket as? URLSessionWebSocketTask
         XCTAssertNotNil(task, "The production transport must produce a URLSessionWebSocketTask")
         XCTAssertEqual(task?.maximumMessageSize, URLSessionWebSocketTransport.maximumMessageSize)
-        XCTAssertEqual(URLSessionWebSocketTransport.maximumMessageSize, 4 * 1024 * 1024)
+        XCTAssertEqual(URLSessionWebSocketTransport.maximumMessageSize, 64 * 1024 * 1024)
         XCTAssertNotEqual(
             URLSessionWebSocketTransport.maximumMessageSize,
             1_048_576,
@@ -734,6 +735,10 @@ final class HermesClientTests: XCTestCase {
         let params = try XCTUnwrap(request["params"] as? [String: Any])
         XCTAssertEqual(params["session_id"] as? String, "sess-full")
         XCTAssertNil(params["omit_messages"], "The legacy resume must not suppress the transcript")
+        XCTAssertEqual(
+            params["inline_images"] as? Bool, false,
+            "The transcript leaves out the copy of every picture stored in it (#652)"
+        )
 
         let id = try XCTUnwrap(request["id"] as? Int)
         let response: [String: Any] = [
@@ -818,6 +823,119 @@ final class HermesClientTests: XCTestCase {
             ["Ship the release.", "Resumed interrupted turn", "2 background agents finished"]
         )
         client.disconnect()
+    }
+
+    // MARK: - Delegate agent controls (#820)
+
+    /// Runs one client call against a fake gateway that answers `result`,
+    /// returning the request it sent and what the call returned.
+    private func capturedCall<T: Sendable>(
+        result: [String: Any],
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        _ call: @escaping @Sendable (HermesClient) async throws -> T
+    ) async throws -> (request: [String: Any], value: T) {
+        let transport = FakeTransport()
+        let socket = FakeSocket()
+        transport.nextSocket = { socket }
+        let client = makeClient(transport: transport)
+        let connectTask = Task { try? await client.connect() }
+        transport.open(socket)
+        try await awaitCompletion(of: connectTask, "connect() to complete", file: file, line: line)
+
+        let sent = Gate()
+        socket.onSend = { sent.signal() }
+        let callTask = Task<T, Error> { try await call(client) }
+        try await sent.wait("the request to be sent", file: file, line: line)
+
+        let request = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(try XCTUnwrap(socket.sentTexts.last, file: file, line: line).utf8)) as? [String: Any],
+            file: file,
+            line: line
+        )
+        let id = try XCTUnwrap(request["id"] as? Int, file: file, line: line)
+        let response: [String: Any] = ["jsonrpc": "2.0", "id": id, "result": result]
+        socket.deliver(try XCTUnwrap(String(data: try JSONSerialization.data(withJSONObject: response), encoding: .utf8)))
+
+        let value = try await awaitResult(of: callTask, "the response", file: file, line: line)
+        client.disconnect()
+        return (request, value)
+    }
+
+    func testSteerSubagentAddressesTheAgentAndReadsQueued() async throws {
+        let (request, queued) = try await capturedCall(result: ["status": "queued", "subagent_id": "sa-1", "text": "use the cache"]) {
+            try await $0.steerSubagent(sessionId: "s1", subagentId: "sa-1", text: "use the cache")
+        }
+        XCTAssertEqual(request["method"] as? String, "subagent.steer")
+        let params = try XCTUnwrap(request["params"] as? [String: Any])
+        XCTAssertEqual(params["session_id"] as? String, "s1")
+        XCTAssertEqual(params["subagent_id"] as? String, "sa-1")
+        XCTAssertEqual(params["text"] as? String, "use the cache")
+        XCTAssertTrue(queued)
+
+        let (_, rejected) = try await capturedCall(result: ["status": "rejected", "subagent_id": "sa-1"]) {
+            try await $0.steerSubagent(sessionId: "s1", subagentId: "sa-1", text: "x")
+        }
+        XCTAssertFalse(rejected, "A rejected steer means the agent isn't running")
+
+        do {
+            _ = try await capturedCall(result: ["status": "delivered"]) {
+                try await $0.steerSubagent(sessionId: "s1", subagentId: "sa-1", text: "x")
+            }
+            XCTFail("An unknown status must not read as a rejection")
+        } catch HermesError.invalidResponse {}
+    }
+
+    func testInterruptSubagentReportsWhetherHermesFoundIt() async throws {
+        let (request, found) = try await capturedCall(result: ["found": true, "subagent_id": "sa-1"]) {
+            try await $0.interruptSubagent(sessionId: "s1", subagentId: "sa-1")
+        }
+        XCTAssertEqual(request["method"] as? String, "subagent.interrupt")
+        let params = try XCTUnwrap(request["params"] as? [String: Any])
+        XCTAssertEqual(params["session_id"] as? String, "s1")
+        XCTAssertEqual(params["subagent_id"] as? String, "sa-1")
+        XCTAssertTrue(found)
+
+        let (_, missing) = try await capturedCall(result: ["found": false, "subagent_id": "sa-1"]) {
+            try await $0.interruptSubagent(sessionId: "s1", subagentId: "sa-1")
+        }
+        XCTAssertFalse(missing)
+
+        do {
+            _ = try await capturedCall(result: ["subagent_id": "sa-1"]) {
+                try await $0.interruptSubagent(sessionId: "s1", subagentId: "sa-1")
+            }
+            XCTFail("A reply without found must not read as not found")
+        } catch HermesError.invalidResponse {}
+    }
+
+    func testTailSubagentDecodesTheTranscriptEnd() async throws {
+        let (request, tail) = try await capturedCall(result: ["subagent_id": "sa-1", "available": true, "text": "reading files\n", "truncated": true]) {
+            try await $0.tailSubagent(sessionId: "s1", subagentId: "sa-1")
+        }
+        XCTAssertEqual(request["method"] as? String, "subagent.tail")
+        XCTAssertEqual(tail, SubagentTail(available: true, text: "reading files\n", truncated: true))
+
+        let (_, empty) = try await capturedCall(result: ["subagent_id": "sa-1", "available": false, "text": "", "truncated": false]) {
+            try await $0.tailSubagent(sessionId: "s1", subagentId: "sa-1")
+        }
+        XCTAssertFalse(empty.available)
+    }
+
+    func testDelegationPauseReadsAndSetsTheSpawnPause() async throws {
+        let (statusRequest, paused) = try await capturedCall(result: ["active": [], "paused": true, "max_spawn_depth": 2, "max_concurrent_children": 3]) {
+            try await $0.delegationPaused()
+        }
+        XCTAssertEqual(statusRequest["method"] as? String, "delegation.status")
+        XCTAssertTrue(paused)
+
+        let (pauseRequest, state) = try await capturedCall(result: ["paused": false]) {
+            try await $0.setDelegationPaused(false)
+        }
+        XCTAssertEqual(pauseRequest["method"] as? String, "delegation.pause")
+        let params = try XCTUnwrap(pauseRequest["params"] as? [String: Any])
+        XCTAssertEqual(params["paused"] as? Bool, false, "Unpausing must send paused: false, since Hermes defaults to pausing")
+        XCTAssertFalse(state)
     }
 
     // MARK: - prompt.submit outcome + session.active_list probe
@@ -926,6 +1044,73 @@ final class HermesClientTests: XCTestCase {
         XCTAssertNil(params["voice_turn"])
         try deliver(["jsonrpc": "2.0", "id": try XCTUnwrap(later["id"] as? Int), "result": ["status": "streaming"]])
         _ = try await awaitResult(of: try XCTUnwrap(submitTask), "the later prompt.submit response")
+        client.disconnect()
+    }
+
+    func testQueueMarksQueuedAndNeverResendsWithoutIt() async throws {
+        // Queue (#842) carries `queued: true`: Hermes keeps the message as
+        // the next turn. A gateway that refuses the key fails the send
+        // rather than getting it without, which would steer or interrupt,
+        // and later Queue sends fail at once. Ordinary sends never carry it.
+        let transport = FakeTransport()
+        let socket = FakeSocket()
+        transport.nextSocket = { socket }
+        let client = makeClient(transport: transport)
+        let connectTask = Task { try? await client.connect() }
+        transport.open(socket)
+        try await awaitCompletion(of: connectTask, "connect() to complete")
+
+        func nextRequest(_ phase: String, after send: () -> Void) async throws -> [String: Any] {
+            let sent = Gate()
+            socket.onSend = { sent.signal() }
+            send()
+            try await sent.wait(phase)
+            return try XCTUnwrap(
+                JSONSerialization.jsonObject(with: Data(try XCTUnwrap(socket.sentTexts.last).utf8)) as? [String: Any]
+            )
+        }
+        func deliver(_ response: [String: Any]) throws {
+            socket.deliver(try XCTUnwrap(String(data: try JSONSerialization.data(withJSONObject: response), encoding: .utf8)))
+        }
+
+        var submitTask: Task<PromptSubmissionOutcome, Error>?
+        let plain = try await nextRequest("an ordinary prompt.submit") {
+            submitTask = Task { try await client.sendPrompt("sess-1", text: "Hi") }
+        }
+        XCTAssertNil(try XCTUnwrap(plain["params"] as? [String: Any])["queued"])
+        try deliver(["jsonrpc": "2.0", "id": try XCTUnwrap(plain["id"] as? Int), "result": ["status": "streaming"]])
+        _ = try await awaitResult(of: try XCTUnwrap(submitTask), "the ordinary prompt.submit response")
+
+        let first = try await nextRequest("a queued prompt.submit") {
+            submitTask = Task { try await client.sendPrompt("sess-1", text: "Next", queued: true) }
+        }
+        XCTAssertEqual(try XCTUnwrap(first["params"] as? [String: Any])["queued"] as? Bool, true)
+        try deliver(["jsonrpc": "2.0", "id": try XCTUnwrap(first["id"] as? Int), "result": ["status": "queued"]])
+        let outcome = try await awaitResult(of: try XCTUnwrap(submitTask), "the queued prompt.submit response")
+        XCTAssertEqual(outcome, .queued)
+
+        let refused = try await nextRequest("a queued prompt.submit to a gateway without the key") {
+            submitTask = Task { try await client.sendPrompt("sess-1", text: "Again", queued: true) }
+        }
+        let sentBefore = socket.sentTexts.count
+        try deliver([
+            "jsonrpc": "2.0", "id": try XCTUnwrap(refused["id"] as? Int),
+            "error": [
+                "code": 4000,
+                "message": "invalid params for prompt.submit: queued: Extra inputs are not permitted"
+            ]
+        ])
+        do {
+            _ = try await awaitResult(of: try XCTUnwrap(submitTask), "the refused prompt.submit")
+            XCTFail("A refused Queue must not be sent another way")
+        } catch is HermesClient.QueueUnsupportedError {}
+        XCTAssertEqual(socket.sentTexts.count, sentBefore, "Nothing is resent without the key")
+
+        do {
+            _ = try await client.sendPrompt("sess-1", text: "Once more", queued: true)
+            XCTFail("Later Queue sends fail at once")
+        } catch is HermesClient.QueueUnsupportedError {}
+        XCTAssertEqual(socket.sentTexts.count, sentBefore)
         client.disconnect()
     }
 
@@ -1224,6 +1409,25 @@ final class HermesClientTests: XCTestCase {
         XCTAssertNil(HermesClient.exactIntValue(.number(Double.nan)))
         XCTAssertNil(HermesClient.exactIntValue(.string("42")))
         XCTAssertNil(HermesClient.exactIntValue(nil))
+    }
+
+    func testIntValueTruncatesInRangeNumbersAndRejectsTrappingDoubles() {
+        XCTAssertEqual(AnyCodable.number(42).intValue, 42)
+        XCTAssertEqual(AnyCodable.number(-10).intValue, -10)
+        XCTAssertEqual(AnyCodable.number(12.7).intValue, 12, "Fractional counters keep truncating")
+        XCTAssertNil(AnyCodable.number(1e100).intValue)
+        XCTAssertNil(AnyCodable.number(-1e100).intValue)
+        XCTAssertNil(AnyCodable.number(9.3e18).intValue)
+        XCTAssertNil(AnyCodable.number(Double.infinity).intValue)
+        XCTAssertNil(AnyCodable.number(Double.nan).intValue)
+        XCTAssertNil(AnyCodable.string("42").intValue)
+
+        let snapshot = SessionRuntimeSnapshot(object: [
+            "context_used": .number(1e100),
+            "context_max": .number(200_000),
+        ])
+        XCTAssertNil(snapshot.contextUsed, "An out-of-range gateway number degrades to unknown instead of crashing")
+        XCTAssertEqual(snapshot.contextMax, 200_000)
     }
 
     func testApprovalRespondSendsRequestIdentityAndRejectsZeroResolved() async throws {
@@ -1672,6 +1876,66 @@ final class HermesClientTests: XCTestCase {
         XCTAssertEqual(withdrawn.first?.0, "runtime-1")
         XCTAssertEqual(withdrawn.first?.1, "queue-1", "The card is keyed by the queue id, not the srq id")
         XCTAssertEqual(withdrawn.first?.2, "timeout")
+        client.disconnect()
+    }
+
+    func testLargeEventFrameArrivesDecodedAndInOrder() async throws {
+        let (client, socket) = try await connectedClientForServerRequests()
+        var events: [StreamEvent] = []
+        client.onEvent = { events.append($0) }
+        // Over the background-decode threshold: a big tool result, as a chat
+        // running in the background sends.
+        let output = String(repeating: "line of tool output\n", count: 2_000)
+        XCTAssertGreaterThan(output.utf8.count, HermesClient.backgroundDecodeThreshold)
+        try await deliverFrame([
+            "jsonrpc": "2.0", "method": "event",
+            "params": [
+                "type": "tool.complete", "session_id": "background-1",
+                "payload": ["name": "terminal", "tool_id": "call-1", "output": output]
+            ]
+        ], to: socket)
+        try await deliverFrame([
+            "jsonrpc": "2.0", "method": "event",
+            "params": ["type": "message.delta", "session_id": "background-1", "payload": ["text": "Done"]]
+        ], to: socket)
+
+        XCTAssertEqual(events.count, 2)
+        guard case .toolComplete(let sessionId, let name, let toolOutput, let toolID)? = events.first else {
+            return XCTFail("Expected the tool result first, got \(events)")
+        }
+        XCTAssertEqual(sessionId, "background-1")
+        XCTAssertEqual(name, "terminal")
+        XCTAssertEqual(toolOutput, output)
+        XCTAssertEqual(toolID, "call-1")
+        guard case .messageDelta(_, let text)? = events.last else {
+            return XCTFail("Expected the delta second, got \(events)")
+        }
+        XCTAssertEqual(text, "Done")
+        client.disconnect()
+    }
+
+    func testEventFrameKeepsBoolsNumbersAndNulls() async throws {
+        let (client, socket) = try await connectedClientForServerRequests()
+        var events: [StreamEvent] = []
+        client.onEvent = { events.append($0) }
+        try await deliverFrame([
+            "jsonrpc": "2.0", "method": "event",
+            "params": [
+                "type": "tool.start", "session_id": "runtime-1",
+                "payload": [
+                    "name": "web_search", "tool_id": "call-2",
+                    "args": ["query": "dinner", "limit": 5, "safe": true, "page": NSNull()]
+                ]
+            ]
+        ], to: socket)
+
+        guard case .toolStart(_, _, let input, _)? = events.first else {
+            return XCTFail("Expected a tool start, got \(events)")
+        }
+        let decoded = try XCTUnwrap(input.flatMap { try? JSONDecoder().decode(AnyCodable.self, from: Data($0.utf8)) })
+        XCTAssertEqual(decoded, .object([
+            "query": .string("dinner"), "limit": .number(5), "safe": .bool(true), "page": .null
+        ]))
         client.disconnect()
     }
 
@@ -2811,6 +3075,76 @@ extension HermesClientTests {
         } catch let error as RpcError {
             XCTAssertEqual(error.code, -32603)
         }
+        client.disconnect()
+    }
+
+    /// `onSend` is installed before the handshake so a keepalive ping sent
+    /// right after it is never missed.
+    private func connectKeepaliveClient(
+        onSend: (() -> Void)? = nil,
+        backgroundInterval: TimeInterval? = nil
+    ) async throws -> (client: HermesClient, socket: FakeSocket) {
+        let transport = FakeTransport()
+        let socket = FakeSocket()
+        socket.onSend = onSend
+        transport.nextSocket = { socket }
+        let client = HermesClient(
+            connection: HermesConnection(baseUrl: "https://test.example", ticket: "ticket"),
+            transportFactory: { transport },
+            keepaliveInterval: 0.3,
+            backgroundKeepaliveInterval: backgroundInterval,
+            keepalivePingTimeout: 0.3,
+            monitorsPath: false
+        )
+        let connectTask = Task { try? await client.connect() }
+        transport.open(socket)
+        try await awaitCompletion(of: connectTask, "connect() to complete after the handshake")
+        return (client, socket)
+    }
+
+    func testQuietSocketGetsAKeepalivePingAndStaysOpenWhenAnswered() async throws {
+        let sent = Gate()
+        let (client, socket) = try await connectKeepaliveClient(onSend: { sent.signal() })
+        try await sent.wait("a keepalive ping on a quiet socket")
+        let request = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(try XCTUnwrap(socket.sentTexts.last).utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(request["method"] as? String, "ping")
+        let id = try XCTUnwrap(request["id"] as? Int)
+        try deliverReply(["jsonrpc": "2.0", "id": id, "result": ["pong": true]], on: socket)
+        await flushMainActor()
+        XCTAssertFalse(socket.cancelled, "An answered keepalive leaves the socket alone")
+        XCTAssertTrue(client.isConnected)
+        client.disconnect()
+    }
+
+    func testUnansweredKeepalivePingsCloseTheSocketAndReportTheDrop() async throws {
+        let (client, socket) = try await connectKeepaliveClient()
+        let dropped = Gate()
+        client.onDisconnected = { dropped.signal() }
+        // Two pings go unanswered: the socket is dead, so the client closes
+        // it and AppState hears about the drop as for any other.
+        try await dropped.wait("the keepalive to give up on a silent socket")
+        XCTAssertTrue(socket.cancelled)
+        XCTAssertFalse(client.isConnected)
+        XCTAssertEqual(
+            socket.sentTexts.filter { $0.contains("\"ping\"") }.count, 2,
+            "One retry before giving up"
+        )
+        client.disconnect()
+    }
+
+    func testOffScreenTheKeepalivePingsLessOften() async throws {
+        let (client, socket) = try await connectKeepaliveClient(backgroundInterval: 1.5)
+        client.setKeepaliveBackgrounded(true)
+        func pings() -> Int { socket.sentTexts.filter { $0.contains("\"ping\"") }.count }
+        try await Task.sleep(for: .seconds(0.8))
+        XCTAssertEqual(pings(), 0, "Off screen the 0.3 s interval gives way to the longer one")
+        let deadline = Date().addingTimeInterval(5)
+        while pings() == 0, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(pings(), 1, "The quiet socket is still pinged off screen")
         client.disconnect()
     }
 

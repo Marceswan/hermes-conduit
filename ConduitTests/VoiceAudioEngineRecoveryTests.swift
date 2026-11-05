@@ -9,8 +9,8 @@ import XCTest
 /// engine subclass, so no test renders audio or starts a real engine.
 ///
 /// Hosted as an extension of an existing voice-audio test class rather than a
-/// new XCTestCase: the CI planner's per-job batch policy is at capacity, and
-/// one more planned class fails plan validation.
+/// new XCTestCase: the CI planner's per-job batch policy was at capacity, and
+/// one more planned class would have failed plan validation.
 extension VoiceAudioSessionCoordinatorTests {
     private var formatNotSupported: NSError {
         NSError(
@@ -149,6 +149,101 @@ extension VoiceAudioSessionCoordinatorTests {
             )
         )
         XCTAssertEqual(starts, 1)
+    }
+
+    // MARK: - Built-in microphone fallback (#177)
+
+    func testAHeadsetMicrophoneThatStillFailsStartsOnTheBuiltInOne() throws {
+        var steps: [String] = []
+        var failuresRemaining = 2
+
+        try VoiceAudioEngineRecovery.startFresh(
+            rebuild: { steps.append("rebuild") },
+            reassert: { steps.append("reassert") },
+            start: {
+                steps.append("start")
+                if failuresRemaining > 0 {
+                    failuresRemaining -= 1
+                    throw self.formatNotSupported
+                }
+            },
+            switchMicrophone: {
+                steps.append("switch")
+                return true
+            }
+        )
+
+        XCTAssertEqual(steps, ["rebuild", "start", "reassert", "rebuild", "start", "switch", "rebuild", "start"])
+    }
+
+    func testNoOtherMicrophoneRethrowsTheSecondFailure() {
+        var starts = 0
+
+        XCTAssertThrowsError(
+            try VoiceAudioEngineRecovery.startFresh(
+                rebuild: {},
+                reassert: {},
+                start: {
+                    starts += 1
+                    throw self.formatNotSupported
+                },
+                switchMicrophone: { false }
+            )
+        ) { error in
+            XCTAssertEqual((error as NSError).code, VoiceAudioEngineRecovery.formatNotSupported)
+        }
+        XCTAssertEqual(starts, 2)
+    }
+
+    func testTheFallbackOnlyMovesOffABluetoothMicrophoneAndClearsOnce() throws {
+        var bluetooth = false
+        var preferred = 0
+        var cleared = 0
+        let fallback = VoiceBuiltInMicrophoneFallback(
+            routeRecordsFromBluetooth: { bluetooth },
+            preferBuiltInMicrophone: {
+                preferred += 1
+                return true
+            },
+            clearPreferredInput: { cleared += 1 }
+        )
+
+        XCTAssertFalse(try fallback.engage(), "the built-in microphone failing is no headset's fault")
+        XCTAssertEqual(preferred, 0)
+        fallback.clear()
+        XCTAssertEqual(cleared, 0, "nothing to clear")
+
+        bluetooth = true
+        XCTAssertTrue(try fallback.engage())
+        XCTAssertFalse(try fallback.engage(), "moved once per capture")
+        XCTAssertEqual(preferred, 1)
+        fallback.clear()
+        fallback.clear()
+        XCTAssertEqual(cleared, 1)
+    }
+
+    func testCaptureOnAFailingHeadsetMicrophoneRecordsFromTheBuiltInOne() throws {
+        let factory = FakeCaptureEngineFactory()
+        factory.startFailures = [formatNotSupported, formatNotSupported]
+        var cleared = 0
+        let fallback = VoiceBuiltInMicrophoneFallback(
+            routeRecordsFromBluetooth: { true },
+            preferBuiltInMicrophone: { true },
+            clearPreferredInput: { cleared += 1 }
+        )
+        let service = AVAudioCaptureService(
+            coordinator: VoiceAudioSessionCoordinator(session: InertVoiceAudioSession()),
+            makeEngine: { factory.make() },
+            microphoneFallback: fallback
+        )
+
+        try service.startListening()
+        XCTAssertTrue(factory.engines.last?.isRunning == true, "started on the built-in microphone")
+        XCTAssertTrue(fallback.isEngaged)
+
+        service.stop()
+        XCTAssertFalse(fallback.isEngaged, "the next capture tries the headset again")
+        XCTAssertEqual(cleared, 1)
     }
 
     func testCoreAudioCodeInAnotherDomainIsNotRetried() {
@@ -528,14 +623,18 @@ extension VoiceAudioSessionCoordinatorTests {
     /// reply drains, the next reply's chunks must report playing again, or
     /// a hands-free end closes the call over the goodbye still queued.
     func testChunkAfterADrainReportsPlayingAgain() throws {
-        let service = AVSpeechPlaybackService(coordinator: VoiceAudioSessionCoordinator(session: InertVoiceAudioSession()))
+        // An offline engine: a real output I/O unit talks to the simulator's
+        // audio server, which on hosted CI stalls until CoreAudio aborts the
+        // test process ("RPC timeout. Apparently deadlocked").
+        let service = AVSpeechPlaybackService(
+            coordinator: VoiceAudioSessionCoordinator(session: InertVoiceAudioSession()),
+            makeEngine: { OfflineRenderingEngine.make() }
+        )
         defer { service.stop() }
         let chunk = Data(count: 480)
-        do {
-            _ = try service.enqueuePCM16(chunk, sampleRate: 24_000)
-        } catch {
-            throw XCTSkip("no audio output available: \(error)")
-        }
+        // An offline engine needs no audio output, so a start failure is a
+        // real failure, not a missing device.
+        _ = try service.enqueuePCM16(chunk, sampleRate: 24_000)
         XCTAssertTrue(service.isPlaying)
 
         // The first reply finished rendering; the stream stays open.
@@ -557,6 +656,22 @@ private final class InertVoiceAudioSession: VoiceAudioSessionControlling {
     ) throws {}
 
     func setActive(_ active: Bool, options: AVAudioSession.SetActiveOptions) throws {}
+}
+
+/// An engine in offline manual rendering mode, switched before anything
+/// reads its output node, so no output I/O unit is ever built. It starts and
+/// plays like a device engine but renders only when pulled, which these
+/// tests never do: drains are driven by hand. A failed switch traps rather
+/// than quietly handing back a device engine, which would bring back the
+/// CoreAudio abort this exists to avoid.
+private enum OfflineRenderingEngine {
+    static func make() -> AVAudioEngine {
+        let engine = AVAudioEngine()
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
+        try! engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 4_096)
+        precondition(engine.isInManualRenderingMode, "the test engine must render offline")
+        return engine
+    }
 }
 
 private final class CountingEngineFactory {

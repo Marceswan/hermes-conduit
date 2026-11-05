@@ -14,20 +14,6 @@ struct DashboardTicketBridgeView: NSViewRepresentable {
     func updateNSView(_ nsView: WKWebView, context: Context) {}
 }
 
-/// Mac copy of the file-private `MarkupMessageProxy` in MarkupBlock.swift; keep in sync.
-@MainActor
-private final class MacMarkupMessageProxy: NSObject, WKScriptMessageHandler {
-    private weak var target: WKScriptMessageHandler?
-
-    init(_ target: WKScriptMessageHandler) {
-        self.target = target
-    }
-
-    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        target?.userContentController(userContentController, didReceive: message)
-    }
-}
-
 // Mac twin of MarkupBlock.swift MarkupWebView; keep in sync (PORTING_LEDGER).
 /// The page a block draws in. It takes no touches: the chat scrolls over it
 /// and the block handles taps.
@@ -60,7 +46,7 @@ struct MarkupWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.userContentController.add(
-            MacMarkupMessageProxy(context.coordinator),
+            MarkupMessageProxy(context.coordinator),
             name: MarkupHTML.messageHandlerName
         )
         let view = Self.makeConfiguredWebView(configuration: configuration)
@@ -121,7 +107,7 @@ struct MarkupWebView: NSViewRepresentable {
             }
         }
 
-        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
             decisionHandler(MarkupHTML.allowsNavigation(to: navigationAction.request.url) ? .allow : .cancel)
         }
     }
@@ -166,7 +152,7 @@ struct SafeMarkupWebView: NSViewRepresentable {
             webView.loadHTMLString(html, baseURL: MarkupHTML.baseURL)
         }
 
-        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
             decisionHandler(MarkupHTML.allowsNavigation(to: navigationAction.request.url) ? .allow : .cancel)
         }
     }
@@ -231,7 +217,7 @@ struct RemoteImageWebView: NSViewRepresentable {
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { failed = true }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { failed = true }
 
-        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
             let host = navigationAction.request.url?.host
             decisionHandler(host == nil || host == "conduit.local" ? .allow : .cancel)
         }
@@ -264,24 +250,12 @@ struct AuthWebView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WKWebView {
         let normalized = try? ConnectionURLPolicy.normalizedBaseURL(url)
-        let config = WKWebViewConfiguration()
-        config.websiteDataStore = DashboardCookiePersistence.webKitStore(for: websiteDataStoreIdentifier)
-        config.userContentController.add(context.coordinator, name: "ticket")
-        if let normalized,
-           let script = cloudflareAccess?.fetchInjectionUserScript(expectedBaseURL: normalized),
-           !script.isEmpty {
-            config.userContentController.addUserScript(
-                WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true)
-            )
-        }
-        if let normalized {
-            let script = CustomHeaderStore.shared.fetchInjectionUserScript(expectedBaseURL: normalized)
-            if !script.isEmpty {
-                config.userContentController.addUserScript(
-                    WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true)
-                )
-            }
-        }
+        let config = Self.makeConfiguration(
+            normalizedBaseURL: normalized,
+            cloudflareAccess: cloudflareAccess,
+            websiteDataStoreIdentifier: websiteDataStoreIdentifier,
+            ticketHandler: context.coordinator
+        )
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         guard let normalized else {
@@ -289,11 +263,57 @@ struct AuthWebView: NSViewRepresentable {
             return webView
         }
         if let request = try? Self.dashboardRequest(normalizedBaseURL: normalized, cloudflareAccess: cloudflareAccess) {
-            webView.load(request)
+            Self.load(request, into: webView, websiteDataStoreIdentifier: websiteDataStoreIdentifier)
         } else {
             Self.reportConstructionFailure(onError, detail: AppLocalization.string("dashboard sign-in request construction failed"))
         }
         return webView
+    }
+
+    /// The sign-in page's WebView configuration. Static, so the handler and
+    /// script placement stays unit-testable without a SwiftUI `Context`.
+    ///
+    /// The ticket handler and the proxy-header scripts live in
+    /// `DashboardScriptWorld` (#774), not the page world: the dashboard page's
+    /// own scripts can then neither read the Cloudflare Access token or the
+    /// custom headers, nor post a forged ticket. `headerStore` is a seam for
+    /// tests: the shared store reads the Keychain on first use.
+    @MainActor
+    static func makeConfiguration(
+        normalizedBaseURL normalized: String?,
+        cloudflareAccess: CloudflareAccessCredentials?,
+        websiteDataStoreIdentifier: UUID?,
+        ticketHandler: WKScriptMessageHandler,
+        headerStore: CustomHeaderStore = .shared
+    ) -> WKWebViewConfiguration {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = DashboardCookiePersistence.webKitStore(for: websiteDataStoreIdentifier)
+        config.userContentController.add(ticketHandler, contentWorld: DashboardScriptWorld.world, name: "ticket")
+        if let normalized {
+            DashboardScriptWorld.installProxyHeaderScripts(
+                into: config.userContentController,
+                cloudflareAccess: cloudflareAccess,
+                normalizedBaseURL: normalized,
+                headerStore: headerStore
+            )
+        }
+        return config
+    }
+
+    /// Loads `request` now, or once the clear of this sign-in's store has
+    /// finished. A Sign Out or disconnect clears its store over IPC, so the
+    /// clear can outlive the tap that started it; a session minted before it
+    /// lands would be deleted by it (#788). The wait is bounded (10 s).
+    @MainActor
+    static func load(_ request: URLRequest, into webView: WKWebView, websiteDataStoreIdentifier: UUID?) {
+        if DashboardCookiePersistence.hasPendingStoreClear(for: websiteDataStoreIdentifier) {
+            Task { @MainActor [weak webView] in
+                await DashboardCookiePersistence.awaitPendingStoreClear(for: websiteDataStoreIdentifier)
+                webView?.load(request)
+            }
+        } else {
+            webView.load(request)
+        }
     }
 
     /// Construction-time failures cannot synchronously mutate the owning
@@ -330,13 +350,17 @@ struct AuthWebView: NSViewRepresentable {
     func updateNSView(_ nsView: WKWebView, context: Context) {}
 
     static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
-        nsView.configuration.userContentController.removeScriptMessageHandler(forName: "ticket")
+        nsView.configuration.userContentController.removeScriptMessageHandler(
+            forName: "ticket",
+            contentWorld: DashboardScriptWorld.world
+        )
     }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
     }
 
+    @MainActor
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         let parent: AuthWebView
         private var hasDeliveredTicket = false
@@ -357,35 +381,43 @@ struct AuthWebView: NSViewRepresentable {
             // flow, then a non-login route can use its HttpOnly session cookie
             // to mint a one-time WebSocket ticket.
             guard let expectedURL,
-                  ConnectionURLPolicy.originMatches(webView.url, expected: expectedURL),
-                  !(webView.url?.path.contains("/login") ?? true) else { return }
+                  AuthWebViewNavigationPolicy.isSignedInDashboardPage(webView.url, expectedDashboardURL: expectedURL) else { return }
             hasPinnedDashboardOrigin = true
             authenticatedWebView = webView
-            let js = """
-            (async function() {
-                try {
-                    const response = await fetch('/api/auth/ws-ticket', {
-                        method: 'POST',
-                        credentials: 'include'
-                    });
-                    const body = await response.json().catch(() => ({}));
-                    window.webkit.messageHandlers.ticket.postMessage(JSON.stringify({
-                        type: 'hermes-ticket',
-                        status: response.status,
-                        ticket: body.ticket || null
-                    }));
-                } catch (error) {
-                    window.webkit.messageHandlers.ticket.postMessage(JSON.stringify({
-                        type: 'hermes-ticket',
-                        status: 0,
-                        error: String(error)
-                    }));
-                }
-            })();
-            true;
-            """
-            webView.evaluateJavaScript(js)
+            Self.requestTicket(in: webView)
         }
+
+        /// The dashboard page mints a one-time WebSocket ticket with its session
+        /// cookie and posts it to the `ticket` handler. It runs in
+        /// `DashboardScriptWorld`, where the handler lives (#774): in the page
+        /// world there is no such handler and the sign-in would never finish.
+        static func requestTicket(in webView: WKWebView) {
+            webView.evaluateJavaScript(ticketScript, in: nil, in: DashboardScriptWorld.world, completionHandler: nil)
+        }
+
+        static let ticketScript = """
+        (async function() {
+            try {
+                const response = await fetch('/api/auth/ws-ticket', {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+                const body = await response.json().catch(() => ({}));
+                window.webkit.messageHandlers.ticket.postMessage(JSON.stringify({
+                    type: 'hermes-ticket',
+                    status: response.status,
+                    ticket: body.ticket || null
+                }));
+            } catch (error) {
+                window.webkit.messageHandlers.ticket.postMessage(JSON.stringify({
+                    type: 'hermes-ticket',
+                    status: 0,
+                    error: String(error)
+                }));
+            }
+        })();
+        true;
+        """
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             guard message.name == "ticket", let rawMessage = message.body as? String,
@@ -441,7 +473,7 @@ struct AuthWebView: NSViewRepresentable {
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
-            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+            decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
         ) {
             // A nil targetFrame is treated as main-frame, matching the
             // historical policy for the initial navigation.
@@ -458,6 +490,21 @@ struct AuthWebView: NSViewRepresentable {
                 decisionHandler(.cancel)
             }
         }
+    }
+}
+
+// Copied from upstream LoginView.swift AuthWebViewNavigationPolicy; keep in sync (PORTING_LEDGER).
+// The Mac enum is the frozen copy in ConduitMac/Login/LoginView.swift (decision 2B), which
+// has no `isSignedInDashboardPage`, so the member lives here.
+extension AuthWebViewNavigationPolicy {
+    /// Whether a finished page is the dashboard past its sign-in, where the
+    /// session cookie can mint a ticket: on the dashboard's origin and not a
+    /// sign-in page there (Hermes' /login, or an auth proxy's own page such
+    /// as oauth2-proxy's /oauth2/sign_in), which the user hasn't got past.
+    static func isSignedInDashboardPage(_ url: URL?, expectedDashboardURL: URL?) -> Bool {
+        guard let url, let expectedDashboardURL,
+              ConnectionURLPolicy.originMatches(url, expected: expectedDashboardURL) else { return false }
+        return !DashboardSignInRedirect.isSignInPath(url.path)
     }
 }
 

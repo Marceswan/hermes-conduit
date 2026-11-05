@@ -25,6 +25,8 @@ final class AVAudioCaptureService: NSObject, AudioCaptureService {
     private let makeEngine: () -> VoiceCaptureEngine
     private let session = AVAudioSession.sharedInstance()
     private let coordinator: VoiceAudioSessionCoordinator
+    /// The iPhone's microphone when a Bluetooth headset's won't start (#177).
+    private let microphoneFallback: VoiceBuiltInMicrophoneFallback
     /// AVAudioEngine and AVAudioConverter use deinterleaved Float32 as their
     /// canonical PCM representation. Quantize to PCM16 only after resampling.
     private let outputFormat = AVAudioFormat(
@@ -117,9 +119,11 @@ final class AVAudioCaptureService: NSObject, AudioCaptureService {
     /// rebuild, tap-format, and retry paths without audio hardware.
     init(
         coordinator: VoiceAudioSessionCoordinator? = nil,
-        makeEngine: @escaping () -> VoiceCaptureEngine = { SystemVoiceCaptureEngine() }
+        makeEngine: @escaping () -> VoiceCaptureEngine = { SystemVoiceCaptureEngine() },
+        microphoneFallback: VoiceBuiltInMicrophoneFallback? = nil
     ) {
         self.coordinator = coordinator ?? .shared
+        self.microphoneFallback = microphoneFallback ?? VoiceBuiltInMicrophoneFallback()
         self.makeEngine = makeEngine
         self.engine = makeEngine()
         var capturedContinuation: AsyncStream<VoiceCaptureEvent>.Continuation?
@@ -146,17 +150,15 @@ final class AVAudioCaptureService: NSObject, AudioCaptureService {
     }
 
     func requestPermission() async -> Bool {
-        await withCheckedContinuation { continuation in
-            switch session.recordPermission {
-            case .granted:
-                continuation.resume(returning: true)
-            case .denied:
-                continuation.resume(returning: false)
-            case .undetermined:
-                session.requestRecordPermission { continuation.resume(returning: $0) }
-            @unknown default:
-                continuation.resume(returning: false)
-            }
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted:
+            return true
+        case .denied:
+            return false
+        case .undetermined:
+            return await AVAudioApplication.requestRecordPermission()
+        @unknown default:
+            return false
         }
     }
 
@@ -263,6 +265,8 @@ final class AVAudioCaptureService: NSObject, AudioCaptureService {
         paused = false
         heldForPlayback = false
         shouldKeepEngineRunning = false
+        capturedPCM = Data()
+        preRollPCM = Data()
         // Deliberately unguarded (unlike pause): a redundant stop bumps the
         // generation again, which is always fail-closed.
         captureGeneration &+= 1
@@ -288,7 +292,8 @@ final class AVAudioCaptureService: NSObject, AudioCaptureService {
         try VoiceAudioEngineRecovery.startFresh(
             rebuild: { rebuildEngine() },
             reassert: { try coordinator.reassert() },
-            start: { try startEngine() }
+            start: { try startEngine() },
+            switchMicrophone: { try self.microphoneFallback.engage() }
         )
     }
 
@@ -328,11 +333,6 @@ final class AVAudioCaptureService: NSObject, AudioCaptureService {
             nodeOutput: engine.inputNodeOutputFormat,
             hardware: hardwareFormat
         )
-        if tapFormat != nil {
-            voiceAudioLogger.notice(
-                "Input node output format disagrees with hardware rate \(hardwareFormat.sampleRate, privacy: .public); tapping at the hardware format"
-            )
-        }
         converter = nil
         // Defensive: a recovery restart (e.g. after a route change stops the
         // engine) can reach startEngine while a stale tap still hangs on bus
@@ -394,6 +394,7 @@ final class AVAudioCaptureService: NSObject, AudioCaptureService {
     }
 
     private func releaseLease() {
+        microphoneFallback.clear()
         guard let lease = captureLease else { return }
         captureLease = nil
         coordinator.release(lease)

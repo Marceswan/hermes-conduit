@@ -39,7 +39,10 @@ enum ConnectionAccessMethod: Equatable, CaseIterable {
 
 /// One screen of the guided flow.
 enum ConnectionSetupStep: Equatable {
-    // The three core questions.
+    // The core first-run questions. `credentials` is asked only on the
+    // authentication-recovery entry, where a rejected password already
+    // proved the dashboard signs in with one; first-run never asks about
+    // credentials before discovery.
     case dashboard
     case credentials
     case accessMethod
@@ -71,6 +74,8 @@ enum ConnectionSetupPrompt: CaseIterable {
     case lanDetails
     case tailscaleServe
     case reverseProxyDetails
+    /// A `conduit://connect` sign-in code to scan (DashboardConnectLink).
+    case signInCode
 
     var title: String {
         switch self {
@@ -81,6 +86,7 @@ enum ConnectionSetupPrompt: CaseIterable {
         case .lanDetails: return AppLocalization.string("Ask Hermes for your connection details")
         case .tailscaleServe: return AppLocalization.string("Ask Hermes to configure Tailscale Serve")
         case .reverseProxyDetails: return AppLocalization.string("Ask Hermes to confirm your HTTPS address")
+        case .signInCode: return AppLocalization.string("Ask Hermes for a sign-in code")
         }
     }
 
@@ -103,6 +109,10 @@ enum ConnectionSetupPrompt: CaseIterable {
             return AppLocalization.string("Please check whether the Hermes dashboard is running. Make sure Tailscale is available on this machine, then configure Tailscale Serve so I can securely access the dashboard from my iPhone or iPad. Keep dashboard authentication enabled. When it is ready, tell me the hostname/address and port I should use with Hermes Conduit.")
         case .reverseProxyDetails:
             return AppLocalization.string("Please confirm the HTTPS URL I should use to access the Hermes dashboard through my existing reverse proxy, including any custom port or path prefix. Also confirm that dashboard authentication remains enabled.")
+        case .signInCode:
+            // The code carries the password: a terminal QR code keeps it out
+            // of a chat's history, which a link sent in a chat can't.
+            return AppLocalization.string("Please make me a sign-in code for Hermes Conduit. It is this link, with each value percent-encoded: conduit://connect?url=ADDRESS&username=USERNAME&password=PASSWORD. For ADDRESS, use the full dashboard address my iPhone reaches, with http:// or https://, such as its Tailscale or local network address, never localhost. Leave out the password if you don't know it. If we are talking in a terminal, show the link there as a QR code so the password stays out of chat history; otherwise send me the link. Keep dashboard authentication enabled.")
         }
     }
 }
@@ -153,15 +163,28 @@ struct ConnectionSetupFlow: Equatable {
 
     var canGoBack: Bool { path.count > 1 }
 
-    /// "Step N of 3" for the core questions; `nil` on branch and
+    /// "Step N of 2" for the first-run questions; `nil` on the
+    /// authentication-recovery credentials question and on branch and
     /// troubleshooting screens, which sit outside the numbered sequence.
     var progressLabel: String? {
+        switch progressStep {
+        case 1: return AppLocalization.string("Step 1 of 2")
+        case 2: return AppLocalization.string("Step 2 of 2")
+        default: return nil
+        }
+    }
+
+    /// How many numbered first-run questions there are.
+    static let progressStepCount = 2
+
+    /// The numbered question's position (1-based), for the header's
+    /// progress bar; `nil` wherever `progressLabel` is.
+    var progressStep: Int? {
         switch step {
-        case .dashboard: return AppLocalization.string("Step 1 of 3")
-        case .credentials: return AppLocalization.string("Step 2 of 3")
-        case .accessMethod: return AppLocalization.string("Step 3 of 3")
-        case .lan, .tailscale, .reverseProxy, .connectionDetails, .loginCredentials, .connectionTest, .review,
-             .tlsTroubleshooting, .cloudflareTroubleshooting:
+        case .dashboard: return 1
+        case .accessMethod: return 2
+        case .credentials, .lan, .tailscale, .reverseProxy, .connectionDetails, .loginCredentials, .connectionTest,
+             .review, .tlsTroubleshooting, .cloudflareTroubleshooting:
             return nil
         }
     }
@@ -302,10 +325,13 @@ struct ConnectionSetupFlow: Equatable {
     /// with its Ask Hermes guidance until the user confirms readiness. The
     /// recorded answer is never rewritten by the confirmation — "ready" is a
     /// navigation action, not a retroactive Yes.
+    /// The next first-run question is how this device reaches Hermes: how
+    /// the dashboard signs in is discovered by the connection test, never
+    /// asked up front.
     mutating func answerDashboard(_ answer: ConnectionSetupAnswer) {
         dashboardAnswer = answer
         if answer == .yes {
-            advance(to: .credentials)
+            advance(to: .accessMethod)
         }
     }
 
@@ -314,7 +340,7 @@ struct ConnectionSetupFlow: Equatable {
     /// from any other step stays a deterministic no-op.
     mutating func confirmDashboardReady() {
         guard step == .dashboard else { return }
-        advance(to: .credentials)
+        advance(to: .accessMethod)
     }
 
     mutating func answerCredentials(_ answer: ConnectionSetupAnswer) {
@@ -355,12 +381,28 @@ struct ConnectionSetupFlow: Equatable {
         advance(to: .connectionDetails)
     }
 
+    /// Discovery first: an address with no credentials in the draft goes
+    /// straight to the staged test, whose provider discovery decides whether
+    /// a password applies at all (a password dashboard stops at Credentials
+    /// required, whose Enter Credentials leads to the credentials step).
+    /// Credentials already in the draft — a saved password configuration
+    /// seeded by Settings or Repair, or values typed after an earlier
+    /// password outcome — are shown for review before anything sends them.
     mutating func submitDetails() {
         guard step == .connectionDetails else { return }
         do {
             _ = try ConnectionSetupAddressBuilder.build(draft)
-            advance(to: .loginCredentials)
+            if hasCredentialInput {
+                advance(to: .loginCredentials)
+            } else {
+                enterConnectionTest()
+            }
         } catch { record(error) }
+    }
+
+    private var hasCredentialInput: Bool {
+        !draft.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !draft.password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     mutating func submitCredentials() {
@@ -370,9 +412,10 @@ struct ConnectionSetupFlow: Equatable {
         // and both contexts legitimately seed without credentials (a
         // browser-auth deployment, or an active connection whose password is
         // not saved). A missing-password stop is the supported partial
-        // outcome. LoginView entries keep the strict requirement; a
-        // first-run user must not spend a real server's login attempt on
-        // empty credentials.
+        // outcome. LoginView entries reach this step only once a password is
+        // known to apply (a Credentials required outcome, a rejected
+        // password, or credentials already typed), so the step asks for both
+        // fields there.
         let credentialsOptional = (enteredFromCurrentConnection || isRepairingConnection)
             && draft.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && draft.password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -382,21 +425,25 @@ struct ConnectionSetupFlow: Equatable {
             } else {
                 _ = try draft.result()
             }
-            advance(to: .connectionTest)
-            // A test result validated against an OLDER draft must never
-            // authorize this fresh entry: edits bump the revision, so any
-            // stale success (or leftover failure display) resets to untested.
-            if testSucceededAtRevision != draftRevision {
-                testGeneration += 1
-                testState = ConnectionSetupTestState()
-                testSucceededAtRevision = nil
-            }
+            enterConnectionTest()
         } catch let error as ConnectionSetupValidationError {
             if error != .credentialsRequired {
                 advance(to: draft.usesExistingAddress || draft.accessMethod != nil ? .connectionDetails : .accessMethod)
             }
             record(error)
         } catch { record(error) }
+    }
+
+    private mutating func enterConnectionTest() {
+        advance(to: .connectionTest)
+        // A test result validated against an OLDER draft must never
+        // authorize this fresh entry: edits bump the revision, so any
+        // stale success (or leftover failure display) resets to untested.
+        if testSucceededAtRevision != draftRevision {
+            testGeneration += 1
+            testState = ConnectionSetupTestState()
+            testSucceededAtRevision = nil
+        }
     }
 
     /// Revalidate at the handoff boundary; producing values has no side
@@ -462,11 +509,13 @@ struct ConnectionSetupFlow: Equatable {
 
     /// The supported interactive-auth terminal outcome against the CURRENT
     /// draft: server and dashboard succeeded and authentication stopped at
-    /// "browser sign-in required". Draft edits invalidate it exactly like a
-    /// native success, and it is deliberately not a failure — so the
-    /// recovery-plan machinery never treats it as one.
+    /// "browser sign-in required" — or at the sign-in choice, where browser
+    /// sign-in is one of the offered methods. Draft edits invalidate it
+    /// exactly like a native success, and it is deliberately not a failure
+    /// — so the recovery-plan machinery never treats it as one.
     var hasCurrentInteractiveAuthOutcome: Bool {
-        testState.requiresInteractiveSignIn && testSucceededAtRevision == draftRevision
+        (testState.requiresInteractiveSignIn || testState.requiresSignInChoice)
+            && testSucceededAtRevision == draftRevision
     }
 
     /// Review / "Use These Settings" authorization. Exactly two states
@@ -528,7 +577,8 @@ struct ConnectionSetupFlow: Equatable {
         guard generation == testGeneration, step == .connectionTest else { return false }
         testState.apply(event)
         switch event {
-        case .succeeded(.authentication), .requiresInteractiveSignIn(.authentication):
+        case .succeeded(.authentication), .requiresInteractiveSignIn(.authentication, _),
+             .requiresSignInChoice(.authentication, _):
             testSucceededAtRevision = draftRevision
             advance(to: .review)
         default:
@@ -565,12 +615,30 @@ struct ConnectionSetupFlow: Equatable {
             path.removeSubrange(path.index(after: credentialsIndex)...)
             advance(to: target)
         } else {
+            // Discovery-first routes test before any credentials step
+            // exists: the credentials step takes the spent test's place, so
+            // Back from it returns to the address.
+            if target == .loginCredentials, path.count > 1 {
+                path.removeLast()
+            }
             advance(to: target)
         }
         validationError = nil
         testGeneration += 1
         testState = ConnectionSetupTestState()
         testSucceededAtRevision = nil
+    }
+
+    /// The sign-in-choice outcome's password path: leave the test (or
+    /// Review) for the credentials step, exactly like Enter Credentials
+    /// after a Credentials required outcome. Returning runs a fresh test
+    /// that tries the password.
+    mutating func enterCredentialsForSignInChoice() {
+        guard hasCurrentInteractiveAuthOutcome, testState.requiresSignInChoice else { return }
+        if step == .review {
+            path.removeLast()
+        }
+        editAfterFailedTest(.loginCredentials)
     }
 
     /// Continue from the test screen to Review when a current qualifying

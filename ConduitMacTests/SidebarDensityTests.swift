@@ -40,6 +40,8 @@ final class SidebarDensityTests: XCTestCase {
         // The voice button shows when the profile has voice on (no connection: the "disconnected" bucket).
         suite.defaults.set(true, forKey: "conduit.voice.enabled.v1.disconnected.\(appState.activeProfile)")
         // The sidebar tab key is @AppStorage on standard defaults; the strip tests rely on the default.
+        // A tab click in a test writes the user's key: put it back after.
+        preserveStandardDefaults(MacSidebarState.tabDefaultsKey)
         appState.sessions = [
             summary("p1", "Weekly planning notes", model: "claude-opus-5", when: "2m ago"),
             summary("p2", "Salesforce deploy checklist", model: "gpt-5", when: "1h ago", source: .telegram),

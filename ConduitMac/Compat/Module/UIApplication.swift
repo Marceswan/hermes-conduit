@@ -37,6 +37,7 @@ public struct UIContentSizeCategory: RawRepresentable, Hashable, Sendable {
 public final class UIApplication {
     public static let shared = UIApplication()
     public static let openSettingsURLString = "x-apple.systempreferences:com.apple.preference.security?Privacy"
+    public static let openNotificationSettingsURLString = "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
     public static let didBecomeActiveNotification = NSApplication.didBecomeActiveNotification
     public static let willResignActiveNotification = NSApplication.willResignActiveNotification
 

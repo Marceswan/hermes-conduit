@@ -52,8 +52,10 @@ enum DashboardCookiePersistence {
                 .value: value,
                 .domain: domain,
                 .path: path,
-                .secure: isSecure ? "TRUE" : "FALSE"
             ]
+            // Present at all means Secure (HTTPCookie reads "FALSE" as set),
+            // so a plain-http dashboard's cookie must leave the key out.
+            if isSecure { properties[.secure] = "TRUE" }
             if let expiresDate { properties[.expires] = expiresDate }
             if isHTTPOnly { properties[.init("HttpOnly")] = "TRUE" }
             if let sameSitePolicy { properties[.sameSitePolicy] = sameSitePolicy }
@@ -62,9 +64,44 @@ enum DashboardCookiePersistence {
     }
 
     static func restore(into cookieStore: WKHTTPCookieStore, dashboardID: UUID? = nil) async {
-        for cookie in mirroredCookies(dashboardID: dashboardID) {
+        await restore(mirroredCookies(dashboardID: dashboardID), into: cookieStore)
+    }
+
+    /// Puts `cookies` into WebKit's store only where it lacks them. WebKit's
+    /// identified store persists on its own, and a session it holds may be
+    /// newer than the copy saved here: an auth proxy (oauth2-proxy) refreshes
+    /// its cookie every few minutes and rotates the identity provider's
+    /// refresh token with it. Writing an older copy back on a cold launch
+    /// would replay a spent refresh token, which the provider answers with
+    /// invalid_grant and the proxy with a cleared session: signed out.
+    static func restore(_ cookies: [HTTPCookie], into cookieStore: WKHTTPCookieStore) async {
+        guard !cookies.isEmpty else { return }
+        var live: [String: HTTPCookie] = [:]
+        for cookie in await cookieStore.allCookies() {
+            live[cookieIdentity(cookie)] = cookie
+        }
+        let now = Date()
+        for cookie in cookies where shouldRestore(cookie, over: live[cookieIdentity(cookie)], now: now) {
             await cookieStore.setCookie(cookie)
         }
+    }
+
+    /// A saved cookie replaces WebKit's copy only when it lasts longer, and
+    /// fills a gap only while it is unexpired. A cookie without an expiry (a
+    /// session cookie) counts as lasting until the process ends.
+    nonisolated static func shouldRestore(_ saved: HTTPCookie, over live: HTTPCookie?, now: Date = Date()) -> Bool {
+        if let expires = saved.expiresDate, expires <= now { return false }
+        guard let live else { return true }
+        return (saved.expiresDate ?? .distantFuture) > (live.expiresDate ?? .distantFuture)
+    }
+
+    /// Name, canonical domain and path: what makes two cookies the same one.
+    nonisolated static func cookieIdentity(_ cookie: HTTPCookie) -> String {
+        [
+            cookie.name,
+            cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")),
+            cookie.path.isEmpty ? "/" : cookie.path,
+        ].joined(separator: "\u{0}")
     }
 
     /// The dashboard's cookies as last mirrored to the Keychain. Readable
@@ -102,6 +139,9 @@ enum DashboardCookiePersistence {
     /// same stable primitive the origin-scoped cleanup uses. The store is
     /// exclusively this dashboard's, so a full wipe is the correct scope and
     /// no other dashboard's session can ever be touched.
+    ///
+    /// Sign Out and Remove schedule it with `scheduleWebKitSessionClear`, so
+    /// a sign-in or bridge for the same dashboard waits for it first.
     static func clearWebKitSession(for dashboardID: UUID) async {
         removeNativeCookieStorage(for: dashboardID)
         let store = WKWebsiteDataStore(forIdentifier: dashboardID)
@@ -159,9 +199,7 @@ enum DashboardCookiePersistence {
     ) async {
         guard let host = URL(string: baseURL)?.host?.lowercased() else { return }
         let cookies = nativeCookieStorage(for: dashboardID).cookies ?? []
-        for cookie in cookies where cookieMatchesHost(cookie, host: host) {
-            await cookieStore.setCookie(cookie)
-        }
+        await restore(cookies.filter { cookieMatchesHost($0, host: host) }, into: cookieStore)
     }
 
     static func capture(
@@ -184,12 +222,98 @@ enum DashboardCookiePersistence {
 
     /// Removes dashboard-origin cookies from a WebKit cookie store. Disconnect
     /// must not leave a reusable HttpOnly session behind in the persistent
-    /// default data store; clearing only the origin-matching cookies keeps any
-    /// unrelated cookies intact.
+    /// default data store; clearing only the cookies whose domain is exactly
+    /// the dashboard host keeps unrelated cookies intact, and leaves a
+    /// parent-domain cookie shared with a sibling dashboard alone (#788).
     static func clear(from cookieStore: WKHTTPCookieStore, for url: URL?) async {
         guard let host = url?.host?.lowercased() else { return }
-        for cookie in await cookieStore.allCookies() where cookieMatchesHost(cookie, host: host) {
+        for cookie in await cookieStore.allCookies() where cookieExactlyMatchesHost(cookie, host: host) {
             await cookieStore.deleteCookie(cookie)
+        }
+    }
+
+    /// The store clears still running, keyed by the store they clear: a
+    /// dashboard's identified store, or nil for the default store a legacy
+    /// disconnect clears. WebKit answers over IPC, so a clear outlives the
+    /// Sign Out or disconnect that started it; a bridge or sign-in page on
+    /// the same store waits for it first (`awaitPendingStoreClear`), or the
+    /// late clear could delete the new session's cookies (#788).
+    private static var pendingStoreClears: [UUID?: (generation: UInt64, task: Task<Void, Never>)] = [:]
+    private static var storeClearGeneration: UInt64 = 0
+
+    /// Runs `clear` after any clear of the same store already running, and
+    /// records it until it is done.
+    private static func scheduleStoreClear(for dashboardID: UUID?, _ clear: @escaping @MainActor () async -> Void) {
+        storeClearGeneration &+= 1
+        let generation = storeClearGeneration
+        let previous = pendingStoreClears[dashboardID]?.task
+        let task = Task { @MainActor in
+            await previous?.value
+            await clear()
+            if pendingStoreClears[dashboardID]?.generation == generation {
+                pendingStoreClears[dashboardID] = nil
+            }
+        }
+        pendingStoreClears[dashboardID] = (generation, task)
+    }
+
+    /// Clears the dashboard's cookies from the default WebKit store, after any
+    /// clear already running.
+    static func clearDefaultStore(for url: URL) {
+        scheduleStoreClear(for: nil) {
+            await clear(from: WKWebsiteDataStore.default().httpCookieStore, for: url)
+        }
+    }
+
+    /// Clears a dashboard's identified WebKit session, after any clear of it
+    /// already running. Sign Out and Remove use this, not a detached
+    /// `clearWebKitSession`, so signing in to the same dashboard again
+    /// cannot have its new session deleted by the old one's clear.
+    static func scheduleWebKitSessionClear(for dashboardID: UUID) {
+        scheduleStoreClear(for: dashboardID) {
+            await clearWebKitSession(for: dashboardID)
+        }
+    }
+
+    static func hasPendingStoreClear(for dashboardID: UUID?) -> Bool {
+        pendingStoreClears[dashboardID] != nil
+    }
+
+    static var hasPendingDefaultStoreClear: Bool { hasPendingStoreClear(for: nil) }
+
+    /// Waits for a running clear of the store `dashboardID` uses (the
+    /// default store for nil). Bounded: a WebKit reply that never comes must
+    /// not hold the next sign-in forever.
+    static func awaitPendingStoreClear(for dashboardID: UUID?, timeout: Duration = .seconds(10)) async {
+        guard let task = pendingStoreClears[dashboardID]?.task else { return }
+        await awaitClear(task, timeout: timeout)
+    }
+
+    static func awaitPendingDefaultStoreClear(timeout: Duration = .seconds(10)) async {
+        await awaitPendingStoreClear(for: nil, timeout: timeout)
+    }
+
+    /// Waits for `task` or `timeout`, whichever comes first. Neither waiter
+    /// is a structured child: a task group would join the clear's waiter,
+    /// which cancellation cannot stop, and so wait for WebKit anyway.
+    static func awaitClear(_ task: Task<Void, Never>, timeout: Duration) async {
+        final class Once { var resumed = false }
+        let once = Once()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let finish: @MainActor () -> Void = {
+                guard !once.resumed else { return }
+                once.resumed = true
+                continuation.resume()
+            }
+            let deadline = Task { @MainActor in
+                try? await Task.sleep(for: timeout)
+                finish()
+            }
+            Task { @MainActor in
+                await task.value
+                deadline.cancel()
+                finish()
+            }
         }
     }
 
@@ -206,25 +330,33 @@ enum DashboardCookiePersistence {
         for cookie in jar.cookies ?? [] {
             jar.deleteCookie(cookie)
         }
-        guard let host = URL(string: baseURL)?.host?.lowercased() else { return }
-        for cookie in HTTPCookieStorage.shared.cookies ?? [] {
-            let canonicalDomain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-            if canonicalDomain == host {
-                HTTPCookieStorage.shared.deleteCookie(cookie)
-            }
-        }
+        clearSharedJarCookies(for: baseURL)
     }
 
-    /// Legacy global cleanup for callers without a dashboard identity
-    /// (pre-#148 shapes and tests): suffix-matched clearing of the shared jar.
+    /// Cleanup for callers without a dashboard identity (pre-#148 shapes and
+    /// tests): the same exact-host rule as the registered path, so a
+    /// parent-domain cookie shared with a sibling survives (#788).
     nonisolated static func clearNativeCookies(for baseURL: String) {
+        clearSharedJarCookies(for: baseURL)
+    }
+
+    nonisolated private static func clearSharedJarCookies(for baseURL: String) {
         guard let host = URL(string: baseURL)?.host?.lowercased() else { return }
-        for cookie in HTTPCookieStorage.shared.cookies ?? [] where cookieMatchesHost(cookie, host: host) {
+        for cookie in HTTPCookieStorage.shared.cookies ?? [] where cookieExactlyMatchesHost(cookie, host: host) {
             HTTPCookieStorage.shared.deleteCookie(cookie)
         }
     }
 
+    /// Clearing matches the canonical domain exactly: a parent-domain cookie
+    /// (Domain=.example.com) is shared with every sibling under it, so it
+    /// never belongs to one dashboard alone.
+    nonisolated private static func cookieExactlyMatchesHost(_ cookie: HTTPCookie, host: String) -> Bool {
+        cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) == host
+    }
 
+
+    /// Which cookies apply to `host` (its own and its parent domains'): for
+    /// reading only. Clearing uses `cookieExactlyMatchesHost`.
     nonisolated private static func cookieMatchesHost(_ cookie: HTTPCookie, host: String) -> Bool {
         let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
         return host == domain || host.hasSuffix(".\(domain)")
@@ -299,6 +431,14 @@ enum DashboardTicketBridgeError: LocalizedError {
                 return HermesError.timeoutMessage
             }
             return AppLocalization.string("Conduit couldn't reach your Hermes dashboard. Check this device's network connection and that the dashboard is running.")
+        case 403 where trimmed.range(of: "profile_mismatch", options: .caseInsensitive) != nil:
+            return AppLocalization.string("Hermes says this chat belongs to another profile. Switch to that profile, then try again.")
+        case 403 where SessionMutationIdentity.isRefusalDetail(trimmed):
+            return AppLocalization.string("Hermes only lets the computer it runs on change this older chat. Change it there instead.")
+        case 403 where isMeaningful:
+            // Hermes' own refusal to someone signed in (a sensitive path, a
+            // file it can't write): its reason says what to do.
+            return trimmed
         case 401, 403:
             if trimmed == signInRefreshedDetail { return trimmed }
             return AppLocalization.string("Hermes turned this down because the dashboard sign-in expired or doesn't allow it. Sign in again, then try once more.")
@@ -307,6 +447,9 @@ enum DashboardTicketBridgeError: LocalizedError {
             return AppLocalization.string("Your Hermes server doesn't support this yet. Update Hermes, then try again.")
         case 408, 504, 524:
             return HermesError.timeoutMessage
+        case 409 where (SessionMutationIdentity.retryableConflicts + ["session_busy"]).contains(where: { trimmed.localizedCaseInsensitiveContains($0) }):
+            // A session write that still conflicted after its one retry.
+            return AppLocalization.string("Hermes is busy right now. Wait a moment, then try again.")
         case 429:
             if isMeaningful { return trimmed }
             return AppLocalization.string("Hermes is busy right now. Wait a moment, then try again.")
@@ -323,6 +466,16 @@ enum DashboardTicketBridgeError: LocalizedError {
         }
     }
 
+    /// Whether a dashboard request's failure means its sign-in is gone.
+    /// Hermes turns a signed-out request away with 401. Its 403 refuses
+    /// someone signed in (a sensitive path, a file it can't write, a chat
+    /// this sign-in may not change) and gives the reason as a JSON `detail`:
+    /// signing in again can't change that. An auth proxy in front of Hermes
+    /// answers 403 with its own page and no such reason, which still does.
+    static func meansSignIn(status: Int, hermesDetail: String?) -> Bool {
+        status == 401 || (status == 403 && hermesDetail == nil)
+    }
+
     /// Default HTTP reason phrases and browser fetch errors, which say
     /// nothing a person can act on.
     private static let genericDetails: Set<String> = [
@@ -332,6 +485,39 @@ enum DashboardTicketBridgeError: LocalizedError {
         "failed to fetch", "load failed", "typeerror: load failed",
         "typeerror: failed to fetch", "networkerror when attempting to fetch resource.",
     ]
+}
+
+/// The isolated JavaScript world that holds the dashboard's proxy headers
+/// (the Cloudflare Access service token and any custom headers) and every
+/// script Conduit itself runs in a dashboard WebView. The dashboard page's
+/// own scripts run in the page world, which shares the DOM but not
+/// JavaScript globals with this one: they can't read the header values,
+/// re-wrap the `fetch` that attaches them, or post to Conduit's message
+/// handlers. The page's own requests carry the session cookies the first
+/// native, header-bearing navigation earned, as its scripts and styles
+/// always did.
+@MainActor
+enum DashboardScriptWorld {
+    static let world = WKContentWorld.world(name: "ConduitDashboard")
+
+    /// Adds the header-attaching document-start scripts for this dashboard
+    /// to the isolated world. Cleartext dashboards get none.
+    static func installProxyHeaderScripts(
+        into controller: WKUserContentController,
+        cloudflareAccess: CloudflareAccessCredentials?,
+        normalizedBaseURL: String,
+        headerStore: CustomHeaderStore = .shared
+    ) {
+        let scripts = [
+            cloudflareAccess?.fetchInjectionUserScript(expectedBaseURL: normalizedBaseURL) ?? "",
+            headerStore.fetchInjectionUserScript(expectedBaseURL: normalizedBaseURL),
+        ]
+        for script in scripts where !script.isEmpty {
+            controller.addUserScript(
+                WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: world)
+            )
+        }
+    }
 }
 
 /// WKUserContentController retains its script message handlers strongly, so
@@ -380,6 +566,36 @@ final class DashboardTicketBridgePendingRequests {
     }
 }
 
+/// Re-mirrors a dashboard's cookies whenever WebKit's store changes, so the
+/// Keychain copy a cold launch restores is the session's latest one. An auth
+/// proxy refreshes its cookie on ordinary requests long after the page load
+/// that used to be the only capture.
+@MainActor
+final class DashboardCookieMirrorObserver: NSObject, WKHTTPCookieStoreObserver {
+    private weak var bridge: DashboardTicketBridge?
+    private var pending: Task<Void, Never>?
+
+    init(bridge: DashboardTicketBridge) {
+        self.bridge = bridge
+    }
+
+    func cookiesDidChange(in cookieStore: WKHTTPCookieStore) {
+        // A refresh can touch several cookies at once: mirror once, after
+        // the burst.
+        pending?.cancel()
+        pending = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(750))
+            guard !Task.isCancelled else { return }
+            await self?.bridge?.mirrorCookies()
+        }
+    }
+
+    func cancel() {
+        pending?.cancel()
+        pending = nil
+    }
+}
+
 @MainActor
 final class DashboardTicketBridge: NSObject {
     let baseURL: String
@@ -392,9 +608,14 @@ final class DashboardTicketBridge: NSObject {
     /// exists — decides which dashboard's scoped cookie mirror is restored
     /// into the WebKit store on load.
     let dashboardID: UUID?
-    /// Bearer-backed session for Hermes' native PKCE flow. The bridge keeps
-    /// one interface for callers while cookie/password mode stays intact.
-    private var nativeOAuthSession: NativeOAuthSession?
+    /// What authorizes this dashboard's requests: in native mode it holds
+    /// the bearer-backed session for Hermes' native PKCE flow, and every
+    /// dashboard WebSocket upgrade is authorized through it. The bridge
+    /// keeps one interface for callers while cookie/password mode stays
+    /// intact.
+    let requestAuthorizer: DashboardRequestAuthorizer
+    /// Read-only outside the bridge (file downloads sign with it too).
+    var nativeOAuthSession: NativeOAuthSession? { requestAuthorizer.nativeSession }
     /// AppState includes the authentication transport in its bridge-reuse
     /// identity. A same-URL login that changes cookie ↔ bearer mode must
     /// replace this bridge rather than retaining its in-memory session.
@@ -408,7 +629,9 @@ final class DashboardTicketBridge: NSObject {
     }
 
 
-    private var isReady = false
+    /// Whether the dashboard page is loaded and can run requests.
+    /// Readable for tests; written only by the bridge.
+    private(set) var isReady = false
     /// Whether the current dashboard page load has terminally failed (as
     /// opposed to still being in flight on a slow link). Retry logic only
     /// reloads a failed load — restarting an in-progress one would abort a
@@ -419,6 +642,15 @@ final class DashboardTicketBridge: NSObject {
     /// session is genuinely absent, which callers must hear as
     /// `.signInRequired` rather than as unreadiness.
     private var didLandOnLogin = false
+    /// Whether the dashboard page settled on sign-in: Hermes' /login, an
+    /// auth proxy's sign-in page, or a redirect off the dashboard's origin
+    /// (the proxy's sign-in host, the identity provider). Requests answer
+    /// `.signInRequired` until a reload finds a session.
+    var requiresSignIn: Bool { didLandOnLogin && !isInvalidated }
+    /// Main-frame navigations the bridge stopped because they went to
+    /// sign-in. Diagnostic/test counter: each is one redirect the hidden
+    /// page did not follow.
+    private(set) var cancelledSignInNavigationCount = 0
     /// Test-only landing state, re-asserted by every page load so tests can
     /// model a dashboard that keeps producing the same landing regardless of
     /// when WKWebView's nondeterministic callbacks arrive.
@@ -430,6 +662,7 @@ final class DashboardTicketBridge: NSObject {
         case loadFailure
     }
     private(set) var isInvalidated = false
+    private var cookieMirrorObserver: DashboardCookieMirrorObserver?
     private var requestID = 0
     /// Identity of the current dashboard navigation, used to ignore failure
     /// callbacks for loads a reload has already replaced. `staleNavigations`
@@ -459,6 +692,8 @@ final class DashboardTicketBridge: NSObject {
     /// Cookies the dashboard set on requests sent without the page, newest
     /// last, so a rotated session cookie is the one sent next.
     var backgroundIssuedCookies: [HTTPCookie] = []
+    /// Sends a request without the page in place of URLSession. Test seam.
+    var loadWithoutPageForTesting: (@MainActor (URLRequest) async throws -> (Data, URLResponse))?
     /// Observes the hidden page's load lifecycle for AppState's connection
     /// timeline (#417). Every request waits on this page, so when it becomes
     /// ready is the first thing a slow launch needs to show.
@@ -468,6 +703,7 @@ final class DashboardTicketBridge: NSObject {
         baseURL: String,
         cloudflareAccess: CloudflareAccessCredentials? = nil,
         dashboardID: UUID? = nil,
+        requestAuthorizer: DashboardRequestAuthorizer? = nil,
         pendingRequests: DashboardTicketBridgePendingRequests = DashboardTicketBridgePendingRequests(),
         readinessPollAttempts: Int = 30,
         readinessPollInterval: Duration = .milliseconds(100),
@@ -479,8 +715,21 @@ final class DashboardTicketBridge: NSObject {
         self.extraHeaders = CustomHeaderPolicy.sendable(CustomHeaderStore.shared.headers(forServerURL: normalizedBaseURL))
         let resolvedDashboardID = dashboardID ?? SavedDashboardRegistryStore.load()?.dashboardID(atNormalizedURL: normalizedBaseURL)
         self.dashboardID = resolvedDashboardID
-        self.nativeOAuthSession = resolvedDashboardID.flatMap {
-            NativeOAuthSession(baseURL: normalizedBaseURL, dashboardID: $0, cloudflareAccess: cloudflareAccess)
+        // AppState builds the authorizer with the other saved dashboards in
+        // view; one built for another address, dashboard or token is never
+        // adopted.
+        if let requestAuthorizer,
+           !requestAuthorizer.isInvalidated,
+           requestAuthorizer.baseURL == normalizedBaseURL,
+           requestAuthorizer.dashboardID == resolvedDashboardID,
+           requestAuthorizer.cloudflareAccess == cloudflareAccess {
+            self.requestAuthorizer = requestAuthorizer
+        } else {
+            self.requestAuthorizer = .forDashboard(
+                baseURL: normalizedBaseURL,
+                dashboardID: resolvedDashboardID,
+                cloudflareAccess: cloudflareAccess
+            )
         }
         self.pendingRequests = pendingRequests
         // A negative count would build an invalid Range in the polling loops.
@@ -494,27 +743,40 @@ final class DashboardTicketBridge: NSObject {
         // in. Nil dashboards (legacy/test construction) keep the default
         // store.
         configuration.websiteDataStore = DashboardCookiePersistence.webKitStore(for: self.dashboardID)
-        if let script = cloudflareAccess?.fetchInjectionUserScript(expectedBaseURL: normalizedBaseURL), !script.isEmpty {
-            configuration.userContentController.addUserScript(
-                WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true)
-            )
-        }
-        let extraHeaderScript = CustomHeaderStore.shared.fetchInjectionUserScript(expectedBaseURL: normalizedBaseURL)
-        if !extraHeaderScript.isEmpty {
-            configuration.userContentController.addUserScript(
-                WKUserScript(source: extraHeaderScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
-            )
-        }
+        DashboardScriptWorld.installProxyHeaderScripts(
+            into: configuration.userContentController,
+            cloudflareAccess: cloudflareAccess,
+            normalizedBaseURL: normalizedBaseURL
+        )
         self.webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
-        configuration.userContentController.add(WeakScriptMessageHandler(self), name: "dashboard-response")
+        configuration.userContentController.add(
+            WeakScriptMessageHandler(self),
+            contentWorld: DashboardScriptWorld.world,
+            name: "dashboard-response"
+        )
         webView.navigationDelegate = self
+        self.requestAuthorizer.cookieTicketMinter = { [weak self] in
+            guard let self else { throw DashboardTicketBridgeError.notReady }
+            return try await self.mintCookieTicket()
+        }
+        self.requestAuthorizer.cookieUpgradeCookies = { [weak self] in
+            await self?.cookiesForRequestsWithoutPage() ?? []
+        }
+        if nativeOAuthSession == nil, self.dashboardID != nil {
+            let observer = DashboardCookieMirrorObserver(bridge: self)
+            webView.configuration.websiteDataStore.httpCookieStore.add(observer)
+            cookieMirrorObserver = observer
+        }
         if nativeOAuthSession != nil {
             isReady = true
             return
         }
         Task { [weak self] in
             guard let self else { return }
+            // The Sign Out or disconnect before this bridge may still be
+            // clearing its store (#788).
+            await DashboardCookiePersistence.awaitPendingStoreClear(for: self.dashboardID)
             await DashboardCookiePersistence.restore(
                 into: self.webView.configuration.websiteDataStore.httpCookieStore,
                 dashboardID: self.dashboardID
@@ -536,15 +798,37 @@ final class DashboardTicketBridge: NSObject {
         for deadline in requestDeadlines.values { deadline.cancel() }
         requestDeadlines.removeAll()
         pendingRequests.rejectAll(with: DashboardTicketBridgeError.notReady)
-        webView.configuration.userContentController.removeScriptMessageHandler(forName: "dashboard-response")
+        // The bridge registers exactly one handler; removing them all keeps
+        // this nonisolated deinit off the main-actor `DashboardScriptWorld`.
+        webView.configuration.userContentController.removeAllScriptMessageHandlers()
+    }
+
+    /// Saves the dashboard's current WebKit cookies as its Keychain mirror.
+    /// Never after invalidation: a disconnect that cleared the mirror must
+    /// not see it written back.
+    func mirrorCookies() async {
+        guard !isInvalidated, let dashboardID, let url = URL(string: baseURL) else { return }
+        await DashboardCookiePersistence.capture(
+            from: webView.configuration.websiteDataStore.httpCookieStore,
+            for: url,
+            shouldPersist: { [weak self] in
+                guard let self else { return false }
+                return !self.isInvalidated
+            },
+            dashboardID: dashboardID
+        )
     }
 
     func invalidate() {
         guard !isInvalidated else { return }
         isInvalidated = true
         isReady = false
-        nativeOAuthSession?.invalidate()
-        nativeOAuthSession = nil
+        requestAuthorizer.invalidate()
+        if let cookieMirrorObserver {
+            cookieMirrorObserver.cancel()
+            webView.configuration.websiteDataStore.httpCookieStore.remove(cookieMirrorObserver)
+            self.cookieMirrorObserver = nil
+        }
         // A torn-down bridge must report plain unreadiness: leaving a stale
         // login verdict would surface .signInRequired (with its session
         // recovery) from an invalidated instance.
@@ -585,6 +869,9 @@ final class DashboardTicketBridge: NSObject {
         rejectPending(with: DashboardTicketBridgeError.notReady)
         Task { [weak self] in
             guard let self else { return }
+            // The Sign Out or disconnect before this bridge may still be
+            // clearing its store (#788).
+            await DashboardCookiePersistence.awaitPendingStoreClear(for: self.dashboardID)
             await DashboardCookiePersistence.restore(
                 into: self.webView.configuration.websiteDataStore.httpCookieStore,
                 dashboardID: self.dashboardID
@@ -613,11 +900,17 @@ final class DashboardTicketBridge: NSObject {
         }
     }
 
+    /// A fresh single-use WebSocket ticket. In native mode the authorizer
+    /// mints it with the access token and remembers which bearer must go
+    /// with it on the upgrade.
     func mintTicket() async throws -> String {
-        if let nativeOAuthSession {
-            guard !isInvalidated else { throw DashboardTicketBridgeError.notReady }
-            return try await nativeOAuthSession.mintTicket()
-        }
+        guard !isInvalidated else { throw DashboardTicketBridgeError.notReady }
+        return try await requestAuthorizer.mintTicket()
+    }
+
+    /// Cookie mode's ticket: through the dashboard page, or natively with the
+    /// page's cookies while the page cannot run.
+    private func mintCookieTicket() async throws -> String {
         if !webViewCanRun() {
             let response = try await requestJSONWithoutPage(path: "/api/auth/ws-ticket", method: "POST")
             guard let ticket = response["ticket"] as? String, !ticket.isEmpty else {
@@ -688,11 +981,12 @@ final class DashboardTicketBridge: NSObject {
     /// jar that the sign-in flow owns. This intentionally avoids duplicating
     /// HttpOnly session handling in URLSession.
     ///
-    /// Error contract: unusable page states (foreign-origin landing, stalled
-    /// engine) surface as `.notReady` so callers flow into the reload
-    /// recovery; an origin-matching login landing surfaces as
-    /// `.signInRequired`. Direct callers should not expect `.requestFailed`
-    /// for these states.
+    /// Error contract: unusable page states (a failed or URL-less landing,
+    /// a stalled engine) surface as `.notReady` so callers flow into the
+    /// reload recovery; a sign-in landing or redirect (Hermes' /login, an
+    /// auth proxy's sign-in page, any other origin), of the page or of the
+    /// request itself, surfaces as `.signInRequired`. Direct callers should
+    /// not expect `.requestFailed` for these states.
     func requestJSON(
         path: String,
         method: String = "GET",
@@ -739,7 +1033,7 @@ final class DashboardTicketBridge: NSObject {
         let timeout = max(1_000, timeoutMilliseconds)
         let responseLimit = max(1_024, maxResponseBytes)
 
-        return try await withTaskCancellationHandler(operation: {
+        let response: [String: Any] = try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
                 guard !Task.isCancelled else {
                     continuation.resume(throwing: CancellationError())
@@ -773,11 +1067,12 @@ final class DashboardTicketBridge: NSObject {
                 }
                 let script = """
                 (async function() {
+                    let redirectedTo = null;
                     try {
                         const requestBody = \(bodyLiteral);
                         const controller = new AbortController();
                         const timeout = setTimeout(() => controller.abort(), \(timeout));
-                        const response = await fetch(\(pathLiteral), {
+                        const send = (options) => fetch(\(pathLiteral), Object.assign({
                             method: \(methodLiteral),
                             credentials: 'include',
                             headers: requestBody === null
@@ -785,7 +1080,37 @@ final class DashboardTicketBridge: NSObject {
                                 : { Accept: 'application/json', 'Content-Type': 'application/json' },
                             body: requestBody === null ? undefined : JSON.stringify(requestBody),
                             signal: controller.signal
-                        });
+                        }, options));
+                        // Redirects are followed only within the dashboard's
+                        // origin: the browser refuses a hop to another origin
+                        // (an auth proxy's sign-in host) before sending
+                        // anything there, and fails it like a network error.
+                        // So a failure is probed once, side-effect free (GET,
+                        // no body, redirect not followed): an opaque redirect
+                        // means the request was sent off the dashboard, which
+                        // is sign-in. Anything else keeps the first error.
+                        let response;
+                        try {
+                            response = await send({ redirect: 'follow', mode: 'same-origin' });
+                        } catch (error) {
+                            if (controller.signal.aborted) throw error;
+                            let probe = null;
+                            try {
+                                probe = await send({
+                                    method: 'GET', body: undefined,
+                                    headers: { Accept: 'application/json' },
+                                    redirect: 'manual', cache: 'no-store'
+                                });
+                            } catch (_) {}
+                            if (!probe || probe.type !== 'opaqueredirect') throw error;
+                            clearTimeout(timeout);
+                            window.webkit.messageHandlers['dashboard-response'].postMessage(JSON.stringify({
+                                type: 'dashboard-response', id: \(id), ok: false, status: 0,
+                                signInRedirect: true, error: String(error)
+                            }));
+                            return;
+                        }
+                        if (response.redirected) redirectedTo = response.url;
                         const declaredLength = Number(response.headers.get('content-length') || 0);
                         if (declaredLength > \(responseLimit)) throw new Error('response_too_large');
                         const text = await (async function() {
@@ -817,21 +1142,24 @@ final class DashboardTicketBridge: NSObject {
                         const normalizedBody = Array.isArray(body) ? { _array: body } : (body && typeof body === 'object' ? body : { value: body });
                         window.webkit.messageHandlers['dashboard-response'].postMessage(JSON.stringify({
                             type: 'dashboard-response', id: \(id), ok: response.ok,
-                            status: response.status, body: normalizedBody,
+                            status: response.status, body: normalizedBody, redirectedTo: redirectedTo,
                             error: !response.ok && body && typeof body === 'object'
                                 ? (body.error || body.message || body.detail) : null
                         }));
                     } catch (error) {
                         window.webkit.messageHandlers['dashboard-response'].postMessage(JSON.stringify({
-                            type: 'dashboard-response', id: \(id), ok: false, status: 0, error: String(error)
+                            type: 'dashboard-response', id: \(id), ok: false, status: 0,
+                            redirectedTo: redirectedTo, error: String(error)
                         }));
                     }
                 })();
                 true;
                 """
-                webView.evaluateJavaScript(script) { [weak self] _, error in
+                // Runs in the isolated world, where the header scripts
+                // attach the proxy headers to this fetch.
+                webView.evaluateJavaScript(script, in: nil, in: DashboardScriptWorld.world) { [weak self] result in
                     guard let self else { return }
-                    guard let error else { return }
+                    guard case .failure = result else { return }
                     // The injected IIFE funnels every JS-level failure into
                     // the message channel, so a completion error means the
                     // engine never ran the script — a dead or stalled view.
@@ -852,6 +1180,11 @@ final class DashboardTicketBridge: NSObject {
                 self?.cancelPendingRequest(id: id)
             }
         })
+        // An answer already on its way when the bridge was invalidated (a
+        // dashboard switch) is the old dashboard's: its caller would apply
+        // it to the dashboard now showing.
+        guard !isInvalidated else { throw DashboardTicketBridgeError.notReady }
+        return response
     }
 
     /// Cancels the Swift-side deadline and resumes the pending request, if
@@ -959,7 +1292,7 @@ extension DashboardTicketBridge: WKNavigationDelegate {
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction,
-        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
     ) {
         // Subframe check must come BEFORE the main-frame transport guard:
         // Turnstile's WebView requirements call for about:blank and
@@ -975,16 +1308,41 @@ extension DashboardTicketBridge: WKNavigationDelegate {
             )
             return
         }
-        guard ConnectionURLPolicy.isAllowedTransport(navigationAction.request.url) else {
-            decisionHandler(.cancel)
-            return
+        decisionHandler(mainFrameNavigationPolicy(for: navigationAction.request.url))
+    }
+
+    /// The hidden page's decision for a main-frame navigation (a load, or a
+    /// redirect the load received). The page only ever loads the dashboard,
+    /// so a navigation to sign-in (another origin, or a sign-in page on this
+    /// one) is the dashboard saying the session is gone: it is cancelled
+    /// rather than followed, so the page never walks the auth proxy's
+    /// redirect chain, and the bridge settles on sign-in required, as a
+    /// landing on /login does. Internal so tests can drive it: WKWebView's
+    /// navigation callbacks are not deterministic in the unit test host.
+    func mainFrameNavigationPolicy(for url: URL?) -> WKNavigationActionPolicy {
+        guard let expectedURL = URL(string: baseURL) else { return .cancel }
+        if DashboardSignInRedirect.isSignIn(url, forDashboard: expectedURL) {
+            cancelledSignInNavigationCount += 1
+            settleOnSignIn(event: "Dashboard page redirected to sign-in")
+            return .cancel
         }
-        guard let expectedURL = URL(string: baseURL),
-              ConnectionURLPolicy.originMatches(navigationAction.request.url, expected: expectedURL) else {
-            decisionHandler(.cancel)
-            return
+        guard ConnectionURLPolicy.isAllowedTransport(url),
+              ConnectionURLPolicy.originMatches(url, expected: expectedURL) else {
+            return .cancel
         }
-        decisionHandler(.allow)
+        return .allow
+    }
+
+    /// The page reached (or was sent to) sign-in: nothing it loads can mint
+    /// a ticket until a reload finds a session. An invalidated bridge keeps
+    /// reporting plain unreadiness.
+    private func settleOnSignIn(event: String) {
+        guard !isInvalidated else { return }
+        isReady = false
+        isLoadFailed = false
+        didLandOnLogin = true
+        onPageEvent?(event)
+        rejectPending(with: DashboardTicketBridgeError.signInRequired)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -1001,34 +1359,9 @@ extension DashboardTicketBridge: WKNavigationDelegate {
         // The tracked load has resolved; identity-based suppression ends
         // here (page-initiated navigations after a finish process normally).
         currentNavigation = nil
-        // A landing with no URL at all is unknown, not "signed out" — treat
-        // it as reloadable rather than guessing a login redirect.
-        guard let landedURL = webView.url,
-              let expectedURL = URL(string: baseURL),
-              ConnectionURLPolicy.originMatches(landedURL, expected: expectedURL) else {
-            isReady = false
-            // A settled foreign-origin or unknown-URL landing (e.g. an SSO
-            // redirect that slipped past the navigation policy, or an error
-            // document) is unusable, not still loading — mark it failed so
-            // mint retries reload back to the dashboard origin. Reject with
-            // .notReady (not .requestFailed) so in-flight mints flow into
-            // that same reload recovery. The login verdict is deliberately
-            // untouched: only an origin-matching landing can change it.
-            isLoadFailed = true
-            rejectPending(with: DashboardTicketBridgeError.notReady)
-            onPageEvent?("Dashboard page landed off the dashboard")
-            return
-        }
-        isLoadFailed = false
-        // A redirect back to /login means the HttpOnly dashboard session is
-        // no longer valid; never attempt to mint a misleading gateway ticket.
-        let landedOnLogin = landedURL.path.contains("/login")
-        isReady = !landedOnLogin
-        didLandOnLogin = landedOnLogin
-        onPageEvent?(landedOnLogin ? "Dashboard page landed on sign-in" : "Dashboard page ready")
-        if landedOnLogin {
-            rejectPending(with: DashboardTicketBridgeError.signInRequired)
-        } else if !isInvalidated {
+        guard let expectedURL = URL(string: baseURL),
+              processLanding(at: webView.url) else { return }
+        if !isInvalidated {
             // Late cookie capture after disconnect must not resurrect the
             // durable mirror AppState just cleared: the write guard runs at
             // the moment of the keychain save, after the cookie-store await.
@@ -1050,6 +1383,47 @@ extension DashboardTicketBridge: WKNavigationDelegate {
         }
     }
 
+    /// Applies where the dashboard page settled. Returns whether the page is
+    /// ready (the dashboard itself, signed in). Internal so tests can drive
+    /// it.
+    ///  - No URL at all: unknown, not "signed out". Marked failed so the
+    ///    next mint reloads.
+    ///  - Another origin (the auth proxy's sign-in host, the identity
+    ///    provider) or a sign-in page on the dashboard's origin (Hermes'
+    ///    /login, a proxy's /oauth2/sign_in): the session is gone. Sign-in
+    ///    is required, never a misleading gateway ticket or a network
+    ///    failure the reconnect loop would retry forever.
+    ///  - Any other page on the dashboard's origin: ready.
+    @discardableResult
+    func processLanding(at landedURL: URL?) -> Bool {
+        guard let expectedURL = URL(string: baseURL), let landedURL else {
+            isReady = false
+            isLoadFailed = true
+            rejectPending(with: DashboardTicketBridgeError.notReady)
+            onPageEvent?("Dashboard page landed nowhere")
+            return false
+        }
+        if DashboardSignInRedirect.isSignIn(landedURL, forDashboard: expectedURL) {
+            settleOnSignIn(event: ConnectionURLPolicy.originMatches(landedURL, expected: expectedURL)
+                ? "Dashboard page landed on sign-in"
+                : "Dashboard page landed on another site's sign-in")
+            return false
+        }
+        guard ConnectionURLPolicy.originMatches(landedURL, expected: expectedURL) else {
+            // Another scheme (an error document): unusable, reloadable.
+            isReady = false
+            isLoadFailed = true
+            rejectPending(with: DashboardTicketBridgeError.notReady)
+            onPageEvent?("Dashboard page landed off the dashboard")
+            return false
+        }
+        isLoadFailed = false
+        didLandOnLogin = false
+        isReady = true
+        onPageEvent?("Dashboard page ready")
+        return true
+    }
+
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         // A failure for a navigation a reload has already replaced (or that
         // finished) must not fail the fresh load; remove-on-match keeps the
@@ -1058,6 +1432,9 @@ extension DashboardTicketBridge: WKNavigationDelegate {
         // context still carry real signal.
         if let navigation, staleNavigations.remove(navigation) != nil { return }
         if let currentNavigation, let navigation, navigation !== currentNavigation { return }
+        // The load the bridge stopped on its way to sign-in reports that
+        // cancellation as a failure: the verdict stays sign-in required.
+        if didLandOnLogin { return }
         isReady = false
         isLoadFailed = true
         rejectPending(with: error)
@@ -1067,6 +1444,9 @@ extension DashboardTicketBridge: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         if let navigation, staleNavigations.remove(navigation) != nil { return }
         if let currentNavigation, let navigation, navigation !== currentNavigation { return }
+        // The load the bridge stopped on its way to sign-in reports that
+        // cancellation as a failure: the verdict stays sign-in required.
+        if didLandOnLogin { return }
         isReady = false
         isLoadFailed = true
         rejectPending(with: error)
@@ -1109,17 +1489,37 @@ extension DashboardTicketBridge: WKScriptMessageHandler {
               let continuation = pendingRequests.removeValue(for: id) else { return }
         requestDeadlines.removeValue(forKey: id)?.cancel()
 
+        // The request was redirected to sign-in: off the dashboard's origin
+        // (the page refused to follow it and its probe saw the redirect), or
+        // to a sign-in page on it, whatever that page answered. Sign-in is
+        // required, as for requests sent without the page, never a network
+        // failure the reconnect loop retries forever.
+        if payload["signInRedirect"] as? Bool == true
+            || DashboardSignInRedirect.isSignIn(
+                (payload["redirectedTo"] as? String).flatMap(URL.init(string:)),
+                forDashboard: expectedURL
+            ) {
+            continuation.resume(throwing: DashboardTicketBridgeError.signInRequired)
+            return
+        }
+
         if payload["ok"] as? Bool == true {
             continuation.resume(returning: payload["body"] as? [String: Any] ?? [:])
             return
         }
 
         let status = payload["status"] as? Int ?? 0
-        if status == 401 || status == 403 {
+        let detail = payload["error"] as? String ?? AppLocalization.string("Dashboard request failed (\(String(status))).")
+        // Hermes' own 403 (its `detail` says why, such as a chat this
+        // sign-in may not change or a file it won't serve) is a verdict on
+        // the request, not an expired sign-in: signing in again can't change
+        // it.
+        let hermesDetail = (payload["body"] as? [String: Any])?["detail"] as? String
+        if DashboardTicketBridgeError.meansSignIn(status: status, hermesDetail: hermesDetail),
+           !SessionMutationIdentity.isRefusalDetail(detail) {
             continuation.resume(throwing: DashboardTicketBridgeError.signInRequired)
             return
         }
-        let detail = payload["error"] as? String ?? AppLocalization.string("Dashboard request failed (\(String(status))).")
         // The injected fetch throws exactly one sentinel for a response that
         // outgrew the safe bound (content-length or streamed bytes). It
         // arrives here as a status-0 failure like every other JS-level

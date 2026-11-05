@@ -84,6 +84,10 @@ final class WidgetLaunchCoordinator {
         let deadline: Duration
         var stage: Stage = .prepare
         var inFlight = false
+        /// Readiness changed while a step was running. That step read the
+        /// state before the change, so a step that defers runs once more
+        /// instead of waiting for a signal that already came.
+        var readinessChangedInFlight = false
         var task: Task<Void, Never>?
         var expiryTask: Task<Void, Never>?
 
@@ -104,8 +108,19 @@ final class WidgetLaunchCoordinator {
     private let prepare: Operation
     private let perform: Operation
     private let finish: @MainActor (WidgetLaunchOutcome) -> Void
+    /// Told the pending link whenever it changes, and nil once there is none.
+    private let pendingLinkChanged: @MainActor (WidgetLaunchLink?) -> Void
+    /// Told each request's link when it ends: with its outcome, or nil when
+    /// something newer superseded it. A shared draft (#812) rides on a
+    /// launch and needs to know which one ended.
+    private let ended: @MainActor (WidgetLaunchLink, WidgetLaunchOutcome?) -> Void
     private var generation: UInt64 = 0
-    private var request: Request?
+    private var request: Request? {
+        didSet {
+            guard oldValue !== request else { return }
+            pendingLinkChanged(request?.link)
+        }
+    }
     private var activeLease: WidgetLaunchLease?
     private var activeLeaseExpiryTask: Task<Void, Never>?
     private var handedOffTalkGeneration: UInt64?
@@ -115,15 +130,21 @@ final class WidgetLaunchCoordinator {
         now: @escaping () -> Duration,
         prepare: @escaping Operation,
         perform: @escaping Operation,
-        finish: @escaping @MainActor (WidgetLaunchOutcome) -> Void
+        finish: @escaping @MainActor (WidgetLaunchOutcome) -> Void,
+        pendingLinkChanged: @escaping @MainActor (WidgetLaunchLink?) -> Void = { _ in },
+        ended: @escaping @MainActor (WidgetLaunchLink, WidgetLaunchOutcome?) -> Void = { _, _ in }
     ) {
         self.now = now
         self.prepare = prepare
         self.perform = perform
         self.finish = finish
+        self.pendingLinkChanged = pendingLinkChanged
+        self.ended = ended
     }
 
     var hasPendingRequest: Bool { request != nil }
+    /// The link still waiting to be carried out, if any.
+    var pendingLink: WidgetLaunchLink? { request?.link }
 
     func receive(_ link: WidgetLaunchLink) {
         if let request, request.link == link, request.inFlight { return }
@@ -159,6 +180,7 @@ final class WidgetLaunchCoordinator {
         activeLeaseExpiryTask = nil
         old?.task?.cancel()
         old?.expiryTask?.cancel()
+        if let old { ended(old.link, nil) }
     }
 
     func readinessChanged() {
@@ -174,6 +196,7 @@ final class WidgetLaunchCoordinator {
             expire(request)
             return
         }
+        if request.inFlight { request.readinessChangedInFlight = true }
         advance(request)
     }
 
@@ -217,6 +240,7 @@ final class WidgetLaunchCoordinator {
         let lease = lease(for: request)
         guard lease.isCurrent else { expire(request); return }
         request.inFlight = true
+        request.readinessChangedInFlight = false
         request.task = Task { @MainActor [weak self, weak request] in
             guard let self, let request else { return }
             let outcome: WidgetLaunchOutcome
@@ -226,9 +250,10 @@ final class WidgetLaunchCoordinator {
                 switch outcome {
                 case .handled:
                     request.stage = .perform
+                    // Perform reads the state fresh.
+                    request.readinessChangedInFlight = false
                 case .deferred:
-                    request.inFlight = false
-                    request.task = nil
+                    self.settleDeferred(request)
                     return
                 case .failed:
                     self.terminate(request, outcome: outcome)
@@ -240,12 +265,19 @@ final class WidgetLaunchCoordinator {
             guard self.isCurrent(request), lease.isCurrent else { return }
             switch performed {
             case .deferred:
-                request.inFlight = false
-                request.task = nil
+                self.settleDeferred(request)
             case .handled, .failed:
                 self.terminate(request, outcome: performed)
             }
         }
+    }
+
+    private func settleDeferred(_ request: Request) {
+        request.inFlight = false
+        request.task = nil
+        guard request.readinessChangedInFlight else { return }
+        request.readinessChangedInFlight = false
+        advance(request)
     }
 
     private func isCurrent(_ request: Request) -> Bool {
@@ -284,6 +316,7 @@ final class WidgetLaunchCoordinator {
         request.inFlight = false
         self.request = nil
         if !retainTalkCaptureDeadline { activeLease = nil }
+        ended(request.link, outcome)
         finish(outcome)
     }
 

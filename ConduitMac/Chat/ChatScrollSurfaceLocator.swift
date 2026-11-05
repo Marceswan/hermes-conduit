@@ -98,6 +98,16 @@ final class NSScrollViewChatSurface: NSObject, ChatScrollSurface {
     private var programmaticOffsetY: CGFloat?
     private var animatingProgrammatically = false
     private(set) var lastInsets: NSEdgeInsets
+    /// View > Zoom (D27): from `MacUIZoom.willChangeNotification` until the change
+    /// settles, an offset change is layout, not the reader. After the engine pins
+    /// the new bottom, SwiftUI writes back the offset it kept for the old viewport
+    /// size, which would read as a scroll away from the latest message.
+    private(set) var zoomSettling = false
+    /// The chat followed its latest message when the zoom began; it follows it after.
+    private var followedBeforeZoom = false
+    private var zoomGeneration = 0
+    /// Longer than the layout pass a zoom change starts; a reader's scroll in it is not lost, only not read as leaving the end.
+    static let zoomSettleDelay: TimeInterval = 0.3
 
     init(scrollView: NSScrollView, locator: NSView, engine: ChatScrollEngine?) {
         self.scrollView = scrollView
@@ -130,7 +140,26 @@ final class NSScrollViewChatSurface: NSObject, ChatScrollSurface {
                     self?.engine?.userDragEnded()
                 }
             },
+            // Synchronous (no queue): posted just before the new level is stored.
+            center.addObserver(forName: MacUIZoom.willChangeNotification, object: nil, queue: nil) { [weak self] _ in
+                MainActor.assumeIsolated { self?.zoomWillChange() }
+            },
         ]
+    }
+
+    func zoomWillChange() {
+        if !zoomSettling { followedBeforeZoom = engine?.isFollowingLatest ?? false }
+        zoomSettling = true
+        zoomGeneration += 1
+        let generation = zoomGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.zoomSettleDelay) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.zoomGeneration == generation else { return }
+                self.zoomSettling = false
+                if self.followedBeforeZoom { self.engine?.explicitLatestRequested(animated: false) }
+                self.followedBeforeZoom = false
+            }
+        }
     }
 
     func invalidate() {
@@ -145,6 +174,7 @@ final class NSScrollViewChatSurface: NSObject, ChatScrollSurface {
         switch classifyScroll(newOffsetY: y) {
         case .programmatic:
             engine.surfaceScrolled()
+            if zoomSettling, followedBeforeZoom { engine.explicitLatestRequested(animated: false) }
         case .userDiscrete:
             // Discrete scrolls never post willStartLiveScroll, so the engine
             // would keep pinning the bottom. Treat them as a drag.
@@ -161,7 +191,7 @@ final class NSScrollViewChatSurface: NSObject, ChatScrollSurface {
     /// reading surface state, so tests can drive it directly.
     func classifyScroll(newOffsetY: CGFloat) -> ScrollKind {
         if liveScrolling { return .live }
-        if animatingProgrammatically { return .programmatic }
+        if animatingProgrammatically || zoomSettling { return .programmatic }
         if let target = programmaticOffsetY, abs(newOffsetY - target) <= 0.5 {
             return .programmatic
         }

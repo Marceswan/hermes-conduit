@@ -2,13 +2,14 @@ import XCTest
 
 /// Round-6 Repair Connection UI coverage. All paths are deterministic:
 /// `-CONDUIT_UI_TEST_FAILED_CONNECTION` starts the app on a failed stubbed
-/// session (Repair Connection visible), `-CONNECTION_SETUP_TEST_RESULT`
+/// session (Repair Connection visible at the top of V2's Chats, where the
+/// app opens), `-CONNECTION_SETUP_TEST_RESULT`
 /// scripts the staged probe, and `-CONDUIT_REPAIR_ACTIVATION` scripts the
 /// explicit activation outcome. No test touches a real Hermes server.
 final class ConnectionRepairUITests: XCTestCase {
     private enum Identity {
         static let stubDashboardURL = "https://repair-uitest.example"
-        static let repairButton = "composer.repair-connection"
+        static let repairButton = "chats.repair-connection"
         static let urlField = "setup.url"
         static let username = "setup.username"
         static let password = "setup.password"
@@ -17,6 +18,7 @@ final class ConnectionRepairUITests: XCTestCase {
         static let testRun = "setup.test.run"
         static let reconnectNow = "setup.review.reconnect-now"
         static let signInReconnect = "setup.review.sign-in-reconnect"
+        static let browserSignInCancel = "login.browser-sign-in.cancel"
         static let enterCredentials = "setup.test.enter-credentials"
     }
 
@@ -44,13 +46,14 @@ final class ConnectionRepairUITests: XCTestCase {
     }
 
     func testNativeRepairTestsReconnectsAndReturnsToChat() {
-        // Full native repair: seeded URL → credentials → staged success →
-        // Reconnect Now (scripted activation) → back on chat, never bounced
-        // to the login card.
+        // Full native repair: seeded URL → staged test (Credentials
+        // required) → credentials → staged success → Reconnect Now
+        // (scripted activation) → back on chat, never bounced to the login
+        // card.
         let app = XCUIApplication()
         app.launchArguments += [
             "-CONDUIT_UI_TEST_FAILED_CONNECTION", Identity.stubDashboardURL,
-            "-CONNECTION_SETUP_TEST_RESULT", "success",
+            "-CONNECTION_SETUP_TEST_RESULT", "auth:password",
             "-CONDUIT_REPAIR_ACTIVATION", "success"
         ]
         app.launch()
@@ -64,6 +67,11 @@ final class ConnectionRepairUITests: XCTestCase {
         XCTAssertEqual(urlField.value as? String, Identity.stubDashboardURL)
         tapVisible(app.buttons[Identity.next], in: app)
 
+        // Discovery first: the address goes straight to the staged test,
+        // which asks for credentials once it proves a password dashboard.
+        XCTAssertTrue(app.buttons[Identity.testRun].waitForExistence(timeout: 5), "Test screen did not appear. Tree:\n\(app.debugDescription)")
+        tapVisible(app.buttons[Identity.testRun], in: app)
+        tapVisible(app.buttons[Identity.enterCredentials], in: app)
         let username = app.textFields[Identity.username]
         XCTAssertTrue(username.waitForExistence(timeout: 5))
         tapVisible(username, in: app)
@@ -86,8 +94,8 @@ final class ConnectionRepairUITests: XCTestCase {
         XCTAssertFalse(app.buttons["setup.use-settings"].exists, "Repair mode must not show the login handoff")
         tapVisible(app.buttons[Identity.reconnectNow], in: app)
 
-        // Back on the chat surface: still the (stubbed) failed session in
-        // its stable state — never the login card.
+        // Back on Chats: still the (stubbed) failed session in its stable
+        // state — never the login card.
         XCTAssertTrue(app.buttons[Identity.repairButton].waitForExistence(timeout: 5), "Wizard did not return to chat. Tree:\n\(app.debugDescription)")
         XCTAssertFalse(app.textFields["login.server-url"].exists, "Repair must never strand the user on the login card")
     }
@@ -152,6 +160,42 @@ final class ConnectionRepairUITests: XCTestCase {
         XCTAssertFalse(app.buttons[Identity.reconnectNow].exists)
     }
 
+    func testBrowserSignInSheetCancelReturnsToReview() {
+        // The browser sign-in sheet closes with its Cancel button, not only
+        // the swipe down: the sheet goes, Review is left as it was, and Sign
+        // In to Reconnect opens the sheet again.
+        let app = XCUIApplication()
+        app.launchArguments += [
+            "-CONDUIT_UI_TEST_FAILED_CONNECTION", Identity.stubDashboardURL,
+            "-CONDUIT_UI_TEST_FAILURE_KIND", "none",
+            "-CONNECTION_SETUP_TEST_RESULT", "auth:interactiveSignInRequired"
+        ]
+        app.launch()
+
+        let repair = app.buttons[Identity.repairButton]
+        XCTAssertTrue(repair.waitForExistence(timeout: 10))
+        tapVisible(repair, in: app)
+        XCTAssertTrue(app.staticTexts["setup.address-preview"].waitForExistence(timeout: 5))
+        tapVisible(app.buttons[Identity.testRun], in: app)
+
+        let signIn = app.buttons[Identity.signInReconnect]
+        XCTAssertTrue(signIn.waitForExistence(timeout: 5), "Sign In to Reconnect did not appear. Tree:\n\(app.debugDescription)")
+        tapVisible(signIn, in: app)
+
+        let cancel = app.buttons[Identity.browserSignInCancel]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 10), "The browser sign-in sheet has no Cancel. Tree:\n\(app.debugDescription)")
+        XCTAssertTrue(app.webViews.firstMatch.waitForExistence(timeout: 5), "Cancel belongs to the browser sign-in sheet")
+        waitUntilSettled(cancel)
+        cancel.tap()
+
+        XCTAssertTrue(cancel.waitForNonExistence(timeout: 5), "Cancel did not close the sheet")
+        XCTAssertTrue(app.webViews.firstMatch.waitForNonExistence(timeout: 5), "The sign-in page is still up")
+
+        waitUntilSettled(signIn)
+        tapVisible(signIn, in: app)
+        XCTAssertTrue(cancel.waitForExistence(timeout: 10), "Sign In to Reconnect did not open the sheet again")
+    }
+
     func testFailedActivationShowsClassifiedFailureAndForcesFreshTest() {
         // A test success is not a guarantee the world is unchanged: when the
         // explicit activation fails, the classified failure is shown on
@@ -160,7 +204,7 @@ final class ConnectionRepairUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += [
             "-CONDUIT_UI_TEST_FAILED_CONNECTION", Identity.stubDashboardURL,
-            "-CONNECTION_SETUP_TEST_RESULT", "success",
+            "-CONNECTION_SETUP_TEST_RESULT", "auth:password",
             "-CONDUIT_REPAIR_ACTIVATION", "transportFailure"
         ]
         app.launch()
@@ -174,6 +218,11 @@ final class ConnectionRepairUITests: XCTestCase {
         XCTAssertEqual(urlField.value as? String, Identity.stubDashboardURL)
         tapVisible(app.buttons[Identity.next], in: app)
 
+        // Discovery first: the address goes straight to the staged test,
+        // which asks for credentials once it proves a password dashboard.
+        XCTAssertTrue(app.buttons[Identity.testRun].waitForExistence(timeout: 5), "Test screen did not appear. Tree:\n\(app.debugDescription)")
+        tapVisible(app.buttons[Identity.testRun], in: app)
+        tapVisible(app.buttons[Identity.enterCredentials], in: app)
         let username = app.textFields[Identity.username]
         XCTAssertTrue(username.waitForExistence(timeout: 5))
         tapVisible(username, in: app)
@@ -200,6 +249,20 @@ final class ConnectionRepairUITests: XCTestCase {
     }
 
     // MARK: - Walk helpers
+
+    /// Waits until the element's frame stops moving, so a tap isn't
+    /// swallowed while a sheet slides in or out (as ConnectionSetupUITests).
+    private func waitUntilSettled(_ element: XCUIElement, timeout: TimeInterval = 5) {
+        let deadline = Date().addingTimeInterval(timeout)
+        var last = element.frame
+        var stablePolls = 0
+        while Date() < deadline, stablePolls < 3 {
+            Thread.sleep(forTimeInterval: 0.15)
+            let frame = element.frame
+            stablePolls = frame == last ? stablePolls + 1 : 0
+            last = frame
+        }
+    }
 
     private func tapVisible(_ element: XCUIElement, in app: XCUIApplication) {
         XCTAssertTrue(element.waitForExistence(timeout: 5))

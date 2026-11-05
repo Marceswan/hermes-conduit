@@ -24,6 +24,9 @@ struct HermesCallSettingsModel {
     var current: @MainActor () -> HermesCallSettings?
     /// Saves every setting; false when the host didn't take them.
     var save: (HermesCallSettings) async -> Bool
+    /// This iPhone's saved places (Settings > Location), for "Don't call me
+    /// while I'm at"; their ids are what the host keeps.
+    var places: [LocationSavedPlace] = []
 }
 
 /// Formats for the call settings, in the app's language.
@@ -264,6 +267,9 @@ struct HermesCallSettingsSection: View {
                     Text("Past a limit, a finished job sends its usual notification instead of calling. These settings are this profile's, kept on your Hermes host.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if draft.avoidPlaces != nil || draft.avoidUnknownPlace != nil {
+                        avoidPlacesRows
+                    }
                 }
             } else if loadFailed {
                 Text("Couldn't read Hermes' call settings.")
@@ -272,6 +278,7 @@ struct HermesCallSettingsSection: View {
                 Button(AppLocalization.string("Try again")) {
                     Task { await load() }
                 }
+                .buttonStyle(.settings)
             } else {
                 HStack(spacing: 8) {
                     ProgressView()
@@ -306,15 +313,64 @@ struct HermesCallSettingsSection: View {
         }
     }
 
+    /// "Don't call me while I'm at": the saved places where a call becomes
+    /// the usual notification instead; and, on its own, "don't call me when
+    /// Conduit can't say where I am" (no recent location, or sharing paused
+    /// or off). Each shows only when the host has the setting.
+    @ViewBuilder
+    private var avoidPlacesRows: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if draft.avoidPlaces != nil {
+                Text("Don't call me while I'm at")
+                    .font(.subheadline.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
+                if model.places.isEmpty {
+                    Text("Save places in Settings under Location first.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(model.places) { place in
+                    Toggle(isOn: avoidBinding(place.id)) {
+                        Label {
+                            Text(verbatim: place.name)
+                        } icon: {
+                            Image(systemName: place.kind.symbol)
+                        }
+                    }
+                }
+                Text("A call Hermes would make while you're at one of these places comes as the usual “Hermes wants to talk” notification instead. Needs location shared in the background.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if draft.avoidUnknownPlace != nil {
+                Toggle("Don't call me when Conduit can't say where I am", isOn: optionalBinding(\.avoidUnknownPlace))
+                Text("That's when location sharing is off or paused, or no recent location has been sent. The call comes as the usual notification instead.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func avoidBinding(_ placeID: String) -> Binding<Bool> {
+        Binding(
+            get: { draft.avoidPlaces?.contains(placeID) ?? false },
+            set: { on in
+                change { settings in
+                    var places = settings.avoidPlaces ?? []
+                    places.removeAll { $0 == placeID }
+                    if on { places.append(placeID) }
+                    settings.avoidPlaces = Array(places.prefix(HermesCallSettings.maxAvoidPlaces))
+                }
+            }
+        )
+    }
+
     private func testCallRow(_ start: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Button(action: start) {
                 Label(AppLocalization.string("Try a test call"), systemImage: "phone.fill")
-                    .font(.subheadline.weight(.semibold))
             }
-            // Bordered, so it reads as a button and not a caption.
-            .buttonStyle(.bordered)
-            .tint(.conduitAccent)
+            .buttonStyle(.settings)
             .accessibilityIdentifier("settings.hermesCallsTest")
             Text(AppLocalization.string("Opens a new chat with “\(HermesCallSettingsFormat.testCallPrompt)” ready to send. Send it, and your iPhone rings when Hermes replies."))
                 .font(.caption)
@@ -326,10 +382,8 @@ struct HermesCallSettingsSection: View {
         VStack(alignment: .leading, spacing: 6) {
             Button(action: start) {
                 Label(AppLocalization.string("Have Hermes watch for this"), systemImage: "binoculars.fill")
-                    .font(.subheadline.weight(.semibold))
             }
-            .buttonStyle(.bordered)
-            .tint(.conduitAccent)
+            .buttonStyle(.settings)
             .accessibilityIdentifier("settings.hermesCallsWatch")
             Text("Hermes doesn't check for what your note describes on its own. This opens a new chat asking it to set up scheduled checks that call you when it happens. After you change the note, tap it again to bring the checks up to date.")
                 .font(.caption)

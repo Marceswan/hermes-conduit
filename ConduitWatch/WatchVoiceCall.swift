@@ -31,6 +31,7 @@ enum WatchVoiceEngine: String, CaseIterable, Identifiable {
     case geminiLive
     case gptLive
     case grokLive
+    case localLive
 
     static let storageKey = "watchVoice.engine"
 
@@ -41,6 +42,7 @@ enum WatchVoiceEngine: String, CaseIterable, Identifiable {
         case .geminiLive: return String(localized: "Gemini Live")
         case .gptLive: return String(localized: "GPT-Live")
         case .grokLive: return String(localized: "Grok")
+        case .localLive: return String(localized: "Local Live")
         }
     }
 
@@ -48,6 +50,7 @@ enum WatchVoiceEngine: String, CaseIterable, Identifiable {
         switch self {
         case .geminiLive: return String(localized: "Runs on your Watch")
         case .gptLive, .grokLive: return String(localized: "Runs on your Hermes host")
+        case .localLive: return String(localized: "Your own speech server")
         }
     }
 
@@ -57,6 +60,7 @@ enum WatchVoiceEngine: String, CaseIterable, Identifiable {
         case .geminiLive: return .geminiLive
         case .gptLive: return .gptLive
         case .grokLive: return .grokLive
+        case .localLive: return .localLive
         }
     }
 
@@ -65,6 +69,7 @@ enum WatchVoiceEngine: String, CaseIterable, Identifiable {
         case .geminiLive: return "sparkles"
         case .gptLive: return "waveform.path.ecg"
         case .grokLive: return "bolt.fill"
+        case .localLive: return "house.fill"
         }
     }
 }
@@ -107,6 +112,12 @@ final class WatchVoiceCall: ObservableObject {
     /// A call on open was skipped for the microphone permission: logged
     /// once a launch.
     private var loggedOpenSkip = false
+    /// The scene's last phase, nil until SwiftUI reports the first.
+    private var scenePhase: ScenePhase?
+    /// A call asked for from outside the app (`requestCall`) while the app
+    /// wasn't in front yet: it starts once the app is. Only the latest
+    /// request is kept; every source asks for the same call.
+    private var pendingRequest: (source: String, at: Date)?
     /// The engine of the call on screen, which a change of `engine` during
     /// the call doesn't move.
     @Published private(set) var callEngine: WatchVoiceEngine
@@ -178,6 +189,8 @@ final class WatchVoiceCall: ObservableObject {
         switch callEngine {
         case .geminiLive: Task { await direct.start(engine: .gemini, ring: ring, answer: answer) }
         case .grokLive: Task { await direct.start(engine: .grok, ring: ring, answer: answer) }
+        // Calls from Hermes don't ring a Watch on Local Live (WatchCallVoices).
+        case .localLive: Task { await direct.start(engine: .localLive) }
         case .gptLive: Task { await bridge.start(ring: ring, answer: answer) }
         }
     }
@@ -188,13 +201,14 @@ final class WatchVoiceCall: ObservableObject {
         switch engine {
         case .geminiLive: return WatchDirectCallModel.startRequest(engine: .gemini, callID: callID, ring: ring)
         case .grokLive: return WatchDirectCallModel.startRequest(engine: .grok, callID: callID, ring: ring)
+        case .localLive: return WatchDirectCallModel.startRequest(engine: .localLive, callID: callID, ring: ring)
         case .gptLive: return WatchBridgeCallModel.startRequest(callID: callID, ring: ring)
         }
     }
 
     func end() {
         switch callEngine {
-        case .geminiLive, .grokLive: direct.end()
+        case .geminiLive, .grokLive, .localLive: direct.end()
         case .gptLive: bridge.end()
         }
     }
@@ -203,14 +217,14 @@ final class WatchVoiceCall: ObservableObject {
     /// Siri or an alarm.
     func tap() {
         switch callEngine {
-        case .geminiLive, .grokLive: direct.tapOrb()
+        case .geminiLive, .grokLive, .localLive: direct.tapOrb()
         case .gptLive: bridge.tapOrb()
         }
     }
 
     func toggleMute() {
         switch callEngine {
-        case .geminiLive, .grokLive: direct.toggleMute()
+        case .geminiLive, .grokLive, .localLive: direct.toggleMute()
         case .gptLive: bridge.toggleMute()
         }
     }
@@ -218,7 +232,7 @@ final class WatchVoiceCall: ObservableObject {
     /// Answers the approval the card showed, never one queued behind it.
     func answerApproval(_ approval: WatchJobAnswer.Approval, approve: Bool) {
         switch callEngine {
-        case .geminiLive, .grokLive: direct.answerApproval(approval, approve: approve)
+        case .geminiLive, .grokLive, .localLive: direct.answerApproval(approval, approve: approve)
         case .gptLive: bridge.answerApproval(approval, approve: approve)
         }
     }
@@ -231,6 +245,7 @@ final class WatchVoiceCall: ObservableObject {
         caption = nil
         transcript = []
         liveSince = nil
+        endedAt = nil
     }
 
     func scenePhaseChanged(_ newPhase: ScenePhase) {
@@ -238,9 +253,23 @@ final class WatchVoiceCall: ObservableObject {
         bridge.scenePhaseChanged(newPhase)
         // Opened: the first active since launch, or the first since the
         // app went to the background (either can pass through inactive on
-        // the way). A wrist raise never left inactive and starts nothing.
+        // the way). A wrist raise never left inactive and starts nothing:
+        // watchOS keeps the app frontmost (inactive) with the wrist down,
+        // and only backgrounds it on a press of the crown or once Return
+        // to Clock runs out (WatchKit, "Taking advantage of frontmost app
+        // state").
+        scenePhase = newPhase
         if newPhase == .background { wasBackgrounded = true }
         if newPhase == .active {
+            if let request = pendingRequest {
+                pendingRequest = nil
+                let age = Date().timeIntervalSince(request.at)
+                if age < Self.requestLifetime {
+                    startRequested(source: request.source)
+                } else {
+                    WatchCallLog.shared.note("callRequestExpired", ["source": request.source, "seconds": Int(age)])
+                }
+            }
             if !hasBeenActive || wasBackgrounded { startOnOpenIfWanted() }
             hasBeenActive = true
             wasBackgrounded = false
@@ -250,14 +279,45 @@ final class WatchVoiceCall: ObservableObject {
         WatchCallLog.shared.note("scenePhase", ["phase": "\(newPhase)", "reachable": WatchLink.shared.isReachable])
     }
 
-    static let openAfterEndPause: TimeInterval = 120
+    /// How long a call asked for before the app came to the front still
+    /// starts when it does.
+    static let requestLifetime: TimeInterval = 60
+
+    /// A call asked for from outside the app: the Action button or a
+    /// control (watchOS 26), the watch face complication or a shortcut
+    /// (TalkToHermesIntent, WatchCallURL). It starts whatever Call on open
+    /// says, and from a wrist raise too: the press asked for it.
+    func requestCall(source: String) {
+        WatchCallLog.shared.note("callRequested", ["source": source, "screen": scenePhase.map { "\($0)" } ?? "launching"])
+        guard scenePhase == .active else {
+            if let older = pendingRequest {
+                WatchCallLog.shared.note("callRequestReplaced", ["source": older.source, "by": source])
+            }
+            pendingRequest = (source, Date())
+            return
+        }
+        startRequested(source: source)
+    }
+
+    private func startRequested(source: String) {
+        // A call from Hermes ringing or answered is the call.
+        guard !isActive, !HermesWatchCalls.shared.holdsCall else {
+            WatchCallLog.shared.note("callRequestDropped", ["source": source, "callOn": isActive, "hermesCall": HermesWatchCalls.shared.holdsCall])
+            return
+        }
+        WatchCallLog.shared.note("callStartedOnRequest", ["source": source, "engine": engine.rawValue])
+        dismissEnded()
+        start()
+    }
 
     private func startOnOpenIfWanted() {
         // A call from Hermes ringing or answered is the call.
-        guard startsOnOpen, !isActive, !HermesWatchCalls.shared.holdsCall else { return }
-        // Back in front soon after a call ended (the wrist went down on
-        // its summary): the user is reading it, not calling again.
-        if let endedAt, Date().timeIntervalSince(endedAt) < Self.openAfterEndPause { return }
+        guard !isScreenshotFixture, startsOnOpen, !isActive, !HermesWatchCalls.shared.holdsCall else { return }
+        // Back from the background is an open, however soon after a call
+        // ended: reading the summary with the wrist down and up again
+        // never leaves inactive. Return to Clock running out on the summary
+        // does background the app; opening it after that is an open too
+        // (the call is saved on the iPhone).
         // The microphone prompt is left to a tap on Start.
         guard WatchAudio.hasPermission else {
             if !loggedOpenSkip {
@@ -269,6 +329,49 @@ final class WatchVoiceCall: ObservableObject {
         WatchCallLog.shared.note("callStartedOnOpen", ["engine": engine.rawValue])
         dismissEnded()
         start()
+    }
+
+    // MARK: Screenshot fixture
+
+    /// Set by `-conduitScreenshotCall home|speaking|listening|ended|approval|approvalDenyOnly` (debug builds only):
+    /// the App Store screenshot run (scripts/app-store) shows a call in that
+    /// state with no audio or connection behind it.
+    private(set) var isScreenshotFixture = false
+
+    func applyScreenshotFixture(arguments: [String] = ProcessInfo.processInfo.arguments) {
+        #if DEBUG
+        guard let index = arguments.firstIndex(of: "-conduitScreenshotCall"), index + 1 < arguments.count else { return }
+        isScreenshotFixture = true
+        if arguments[index + 1] == "home" { return }
+        // Demo content, English only like the rest of the demo world.
+        let now = Date()
+        callEngine = engine
+        transcript = [
+            .init(role: .user, text: "What's on my calendar this afternoon?", at: now.addingTimeInterval(-70)),
+            .init(role: .assistant, text: "Two things: a dentist appointment at 3, and Maya's soccer practice at 5:30. Want me to set a reminder to leave by 2:40?", at: now.addingTimeInterval(-62)),
+            .init(role: .user, text: "Yes, and text Maya's coach that we might be ten minutes late.", at: now.addingTimeInterval(-40)),
+            .init(role: .assistant, text: "Reminder set for 2:40. I've drafted the text to Coach Rivera and started a job to send it.", at: now.addingTimeInterval(-30)),
+        ]
+        liveSince = now.addingTimeInterval(-83)
+        jobsRunning = 1
+        switch arguments[index + 1] {
+        case "ended":
+            endedAt = now
+            phase = .ended(nil)
+        case "listening":
+            phase = .listening
+        case "approval", "approvalDenyOnly":
+            // A Local Live call's own request, on the job approvals' card.
+            pendingApproval = WatchJobAnswer.Approval(
+                grantID: "", jobID: "", title: "Delete the old build folder", requestID: "fixture",
+                command: "rm -rf ~/Projects/site/build", description: "",
+                canApproveOnce: arguments[index + 1] == "approval")
+            phase = .speaking
+        default:
+            caption = transcript.last?.text
+            phase = .speaking
+        }
+        #endif
     }
 
     // MARK: State
@@ -284,10 +387,10 @@ final class WatchVoiceCall: ObservableObject {
     }
 
     private func refresh() {
-        guard !summaryDismissed else { return }
+        guard !summaryDismissed, !isScreenshotFixture else { return }
         let next: Phase
         switch callEngine {
-        case .geminiLive, .grokLive: next = Self.phase(direct.phase)
+        case .geminiLive, .grokLive, .localLive: next = Self.phase(direct.phase)
         case .gptLive: next = Self.phase(bridge.phase)
         }
         // Only a dismissed summary goes back to the home screen: a model
@@ -299,7 +402,7 @@ final class WatchVoiceCall: ObservableObject {
             previousModelCall = nil
         }
         switch callEngine {
-        case .geminiLive, .grokLive:
+        case .geminiLive, .grokLive, .localLive:
             caption = direct.caption
             transcript = direct.transcript
             isMuted = direct.isMuted
@@ -325,7 +428,7 @@ final class WatchVoiceCall: ObservableObject {
 
     private var modelCallID: UInt32 {
         switch callEngine {
-        case .geminiLive, .grokLive: return direct.callID
+        case .geminiLive, .grokLive, .localLive: return direct.callID
         case .gptLive: return bridge.callID
         }
     }

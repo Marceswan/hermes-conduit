@@ -38,9 +38,11 @@ final class MissingSessionRecoveryTests: XCTestCase {
 
     private let notFound = RpcError(code: 4007, message: "session not found")
 
-    private func session(_ id: String) -> SessionSummary {
+    private func session(_ id: String, storedID: String? = nil) -> SessionSummary {
         SessionSummary(
-            id: id, storedSessionId: nil, alternateIds: [], title: id, model: "Hermes",
+            // As the catalog parser lists them: the stored id is an alias too.
+            id: id, storedSessionId: storedID,
+            alternateIds: [storedID].compactMap { $0 }.filter { $0 != id }, title: id, model: "Hermes",
             updatedLabel: "now", profile: "default", source: .chat, isActive: false,
             isArchived: false, lineageRootId: nil
         )
@@ -62,9 +64,9 @@ final class MissingSessionRecoveryTests: XCTestCase {
         persistedTranscript: (@MainActor (String, String, String) async -> PersistedTranscriptFetchOutcome)? = nil,
         requests: Requests
     ) -> Fixture {
-        let suite = "MissingSessionRecoveryTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let suite = HostedTestSupport.makeSuite()
+        let defaults = suite.defaults
+        addTeardownBlock { @MainActor in HostedTestSupport.dropSuite(suite) }
         let store = ChatResumeStore(defaults: defaults)
         store.setBehavior(.continueWhereLeftOff)
         let scheduler = Scheduler()
@@ -145,6 +147,72 @@ final class MissingSessionRecoveryTests: XCTestCase {
         XCTAssertEqual(f.appState.turnState, .idle)
         XCTAssertEqual(f.scheduler.scheduledCount, 0, "No reconnect loop after an authoritative not-found")
         XCTAssertFalse(f.appState.macNewChatDisabled)
+    }
+
+    /// Upstream #446 and #950: Hermes drops runtimes (a gateway restart, idle reaping) and resumes by
+    /// the stored id. A listed row whose RUNTIME id answers 4007 is not a dead conversation while its
+    /// stored id still resumes: it opens once more by the stored id, the pointer stays, nothing is
+    /// walked or created. (Ported from ConduitTests/MissingSessionRecoveryTests; no Mac fixture used a
+    /// distinct stored id before, so this path had no Mac test.)
+    func testListedSessionWhoseRuntimeIDIsGoneResumesByStoredID() async {
+        let requests = Requests()
+        requests.create = { "must-not-happen" }
+        let f = makeFixture(
+            saved: "stored-a",
+            catalog: [session("runtime-old", storedID: "stored-a"), session("other")],
+            open: { id in
+                switch id {
+                case "runtime-old":
+                    throw self.notFound
+                case "stored-a":
+                    return SessionResumeResult(
+                        sessionId: "runtime-new",
+                        storedSessionId: "stored-a",
+                        messages: [ChatMessage(id: "a-m", role: .user, content: "hi", timestamp: "1")],
+                        snapshot: SessionRuntimeSnapshot(object: ["running": .bool(false)])
+                    )
+                default:
+                    return self.resumed(id)
+                }
+            },
+            requests: requests
+        )
+
+        await coldLaunchSync(f)
+
+        XCTAssertEqual(requests.ids, ["runtime-old", "stored-a"], "the stored id is tried once; no other row is probed")
+        XCTAssertEqual(f.appState.activeSessionId, "runtime-new")
+        XCTAssertTrue(
+            ["runtime-old", "stored-a"].contains(f.store.lastSessionID(for: "default") ?? ""),
+            "the saved pointer still names this conversation"
+        )
+        XCTAssertEqual(requests.createCalls, 0, "no fresh chat")
+        XCTAssertNil(f.appState.offlineChatPresentation)
+        XCTAssertNil(f.appState.errorMessage)
+        XCTAssertEqual(f.appState.turnState, .idle)
+        XCTAssertEqual(f.scheduler.scheduledCount, 0)
+    }
+
+    /// The same row with its stored id gone too is dead: the walk moves on.
+    func testListedSessionWhoseRuntimeAndStoredIDsAreGoneFallsBack() async {
+        let requests = Requests()
+        let f = makeFixture(
+            saved: "stored-a",
+            catalog: [session("runtime-old", storedID: "stored-a"), session("other")],
+            open: { id in
+                if id == "other" { return self.resumed(id) }
+                throw self.notFound
+            },
+            requests: requests
+        )
+
+        await coldLaunchSync(f)
+
+        XCTAssertEqual(requests.ids, ["runtime-old", "stored-a", "other"])
+        XCTAssertEqual(f.appState.activeSessionId, "other")
+        XCTAssertEqual(f.store.lastSessionID(for: "default"), "other")
+        XCTAssertNil(f.appState.errorMessage)
+        XCTAssertEqual(f.scheduler.scheduledCount, 0)
     }
 
     func testListedButMissingOnlySessionFallsBackToFreshChat() async {
@@ -407,7 +475,10 @@ final class MissingSessionRecoveryTests: XCTestCase {
         XCTAssertEqual(f.scheduler.scheduledCount, 1)
     }
 
-    // MARK: - Sidebar New Chat gating
+    // MARK: - New Chat gate of the callers that create a chat at once (Notch menu, Home)
+    //
+    // The sidebar button is upstream's `canTapNewChat` (Ruling R39); MacNewChatAvailabilityTests pins
+    // it. These tests pin `macNewChatDisabled`, the stricter gate of `NotchActions` and `MacHomeBinding`.
 
     func testNewChatGateRequiresLiveClientWhileSavedCopyIsUp() {
         func disabled(_ turn: TurnState, copy: Bool, live: Bool) -> Bool {

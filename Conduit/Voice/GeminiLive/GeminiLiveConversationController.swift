@@ -164,6 +164,8 @@ final class GeminiLiveConversationController: ObservableObject {
             // told only "first say 'Let me check.'", the model opened that
             // turn with the same words again.
             lookups = "For weather, news, sports, prices, and other quick facts from the web, call web_search. Just before you call it, say a few words out loud so the user knows you're looking it up, in your own words and different each time (for example \"One sec.\", \"Let me look that up.\" or \"Checking now.\"). Say that only once per lookup: the result arrives a few seconds later as its own turn, and that turn opens straight with the answer, never with another \"let me check\". Never guess the answer before the result arrives; if it returns an error, say in a few words that the lookup failed."
+        case .grok:
+            lookups = "For weather, news, sports, stock prices, and other public facts, look them up yourself with web_search (the web) or x_search (posts on X) and answer on this call; never start a Hermes job for them."
         case .none:
             lookups = "You have no web search. A question that needs current information from the web (weather, news, prices) is work for Hermes: offer to start a job for it."
         }
@@ -174,13 +176,13 @@ final class GeminiLiveConversationController: ObservableObject {
     Answer quick questions yourself. \(lookups)
     Call start_job only for work that needs the user's Hermes agent: their files, code, systems, accounts, or longer multi-step research. Pass the complete task. Every time you call start_job, first say a very short acknowledgement out loud, like "On it, I'll have Hermes look into that." Then carry on with the conversation; the job runs on Hermes in the background.
     Do not comment on how a job is progressing unless the user asks; use list_jobs when they do. When a job's result arrives, tell the user the outcome once, when the conversation is quiet: what Hermes found or did, with the details that matter.
-    \(readsBack ? readBackParagraph + "\n" : "")\(onWatch ? watchFindChatParagraph + "\n" : showOnScreenParagraph + "\n" + findChatParagraph + "\n")\(onWatch ? watchApprovalParagraph : "Never approve, deny, or answer anything on a job's behalf. If a job needs input, tell the user to open it in Conduit.")
+    \(readsBack ? readBackParagraph + "\n" : "")\(onWatch ? watchFindChatParagraph + "\n" : showOnScreenParagraph + "\n" + findChatParagraph + "\n")\(onWatch ? watchApprovalParagraph : "Never approve, deny, or answer anything on a job's behalf yourself. When a job update says it needs the user's OK, ask them, and answer it with answer_approval only on their own yes or no; if a job needs any other input, tell the user to open it in Conduit.")
     When the user corrects, changes, pauses or calls off a job Hermes is still working on ("wait, make it Alex", "hold that", "never mind"), call interrupt_job with their words right away (job_id from list_jobs): Hermes takes them in at once and decides what they mean. Use cancel_job only when the user asks to cancel.
-    \(asksFirst ? askFirstParagraph + "\n" : "")When the user says goodbye or asks to end the conversation, say a short goodbye, then call end_conversation. Jobs keep running after it ends.
+    \(asksFirst ? askFirstParagraph + "\n" : "")When the user says goodbye to you, or asks to end, hang up or close the call, say a short goodbye, then call end_conversation. Jobs keep running after it ends.
     """ + personalityInstructions(personality) + memoryInstructions(memory) + speechRule(personality)
     }
 
-    static let showOnScreenParagraph = "Use show_on_screen for anything better seen than heard: charts, tables, forecasts, recipes and other steps, comparisons, images and links. Put the full detail there; once it's shown, say in a sentence that it's on their screen and give the gist: the screen takes the place of a long spoken answer. If it says the screen isn't available, just tell the user."
+    static let showOnScreenParagraph = "Use show_on_screen for anything better seen than heard: charts, tables, forecasts, recipes and other steps, comparisons, images and links, and places as map or place cards. Put the full detail there; once it's shown, say in a sentence that it's on their screen and give the gist: the screen takes the place of a long spoken answer. If it says the screen isn't available, just tell the user."
 
     /// A Watch call finds and reads chats (through its grant, or the phone)
     /// but can't open one: the phone isn't in view.
@@ -248,13 +250,23 @@ final class GeminiLiveConversationController: ObservableObject {
         didSet {
             syncHeadsetMute()
             // A host issue labels only the failure it caused.
-            if case .failed = phase {} else { hostIssue = nil }
+            if case .failed = phase {} else {
+                hostIssue = nil
+                awaitingConsent = nil
+            }
         }
     }
     /// What the host's check found wrong on the last start, set before
     /// the phase fails with the host's reason; nil once a start gets past
     /// the check, or when the failure was something else.
     private(set) var hostIssue: LiveVoiceHostIssue?
+    /// The mode whose provider the user hasn't yet allowed to hear them
+    /// (#827), set before the phase fails on it: the call screen then asks
+    /// instead of showing the failure. Nil otherwise.
+    @Published private(set) var awaitingConsent: LiveVoiceModeName?
+    /// The mode still needing the user's OK before this call may reach its
+    /// provider, or nil (`LiveVoiceProviderConsent.missing`).
+    private let missingConsent: @MainActor () -> LiveVoiceModeName?
     @Published private(set) var transcript: [VoiceConversationTranscriptEntry] = []
     @Published private(set) var isMicrophoneMuted = false { didSet { syncHeadsetMute() } }
     /// The model's voice is silenced (#487). Its words still show in the
@@ -384,6 +396,7 @@ final class GeminiLiveConversationController: ObservableObject {
     init(
         makeSession: @escaping @MainActor () -> GeminiLiveSessionControlling,
         availability: @escaping @MainActor () async throws -> GeminiLiveAvailability,
+        missingConsent: @escaping @MainActor () -> LiveVoiceModeName? = { nil },
         tools: GeminiLiveToolBridge,
         input: GeminiLiveAudioInput,
         output: GeminiLiveAudioOutput,
@@ -397,6 +410,7 @@ final class GeminiLiveConversationController: ObservableObject {
         self.notificationCenter = notificationCenter
         self.makeSession = makeSession
         self.availability = availability
+        self.missingConsent = missingConsent
         self.openingPrompt = openingPrompt
         self.tools = tools
 #if os(macOS) // MAC: both audio seams are metered for the orb (ConduitMac/Voice/LiveVoiceLevelTaps.swift)
@@ -481,7 +495,16 @@ final class GeminiLiveConversationController: ObservableObject {
         lastModelTranscriptAt = nil
         closeOpenEntries()
         activeEndPhrases = endConversationPhrases()
+        if let traceName { LiveCallTrace.shared.begin(traceName) }
         hostIssue = nil
+        // Nothing reaches the provider, its credential included, until the
+        // user has allowed it to hear them (#827).
+        if let mode = missingConsent() {
+            initialWidgetCaptureAuthorization = nil
+            awaitingConsent = mode
+            phase = .failed(VoiceSetupIssue.providerConsentNeeded(mode).message)
+            return
+        }
         do {
             let status = try await availability()
             guard phase == .connecting else { return }
@@ -529,6 +552,9 @@ final class GeminiLiveConversationController: ObservableObject {
             } else {
                 self.tools.beginEnding()
             }
+        }
+        session.onFreshSession = { [weak self] heardDropout in
+            self?.freshSessionStarted(heardDropout: heardDropout)
         }
         self.session = session
         input.onChunk = { [weak self] chunk in self?.microphoneChunk(chunk) }
@@ -692,12 +718,12 @@ final class GeminiLiveConversationController: ObservableObject {
     /// The profile's end phrases, read once when the conversation starts.
     private var activeEndPhrases: [String] = []
 
-    /// A finished user utterance that is exactly one of the profile's end
-    /// phrases ends the conversation, even if the model doesn't call
-    /// end_conversation.
+    /// A finished user utterance that is one of the profile's end phrases,
+    /// or asks to hang up ("end call", "hang up"…), ends the conversation, even if the
+    /// model doesn't call end_conversation.
     private func endIfUserSaidGoodbye(_ entryID: UUID) {
         guard endRequestedAt == nil, let entry = transcript.first(where: { $0.id == entryID }) else { return }
-        guard VoiceSpokenCommands.matchesSpokenCommand(entry.text, phrases: activeEndPhrases) else { return }
+        guard VoiceSpokenCommands.asksToEndCall(entry.text, endPhrases: activeEndPhrases) else { return }
         requestEnd()
     }
 
@@ -724,14 +750,16 @@ final class GeminiLiveConversationController: ObservableObject {
     func endIfUnansweredGoodbye() {
         guard isActive, endRequestedAt == nil, !modelTurnActive,
               let exchangeUserEntry, let entry = transcript.first(where: { $0.id == exchangeUserEntry }),
-              Self.endsAnUtterance(entry.text),
-              VoiceSpokenCommands.matchesSpokenCommand(entry.text, phrases: activeEndPhrases) else { return }
+              session?.transcribesWholeUtterances == true || Self.endsAnUtterance(entry.text),
+              VoiceSpokenCommands.asksToEndCall(entry.text, endPhrases: activeEndPhrases) else { return }
         requestEnd(awaitingReply: true)
     }
 
     /// Gemini closes a finished utterance's transcript with sentence
     /// punctuation; a chunk that stops without it ("By" of "By the way…")
-    /// may be a pause mid-sentence, which must never end the call.
+    /// may be a pause mid-sentence, which must never end the call. Grok's
+    /// transcripts are whole utterances already, punctuated or not
+    /// (`transcribesWholeUtterances`), so they skip this.
     nonisolated static func endsAnUtterance(_ text: String) -> Bool {
         guard let last = text.trimmingCharacters(in: .whitespacesAndNewlines).last else { return false }
         return ".!?。！？".contains(last)
@@ -960,6 +988,7 @@ final class GeminiLiveConversationController: ObservableObject {
             modelTurnActive = true
             lastModelTranscriptAt = now()
             appendTranscript(text, speaker: .assistant)
+            stopSpokenToolMarkup()
         case .inputTranscription(let text):
             lastUserSpeechAt = now()
             appendTranscript(text, speaker: .user)
@@ -1002,8 +1031,10 @@ final class GeminiLiveConversationController: ObservableObject {
                     // any speech since the user's request counts.
                     let calledAt = self.now()
                     let requestedAt = min(calledAt, self.lastUserSpeechAt ?? calledAt)
+                    self.trace("Running \(call.name)")
                     var outgoing = await self.tools.handle(call)
                     self.inFlightCallIDs.remove(call.id)
+                    self.trace("\(call.name): \(Self.traceStatus(of: outgoing, answering: call.id))")
                     // The model withdrew the call while it ran (the user
                     // spoke over a lookup): its answer must not go back.
                     if self.withdrawnCallIDs.remove(call.id) != nil {
@@ -1078,7 +1109,92 @@ final class GeminiLiveConversationController: ObservableObject {
         flushPendingTextIfIdle()
     }
 
+    /// Google wouldn't resume the conversation, so a new server session
+    /// took over without it: the model is told what was said so far (the
+    /// Watch's rejoin wording) before anything else goes out.
+    private func freshSessionStarted(heardDropout: Bool) {
+        tools.serverSessionStarted()
+        // A turn the lost session was in never completes. After a handoff
+        // nothing else ends it (a dropout already did via `.reconnecting`),
+        // so it is closed here as an interruption would.
+        output.interrupt()
+        suppressingModelTurn = false
+        modelTurnActive = false
+        lastModelTurnEndedAt = now()
+        publishFinished(openUserEntry)
+        publishFinished(openAssistantEntry)
+        closeOpenEntries()
+        if endRequestedAt == nil { phase = restingPhase }
+        // Ending: the goodbye goes on without a recap.
+        guard endRequestedAt == nil else { return }
+        let at = now()
+        let lines = transcript.map { entry in
+            WatchVoiceWire.DirectTurn(role: entry.speaker == .user ? .user : .assistant, text: entry.text, at: at)
+        }
+        pendingTextTurns.insert(WatchRejoin.prompt(lines, after: heardDropout ? .broke : .froze), at: 0)
+        scheduleIdleFlush()
+    }
+
     /// Not UI copy (written for the model), so not localized.
+    // MARK: Tool markup spoken as text
+
+    /// Grok has spoken a tool call as text ("<tool_call>…") instead of
+    /// calling it: nothing runs, and the arguments are read out. Matched
+    /// case-insensitively in the model's line as it streams.
+    nonisolated static let spokenToolMarkers = ["<tool_call", "</tool_call", "<function_call", "<|tool", "<tool_code"]
+
+    /// Where the first tool markup starts in a line, if it has any.
+    nonisolated static func spokenToolMarkupStart(in text: String) -> String.Index? {
+        spokenToolMarkers.compactMap { text.range(of: $0, options: .caseInsensitive)?.lowerBound }.min()
+    }
+
+    /// Sent once the turn is over, so the model calls the tool it meant to
+    /// and never tells the user it ran when it didn't. Not UI copy, so not
+    /// localized.
+    static let spokenToolMarkupPrompt = "[Conduit: your last reply put a tool call in its spoken text, so no tool ran and nothing was started, sent or queued. Conduit cut it off. Never speak tool calls, their names or arguments. If you meant to use a tool, call it now as a function, without reading it out; until its result comes back, don't tell the user it's done or on its way. If you only meant to talk, just carry on.]"
+
+    /// The model's open line has tool markup in it: stop its speech now,
+    /// drop the rest of the turn, keep only the words before the markup,
+    /// and tell the model once the turn ends.
+    private func stopSpokenToolMarkup() {
+        guard let openAssistantEntry, let index = transcript.firstIndex(where: { $0.id == openAssistantEntry }),
+              let start = Self.spokenToolMarkupStart(in: transcript[index].text) else { return }
+        let spoken = String(transcript[index].text[..<start]).trimmingCharacters(in: .whitespacesAndNewlines)
+        if spoken.isEmpty {
+            // The whole line was markup: leave no blank line on the call.
+            transcript.remove(at: index)
+            self.openAssistantEntry = nil
+        } else {
+            transcript[index].text = spoken
+        }
+        output.interrupt()
+        suppressingModelTurn = true
+        trace("Tool markup in the spoken reply: cut off, model asked to call the tool")
+        if !pendingTextTurns.contains(Self.spokenToolMarkupPrompt) { pendingTextTurns.append(Self.spokenToolMarkupPrompt) }
+        scheduleIdleFlush()
+    }
+
+    // MARK: Call trace
+
+    /// The call's name in Gateway Diagnostics' call trace ("Grok Live").
+    /// Nil keeps the call out of the trace.
+    var traceName: String?
+
+    private func trace(_ label: String) {
+        guard traceName != nil else { return }
+        LiveCallTrace.shared.note(label)
+    }
+
+    /// How a call was answered, for the trace: never its text.
+    static func traceStatus(of outgoing: [GeminiLiveToolBridge.Outgoing], answering id: String) -> String {
+        for item in outgoing {
+            guard case .toolResponse(let responseID, _, let result, _) = item, responseID == id else { continue }
+            if result["error"] != nil { return "error" }
+            return result["status"] ?? "answered"
+        }
+        return "no answer"
+    }
+
     static let acknowledgementPrompt = "[You just started a background job on Hermes for the user's last request. Acknowledge it out loud in a few words, like \"On it, Hermes is checking.\" Do not start another job.]"
 
     var lastModelAudioAtForTesting: Date? { lastModelAudioAt }
@@ -1404,7 +1520,7 @@ final class GeminiLiveConversationController: ObservableObject {
             return true
         } catch {
             if pausingOnFailure {
-                geminiLiveLogger.notice("Live voice microphone couldn't start; pausing: \(String(describing: error), privacy: .public)")
+                geminiLiveLogger.notice("Live voice microphone couldn't start; pausing: \(LogRedaction.describing(error), privacy: .public)")
                 pauseForAudioInterruption()
                 if endRequestedAt == nil { phase = .paused }
                 if scheduleRetryOnFailure {
@@ -1426,6 +1542,7 @@ final class GeminiLiveConversationController: ObservableObject {
         old.onEvent = nil
         old.onStateChange = nil
         old.onConnectionReplaced = nil
+        old.onFreshSession = nil
         old.stop()
     }
 

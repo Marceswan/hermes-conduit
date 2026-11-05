@@ -1,3 +1,4 @@
+// Mac twin of Conduit/Voice/HermesNativeCalls.swift (R3); keep in sync (PORTING_LEDGER): same members as the Mac-compiled call sites use.
 import Foundation
 
 /// Calls from Hermes ring through CallKit and PushKit on iPhone only.

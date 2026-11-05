@@ -2,8 +2,11 @@ import Combine
 import Foundation
 
 extension SessionSummary {
-    /// Tabs match a session by its id or any of its alternate ids.
-    func macMatches(_ id: String) -> Bool { self.id == id || alternateIds.contains(id) }
+    /// Every id a tab can carry for this session: its id, stored id and alternate ids.
+    var macTabIDs: [String] { [id] + [storedSessionId].compactMap { $0 }.filter { !$0.isEmpty } + alternateIds }
+
+    /// Tabs match a session by any of its ids.
+    func macMatches(_ id: String) -> Bool { macTabIDs.contains(id) }
 }
 
 /// Spots a deletion without AppState edits: a session mutation (rename,
@@ -29,9 +32,16 @@ struct MacSessionDeletionDetector {
 /// The session tabs of the current dashboard and profile (D11).
 @MainActor
 final class MacSessionTabsStore: ObservableObject {
+    #if DEBUG
+    // The host's root view binds this store to the host's AppState; under XCTest it saves to a throwaway suite.
+    static let shared = MacSessionTabsStore(defaults: MacXCTestDefaults.standardOrTestSuite("sessionTabs"))
+    #else
     static let shared = MacSessionTabsStore()
+    #endif
 
     @Published private(set) var model = MacSessionTabsModel()
+    /// Sessions deleted while tabs were bound (D21: an open session window shows "deleted").
+    let sessionDeletions = PassthroughSubject<String, Never>()
 
     var openSession: (String) -> Void = { _ in }
     var startNewChat: () -> Void = {}
@@ -43,7 +53,8 @@ final class MacSessionTabsStore: ObservableObject {
     /// close a tab the user cannot see (D11).
     var isChatSurfaceShowing: () -> Bool = { true }
 
-    private let defaults: UserDefaults
+    /// Where the tabs are saved (internal so a test can check which domain it is).
+    let defaults: UserDefaults
     private let routeDefaults: UserDefaults
     private var scopeKey: String?
     private var deletionDetector = MacSessionDeletionDetector()
@@ -73,8 +84,9 @@ final class MacSessionTabsStore: ObservableObject {
         }
     }
 
-    func activeSessionChanged(_ id: String?, title: String?) {
-        if let id { model.open(id, title: title ?? model.tabs.first { $0.id == id }?.title ?? "") }
+    /// `aliases` are the session's other ids; a tab under one of them is reused.
+    func activeSessionChanged(_ id: String?, title: String?, aliases: [String] = []) {
+        if let id { model.open(id, title: title ?? model.tabs.first { $0.id == id }?.title ?? "", aliases: aliases) }
         else { model.clearActive() }
         save()
     }
@@ -116,9 +128,23 @@ final class MacSessionTabsStore: ObservableObject {
         openSession(id)
     }
 
+    /// Moves a tab into its own window (D21). `openWindow` returns false at the
+    /// window cap; the tab then stays. Main activates the neighbour, or starts
+    /// a new chat when the popped tab was the last.
+    func popOut(_ id: String, openWindow: (String) -> Bool) {
+        guard model.index(of: id) != nil, openWindow(id) else { return }
+        switch model.detach(id) {
+        case .activate(let next): openSession(next)
+        case .closedLast: startNewChat()
+        case .closedInactive, .notFound: break
+        }
+        save()
+    }
+
     func sessionDeleted(_ id: String) {
         model.remove(id)
         save()
+        sessionDeletions.send(id)
     }
 
     func openFailed(_ id: String) {
@@ -146,7 +172,8 @@ final class MacSessionTabsStore: ObservableObject {
             appState?.dismissSidebarDrawer()
             _ = appState?.requestOpenSession(id) { self?.openFailed(id) }
         }
-        startNewChat = { [weak appState] in Task { await appState?.createNewSession() } }
+        // The sidebar button's own call: the chat after the last tab closes is queued while Conduit connects (R39).
+        startNewChat = { [weak appState] in appState?.startNewChat() }
         activeChatIsEmpty = { [weak appState] in appState?.messages.isEmpty ?? false }
         scrollActiveToTop = { [weak appState] in appState?.requestChatScrollToTop() }
         isChatSurfaceShowing = { [weak appState, routeDefaults] in
@@ -178,7 +205,9 @@ final class MacSessionTabsStore: ObservableObject {
                     // Outside the loaded catalog displayedChatTitle is the previous chat's: keep a known tab's title.
                     let knownTab = id.map { self.model.index(of: $0) != nil } ?? false
                     let title = summary?.title ?? (id == nil || knownTab ? nil : appState.displayedChatTitle)
-                    self.activeSessionChanged(summary?.id ?? id, title: title)
+                    // The active id can be the runtime or stored id, not the row's: reuse a tab under any of them.
+                    let aliases = (summary?.macTabIDs ?? []) + [id].compactMap { $0 }
+                    self.activeSessionChanged(summary?.id ?? id, title: title, aliases: aliases)
                 }
             }
             .store(in: &bindings)

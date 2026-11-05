@@ -148,6 +148,21 @@ enum WatchVoiceWire {
         var endPhrases: [String]? = nil
     }
 
+    /// Everything a Watch call to Local Live needs, built on the iPhone: the
+    /// grant that opens the host's audio bridge, where the host relays the
+    /// Watch's session to the user's speech server and answers its turns in
+    /// a Hermes chat. No setup: the speech server's model is Hermes.
+    struct LocalLiveCall: Codable, Equatable {
+        var grant: DirectToolGrant
+        /// What the speech server says once the call is ready, resolved
+        /// from the greeting setting as the iPhone's call does; nil says
+        /// nothing.
+        var greeting: String?
+        /// The profile's spoken end phrases: the user saying one ends the
+        /// call, as on the iPhone.
+        var endPhrases: [String]? = nil
+    }
+
     /// The setup's long part. Function declarations travel as their JSON:
     /// their parameter schemas aren't Codable.
     struct DirectSetup: Codable, Equatable {
@@ -160,6 +175,12 @@ enum WatchVoiceWire {
         var id: String
         var name: String
         var arguments: [String: String]
+        /// What the user last said in the call, and which of their turns
+        /// it was: a change to what they keep on the iPhone takes their
+        /// own yes, which the iPhone can't hear on a Watch call. Nil from
+        /// an older Watch app.
+        var userWords: String? = nil
+        var userTurn: Int? = nil
     }
 
     /// What the tool bridge asks the call to send Gemini, as on the iPhone.
@@ -285,7 +306,9 @@ enum WatchVoiceWire {
         // Watch → iPhone
         /// A finished call's summary, as one JSON line for the iPhone's log.
         case report(String)
-        /// Any other Watch event, as one JSON line for the iPhone's log.
+        /// Any other Watch events, as JSON lines for the iPhone's log,
+        /// joined by newlines (WatchCallLogBatch): one line from an older
+        /// Watch.
         case note(String)
         /// A Watch call to Gemini Live wants its session. `ring`: the call
         /// from Hermes it answers (designs/hermes-calls-watch.md), so it
@@ -310,6 +333,9 @@ enum WatchVoiceWire {
         /// A Watch call to Grok wants its setup and the grant that opens
         /// the host's audio bridge.
         case grokStart(callID: UInt32, version: Int, ring: String? = nil)
+        /// A Watch call to Local Live wants the grant that opens the host's
+        /// audio bridge. Calls from Hermes don't ring a Watch on Local Live.
+        case localLiveStart(callID: UInt32, version: Int)
         /// The Watch's own PushKit token, which calls from Hermes ring on
         /// (designs/hermes-calls-watch.md); nil once it has none. Queued, so
         /// it reaches a sleeping iPhone. `key`: the Watch's handoff key,
@@ -334,6 +360,8 @@ enum WatchVoiceWire {
         case bridgeSession(callID: UInt32, session: BridgeSession)
         /// The answer to `grokStart`; a refusal comes as `callRefused`.
         case grokSession(callID: UInt32, session: GrokSession)
+        /// The answer to `localLiveStart`; a refusal comes as `callRefused`.
+        case localLiveSession(callID: UInt32, call: LocalLiveCall)
     }
 
     static func encode(_ message: Message) -> [String: Any] {
@@ -360,7 +388,16 @@ enum WatchVoiceMain {
     /// scrolls, and the pause would read as a link stall or a suspension.
     static func timer(every interval: TimeInterval, repeats: Bool, _ block: @escaping @Sendable (Timer) -> Void) -> Timer {
         let timer = Timer(timeInterval: interval, repeats: repeats, block: block)
+        timer.tolerance = tolerance(for: interval)
         RunLoop.main.add(timer, forMode: .common)
         return timer
+    }
+
+    /// How late a timer may fire, so the system can group its wakeups
+    /// with others': a tenth of an interval of a second or more (a call's
+    /// 1 s tick may come at 1.1 s, a 20 s ping at 22 s). A shorter one
+    /// paces the call's microphone audio and stays exact.
+    static func tolerance(for interval: TimeInterval) -> TimeInterval {
+        interval >= 1 ? interval / 10 : 0
     }
 }

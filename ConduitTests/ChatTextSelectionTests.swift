@@ -288,6 +288,7 @@ final class ChatTextSelectionTests: XCTestCase {
 
     @MainActor
     func testDismantleUnregistersMountedCoordinatedTextView() {
+        defer { SelectableTextViewPool.removeAll() }
         let selectionCoordinator = MarkdownSelectionCoordinator()
         let descriptor = MarkdownSelectionSegmentDescriptor(id: "paragraph", order: 0, separatorBefore: "")
         selectionCoordinator.replaceSegments([descriptor], revision: "dismantle-v1")
@@ -305,6 +306,65 @@ final class ChatTextSelectionTests: XCTestCase {
         SelectableTextView.dismantleUIView(hostView, coordinator: bridgeCoordinator)
 
         XCTAssertNil(selectionCoordinator.text(for: descriptor.id))
+    }
+
+    @MainActor
+    func testATextViewMovedToTextKit1IsNotReused() {
+        SelectableTextViewPool.removeAll()
+        defer { SelectableTextViewPool.removeAll() }
+        let view = SelectableTextView(text: "First block")
+        let coordinator = view.makeCoordinator()
+        let host = view.makeUIViewForTests(coordinator: coordinator)
+        let textView = host.mountedTextView
+        _ = textView.layoutManager
+        XCTAssertNil(textView.textLayoutManager, "asking for the layoutManager moves it to TextKit 1")
+        SelectableTextView.dismantleUIView(host, coordinator: coordinator)
+
+        let next = SelectableTextView(text: "Second")
+        let nextHost = next.makeUIViewForTests(coordinator: next.makeCoordinator())
+        XCTAssertFalse(nextHost.mountedTextView === textView)
+        XCTAssertNotNil(nextHost.mountedTextView.textLayoutManager)
+    }
+
+    @MainActor
+    func testDismantledTextViewIsReusedCleanByTheNextMount() {
+        SelectableTextViewPool.removeAll()
+        defer { SelectableTextViewPool.removeAll() }
+        let selectionCoordinator = MarkdownSelectionCoordinator()
+        let first = MarkdownSelectionSegmentDescriptor(id: "first", order: 0, separatorBefore: "")
+        let second = MarkdownSelectionSegmentDescriptor(id: "second", order: 1, separatorBefore: "\n\n")
+        selectionCoordinator.replaceSegments([first, second], revision: "reuse-v1")
+
+        let firstView = SelectableTextView(
+            text: "First block",
+            selectionCoordinator: selectionCoordinator,
+            selectionSegment: first
+        )
+        let firstCoordinator = firstView.makeCoordinator()
+        let firstHost = firstView.makeUIViewForTests(coordinator: firstCoordinator)
+        let textView = firstHost.mountedTextView
+        textView.selectedRange = NSRange(location: 2, length: 3)
+        SelectableTextView.dismantleUIView(firstHost, coordinator: firstCoordinator)
+
+        let secondView = SelectableTextView(
+            text: "Second",
+            selectionCoordinator: selectionCoordinator,
+            selectionSegment: second
+        )
+        let secondCoordinator = secondView.makeCoordinator()
+        let secondHost = secondView.makeUIViewForTests(coordinator: secondCoordinator)
+
+        XCTAssertTrue(secondHost.mountedTextView === textView, "the next mount reuses the text view")
+        XCTAssertTrue(textView.superview === secondHost)
+        XCTAssertEqual(textView.attributedText.string, "Second")
+        XCTAssertEqual(textView.selectedRange, NSRange(location: 0, length: 0))
+        XCTAssertTrue(textView.delegate === secondCoordinator)
+        XCTAssertNil(selectionCoordinator.text(for: first.id))
+        XCTAssertEqual(selectionCoordinator.text(for: second.id), "Second")
+
+        SelectableTextView.dismantleUIView(secondHost, coordinator: secondCoordinator)
+        XCTAssertEqual(textView.attributedText.length, 0, "a pooled view keeps no text")
+        XCTAssertNil(textView.superview)
     }
 
     @MainActor

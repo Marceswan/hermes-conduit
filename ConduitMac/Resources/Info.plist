@@ -15,14 +15,26 @@
     <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>LSFileQuarantineEnabled</key><true/>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>CFBundleURLName</key><string>$(PRODUCT_BUNDLE_IDENTIFIER).chat-link</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>conduit</string>
+            </array>
+        </dict>
+    </array>
     <key>SUFeedURL</key><string>https://github.com/Marceswan/hermes-conduit/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key><string>wa1VnqgoM+ekG9UqFi6r78wInTGSFso0KmwMzlwsIL4=</string>
     <key>SUEnableAutomaticChecks</key><true/>
     <key>SUScheduledCheckInterval</key><integer>3600</integer>
     <key>SUAutomaticallyUpdate</key><false/>
     <key>NSMicrophoneUsageDescription</key><string>Conduit uses the microphone for voice conversations with Hermes.</string>
-    <key>NSSpeechRecognitionUsageDescription</key><string>Conduit transcribes your voice on this Mac before sending it to Hermes.</string>
+    <key>NSSpeechRecognitionUsageDescription</key><string>Conduit uses Apple speech recognition to turn your voice into text. Voice conversations and wake phrases are always recognized on your Mac. Dictation is too when your language supports it; otherwise Apple may process your dictation on its servers.</string>
     <key>NSCameraUsageDescription</key><string>Conduit can attach a photo from your camera to a chat.</string>
+    <key>NSLocalNetworkUsageDescription</key><string>Conduit connects to your own Hermes server when it is on your home or local network. Nothing goes to Conduit's developer.</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key><true/>
@@ -39,5 +51,19 @@
             </dict>
         </dict>
     </dict>
+    <key>NSServices</key>
+    <array>
+        <dict>
+            <key>NSMenuItem</key>
+            <dict><key>default</key><string>Send to Hermes</string></dict>
+            <key>NSMessage</key><string>sendToHermes</string>
+            <key>NSPortName</key><string>Conduit</string>
+            <key>NSSendTypes</key>
+            <array>
+                <string>public.utf8-plain-text</string>
+                <string>public.plain-text</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

@@ -1,0 +1,11 @@
+{"type": "session.busy", "session_id": "trace-session", "payload": {"busy": true}}
+{"type": "message.start", "session_id": "trace-session"}
+{"type": "message.delta", "session_id": "trace-session", "payload": {"text": "Let me check."}}
+{"type": "message.complete", "session_id": "trace-session", "payload": {"message_id": "m-1", "content": "Let me check."}}
+{"type": "tool.start", "session_id": "trace-session", "payload": {"tool_id": "t-1", "name": "web_search", "args_text": "current macOS version"}}
+{"type": "tool.complete", "session_id": "trace-session", "payload": {"tool_id": "t-1", "name": "web_search", "output": "macOS 15"}}
+{"type": "message.start", "session_id": "trace-session"}
+{"type": "message.delta", "session_id": "trace-session", "payload": {"text": "The current macOS is "}}
+{"type": "message.delta", "session_id": "trace-session", "payload": {"text": "macOS 15."}}
+{"type": "message.complete", "session_id": "trace-session", "payload": {"message_id": "m-2", "content": "The current macOS is macOS 15."}}
+{"type": "session.busy", "session_id": "trace-session", "payload": {"busy": false}}

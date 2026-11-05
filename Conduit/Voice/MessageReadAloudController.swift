@@ -31,11 +31,24 @@ final class MessageReadAloudController: ObservableObject {
     /// screen, Control Center, AirPods). The chat button still reads Stop.
     @Published private(set) var isPaused = false
 
+    /// The reply being read, for the floating player (#759). Set from the
+    /// tap until playback settles.
+    struct NowReading: Equatable {
+        let messageID: String
+        let title: String
+    }
+
+    @Published private(set) var nowReading: NowReading?
+    /// The speed the playing reply uses; the player changes it live.
+    @Published private(set) var speed: ReadAloudSpeed = .normal
+
     private let playback: SpeechPlaybackService
     private let reportError: @MainActor (String) -> Void
     /// Read Aloud speed, read when each playback starts so a change in
     /// Settings applies from the next tap.
     private let playbackRate: @MainActor () -> Float
+    /// Saves a speed picked in the player as the Read Aloud setting.
+    private let storeSpeed: @MainActor (ReadAloudSpeed) -> Void
     private var activeGateway: VoiceGatewayService?
     private var speechStream: VoiceSpeechStream?
     private var playbackTask: Task<Void, Never>?
@@ -59,6 +72,9 @@ final class MessageReadAloudController: ObservableObject {
         playback: SpeechPlaybackService? = nil,
         gateway: VoiceGatewayService? = nil,
         playbackRate: @escaping @MainActor () -> Float = { ReadAloudSpeed.current().rate },
+        storeSpeed: @escaping @MainActor (ReadAloudSpeed) -> Void = {
+            UserDefaults.standard.set($0.rawValue, forKey: ReadAloudSpeed.preferenceKey)
+        },
         beginBackgroundActivity: (@MainActor (@escaping @MainActor () -> Void) -> @MainActor () -> Void)? = nil,
         nowPlaying: ReadAloudNowPlayingPresenting? = nil,
         reportError: @escaping @MainActor (String) -> Void = { _ in }
@@ -67,6 +83,7 @@ final class MessageReadAloudController: ObservableObject {
         self.nowPlaying = nowPlaying ?? SystemReadAloudNowPlaying()
         self.activeGateway = gateway
         self.playbackRate = playbackRate
+        self.storeSpeed = storeSpeed
         self.beginBackgroundActivity = beginBackgroundActivity ?? Self.beginApplicationBackgroundTask
         self.reportError = reportError
     }
@@ -117,11 +134,13 @@ final class MessageReadAloudController: ObservableObject {
     static func unavailableReason(
         isConnected: Bool,
         isVoiceEnabled: Bool,
-        snapshot: VoiceCapabilitySnapshot
+        snapshot: VoiceCapabilitySnapshot,
+        speechOutput: VoiceSpeechOutput = .hermes
     ) -> String? {
         if !isConnected { return AppLocalization.string("Connect to Hermes before reading responses aloud.") }
         if !isVoiceEnabled { return VoiceSetupIssue.voiceOff.message }
-        if !snapshot.supportsSpeech {
+        // This iPhone's voice needs nothing from Hermes' speech setup.
+        if speechOutput == .hermes, !snapshot.supportsSpeech {
             return VoiceSetupIssue.noTextToSpeech.message
         }
         return nil
@@ -144,7 +163,7 @@ final class MessageReadAloudController: ObservableObject {
             return
         }
         // `MEDIA:` file tags are attachments, not words (#439).
-        let readable = GatewayMediaTags.removingTags(from: content)
+        let readable = TranscriptDirectives.removingPreviews(from: GatewayMediaTags.removingTags(from: content))
         guard !readable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         // Starting is an on-screen action; a reply already playing is not
         // tied to the foreground and keeps going in the background.
@@ -213,6 +232,17 @@ final class MessageReadAloudController: ObservableObject {
         isPaused ? resume() : pause()
     }
 
+    /// The player's speed control (#759): retimes the reply already playing
+    /// and becomes the Read Aloud speed setting for later replies.
+    func setSpeed(_ speed: ReadAloudSpeed) {
+        self.speed = speed
+        storeSpeed(speed)
+        switch state {
+        case .preparing, .playing: playback.changeRate(speed.rate)
+        case .idle, .failed: break
+        }
+    }
+
     /// The active stream belongs to the gateway that opened it. A replaced or
     /// cleared gateway (disconnect, profile change) invalidates the in-flight
     /// operation, so any replacement stops it.
@@ -242,6 +272,8 @@ final class MessageReadAloudController: ObservableObject {
         let generation = operationGeneration
         state = .preparing(messageID: messageID)
         nowPlayingTitle = ReadAloudNowPlaying.title(for: content)
+        speed = ReadAloudSpeed.closest(to: playbackRate())
+        nowReading = NowReading(messageID: messageID, title: nowPlayingTitle)
         endBackgroundActivity = beginBackgroundActivity { [weak self] in
             // Time ran out before any audio: the app is about to suspend
             // with the stream still opening. Fail closed rather than leave
@@ -265,7 +297,10 @@ final class MessageReadAloudController: ObservableObject {
             // Pin output-only ownership per operation rather than inheriting
             // whatever intent a shared playback instance last claimed.
             playback.ownershipIntent = .standalonePlayback
-            playback.playbackRate = playbackRate()
+            playback.keepsRateAdjustable = true
+            // The player shows one of the Read Aloud speeds, so the reply
+            // plays at exactly that one.
+            playback.playbackRate = ReadAloudSpeed.closest(to: playbackRate()).rate
             let stream = try await gateway.openSpeechStream(
                 onStart: { [weak self] sampleRate in
                     guard let self, self.isCurrent(generation) else { return }
@@ -362,6 +397,7 @@ final class MessageReadAloudController: ObservableObject {
     private func settle(_ terminal: State) {
         state = terminal
         isPaused = false
+        nowReading = nil
         pausedStopTask?.cancel()
         pausedStopTask = nil
         nowPlaying.end()

@@ -119,16 +119,27 @@ final class DashboardSessionIsolationTests: XCTestCase {
         let cookie = try parentDomainCookie(value: "a-session")
 
         try await awaitWebKit("setCookie on A") { await storeA.httpCookieStore.setCookie(cookie) }
-        // Give WebKit a beat to settle the write.
-        try await Task.sleep(for: .milliseconds(50))
+        // setCookie can return before the network process lists the cookie
+        // (seen on a busy hosted runner), so wait until A reads it back. B
+        // is checked after that, when the write has certainly landed.
+        let isASession: (HTTPCookie) -> Bool = { $0.name == "session" && $0.value == "a-session" }
+        let deadline = ContinuousClock.now + .seconds(10)
+        var cookiesA = try await awaitWebKit("allCookies on A") { await storeA.httpCookieStore.allCookies() }
+        while !cookiesA.contains(where: isASession), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(100))
+            cookiesA = try await awaitWebKit("allCookies on A") { await storeA.httpCookieStore.allCookies() }
+        }
+        // Without A's write landing, B's empty store would prove nothing.
+        guard cookiesA.contains(where: isASession) else {
+            XCTFail("dashboard A never read back its own cookie")
+            return
+        }
 
         let cookiesB = try await awaitWebKit("allCookies on B") { await storeB.httpCookieStore.allCookies() }
         XCTAssertFalse(
-            cookiesB.contains { $0.name == "session" && $0.value == "a-session" },
+            cookiesB.contains(where: isASession),
             "dashboard A's WebKit cookie must never appear in dashboard B's store"
         )
-        let cookiesA = try await awaitWebKit("allCookies on A") { await storeA.httpCookieStore.allCookies() }
-        XCTAssertTrue(cookiesA.contains { $0.name == "session" && $0.value == "a-session" })
     }
 
     // MARK: - Native jar ownership
@@ -202,6 +213,135 @@ final class DashboardSessionIsolationTests: XCTestCase {
             "a parent-domain cookie shared with sibling dashboards survives one dashboard's sign-out"
         )
         sharedJar.deleteCookie(sharedParent)
+    }
+
+    /// #788: the legacy (no dashboard identity) sweep follows the same
+    /// rule as the registered one. A parent-domain cookie (Domain=.example.com)
+    /// is shared with sibling dashboards and never exact-matches a dashboard
+    /// host, so disconnecting a.example.com must leave it alone.
+    func testLegacyClearNativeCookiesSparesParentDomainCookies() throws {
+        let sharedJar = HTTPCookieStorage.shared
+        let sharedParent = try parentDomainCookie(value: "legacy-parent-session")
+        let exactHost = try hostCookie(name: "host-residue", value: "legacy-a", domain: "a.example.com")
+        sharedJar.setCookie(sharedParent)
+        sharedJar.setCookie(exactHost)
+        addTeardownBlock {
+            sharedJar.deleteCookie(sharedParent)
+            sharedJar.deleteCookie(exactHost)
+        }
+
+        DashboardCookiePersistence.clearNativeCookies(for: parentHostA)
+
+        XCTAssertNotNil(
+            sharedJar.cookies?.first { $0.value == "legacy-parent-session" },
+            "a legacy disconnect must not delete a parent-domain cookie shared with sibling dashboards"
+        )
+        XCTAssertNil(
+            sharedJar.cookies?.first { $0.value == "legacy-a" },
+            "the dashboard's own exact-host cookie is still cleared"
+        )
+    }
+
+    /// #788: cookies ignore ports, so two saved dashboards on one machine
+    /// (192.168.1.10:9119 and :9120) are kept apart by their OWN jars, not by
+    /// host. Signing one out leaves the other's session where it lives.
+    func testSignOutLeavesASameHostSiblingOnAnotherPortSignedIn() throws {
+        let a = track(UUID())
+        let b = track(UUID())
+        let dashboardA = SavedDashboard(id: a, label: "A", normalizedURL: "http://192.168.1.10:9119")
+        let dashboardB = SavedDashboard(id: b, label: "B", normalizedURL: "http://192.168.1.10:9120")
+        let appState = makeAppState(registry: SavedDashboardRegistry(activeDashboardID: b, dashboards: [dashboardA, dashboardB]))
+        let jarA = DashboardCookiePersistence.nativeCookieStorage(for: a)
+        let jarB = DashboardCookiePersistence.nativeCookieStorage(for: b)
+        jarA.setCookie(try hostCookie(name: "session", value: "port-a", domain: "192.168.1.10"))
+        jarB.setCookie(try hostCookie(name: "session", value: "port-b", domain: "192.168.1.10"))
+
+        appState.signOutDashboard(a)
+
+        XCTAssertTrue((jarA.cookies ?? []).isEmpty, ":9119's own session is gone")
+        XCTAssertNotNil(jarB.cookies?.first { $0.value == "port-b" }, ":9120 stays signed in")
+    }
+
+    /// #788: the legacy disconnect's default-store clear runs over WebKit IPC
+    /// after the disconnect returns. A quick reconnect to another legacy
+    /// dashboard on the same origin waits for it (as the bridge and sign-in
+    /// page do), so the clear can never land on the new session's cookies,
+    /// and the old session is still gone.
+    func testLegacyReconnectWaitsForTheDisconnectsDefaultStoreClear() async throws {
+        let store = attachWebView(to: WKWebsiteDataStore.default())
+        let host = "conduit-788-legacy.example"
+        let old = try hostCookie(name: "session", value: "old-legacy", domain: host)
+        try await awaitWebKit("setCookie old") { await store.httpCookieStore.setCookie(old) }
+        let deadline = ContinuousClock.now + .seconds(10)
+        while try await !awaitWebKit("allCookies", { await store.httpCookieStore.allCookies() })
+            .contains(where: { $0.value == "old-legacy" }) {
+            // Without the old session in the store, "cleared" proves nothing.
+            guard ContinuousClock.now < deadline else { return XCTFail("the old legacy session never landed") }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+
+        let appState = makeAppState(registry: SavedDashboardRegistry())
+        appState.connection = HermesConnection(baseUrl: "https://\(host)", ticket: "test-ticket")
+        appState.disconnect()
+        XCTAssertTrue(DashboardCookiePersistence.hasPendingDefaultStoreClear, "the default-store clear is ordered, not detached")
+
+        await DashboardCookiePersistence.awaitPendingDefaultStoreClear()
+        let new = try hostCookie(name: "session", value: "new-legacy", domain: host)
+        try await awaitWebKit("setCookie new") { await store.httpCookieStore.setCookie(new) }
+        addTeardownBlock { @MainActor in await store.httpCookieStore.deleteCookie(new) }
+
+        XCTAssertFalse(DashboardCookiePersistence.hasPendingDefaultStoreClear)
+        let cookies = try await awaitWebKit("allCookies after") { await store.httpCookieStore.allCookies() }
+        XCTAssertTrue(cookies.contains { $0.value == "new-legacy" }, "the reconnect's session survives the earlier disconnect")
+        XCTAssertFalse(cookies.contains { $0.value == "old-legacy" }, "the disconnected session is cleared")
+    }
+
+    /// The identified-store analog of #788: Sign Out's wipe of a dashboard's
+    /// own WebKit store runs over IPC after Sign Out returns. Signing in to
+    /// that dashboard again waits for it (as the bridge and sign-in page
+    /// do), so the wipe can never land on the new session's cookies, and
+    /// the signed-out session is still gone. A sibling's store has nothing
+    /// to wait for.
+    func testSignInAgainWaitsForTheSignOutsIdentifiedStoreClear() async throws {
+        let a = track(UUID())
+        let b = track(UUID())
+        let host = "conduit-977-identified.example"
+        let dashboardA = SavedDashboard(id: a, label: "A", normalizedURL: "https://\(host)")
+        let dashboardB = SavedDashboard(id: b, label: "B", normalizedURL: "https://b.\(host)")
+        let store = attachWebView(to: DashboardCookiePersistence.webKitStore(for: a))
+        let old = try hostCookie(name: "session", value: "old-identified", domain: host)
+        try await awaitWebKit("setCookie old") { await store.httpCookieStore.setCookie(old) }
+        let deadline = ContinuousClock.now + .seconds(10)
+        while try await !awaitWebKit("allCookies", { await store.httpCookieStore.allCookies() })
+            .contains(where: { $0.value == "old-identified" }) {
+            // Without the old session in the store, "cleared" proves nothing.
+            guard ContinuousClock.now < deadline else { return XCTFail("the old session never landed") }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+
+        let appState = makeAppState(registry: SavedDashboardRegistry(activeDashboardID: b, dashboards: [dashboardA, dashboardB]))
+        appState.signOutDashboard(a)
+        XCTAssertTrue(DashboardCookiePersistence.hasPendingStoreClear(for: a), "the identified-store clear is ordered, not detached")
+        XCTAssertFalse(DashboardCookiePersistence.hasPendingStoreClear(for: b), "a sibling's sign-in waits for nothing")
+
+        await DashboardCookiePersistence.awaitPendingStoreClear(for: a)
+        let new = try hostCookie(name: "session", value: "new-identified", domain: host)
+        try await awaitWebKit("setCookie new") { await store.httpCookieStore.setCookie(new) }
+
+        XCTAssertFalse(DashboardCookiePersistence.hasPendingStoreClear(for: a))
+        let cookies = try await awaitWebKit("allCookies after") { await store.httpCookieStore.allCookies() }
+        XCTAssertTrue(cookies.contains { $0.value == "new-identified" }, "the new sign-in's session survives the earlier Sign Out")
+        XCTAssertFalse(cookies.contains { $0.value == "old-identified" }, "the signed-out session is cleared")
+    }
+
+    /// #788: the reconnect's wait is bounded. A WebKit reply that never
+    /// comes must not hold the next sign-in forever.
+    func testWaitingForADefaultStoreClearIsBounded() async {
+        let neverAnswers = Task<Void, Never> { try? await Task.sleep(for: .seconds(600)) }
+        defer { neverAnswers.cancel() }
+        let started = ContinuousClock.now
+        await DashboardCookiePersistence.awaitClear(neverAnswers, timeout: .milliseconds(100))
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(5), "the wait gives up at its timeout")
     }
 
     // MARK: - Sign-out clearing without a live connection

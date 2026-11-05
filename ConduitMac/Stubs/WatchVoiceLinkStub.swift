@@ -1,3 +1,4 @@
+// Mac twin of Conduit/Watch/WatchVoiceLink.swift (R2); keep in sync (PORTING_LEDGER): same members as the Mac-compiled call sites use.
 import Combine
 import Foundation
 

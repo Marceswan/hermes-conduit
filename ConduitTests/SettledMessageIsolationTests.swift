@@ -106,6 +106,7 @@ final class SettledMessageIsolationTests: XCTestCase {
                     readAloudController: appState.messageReadAloudController,
                     gatewayResolver: resolver
                 )
+                .chatRows()
                 .environmentObject(appState)
             )
         )
@@ -189,6 +190,7 @@ final class SettledMessageIsolationTests: XCTestCase {
             readAloudController: appState.messageReadAloudController,
             gatewayResolver: resolver
         )
+        .chatRows()
         .environmentObject(appState)
         .environment(\.sizeCategory, .large))
         host.view.setNeedsLayout()
@@ -205,6 +207,129 @@ final class SettledMessageIsolationTests: XCTestCase {
         )
     }
 
+    /// An AppState publish that changes nothing a row shows leaves the row
+    /// alone (rows used to observe AppState, so each publish redrew every
+    /// row on screen); one that changes what it shows redraws it: a newer
+    /// reply decides whether this one still takes a reaction.
+    func testAppStatePublishRedrawsARowOnlyWhenWhatItShowsChanges() throws {
+        let appState = try makeAppState()
+        let host = mountRow(message: markdownMessage(), appState: appState, resolver: nil)
+        drainUntil(0.5) { false }
+
+        TranscriptPerf.reset()
+        appState.objectWillChange.send()
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
+        drainUntil(0.5) { false }
+        XCTAssertEqual(
+            TranscriptPerf.settledMessageBubbleBodyEvaluations, 0,
+            "a publish that changes nothing the row shows must not redraw it"
+        )
+
+        appState.messages = [markdownMessage(id: "newest")]
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
+        drainUntil(2.0) { TranscriptPerf.settledMessageBubbleBodyEvaluations > 0 }
+        XCTAssertGreaterThan(
+            TranscriptPerf.settledMessageBubbleBodyEvaluations, 0,
+            "a newer reply changes what the row shows"
+        )
+    }
+
+    func testAppStatePublishRedrawsTheComposerOnlyWhenWhatItShowsChanges() throws {
+        let appState = try makeAppState()
+        let host = UIHostingController(rootView: ComposerParent().environmentObject(appState))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        testWindow = window
+        XCTAssertTrue(PerformanceFixtureWait.settleUntilCountersQuiet(quietFor: 1.0), "the mount never settled")
+
+        // A publish that changes nothing the composer shows must never
+        // redraw it, so a regression redraws in every window. On a loaded
+        // runner the composer's own late work (its draft, dictation and
+        // language state) can still land in a window after the mount
+        // settles (seen twice in Nightly), which a single window cannot tell
+        // apart from a regression: one clean window out of three passes.
+        var redrawsPerWindow: [Int] = []
+        while redrawsPerWindow.count < 3, redrawsPerWindow.last != 0 {
+            if !redrawsPerWindow.isEmpty {
+                // An unsettled result is fine here: the next window is
+                // measured the same way.
+                PerformanceFixtureWait.settleUntilCountersQuiet(quietFor: 1.0)
+            }
+            TranscriptPerf.reset()
+            appState.objectWillChange.send()
+            drainUntil(0.5) { false }
+            redrawsPerWindow.append(TranscriptPerf.composerBarBodyEvaluations)
+        }
+        XCTAssertEqual(
+            redrawsPerWindow.last, 0,
+            "a publish that changes nothing the composer shows must not redraw it, though its parent redraws "
+                + "(composer redraws per publish window: \(redrawsPerWindow))"
+        )
+
+        appState.composerNotice = "Reconnecting"
+        drainUntil(2.0) { TranscriptPerf.composerBarBodyEvaluations > 0 }
+        XCTAssertGreaterThan(TranscriptPerf.composerBarBodyEvaluations, 0, "a notice changes what it shows")
+    }
+
+    func testTranscriptRedrawLeavesRowsAlone() throws {
+        let appState = try makeAppState()
+        let messages = [markdownMessage(id: "first"), markdownMessage(id: "second")]
+        let host = UIHostingController(rootView: TranscriptParent(messages: messages).chatRows().environmentObject(appState))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        testWindow = window
+        XCTAssertTrue(PerformanceFixtureWait.settleUntilCountersQuiet(quietFor: 1.0), "the mount never settled")
+
+        TranscriptPerf.reset()
+        appState.objectWillChange.send()
+        drainUntil(0.5) { false }
+        XCTAssertEqual(
+            TranscriptPerf.settledMessageBubbleBodyEvaluations, 0,
+            "the transcript redrawing on a publish must not rebuild rows whose message is unchanged"
+        )
+
+        // Same messages, but a newer reply changes what each row shows
+        // (`ChatRowState.latestAssistantMessageID`): the row state reaches
+        // the rows through `.equatable()`.
+        appState.messages = [markdownMessage(id: "newest")]
+        drainUntil(2.0) { TranscriptPerf.settledMessageBubbleBodyEvaluations > 0 }
+        XCTAssertGreaterThan(
+            TranscriptPerf.settledMessageBubbleBodyEvaluations, 0,
+            "a row state change redraws rows whose message is unchanged"
+        )
+    }
+
+    /// Redraws on every publish and rebuilds its rows, as ChatView's
+    /// transcript does.
+    private struct TranscriptParent: View {
+        @EnvironmentObject var appState: AppState
+        let messages: [ChatMessage]
+        var body: some View {
+            VStack {
+                Text(appState.activeProfile)
+                ForEach(messages) { message in
+                    MessageBubble(message: message, gatewayResolver: appState.gatewayMediaResolver)
+                        .equatable()
+                }
+            }
+        }
+    }
+
+    /// Redraws on every publish, as ChatView does.
+    private struct ComposerParent: View {
+        @EnvironmentObject var appState: AppState
+        var body: some View {
+            VStack {
+                Text(appState.activeProfile)
+                ComposerBar(appState: appState).equatable()
+            }
+        }
+    }
+
     func testResolverChangeStillReRendersSettledContent() throws {
         let appState = try makeAppState()
         let resolverA = GatewayMediaDataURLResolver(appState: appState, profile: "default")
@@ -219,6 +344,7 @@ final class SettledMessageIsolationTests: XCTestCase {
             readAloudController: appState.messageReadAloudController,
             gatewayResolver: resolverB
         )
+        .chatRows()
         .environmentObject(appState)
         .environment(\.sizeCategory, .large))
         host.view.setNeedsLayout()
@@ -248,66 +374,149 @@ final class SettledMessageIsolationTests: XCTestCase {
         let resolver = GatewayMediaDataURLResolver(appState: appState, profile: "default")
         let otherResolver = GatewayMediaDataURLResolver(appState: appState, profile: "default")
 
+        let identity = ConversationAgentIdentity.workspace(name: "Hermes", photoURL: nil)
         let a = SettledAssistantMessageContent(
             message: markdownMessage(),
-            displayName: "Hermes",
-            avatarURL: nil,
+            identity: identity,
             gatewayResolver: resolver,
             sizeCategory: .large,
             chatTextSize: .default
         )
         let sameInputs = SettledAssistantMessageContent(
             message: markdownMessage(),
-            displayName: "Hermes",
-            avatarURL: nil,
+            identity: identity,
             gatewayResolver: resolver,
             sizeCategory: .large,
             chatTextSize: .default
         )
         let differentResolver = SettledAssistantMessageContent(
             message: markdownMessage(),
-            displayName: "Hermes",
-            avatarURL: nil,
+            identity: identity,
             gatewayResolver: otherResolver,
             sizeCategory: .large,
             chatTextSize: .default
         )
         let differentMessage = SettledAssistantMessageContent(
             message: markdownMessage(id: "m2"),
-            displayName: "Hermes",
-            avatarURL: nil,
+            identity: identity,
             gatewayResolver: resolver,
             sizeCategory: .large,
             chatTextSize: .default
         )
         let differentSizeCategory = SettledAssistantMessageContent(
             message: markdownMessage(),
-            displayName: "Hermes",
-            avatarURL: nil,
+            identity: identity,
             gatewayResolver: resolver,
             sizeCategory: .extraExtraLarge,
             chatTextSize: .default
         )
         let differentChatTextSize = SettledAssistantMessageContent(
             message: markdownMessage(),
-            displayName: "Hermes",
-            avatarURL: nil,
+            identity: identity,
             gatewayResolver: resolver,
             sizeCategory: .large,
             chatTextSize: .largest
         )
-        let differentDisplayName = SettledAssistantMessageContent(
+        let differentName = SettledAssistantMessageContent(
             message: markdownMessage(),
-            displayName: "Hermes (work)",
-            avatarURL: nil,
+            identity: .workspace(name: "Hermes (work)", photoURL: nil),
             gatewayResolver: resolver,
             sizeCategory: .large,
             chatTextSize: .default
         )
-        let differentAvatarURL = SettledAssistantMessageContent(
+        let differentPhotoURL = SettledAssistantMessageContent(
             message: markdownMessage(),
-            displayName: "Hermes",
-            avatarURL: URL(string: "https://example.com/avatar.png"),
+            identity: .workspace(name: "Hermes", photoURL: URL(string: "https://example.com/avatar.png")),
+            gatewayResolver: resolver,
+            sizeCategory: .large,
+            chatTextSize: .default
+        )
+        let differentBotFace = SettledAssistantMessageContent(
+            message: markdownMessage(),
+            identity: ConversationAgentIdentity(
+                name: "Hermes", photoURL: nil,
+                botFace: ConversationAgentIdentity.BotFace(
+                    name: "atlas", colorString: nil, image: UIImage()
+                )
+            ),
+            gatewayResolver: resolver,
+            sizeCategory: .large,
+            chatTextSize: .default
+        )
+        let differentBotColor = SettledAssistantMessageContent(
+            message: markdownMessage(),
+            identity: ConversationAgentIdentity(
+                name: "Hermes", photoURL: nil,
+                botFace: ConversationAgentIdentity.BotFace(
+                    name: "atlas", colorString: "purple", image: nil
+                )
+            ),
+            gatewayResolver: resolver,
+            sizeCategory: .large,
+            chatTextSize: .default
+        )
+        // The bot picture compares by INSTANCE: the avatar cache hands out
+        // the same object across streaming publishes, and a refresh delivers
+        // a new one. Both directions of that contract are pinned here.
+        let cachedPicture = UIImage()
+        let withPicture = SettledAssistantMessageContent(
+            message: markdownMessage(),
+            identity: ConversationAgentIdentity(
+                name: "Hermes", photoURL: nil,
+                botFace: ConversationAgentIdentity.BotFace(
+                    name: "atlas", colorString: nil, image: cachedPicture
+                )
+            ),
+            gatewayResolver: resolver,
+            sizeCategory: .large,
+            chatTextSize: .default
+        )
+        let samePictureInstance = SettledAssistantMessageContent(
+            message: markdownMessage(),
+            identity: ConversationAgentIdentity(
+                name: "Hermes", photoURL: nil,
+                botFace: ConversationAgentIdentity.BotFace(
+                    name: "atlas", colorString: nil, image: cachedPicture
+                )
+            ),
+            gatewayResolver: resolver,
+            sizeCategory: .large,
+            chatTextSize: .default
+        )
+        let refreshedPicture = SettledAssistantMessageContent(
+            message: markdownMessage(),
+            identity: ConversationAgentIdentity(
+                name: "Hermes", photoURL: nil,
+                botFace: ConversationAgentIdentity.BotFace(
+                    name: "atlas", colorString: nil, image: UIImage()
+                )
+            ),
+            gatewayResolver: resolver,
+            sizeCategory: .large,
+            chatTextSize: .default
+        )
+        // Same picture INSTANCE, only one face input differing, so every
+        // arm of BotFace's equality is load-bearing on its own.
+        let samePictureDifferentColor = SettledAssistantMessageContent(
+            message: markdownMessage(),
+            identity: ConversationAgentIdentity(
+                name: "Hermes", photoURL: nil,
+                botFace: ConversationAgentIdentity.BotFace(
+                    name: "atlas", colorString: "green", image: cachedPicture
+                )
+            ),
+            gatewayResolver: resolver,
+            sizeCategory: .large,
+            chatTextSize: .default
+        )
+        let samePictureDifferentProfileName = SettledAssistantMessageContent(
+            message: markdownMessage(),
+            identity: ConversationAgentIdentity(
+                name: "Hermes", photoURL: nil,
+                botFace: ConversationAgentIdentity.BotFace(
+                    name: "atlas-2", colorString: nil, image: cachedPicture
+                )
+            ),
             gatewayResolver: resolver,
             sizeCategory: .large,
             chatTextSize: .default
@@ -318,8 +527,66 @@ final class SettledMessageIsolationTests: XCTestCase {
         XCTAssertNotEqual(a, differentMessage, "different message must compare unequal")
         XCTAssertNotEqual(a, differentSizeCategory, "a Dynamic Type change must compare unequal and re-open the gate")
         XCTAssertNotEqual(a, differentChatTextSize, "a chat text-size change must compare unequal and re-open the gate")
-        XCTAssertNotEqual(a, differentDisplayName, "a profile display-name change must compare unequal")
-        XCTAssertNotEqual(a, differentAvatarURL, "an avatar change must compare unequal")
+        XCTAssertNotEqual(a, differentName, "an agent identity name change must compare unequal")
+        XCTAssertNotEqual(a, differentPhotoURL, "a profile photo change must compare unequal")
+        XCTAssertNotEqual(a, differentBotFace, "a bot face arriving must compare unequal")
+        XCTAssertNotEqual(a, differentBotColor, "a bot color change must compare unequal")
+        XCTAssertEqual(withPicture, samePictureInstance,
+                       "the same cached picture instance must keep the gate closed across streaming publishes")
+        XCTAssertNotEqual(withPicture, refreshedPicture,
+                          "a refreshed picture instance must re-open the gate")
+        XCTAssertNotEqual(withPicture, samePictureDifferentColor,
+                          "a color-string change must compare unequal")
+        XCTAssertNotEqual(withPicture, samePictureDifferentProfileName,
+                          "a profile-name change (the color's fallback seed) must compare unequal")
+    }
+
+    /// The identity value the transcript gates on must be stable across
+    /// SEPARATE construction: a streaming publish re-creates the row's
+    /// inputs, and the bot's picture (the same instance the avatar cache
+    /// hands out) plus its face inputs must compare equal so the settled
+    /// rows stay gated.
+    func testConversationAgentIdentityEqualityIsStableAcrossSeparateValues() {
+        let picture = UIImage()
+        let first = ConversationAgentIdentity(
+            name: "Atlas Prime",
+            photoURL: nil,
+            botFace: ConversationAgentIdentity.BotFace(
+                name: "atlas", colorString: "purple", image: picture
+            )
+        )
+        let second = ConversationAgentIdentity(
+            name: "Atlas Prime",
+            photoURL: nil,
+            botFace: ConversationAgentIdentity.BotFace(
+                name: "atlas", colorString: "purple", image: picture
+            )
+        )
+        XCTAssertEqual(first, second,
+                       "same picture instance + same face inputs must compare equal")
+
+        XCTAssertNotEqual(
+            first,
+            ConversationAgentIdentity(
+                name: "Atlas Prime",
+                photoURL: nil,
+                botFace: ConversationAgentIdentity.BotFace(
+                    name: "atlas", colorString: "purple", image: UIImage()
+                )
+            ),
+            "a refreshed picture instance must compare unequal"
+        )
+        XCTAssertNotEqual(
+            first,
+            ConversationAgentIdentity(
+                name: "Atlas Prime",
+                photoURL: nil,
+                botFace: ConversationAgentIdentity.BotFace(
+                    name: "atlas-2", colorString: "purple", image: picture
+                )
+            ),
+            "a bot profile rename re-seeds the fallback hue, so the face must compare unequal"
+        )
     }
 
     /// Dynamic Type invalidation (#4): a size-category change must re-open
@@ -569,6 +836,7 @@ private struct SettledGateHarnessRow: View {
                 readAloudController: readAloudController,
                 gatewayResolver: gatewayResolver
             )
+            .chatRows()
             .environmentObject(appState),
             sizeCategory: sizeCategory
         )

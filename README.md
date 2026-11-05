@@ -1,6 +1,6 @@
 # Hermes Conduit
 
-A native iOS client for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Free, no ads, no tracking.
+A native iPhone, iPad and Apple Watch app for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Free, no ads, no tracking.
 
 [![App Store](https://img.shields.io/badge/App_Store-Hermes_Conduit-blue)](https://apps.apple.com/us/app/hermes-conduit/id6790977764)
 [![Website](https://img.shields.io/badge/Website-hermesconduit.app-blue)](https://hermesconduit.app)
@@ -8,87 +8,158 @@ A native iOS client for [Hermes Agent](https://github.com/NousResearch/hermes-ag
 
 ## What it does
 
-Conduit connects directly to your self-hosted Hermes dashboard. Same sessions, same profiles, same capabilities as the desktop client. No relay service, no extra processes, no middleman.
+Conduit is a touch-first app for your own Hermes agent on iPhone, iPad and Apple Watch, with CarPlay, widgets and Live Activities. It signs in to the Hermes dashboard you run, so your sessions, profiles, bots, tools and scheduled jobs are the same ones you use on desktop. Start a conversation on desktop and pick it up on your phone: the session list is the same because it is the same database.
 
-Start a conversation on desktop, pick it up on your phone. The session list is the same because it is the same database.
+The app works with any Hermes dashboard on its own. The free [Hermes Conduit Notifier](https://github.com/kaishi00/hermes-conduit-notifier) plugin on your host adds notifications, live voice, Apple Watch calls, rich cards and the phone features below.
 
 ## Features
 
 **Chat**
 
-- Streaming responses with full Markdown — syntax-highlighted code, math, Mermaid diagrams, task lists
-- Tool call inspection, reasoning traces, and delegated-agent progress
-- Attach images and any other file (PDFs, documents, code), or paste an image straight into the composer
-- Steer or interrupt an active turn mid-flight
-- Context usage meter with token counts and a progress ring
-- Slash commands and workspace file browsing
-- Session branching, pinning, archiving, refresh, and delete
+- Streaming replies with Markdown, highlighted code, math, Mermaid diagrams and task lists
+- Thinking, tool calls and each turn's steps, shown live or folded away; delegated-agent progress
+- Map, place, travel, media, contact and info cards that Hermes draws in the chat
+- Attach photos, camera shots and any file; quote a message, react to it, copy it
+- Steer, queue or stop a running turn; context meter; slash commands and workspace files
+- Branch, pin, archive and delete sessions; project chats; Artifacts browser for every file and page Hermes made
+- Saved chats open instantly, and you can type while Conduit reconnects
 
 **Voice**
 
-- Push-to-talk voice mode with on-device speech recognition or server-side Whisper
-- Live voice conversations via GPT-Live (OpenAI Realtime) and Gemini Live, including web search through Gemini's tool bridge
-- CarPlay support — talk to Hermes from the car
-- Spoken stop/end commands, continuous-conversation controls, and background audio
+- Live voice calls with Gemini Live, GPT-Live (ChatGPT subscription or API key), Grok Live, or Local Live on your own speech server, with echo cancellation and talking over Hermes
+- Start, check and cancel Hermes jobs by voice; results come back into the call
+- Calls stay with their chat, keep going with the screen locked, shrink to a bar while you read, and are saved as chats you can resume
+- Hermes calls you: a CallKit call when a job is done, Hermes needs you, or a check you scheduled is due, on the phone or the Watch
+- Classic voice and dictation with on-device, Apple, Hermes or your own speech-to-text, spoken Stop and End, wake phrases, and Read Aloud for any reply
+- Apple Watch app that calls on its own, CarPlay, Siri and the Action Button
 
-**Agents and control**
+**Tasks, bots and groups**
 
-- Bot Mode — browse your Hermes bots and open their dedicated Bot Chat conversations
-- Multiple dashboards — save and switch between Hermes servers with isolated credentials, sessions, and connection state
-- Provider and model switching without leaving the conversation, plus reasoning effort controls
-- Capabilities tab to toggle skills, tools, and MCP servers
-- Scheduled jobs viewer, connector monitoring, and recent gateway logs
-- Multi-profile support with per-profile settings
+- Tasks board for Hermes' Kanban tasks
+- Bots and their Bot Chats; gateway-hosted group chats with @mentions, files and approvals
+- Scheduled jobs: review runs, run now, edit, mute their notifications, delete
 
-**Sign-in, notifications, platform**
+**Your phone, if you allow it**
 
-- Native OAuth sign-in for dashboards using Google or other OIDC providers
-- Cloudflare Access service-token support
-- Push notifications for approvals, input requests, completed responses, failed turns, and background tasks
-- Inline approvals so you can approve or reject tool calls without typing
-- Face ID lock and Keychain credential storage
-- iPhone and iPad (iOS 17+)
+Each is off until you turn it on, and goes only to your own Hermes host, encrypted end to end. The keys are agreed over your dashboard connection, so use HTTPS or a private tunnel such as Tailscale to keep anyone on the network from stepping into that exchange:
+
+- Location and place rules, travel times, directions and navigation
+- Calendar and reminders, with each change asked first unless you allow adds
+- Apple Health data
+- Focus and phone status, alarms and timers, and contacts you pick
+- Ask Hermes about what's on your screen, or send anything from Shortcuts or the share sheet
+
+**Notifications and control**
+
+- Approve tools and answer questions straight from a notification, end-to-end encrypted between your host and your phone
+- Live Activities on the Lock Screen and in the Dynamic Island while a reply runs
+- Home Screen widgets to start a chat or talk in one tap
+- Provider, model and reasoning effort switching mid-conversation
+- Multiple dashboards and profiles, each with its own credentials and settings
+- Capabilities: skills, tools, connectors and plugins, plus Hermes settings and gateway logs
+- Native OAuth sign-in through your dashboard, QR code and setup links, Cloudflare Access service tokens
+- Face ID or Touch ID lock, credentials in the Keychain
 - Available in English, French, German, Indonesian, Italian, Japanese, Korean, Polish, Portuguese (Brazil), Russian, Simplified Chinese, Spanish, Traditional Chinese and Turkish
 
 ## Requirements
 
-- iOS 17 or later
-- iPhone or iPad
+- iPhone or iPad on iOS 17 or later; Apple Watch app on watchOS 10 or later (some features need newer versions)
 - A running Hermes Agent instance with the native dashboard enabled (default port 9119)
 
 ## Connecting
 
-1. Make sure your Hermes dashboard is running. If you are not sure, ask your agent: `is the dashboard running?`
-2. Find your dashboard address. It is usually `http://your-server-ip:9119`.
-3. Open Conduit and enter that address on the login screen.
-4. Log in with your dashboard credentials.
+**If Hermes is already running, that's all you need.** Conduit talks to the web dashboard that comes with Hermes (`hermes dashboard`, port 9119 by default). There is no Conduit server or container to install. The [companion plugin](#notifications-voice-and-phone-features) is optional but unlocks notifications, live voice and the phone features, and it installs with one command.
 
-**Note:** Conduit connects to the native Hermes dashboard, not the WebUI. The default port is 9119.
+You need three things from your Hermes host: the dashboard running with a username and password, a way for your phone to reach it, and the address to type into Conduit. Your Hermes agent can set all of that up for you.
 
-If your server is not on your local network, use Tailscale or a reverse proxy to reach it from your phone. Plain HTTP over Tailscale (MagicDNS `.ts.net` domains and `100.64.0.0/10` tailnet IPs) is supported — the traffic is already WireGuard-encrypted.
+### The easy way: ask Hermes
+
+1. Install [Tailscale](https://tailscale.com/download) on your iPhone or iPad and sign in. It's free, and it lets your phone reach Hermes securely from anywhere without opening anything to the internet.
+2. Copy the prompt below and send it to your Hermes agent wherever you normally talk to it: Telegram, Discord, the terminal, or the Chat page of the Hermes dashboard.
+3. Hermes replies with an address, a username and a password, plus a sign-in link. Tap the link on your phone, or open Conduit and type the details in. If Hermes shows a QR code, tap **Scan Code** on Conduit's sign-in screen.
+
+```text
+I want to use the Hermes Conduit app on my iPhone to talk to you. Conduit signs in to the Hermes web dashboard (the one started by `hermes dashboard`, default port 9119). Please set everything up and then tell me what to enter in the app.
+
+1. Check whether the Hermes dashboard is running and which port it uses. If it isn't, start it, and make sure it starts again after a reboot.
+2. Make sure the dashboard requires a sign-in. Never turn authentication off. If no username and password are set up yet, create them (HERMES_DASHBOARD_BASIC_AUTH_USERNAME and HERMES_DASHBOARD_BASIC_AUTH_PASSWORD in the Hermes .env file), and set HERMES_DASHBOARD_BASIC_AUTH_SECRET to a long random value so I stay signed in when the dashboard restarts.
+3. Set up remote access with Tailscale Serve: check that Tailscale is installed and signed in on this machine, then run `tailscale serve --bg 9119` (with the dashboard's real port) and set dashboard.public_url in config.yaml to the https://<machine>.<tailnet>.ts.net address that Serve gives you. If the dashboard only listens on 127.0.0.1, leave it that way. Never open the dashboard port to the internet.
+4. Install the Conduit companion plugin: `hermes plugins install kaishi00/hermes-conduit-notifier --enable`
+5. If something needs me (installing or signing in to Tailscale, turning on HTTPS certificates for my tailnet, or a step on the host because you run inside a Docker container or on a NAS and can't make the change yourself), stop and tell me exactly what to do or which commands to run, then continue once I've done it.
+6. When it's ready, tell me the address to enter in Conduit, the username and the password. Also make me a sign-in link: conduit://connect?url=ADDRESS&username=USERNAME&password=PASSWORD with each value percent-encoded and the full https:// address, never localhost. If we're talking in a terminal, show the link as a QR code there so the password stays out of chat history.
+7. Last, restart the gateway and the dashboard so the plugin and the new settings load. Do this only after you've sent me everything from step 6, because the restart may end this conversation.
+```
+
+Only using Conduit at home on the same Wi-Fi? You can skip Tailscale: replace step 3 with "Make the dashboard reachable from other devices on my local network and tell me this machine's local IP address and the dashboard port." That address only works at home.
+
+Conduit also has this built in: on the sign-in screen, **Need help connecting?** walks through the same questions and gives you a ready-to-copy prompt for each step.
+
+### Hermes in Docker or on a NAS
+
+Conduit works the same when Hermes runs in a container: all it needs is the dashboard. The differences:
+
+- **Turn the dashboard on.** The official image runs the dashboard only when `HERMES_DASHBOARD=1` is set, and the port must be published (`-p 9119:9119`). If you can open the dashboard in a browser already, this part is done.
+- **Sign-in comes from the container's environment.** Inside a container the dashboard listens on all interfaces, so Hermes refuses to start it without a sign-in. Set `HERMES_DASHBOARD_BASIC_AUTH_USERNAME`, `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD` and `HERMES_DASHBOARD_BASIC_AUTH_SECRET` on the container (or in the `.env` file in its data folder).
+- **Tailscale goes on the NAS, not in the container.** Synology, QNAP, Unraid and TrueNAS all have a Tailscale app. Install it, sign in, then run `tailscale serve --bg 9119` on the NAS and set `dashboard.public_url` in the mounted `config.yaml` to the `https://….ts.net` address it prints. The agent inside the container can't do this part, so the prompt above asks it to tell you the steps.
+- **Install the plugin from the host.** `docker exec -it hermes hermes plugins install kaishi00/hermes-conduit-notifier --enable`, then `docker restart hermes`. Plugins live in the data volume (`/opt/data`), so they survive image updates.
+
+A minimal example (pick your own username and password; the secret can be any long random string, such as the output of `openssl rand -base64 32`):
+
+```sh
+docker run -d --name hermes --restart unless-stopped \
+  -v ~/.hermes:/opt/data \
+  -p 9119:9119 \
+  -e HERMES_DASHBOARD=1 \
+  -e HERMES_DASHBOARD_BASIC_AUTH_USERNAME=me \
+  -e HERMES_DASHBOARD_BASIC_AUTH_PASSWORD='a-strong-password' \
+  -e HERMES_DASHBOARD_BASIC_AUTH_SECRET='a-long-random-string' \
+  nousresearch/hermes-agent gateway run
+```
+
+On your home network the address is then `http://<nas-ip>:9119`; through Tailscale Serve it is the `https://….ts.net` address. See Hermes' [Docker guide](https://hermes-agent.nousresearch.com/docs/user-guide/docker) for the full set of options.
+
+### Setting it up by hand
+
+1. **Give the dashboard a sign-in.** Add these to `~/.hermes/.env` (the secret keeps you signed in across restarts):
+   ```sh
+   HERMES_DASHBOARD_BASIC_AUTH_USERNAME=me
+   HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=a-strong-password
+   HERMES_DASHBOARD_BASIC_AUTH_SECRET=a-long-random-string
+   ```
+2. **Choose how your phone reaches it.**
+   - **Tailscale Serve (recommended).** Run the dashboard on the default `127.0.0.1:9119`, run `tailscale serve --bg 9119`, and set `dashboard.public_url` in `~/.hermes/config.yaml` to the `https://<machine>.<tailnet>.ts.net` address Serve prints (Hermes needs this to keep the sign-in on for Tailscale visitors). Install Tailscale on the phone with the same account. The address for Conduit is that `https://….ts.net` URL.
+   - **Same network only.** Run `hermes dashboard --host 0.0.0.0 --port 9119 --no-open`. The address is `http://<server-ip>:9119` and works only on that network.
+   - **Your own domain or reverse proxy.** Point the proxy at `http://127.0.0.1:9119` and set `dashboard.public_url` to your HTTPS address.
+3. **Keep the dashboard running** with systemd, launchd, tmux or similar, so it survives reboots.
+4. **Sign in.** Open Conduit, enter the address and sign in with the username and password from step 1.
+5. **Add the plugin** as described in [Notifications, voice and phone features](#notifications-voice-and-phone-features), or from **Settings > Conduit plugin** once you're signed in.
+
+**Note:** Conduit connects to the native Hermes dashboard, not the separate Hermes WebUI project. The default port is 9119.
+
+Plain HTTP over Tailscale (MagicDNS `.ts.net` domains and `100.64.0.0/10` tailnet IPs) is supported, since that traffic is already WireGuard-encrypted.
 
 If the dashboard is behind Cloudflare Access, enable the optional service token on the login screen or in Settings > Connection > Gateway. Conduit stores the client secret in Keychain (scoped to the gateway origin), and injects both Access headers into native authentication requests, WebSocket handshakes, and all in-page WebKit fetches via a document-start user script. Credentials are bound to the gateway URL and cleared when switching to a different host.
 
 **Native OAuth limitation:** service-token headers cannot be attached to the system Safari navigation that opens `/auth/native/authorize`. Native OAuth therefore requires that browser authorization route to be reachable through an interactive Cloudflare policy or without a service-token challenge. The token exchange, refresh, REST, and WebSocket-ticket requests still use the configured service-token headers. A service-token-only challenge in front of the authorize route cannot be bypassed by Conduit and must not silently fall back to embedded Google OAuth.
 
-## Push Notifications
+## Notifications, voice and phone features
 
-Push notifications require a small relay service because iOS does not allow apps to maintain persistent background connections. The relay source is in the `hermes-conduit-notifier` plugin and the push relay server.
+Push notifications need a small relay because iOS does not let apps keep a background connection open. Live voice, Apple Watch calls, cards and the phone features need the notifier plugin on your Hermes host. One install covers all of it; the relay and plugin source live in [hermes-conduit-notifier](https://github.com/kaishi00/hermes-conduit-notifier).
 
-To set up push notifications, install the notifier plugin on your Hermes instance:
+Install the notifier plugin on your Hermes instance:
 
 ```
 hermes plugins install kaishi00/hermes-conduit-notifier --enable
 hermes gateway restart
 ```
 
-Then follow the in-app pairing flow under Settings > Notifications.
+Then turn on notifications under Settings > Notifications; Conduit pairs the signed-in profile by itself when no other iPhone receives its notifications; if one does, Settings > Notifications offers to move them to this one. Settings > Conduit plugin shows the installed version and can update it.
 
 The app uses a shared relay by default (`push.milim.dev`) so notifications work out of the box with no extra setup.
 
 **End-to-end encryption.** With notifier 0.5 or later, Conduit gives each pairing its own key over your dashboard connection (never through the relay) and turns encryption on by itself. Notification text, session and profile names, approval and clarify cards, and your clarify answers are then encrypted between your Hermes host and this iPhone; a Notification Service Extension decrypts them on the phone. The relay and Apple only see routing data such as the event type and timing. Settings > Notifications shows which pairings are encrypted.
 
-**Running your own relay.** Apple only delivers notifications for the App Store build when they are signed with its developer's APNs key, so a relay you run yourself can't reach the App Store app, even if you enter its URL under Settings > Notifications > Push relay. A self-hosted relay works with a Conduit build you sign with your own Apple developer account and bundle id (see [Building from source](#building-from-source) and the relay's [self-hosting guide](https://github.com/kaishi00/hermes-conduit-notifier#self-hosting)). If your goal is that the relay can't read your notifications, end-to-end encryption already covers that on the shared relay.
+**Running your own relay.** Apple only delivers notifications for the App Store build when they are signed with its developer's APNs key, so a relay you run yourself can't reach the App Store app, even if you enter its URL under Settings > Notifications > Push relay. A self-hosted relay works with a Conduit build you sign with your own Apple developer account and bundle id (see [Building from source](#building-from-source) and the relay's [self-hosting guide](https://github.com/kaishi00/hermes-conduit-notifier#self-hosting)). Such a build registers under its own bundle id, and can make your relay its default with the `CONDUIT_DEFAULT_RELAY_URL` build setting (an https URL, e.g. `xcodebuild CONDUIT_DEFAULT_RELAY_URL=https://push.example.com …`), so nobody has to type it into Settings. If your goal is that the relay can't read your notifications, end-to-end encryption already covers that on the shared relay.
 
 ## Building from source
 
@@ -103,8 +174,7 @@ open Conduit.xcodeproj
 Select your team in Signing & Capabilities, then build and run on your device.
 
 **Requirements:**
-- Xcode 16 or later
-- iOS 17 SDK
+- A current Xcode with the iOS 26 and watchOS 26 SDKs or later (CI builds with the default Xcode on GitHub's `macos-26` runners)
 - [xcodegen](https://github.com/yonaskolb/XcodeGen)
 
 ## Releasing
@@ -113,22 +183,24 @@ See [the iOS release workflow](docs/RELEASE_WORKFLOW.md) for the TestFlight and 
 
 ## Architecture
 
-Conduit is pure SwiftUI targeting iOS 17+. The project uses xcodegen for Xcode project generation from `project.yml`.
+Conduit is SwiftUI, generated with xcodegen from `project.yml`. Targets: the iPhone and iPad app, the Watch app and its widgets, Home Screen widgets and Live Activities, a Notification Service Extension (decrypts end-to-end encrypted notifications), a Location Push extension, and a share extension.
 
-The app connects to the Hermes dashboard WebSocket endpoint (`/api/ws`) after authenticating through the dashboard login page. All RPC calls route through the dashboard, same as the desktop client. The gateway is never contacted directly.
+The app connects to the Hermes dashboard's WebSocket (`/api/ws`) and REST routes after authenticating through the dashboard, as the desktop client does. Plugin features use the notifier's routes under `/api/plugins/conduit_push/`, behind the same dashboard auth.
 
-Key files:
+Key places:
 - `Conduit/Services/HermesClient.swift` - WebSocket client and RPC layer
-- `Conduit/Services/AppState.swift` - Main state management and session lifecycle
-- `Conduit/Services/DashboardTicketBridge.swift` - Authentication bridge
-- `Conduit/Views/ChatView.swift` - Chat interface with streaming
-- `Conduit/Voice/` - Voice pipeline: push-to-talk plus GPT-Live and Gemini Live conversations
+- `Conduit/Services/AppState.swift` (and its `AppState+*.swift` extensions) - state and session lifecycle
+- `Conduit/Views/V2/` - the app shell: Chats, Tasks, Bots, Settings
+- `Conduit/Voice/` - Classic voice, dictation and the live voice engines (Gemini Live, GPT-Live, Grok Live, Local Live)
+- `Conduit/Health`, `Conduit/Location`, `Conduit/Phone` - opt-in phone data sync
+- `ConduitWatch/` - the Apple Watch app
+- `Shared/` - code shared with the extensions and the Watch
 
 ## Privacy
 
-Conduit does not collect, transmit, or store your data on any third-party server. All communication goes directly between the app and your own Hermes instance. The only external connection is the optional push relay, which delivers notifications through Apple; with end-to-end encryption on, it only sees routing data, not their content.
+Conduit has no analytics, telemetry, crash-reporting or ad SDKs, and its developer never receives your conversations, voice or phone data. Chats, attachments and opt-in phone data go to your own Hermes host. Live voice calls go to the voice provider you choose (Google, OpenAI or xAI) or your own speech server. The optional push relay delivers notifications and calls through Apple; with end-to-end encryption on, it sees only routing data, not their content.
 
-No analytics. No telemetry. No ad frameworks.
+The full [privacy policy](https://kaishi00.github.io/hermes-conduit-notifier/privacy/) says what each party receives.
 
 ## Support
 

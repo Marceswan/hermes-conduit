@@ -4,7 +4,8 @@
 //
 //  A live call whose sheet was swiped away keeps running. This bar sits
 //  above the composer while it does: tap it or swipe it up to bring the
-//  sheet back, or mute or end the call from here.
+//  sheet back, or mute or end the call from here. A reply being read aloud
+//  shows its player here too (#759).
 //
 
 import SwiftUI
@@ -13,11 +14,21 @@ struct MinimisedLiveVoiceBar: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
+        VStack(spacing: 0) {
+            callBar
+            ReadAloudPlayerBar(controller: appState.messageReadAloudController)
+        }
+    }
+
+    @ViewBuilder
+    private var callBar: some View {
         switch appState.minimisedLiveVoice {
         case .geminiLive?:
             GeminiLiveBarContent(controller: appState.geminiLiveController, jobs: appState.voiceBackgroundJobSupervisor, name: "Gemini Live")
         case .grokLive?:
             GeminiLiveBarContent(controller: appState.grokLiveController, jobs: appState.voiceBackgroundJobSupervisor, name: "Grok Live")
+        case .localLive?:
+            GeminiLiveBarContent(controller: appState.localLiveController, jobs: appState.voiceBackgroundJobSupervisor, name: AppLocalization.string("Local Live"))
         case .gptLive?:
             GPTLiveBarContent(controller: appState.gptLiveController, jobs: appState.voiceBackgroundJobSupervisor)
         case nil:
@@ -44,6 +55,8 @@ private struct GeminiLiveBarContent: View {
             symbol: symbol,
             thread: jobs.liveThread?.title,
             isFailed: isFailed,
+            phase: callPhase,
+            startedAt: jobs.liveCallStartedAt,
             isMuted: controller.isMicrophoneMuted,
             canMute: controller.isActive && !controller.isEnding,
             onRestore: appState.restoreMinimisedLiveVoice,
@@ -61,7 +74,24 @@ private struct GeminiLiveBarContent: View {
         case .speaking: return AppLocalization.string("Speaking")
         case .paused: return AppLocalization.string("Paused")
         case .ending: return AppLocalization.string("Ending conversation…")
-        case .failed: return AppLocalization.string("Call stopped. Tap to see why.")
+        case .failed:
+            #if os(macOS) // MAC: click, not tap (Task 9b)
+            return AppLocalization.string("Mac.LiveVoiceBar.CallStopped")
+            #else // MAC:
+            return AppLocalization.string("Call stopped. Tap to see why.")
+            #endif // MAC:
+        }
+    }
+
+    /// The phase V2's mini level bars draw.
+    private var callPhase: LiveVoiceCallPhase {
+        switch controller.phase {
+        case .idle, .paused: return .idle
+        case .connecting, .reconnecting: return .connecting
+        case .listening: return controller.isMicrophoneMuted ? .muted : .listening
+        case .speaking: return .speaking
+        case .ending: return .ending
+        case .failed: return .failed
         }
     }
 
@@ -95,6 +125,8 @@ private struct GPTLiveBarContent: View {
             symbol: symbol,
             thread: jobs.liveThread?.title,
             isFailed: isFailed,
+            phase: callPhase,
+            startedAt: jobs.liveCallStartedAt,
             isMuted: controller.isMicrophoneMuted,
             canMute: controller.isActive && !controller.isEnding,
             onRestore: appState.restoreMinimisedLiveVoice,
@@ -111,7 +143,24 @@ private struct GPTLiveBarContent: View {
         case .speaking: return AppLocalization.string("Speaking")
         case .paused: return AppLocalization.string("Paused")
         case .ending: return AppLocalization.string("Ending conversation…")
-        case .failed: return AppLocalization.string("Call stopped. Tap to see why.")
+        case .failed:
+            #if os(macOS) // MAC: click, not tap (Task 9b)
+            return AppLocalization.string("Mac.LiveVoiceBar.CallStopped")
+            #else // MAC:
+            return AppLocalization.string("Call stopped. Tap to see why.")
+            #endif // MAC:
+        }
+    }
+
+    /// The phase V2's mini level bars draw.
+    private var callPhase: LiveVoiceCallPhase {
+        switch controller.phase {
+        case .idle, .paused: return .idle
+        case .connecting: return .connecting
+        case .listening: return controller.isMicrophoneMuted ? .muted : .listening
+        case .speaking: return .speaking
+        case .ending: return .ending
+        case .failed: return .failed
         }
     }
 
@@ -134,12 +183,16 @@ private struct LiveVoiceBarRow: View {
     /// The chat the call is attached to, if any.
     let thread: String?
     let isFailed: Bool
+    let phase: LiveVoiceCallPhase
+    /// When the call began, for V2's timer.
+    let startedAt: Date?
     let isMuted: Bool
     let canMute: Bool
     let onRestore: () -> Void
     let onToggleMute: () -> Void
     let onEnd: () -> Void
     @ScaledMetric(relativeTo: .body) private var iconWidth: CGFloat = 24
+    @AppStorage(V2ShellPreference.key) private var usesV2 = V2ShellPreference.defaultValue
     /// How far the bar has risen under the finger; it springs back on release.
     @GestureState(resetTransaction: Transaction(animation: .spring(response: 0.3, dampingFraction: 0.8)))
     private var lift: CGFloat = 0
@@ -148,19 +201,38 @@ private struct LiveVoiceBarRow: View {
         HStack(spacing: 10) {
             Button(action: onRestore) {
                 HStack(spacing: 10) {
-                    Image(systemName: symbol)
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(Color.conduitAura)
-                        .frame(width: iconWidth)
-                        .accessibilityHidden(true)
+                    if usesV2 {
+                        V2CallLevelBars(phase: phase, barCount: 5, glows: false)
+                            .frame(width: iconWidth * 1.3, height: iconWidth)
+                            .accessibilityHidden(true)
+                    } else {
+                        Image(systemName: symbol)
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(Color.conduitAura)
+                            .frame(width: iconWidth)
+                            .accessibilityHidden(true)
+                    }
                     VStack(alignment: .leading, spacing: 1) {
                         Text(verbatim: thread.map { "\(name) · \($0)" } ?? name)
                             .font(.subheadline.weight(.semibold))
                             .lineLimit(1)
-                        Text(status)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
+                        if usesV2, let startedAt, !isFailed {
+                            // The state and how long the call has run.
+                            TimelineView(.animation(minimumInterval: 1)) { context in
+                                Text(verbatim: "\(status) · \(V2CallHeaderTitle.clock(max(0, context.date.timeIntervalSince(startedAt))))")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                                    // VoiceOver reads the state without the
+                                    // ticking time, so the label holds still.
+                                    .accessibilityLabel(Text(verbatim: status))
+                            }
+                        } else {
+                            Text(status)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
                     }
                     Spacer(minLength: 0)
                 }

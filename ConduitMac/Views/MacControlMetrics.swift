@@ -47,6 +47,13 @@ enum MacSidebarMetrics {
     static let sessionCardPaddingV: CGFloat = 5
 }
 
+/// The order the Mac sidebar tab strip shows its tabs in (D24, D26): Home leftmost, then the
+/// four upstream tabs in their own order, then Artifacts. Mac-owned, so upstream's
+/// `SidebarTab.allCases` order (and the Ctrl-Cmd-digit numbering that follows it) is untouched.
+enum MacSidebarTabOrder {
+    static let strip: [SidebarTab] = [.home, .sessions, .bots, .cron, .kanban, .artifacts]
+}
+
 /// Geometry of the sidebar tab strip: a rounded container with a uniformly
 /// inset selection indicator whose radius is concentric with the container's.
 enum MacTabStripMetrics {
@@ -56,6 +63,47 @@ enum MacTabStripMetrics {
     static let segmentHeight: CGFloat = containerHeight - 2 * inset
     static let containerRadius: CGFloat = MacSidebarMetrics.controlRadius
     static var indicatorRadius: CGFloat { concentricRadius(outer: containerRadius, inset: inset) }
+
+    /// A fixed icon-only segment (Home, when the names of every tab do not fit):
+    /// a 32 pt glyph square plus the indicator inset on both sides.
+    static let homeSegmentWidth: CGFloat = 32 + 2 * inset
+
+    /// Gap between a segment's icon and its name, and the margin either side
+    /// of that pair (inside the indicator).
+    static let nameGap: CGFloat = 4
+    static let nameMargin: CGFloat = 3
+
+    /// The strip's three layouts, widest first (D24).
+    enum Ladder: Equatable {
+        /// Every tab shows icon and name, in equal segments.
+        case names
+        /// Every tab except Home keeps icon and name in equal segments; Home
+        /// is an icon-only segment of `homeSegmentWidth`.
+        case homeCompact
+        /// Every tab is an icon in an equal segment.
+        case icons
+    }
+
+    /// Width one segment needs to show its icon and name: glyph, gap, text,
+    /// the margin on both sides and the indicator inset on both sides.
+    static func nameSegmentWidth(iconWidth: CGFloat, textWidth: CGFloat) -> CGFloat {
+        iconWidth + nameGap + textWidth + 2 * nameMargin + 2 * inset
+    }
+
+    /// Which layout fits `availableWidth` (the strip's own width, container
+    /// included). `nameSegmentWidths` are the tabs' `nameSegmentWidth`s keyed
+    /// by tab: Home is found by value, wherever the strip puts it. Equal
+    /// segments are as wide as the widest in their group, so a group needs
+    /// `count * widest`. A pure function of its arguments: the strip's steps
+    /// do not depend on view hosting.
+    static func ladder(availableWidth: CGFloat, nameSegmentWidths: [SidebarTab: CGFloat]) -> Ladder {
+        guard nameSegmentWidths.count > 1 else { return .icons }
+        let allNames = CGFloat(nameSegmentWidths.count) * (nameSegmentWidths.values.max() ?? 0)
+        if availableWidth >= allNames { return .names }
+        let others = nameSegmentWidths.filter { $0.key != .home }.values
+        let compact = CGFloat(others.count) * (others.max() ?? 0) + homeSegmentWidth
+        return availableWidth >= compact ? .homeCompact : .icons
+    }
 
     /// Radius of a shape inset by `inset` inside one of radius `outer`, so the
     /// two corners share a centre. Never negative.

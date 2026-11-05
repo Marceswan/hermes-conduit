@@ -324,6 +324,8 @@ enum VoiceCallDecisionOutcome: Equatable {
     case notAYes
     /// Hermes didn't take it (no connection, or it refused).
     case failed
+    /// More than one job of the call waits on an approval.
+    case severalWaiting
 
     var status: String {
         switch self {
@@ -335,6 +337,7 @@ enum VoiceCallDecisionOutcome: Equatable {
         case .userHasNotSpoken: return "not_answered"
         case .notAYes: return "not_approved"
         case .failed: return "failed"
+        case .severalWaiting: return "several_waiting"
         }
     }
 
@@ -350,6 +353,7 @@ enum VoiceCallDecisionOutcome: Equatable {
         case .userHasNotSpoken: return "Not answered: the user hasn't said anything yet. Ask them, and answer only with their own words."
         case .notAYes: return "Not approved: the user's last words weren't a clear yes. Ask them again for a plain yes or no, or tell them they can approve it in the chat."
         case .failed: return "Hermes didn't take the answer. They can answer in the chat." + tell
+        case .severalWaiting: return "Not answered: more than one job is waiting on the user's OK, so a yes can't say which. They can answer each in its chat in Conduit." + tell
         }
     }
 }
@@ -513,7 +517,10 @@ enum VoiceCallbackPhrases {
             || folded.range(of: #"\bgive me a (call|ring) (when|once|after|as soon as)\b"#, options: .regularExpression) != nil else {
             return false
         }
-        return folded.range(of: #"\b(don't|do not|never|no need to|stop)( \w+)? (call|ring|phone|give)\b"#, options: .regularExpression) == nil
+        // Only hedges may sit between the negator and the verb ("don't
+        // need to call me", "don't even call me"): any word at all would
+        // read "don't forget to call me" as a refusal.
+        return folded.range(of: #"\b(don't|do not|never|no need to|needn't|haven't|hasn't|shouldn't|mustn't|stop)( (need|needs|want|have|has|got|to|even|bother|bothering|really|ever|you|dare))* (call|ring|phone|give)\b"#, options: .regularExpression) == nil
     }
 }
 
@@ -563,6 +570,13 @@ struct HermesCallSettings: Equatable {
     /// The user's own words on what's worth a call Hermes decides to make
     /// (plugin 0.16+); nil when the host doesn't have the setting.
     var rules: String?
+    /// Saved places (ids from the phone) where Hermes must not ring, and
+    /// whether "no recent location" counts as one (plugin with
+    /// `location-sync`); nil when the host doesn't have the settings.
+    var avoidPlaces: [String]?
+    var avoidUnknownPlace: Bool?
+
+    static let maxAvoidPlaces = 20
 
     init() {}
 
@@ -581,6 +595,8 @@ struct HermesCallSettings: Equatable {
         self.perHour = perHour
         self.perDay = perDay
         self.rules = json["rules"] as? String
+        self.avoidPlaces = json["avoid_places"] as? [String]
+        self.avoidUnknownPlace = json["avoid_unknown_place"] as? Bool
     }
 
     /// Only the settings the host has: an older plugin refuses unknown ones.
@@ -589,6 +605,8 @@ struct HermesCallSettings: Equatable {
         if let decides { payload["decides"] = decides }
         if let alerts { payload["alerts"] = alerts }
         if let rules { payload["rules"] = rules }
+        if let avoidPlaces { payload["avoid_places"] = Array(avoidPlaces.prefix(Self.maxAvoidPlaces)) }
+        if let avoidUnknownPlace { payload["avoid_unknown_place"] = avoidUnknownPlace }
         return payload
     }
 }
@@ -918,51 +936,75 @@ struct HermesCallOutcomeOutbox: Codable, Equatable {
         outbox.store(in: defaults)
     }
 
+    /// What `deliver` was asked for: one dashboard's outcomes, sent its way.
+    private struct Delivery {
+        let dashboard: String?
+        let activeProfile: String
+        let takesOutcomes: Bool
+        let defaults: UserDefaults
+        let now: () -> Date
+        let send: @MainActor (Entry, String) async throws -> Void
+    }
+
     @MainActor private static var isDelivering = false
-    @MainActor private static var deliversAgain = false
+    /// Asked for while one runs: the newest per dashboard, each sent with
+    /// its own dashboard, profile and `send`.
+    @MainActor private static var waiting: [Delivery] = []
 
     /// Sends what waits for `dashboard`, oldest first, through `send`
     /// (given each one's profile, `activeProfile` if it has none). A host
     /// whose plugin doesn't take outcomes (`takesOutcomes` false) or refuses
     /// one drops it: it never will. Anything else (offline, a busy host)
     /// keeps it and the rest for the next connection. One delivery at a
-    /// time; one asked for meanwhile runs once it's done.
+    /// time; one asked for meanwhile runs once it's done, even when that
+    /// one stopped early.
     @MainActor
     static func deliver(
         dashboard: String?,
         activeProfile: String,
         takesOutcomes: Bool,
         defaults: UserDefaults,
-        now: () -> Date = { Date() },
-        send: @MainActor (Entry, String) async throws -> Void
+        now: @escaping () -> Date = { Date() },
+        send: @escaping @MainActor (Entry, String) async throws -> Void
     ) async {
+        let delivery = Delivery(dashboard: dashboard, activeProfile: activeProfile, takesOutcomes: takesOutcomes, defaults: defaults, now: now, send: send)
         guard !isDelivering else {
-            deliversAgain = true
+            // Another dashboard's request is its own; the same one's newer
+            // request replaces the older.
+            waiting.removeAll { $0.dashboard == dashboard }
+            waiting.append(delivery)
             return
         }
         isDelivering = true
         defer { isDelivering = false }
-        repeat {
-            deliversAgain = false
-            var outbox = load(from: defaults)
-            outbox.prune(now: now())
-            outbox.store(in: defaults)
-            for entry in outbox.entries where (entry.dashboard ?? dashboard) == dashboard {
-                if takesOutcomes {
-                    do {
-                        try await send(entry, entry.profile ?? activeProfile)
-                    } catch {
-                        // Offline or a busy host: this one and the rest wait.
-                        guard refusesForGood(error) else { return }
-                        hermesCallsLogger.notice("Hermes call outcome dropped for \(entry.callID, privacy: .public): \(String(describing: error), privacy: .public)")
-                    }
+        var next: Delivery? = delivery
+        while let current = next {
+            await deliverOnce(current)
+            next = waiting.isEmpty ? nil : waiting.removeFirst()
+        }
+    }
+
+    @MainActor
+    private static func deliverOnce(_ delivery: Delivery) async {
+        let dashboard = delivery.dashboard, defaults = delivery.defaults
+        var outbox = load(from: defaults)
+        outbox.prune(now: delivery.now())
+        outbox.store(in: defaults)
+        for entry in outbox.entries where (entry.dashboard ?? dashboard) == dashboard {
+            if delivery.takesOutcomes {
+                do {
+                    try await delivery.send(entry, entry.profile ?? delivery.activeProfile)
+                } catch {
+                    // Offline or a busy host: this one and the rest wait.
+                    guard refusesForGood(error) else { return }
+                    hermesCallsLogger.notice("Hermes call outcome dropped for \(entry.callID, privacy: .public): \(LogRedaction.describing(error), privacy: .public)")
                 }
-                // Read again: others may have been recorded meanwhile.
-                var current = load(from: defaults)
-                current.entries.removeAll { $0.dashboard == entry.dashboard && $0.callID == entry.callID }
-                current.store(in: defaults)
             }
-        } while deliversAgain
+            // Read again: others may have been recorded meanwhile.
+            var current = load(from: defaults)
+            current.entries.removeAll { $0.dashboard == entry.dashboard && $0.callID == entry.callID }
+            current.store(in: defaults)
+        }
     }
 
     /// The host refused it as it is (or answered without taking it):
@@ -1052,7 +1094,7 @@ enum HermesCallNotifications {
         do {
             try await center.add(request)
         } catch {
-            hermesCallsLogger.error("Hermes call notification not posted: \(error.localizedDescription, privacy: .public)")
+            hermesCallsLogger.error("Hermes call notification not posted: \(LogRedaction.message(error), privacy: .public)")
         }
     }
 

@@ -31,8 +31,12 @@ extension AppState {
 
     /// Whether the host's notifier plugin takes call watches (plugin 0.13+).
     var supportsHermesCalls: Bool {
+        #if os(macOS) // MAC: a call reaches the iPhone through push (APNs); the Mac uses local notifications only (D20, Ruling R46)
+        return false
+        #else // MAC:
         if case .reported(_, let capabilities) = notifierPlugin.state { return capabilities.contains("hermes-calls") }
         return false
+        #endif // MAC:
     }
 
     /// The active profile's call settings, once read from this dashboard.
@@ -56,13 +60,18 @@ extension AppState {
     func refreshHermesCallsStatus() async {
         guard supportsHermesCalls else { return }
         let key = hermesCallsKey(profile: activeProfile)
+        hermesCallsStatusGeneration &+= 1
+        let generation = hermesCallsStatusGeneration
         do {
             let status = try await hermesCallsClient.status(profile: activeProfile)
-            guard key == hermesCallsKey(profile: activeProfile) else { return }
+            // A read asked later, or a save, answered first: theirs is newer.
+            guard generation > hermesCallsStatusAcceptedGeneration,
+                  key == hermesCallsKey(profile: activeProfile) else { return }
+            hermesCallsStatusAcceptedGeneration = generation
             hermesCallsStatus = status
             hermesCallsStatusKey = key
         } catch {
-            hermesCallsStateLogger.notice("Call settings not read: \(error.localizedDescription, privacy: .public)")
+            hermesCallsStateLogger.notice("Call settings not read: \(LogRedaction.message(error), privacy: .public)")
         }
     }
 
@@ -81,6 +90,9 @@ extension AppState {
             let saved = try await hermesCallsClient.save(settings, profile: profile)
             // Saved; shown only while that profile still is.
             guard key == hermesCallsKey(profile: activeProfile) else { return true }
+            // Reads still out were asked before this save.
+            hermesCallsStatusGeneration &+= 1
+            hermesCallsStatusAcceptedGeneration = hermesCallsStatusGeneration
             if var status = activeHermesCallsStatus {
                 status.settings = saved
                 hermesCallsStatus = status
@@ -89,7 +101,7 @@ extension AppState {
             }
             return true
         } catch {
-            hermesCallsStateLogger.error("Call settings not saved: \(error.localizedDescription, privacy: .public)")
+            hermesCallsStateLogger.error("Call settings not saved: \(LogRedaction.message(error), privacy: .public)")
             errorMessage = AppLocalization.string("Couldn't save Hermes' call settings. Check your connection and try again.")
             return false
         }
@@ -135,7 +147,12 @@ extension AppState {
     /// connect and profile switch, and when the Watch first sends its call
     /// token.
     func refreshWatchCallVoices() async {
-        guard PushNotificationService.shared.watchVoIPToken != nil else { return }
+        // Without a call token the Watch still hears whether this host has
+        // the Conduit plugin its voices all need (watchContextVoices).
+        guard PushNotificationService.shared.watchVoIPToken != nil else {
+            shareWatchCallVoices()
+            return
+        }
         let scope = hermesCallsKey(profile: activeProfile)
         rescopeWatchCallVoices()
         guard supportsHermesCalls else {
@@ -145,7 +162,10 @@ extension AppState {
         async let gemini = watchCallVoiceCheck(.geminiLive)
         async let gpt = watchCallVoiceCheck(.gptLive)
         async let grok = watchCallVoiceCheck(.grokLive)
-        let checks: [(WatchCallVoices.Voice, Bool?)] = [(.geminiLive, await gemini), (.gptLive, await gpt), (.grokLive, await grok)]
+        async let localLive = watchCallVoiceCheck(.localLive)
+        let checks: [(WatchCallVoices.Voice, Bool?)] = [
+            (.geminiLive, await gemini), (.gptLive, await gpt), (.grokLive, await grok), (.localLive, await localLive),
+        ]
         // Another server or profile by now: these say nothing about it.
         guard scope == hermesCallsKey(profile: activeProfile) else { return }
         var voices = PushNotificationService.shared.watchCallVoices
@@ -191,21 +211,73 @@ extension AppState {
         // The Watch's GPT-Live is the subscription's, whatever the phone uses.
         case .gptLive: return (try? await gptLiveClient.availability(billing: .subscription))?.isAvailable
         case .grokLive: return (try? await grokLiveClient.availability())?.isAvailable
+        // The phone's Local Live check: the host's speech server and key.
+        case .localLive: return (try? await localLiveClient.status())?.available
         }
     }
 
     /// The Watch app says what to set up when its voice can't start, and
     /// that calls then ring only the iPhone.
-    /// Also how a call ringing on the Watch names the main profile.
+    /// Also how a call ringing on the Watch names the main profile, and the
+    /// accent the Watch app draws in.
     func shareWatchCallVoices() {
         let notifications = PushNotificationService.shared
-        let voices = notifications.watchCallVoices
         WatchVoiceLink.shared.share(WatchPhoneContext(
-            voices: voices.scope == hermesCallsKey(profile: activeProfile) ? voices.ready : [:],
+            voices: Self.watchContextVoices(
+                notifications.watchCallVoices,
+                scope: hermesCallsKey(profile: activeProfile),
+                plugin: notifierPlugin.state
+            ),
             callsRing: supportsHermesCalls && notifications.voipToken != nil,
             mainProfileNames: mainProfileNamesByDashboard,
-            activeDashboardID: activeDashboardID?.uuidString
+            activeDashboardID: activeDashboardID?.uuidString,
+            accent: UserDefaults.standard.string(forKey: ConduitAccentChoice.storageKey) ?? ConduitAccentChoice.defaultChoice.rawValue
         ))
+    }
+
+    /// The Watch voices' readiness the Watch app is told: this profile's
+    /// checks, except where the host's plugin can't serve a voice at all.
+    /// Every Watch voice needs plugin routes (watchVoiceCapabilities), so a
+    /// host without the plugin (or one too old to report what it serves)
+    /// has none of them, and a plugin that reports its capabilities has
+    /// only those it lists. Such a voice is not set up whatever an earlier
+    /// check found, so a stale "ready" from before the plugin went missing
+    /// can't bring back "Runs on your Watch". A pre-0.4 plugin that did
+    /// serve Gemini Live reads as not set up too; the Watch can still try.
+    nonisolated static func watchContextVoices(
+        _ voices: WatchCallVoices,
+        scope: String,
+        plugin: NotifierPluginStatus.State
+    ) -> [String: Bool] {
+        var context = voices.scope == scope ? voices.ready : [:]
+        for voice in WatchCallVoices.Voice.allCases where !pluginCanServe(voice, plugin: plugin) {
+            context[voice.rawValue] = false
+        }
+        return context
+    }
+
+    /// Whether the plugin state leaves room for the voice's route: not asked
+    /// yet says nothing, a missing or pre-0.4 plugin serves none.
+    nonisolated private static func pluginCanServe(_ voice: WatchCallVoices.Voice, plugin: NotifierPluginStatus.State) -> Bool {
+        switch plugin {
+        case .unknown: return true
+        case .predatesCapabilities: return false
+        case .reported(_, let capabilities): return watchVoiceCapabilities(voice).allSatisfy(capabilities.contains)
+        }
+    }
+
+    /// The plugin capabilities a Watch voice needs. Gemini Live runs on the
+    /// Watch with its own route's token; GPT-Live and Grok also need the
+    /// Watch audio bridge (plugin 0.9), which WatchDirectBroker's grant
+    /// carries. Local Live on the Watch needs the bridge's local_live
+    /// engine (plugin 0.48).
+    nonisolated static func watchVoiceCapabilities(_ voice: WatchCallVoices.Voice) -> [String] {
+        switch voice {
+        case .geminiLive: return ["gemini-live"]
+        case .gptLive: return ["gpt-live", "watch-audio"]
+        case .grokLive: return ["grok-live", "watch-audio"]
+        case .localLive: return ["local-live", "watch-audio", "watch-local-live"]
+        }
     }
 
     /// How GPT-Live asks for a call, when the host takes call watches.
@@ -302,7 +374,9 @@ extension AppState {
             }
             let errorBefore = self.errorMessage
             let opened: Bool
-            if let engine = self.configuredLiveVoiceEngine(profile: profile) {
+            // Local Live has no model of its own to say the call's news:
+            // classic voice takes it, as openVoiceConversation does.
+            if let engine = self.configuredLiveVoiceEngine(profile: profile), engine != .localLive {
                 HermesCallTrace.shared.note("Opening live voice (\(engine))")
                 self.pendingHermesCall = opening
                 opened = await self.openVoiceConversation(intent)
@@ -374,7 +448,7 @@ extension AppState {
                 do {
                     try await client.setPresence(profile: profile, seconds: Self.hermesCallPresenceSeconds)
                 } catch {
-                    hermesCallsStateLogger.notice("Call presence not set: \(error.localizedDescription, privacy: .public)")
+                    hermesCallsStateLogger.notice("Call presence not set: \(LogRedaction.message(error), privacy: .public)")
                 }
                 do { try await Task.sleep(for: Self.hermesCallPresenceRenewal) } catch { return }
                 // A call that ended some other way lets go too.
@@ -560,7 +634,7 @@ extension AppState {
 
     /// What the call trace says of voice: which surfaces are up and running.
     var hermesCallVoiceTraceSummary: String {
-        let liveSheet = showGeminiLiveSheet || showGPTLiveSheet || showGrokLiveSheet
+        let liveSheet = showGeminiLiveSheet || showGPTLiveSheet || showGrokLiveSheet || showLocalLiveSheet
         return "voice sheet: \(showVoiceSheet), live sheet: \(liveSheet), live call: \(isLiveVoiceCallActive), "
             + "classic session: \(voiceConversationController.hasLiveVoiceSession), app on screen: \(isSceneActive)"
     }
@@ -579,6 +653,8 @@ extension AppState {
             gptLiveController.setMicrophoneMuted(muted)
         } else if isGrokLiveActive {
             grokLiveController.setMicrophoneMuted(muted)
+        } else if isLocalLiveActive {
+            localLiveController.setMicrophoneMuted(muted)
         } else if voiceConversationController.hasLiveVoiceSession {
             if muted {
                 voiceConversationController.pauseMicrophone()

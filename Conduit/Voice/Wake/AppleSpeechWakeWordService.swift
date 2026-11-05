@@ -119,7 +119,7 @@ final class AppleSpeechWakeWordService: WakeWordService {
             try startAudio()
         } catch {
             stopEverything()
-            wakeLogger.error("wake audio start failed: \(error.localizedDescription, privacy: .public)")
+            wakeLogger.error("wake audio start failed: \(LogRedaction.message(error), privacy: .public)")
             throw WakeWordServiceError.unavailable(AppLocalization.string("Wake listening couldn't use the microphone. Close other apps using it, then try again."))
         }
         observeAudioDisruptions()
@@ -139,17 +139,31 @@ final class AppleSpeechWakeWordService: WakeWordService {
         if lease == nil {
             lease = try audioCoordinator.acquire(.wakeListening)
         }
-        try applyPreferredInput()
+        try VoiceAudioEngineRecovery.startFresh(
+            rebuild: { stopAudio() },
+            reassert: { try audioCoordinator.reassert() },
+            start: {
+                try applyPreferredInput()
+                try startAudioAttempt()
+            }
+        )
+    }
+
+    private func startAudioAttempt() throws {
         let engine = AVAudioEngine()
         let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else {
-            throw WakeWordServiceError.unavailable(
-                AppLocalization.string("The microphone is not available right now.")
-            )
+        let hardwareFormat = input.inputFormat(forBus: 0)
+        let nodeOutputFormat = input.outputFormat(forBus: 0)
+        guard hardwareFormat.sampleRate > 0, hardwareFormat.channelCount > 0,
+              nodeOutputFormat.sampleRate > 0, nodeOutputFormat.channelCount > 0 else {
+            throw VoiceAudioInputFormatUnavailable()
         }
+        let tapFormat = VoiceAudioEngineRecovery.tapFormat(
+            nodeOutput: nodeOutputFormat,
+            hardware: hardwareFormat
+        )
         let sink = audioSink
-        input.installTap(onBus: 0, bufferSize: 1_024, format: format) { buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 1_024, format: tapFormat) { buffer, _ in
             // Runs on the audio render thread. The buffer request accepts
             // appends from any thread; the sink only guards the swap.
             sink.append(buffer)
@@ -229,7 +243,7 @@ final class AppleSpeechWakeWordService: WakeWordService {
         do {
             try AVAudioSession.sharedInstance().setPreferredInput(nil)
         } catch {
-            wakeLogger.error("wake listening could not clear its preferred input: \(error.localizedDescription, privacy: .public)")
+            wakeLogger.error("wake listening could not clear its preferred input: \(LogRedaction.message(error), privacy: .public)")
         }
     }
 
@@ -318,7 +332,7 @@ final class AppleSpeechWakeWordService: WakeWordService {
                 try self.startAudio()
                 self.startRecognitionCycle()
             } catch {
-                wakeLogger.error("wake audio restart failed: \(error.localizedDescription, privacy: .public)")
+                wakeLogger.error("wake audio restart failed: \(LogRedaction.message(error), privacy: .public)")
                 self.recordFailure(AppLocalization.string("Wake listening couldn't use the microphone. Close other apps using it, then try again."))
             }
         }
